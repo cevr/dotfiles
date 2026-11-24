@@ -25,9 +25,12 @@ export type RowsClient = {
   }
 }
 
-const checking = (child: string, revision: number): OwnedRow => ({
-  child, lifecycle: { kind: "checking", revision, at: 0, sinceReload: false, waitingOn: "", diagnostic: false },
+const unanswered = (child: string, revision: number, kind: "checking" | "unknown"): OwnedRow => ({
+  child, lifecycle: { kind, revision, at: 0, sinceReload: false, waitingOn: "", diagnostic: false },
 })
+
+/** A slow owner gets one bounded read before we return to the native snapshot. */
+const OWNER_READ_DEADLINE = "2 seconds"
 
 export const rowView = ({ child, mark, observation, at, attention }: OwnerAnswer): OwnedRow => {
   const common = {
@@ -56,7 +59,7 @@ export const rowView = ({ child, mark, observation, at, attention }: OwnerAnswer
   return { child, lifecycle }
 }
 
-/** RPC results, not host events, are the row's evidence. A notification only invalidates the read. */
+/** An owner notification establishes the RPC's presence, not a row's phase. */
 export const ownerRows = (context: {
   readonly data: object
   readonly client: RowsClient
@@ -69,12 +72,13 @@ export const ownerRows = (context: {
     const groups = Array.from({ length: Math.ceil(children.length / 512) }, (_, index) => children.slice(index * 512, (index + 1) * 512))
     let reading = false
     let dirty = false
+    let established = false
     let generation = 0
     const revisions = new Map<string, number>()
     const revisionOf = (child: string) => Option.getOrElse(Option.fromUndefinedOr(revisions.get(child)), () => 0)
     const invalidate = () => {
       generation++
-      publish(children.map((child) => checking(child, revisionOf(child))))
+      if (established) publish(children.map((child) => unanswered(child, revisionOf(child), "checking")))
       refresh()
     }
     const refresh = () => {
@@ -85,25 +89,30 @@ export const ownerRows = (context: {
       }
       reading = true
       const requested = generation
-      Effect.forEach(groups, (children) => Effect.tryPromise(() =>
-        context.client.rpc(CHILD_ROWS).read({ children }, { location: context.location, signal: abort.signal }),
+      Effect.forEach(groups, (children) => Effect.tryPromise((signal) =>
+        context.client.rpc(CHILD_ROWS).read({ children }, { location: context.location, signal }),
       ), { concurrency: 2 }).pipe(
+        Effect.timeout(OWNER_READ_DEADLINE),
         Effect.option,
-        Effect.map(Option.map((answers) => answers.map((answer) => readRows(answer)))),
-        Effect.tap(Option.match({
-          onNone: () => Effect.void,
-          onSome: (answers) => Effect.sync(() => {
-            if (abort.signal.aborted || generation !== requested || !answers.every(Option.isSome)) return
-            const received = new Map(answers.flatMap((answer) => answer.value.rows.map((row) => [row.child, row] as const)))
+        Effect.tap((result) => Effect.sync(() => {
+            if (abort.signal.aborted) return
+            if (Option.isNone(result)) {
+              established = false
+              publish([])
+              return
+            }
+            established = true
+            if (generation !== requested) return
+            const received = new Map(result.value.flatMap((reply) =>
+              Option.toArray(readRows(reply)).flatMap(({ rows }) => rows.map((row) => [row.child, row] as const))))
             const views = children.map((child) => {
               const row = received.get(child)
               const floor = revisionOf(child)
-              if (!row || row.observation.child !== child || row.observation.revision < floor) return checking(child, floor)
+              if (!row || row.observation.child !== child || row.observation.revision < floor) return unanswered(child, floor, "unknown")
               revisions.set(child, row.observation.revision)
               return rowView(row)
             })
             publish(views)
-          }),
         })),
         Effect.ensuring(Effect.sync(() => {
           reading = false
@@ -111,7 +120,7 @@ export const ownerRows = (context: {
           dirty = false
           refresh()
         })),
-        Effect.runFork,
+        (read) => Effect.runFork(read, { signal: abort.signal }),
       )
     }
     const unlisten = reads.listen?.(({ details }) => {
@@ -123,6 +132,7 @@ export const ownerRows = (context: {
           if (provided.value < revisionOf(child)) return
           revisions.set(child, provided.value)
         }
+        established = true
         invalidate()
         return
       }

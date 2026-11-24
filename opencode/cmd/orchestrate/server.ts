@@ -140,6 +140,7 @@ import { STATUS } from "@dotfiles/opencode-status/status"
 import { Latch, readMark, MARK_KEY, type Mark, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import { Observation } from "../../mods/kernel/child-lifecycle.ts"
+import { LaunchStatus, readLaunchStatus } from "../../mods/kernel/launch-status.ts"
 import { CHILD_ROWS, readRows, type OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
 import { observedPhase } from "../../mods/kernel/opencode/subagents.ts"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
@@ -560,7 +561,10 @@ const ownerUnavailable = Schema.is(Schema.Union([
   // The simulation host reports unregistered RPC methods with this tag.
   Schema.Struct({ _tag: Schema.Literal("RpcNotFoundError") }),
 ]))
+const LAUNCH_OWNER_DEADLINE = "2 seconds"
+
 const startObservation = (ctx: Plugin.Context, child: string) => ctx.rpc(CHILD_ROWS).read({ children: [child] }).pipe(
+  Effect.timeout(LAUNCH_OWNER_DEADLINE),
   Effect.match({
     onFailure: (error) => ({ standalone: ownerUnavailable(error), answer: Option.none<OwnerAnswer>() }),
     onSuccess: (reply) => ({
@@ -571,19 +575,21 @@ const startObservation = (ctx: Plugin.Context, child: string) => ctx.rpc(CHILD_R
   }),
 )
 
-const launchStatus = (observation: Observation): "checking" | "completed" | "latched" | "running" => {
-  if (observation.basis !== "current") return "checking"
+const launchStatus = (observation: Observation): LaunchStatus => {
+  if (observation.basis !== "current") return "unknown"
   switch (observation.phase._tag) {
     case "Settled": return "completed"
     case "Latched": return "latched"
-    case "Unknown": return "checking"
-    default: return "running"
+    case "Unknown": return "unknown"
+    case "Running":
+    case "Recovering":
+    case "Continuing": return "running"
   }
 }
 const launchResult = (sessionID: string, answer: Option.Option<OwnerAnswer>, model?: string) => {
   const observation = Option.map(answer, ({ observation }) => observation)
-  const status = Option.getOrElse(Option.map(observation, launchStatus), () => "checking" as const)
-  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => "checking")
+  const status = Option.getOrElse(Option.map(observation, launchStatus), () => "unknown" as const)
+  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => "unknown (no current observation)")
   const output = `Subagent ${sessionID}: ${phase}. Do not poll or duplicate its work.`
   return {
     output: { sessionID, status, output, ...tellingOf({ model }),
@@ -593,17 +599,7 @@ const launchResult = (sessionID: string, answer: Option.Option<OwnerAnswer>, mod
     metadata: { sessionID, status },
   }
 }
-const unverifiedHoldReceipt = (latched: Model.LatchedStart, value: OwnerAnswer) => {
-  // `latched` is the legacy command receipt here, not a phase or a time.
-  const output = `Wake accepted the launch as “The subagent is latched” (sessionID: ${latched.child}). ${observedPhase(value.observation)}. Do not poll or duplicate its work.`
-  const status = "latched" as const
-  return {
-    output: { sessionID: latched.child, status, output, observation: value.observation, ...tellingOf({ model: latched.latched.model }) },
-    content: output,
-    metadata: { sessionID: latched.child, status },
-  }
-}
-type LaunchReply = ReturnType<typeof latchedResult> | ReturnType<typeof launchResult> | ReturnType<typeof unverifiedHoldReceipt>
+type LaunchReply = ReturnType<typeof latchedResult> | ReturnType<typeof launchResult>
 const heldAnswer = (ctx: Plugin.Context, latched: Model.LatchedStart, place: Place) => startObservation(ctx, latched.child).pipe(
   Effect.flatMap(({ standalone, answer }): Effect.Effect<LaunchReply, never> => {
     if (standalone) {
@@ -619,9 +615,6 @@ const heldAnswer = (ctx: Plugin.Context, latched: Model.LatchedStart, place: Pla
         const timing = { ...mark.mark, recheck: Option.fromUndefinedOr(recheckAt), words: reason }
         return Effect.succeed(latchedResult(latched, place, timing, Option.some(observation)))
       }
-      if (observation.phase._tag === "Unknown" && !observation.phase.reason && mark._tag === "Unreadable") {
-        return Effect.succeed(unverifiedHoldReceipt(latched, answer.value))
-      }
     }
     return Effect.succeed(launchResult(latched.child, answer, latched.latched.model))
   }),
@@ -630,7 +623,7 @@ const heldAnswer = (ctx: Plugin.Context, latched: Model.LatchedStart, place: Pla
 /** The subagent tool's output, widened with the latched answer. */
 const SubagentOutput = Schema.Struct({
   sessionID: Schema.String,
-  status: Schema.Literals(["completed", "running", "latched", "checking"]),
+  status: LaunchStatus,
   output: Schema.String,
   latch: Schema.optionalKey(
     Schema.Struct({
@@ -1227,7 +1220,13 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
               const child = output.sessionID
               return startObservation(ctx, child).pipe(Effect.map(({ standalone, answer }) => {
                 if (standalone) return result
-                return { ...result, ...launchResult(child, answer) }
+                const witnessed = launchResult(child, answer)
+                // The pinned tool says `running` only after it has admitted and started the job.
+                // An owner read that has not seen that start yet does not revoke its receipt.
+                if (witnessed.output.status === "unknown" && output.status === "running") {
+                  return { ...result, metadata: { ...result.metadata, sessionID: child, status: "running" } }
+                }
+                return { ...result, ...witnessed }
               }))
             }),
           )
@@ -1695,12 +1694,10 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           ),
           Option.getOrElse(() => Effect.void),
         )
-        const status: Status =
-          event.status === "error"
-            ? "error"
-            : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
-              ? metadata.status
-              : "completed"
+        const launch = Option.flatMap(Option.liftPredicate(metadata, isObject), ({ status }) => readLaunchStatus(status))
+        const status: Status = event.status === "error"
+          ? "error"
+          : Option.getOrElse(launch, () => "completed")
         return Effect.andThen(
           noted,
           orchestrate.finishSubagent({

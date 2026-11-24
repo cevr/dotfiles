@@ -343,6 +343,13 @@ describe("what hangs under a call at the all level", () => {
     expect(callBody(started)).toEqual({ files: [], reply: false, output: "Started." })
   })
 
+  test("a launch saying Checking or Unknown did not return a foreground agent's reply", () => {
+    for (const status of ["checking", "unknown"]) {
+      const pending = one(said(call("subagent", { agent: "worker", prompt: "Review." }, "completed", { sessionID: "ses_c", status }), status))
+      expect(callBody(pending)).toEqual({ files: [], reply: false, output: status })
+    }
+  })
+
   test("a subagent's reply shows without the host's envelope, in either form", () => {
     const wrapped = (text: string) => one(said(call("task", { agent: "code-reviewer", prompt: "Review." }), text))
     expect(callBody(wrapped('<background-result kind="subagent" sessionID="ses_c" state="completed" description="Review">\nApproved.\n</background-result>')).output).toBe(

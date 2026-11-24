@@ -522,11 +522,15 @@ describe("the guard", () => {
       Effect.gen(function* () {
         const plugin = yield* start({ now: WEDNESDAY })
         yield* plugin.finish({ status: "completed", result: { metadata: { sessionID: "kid", status: "running" } } })
+        yield* plugin.finish({ status: "completed", result: { metadata: { sessionID: "kid", status: "checking" } } })
+        yield* plugin.finish({ status: "completed", result: { metadata: { sessionID: "kid", status: "unknown" } } })
         yield* plugin.finish({ status: "completed", result: { metadata: { sessionID: "kid" } } })
         yield* plugin.finish({ status: "error", error: { message: "boom" } })
         yield* plugin.finish({ tool: "shell", status: "completed", result: {} })
         expect(plugin.logged()).toEqual([
           '{"kind":"done","sessionID":"root","callID":"call","child":"kid","status":"running"}',
+          '{"kind":"done","sessionID":"root","callID":"call","child":"kid","status":"checking"}',
+          '{"kind":"done","sessionID":"root","callID":"call","child":"kid","status":"unknown"}',
           '{"kind":"done","sessionID":"root","callID":"call","child":"kid","status":"completed"}',
           '{"kind":"done","sessionID":"root","callID":"call","status":"error"}',
         ])
@@ -828,10 +832,17 @@ describe("a latch", () => {
         expect(finished.output).toMatchObject({ status: "completed", observation: { phase, revision: 10 } })
         expect(finished.content).not.toContain("working")
 
+        const registered = yield* start({ now: WEDNESDAY }, { model, readStart: () => [] })
+        const admitted = yield* registered.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
+        const running = yield* registered.runTool(admitted.input)
+        expect(running.output).toMatchObject({ sessionID: "ses_ran", status: "running" })
+        yield* registered.finish({ status: "completed", result: running })
+        expect(registered.logged().at(-1)).toContain('"status":"running"')
+
         const unavailable = yield* start({ now: WEDNESDAY }, { model, pool: held, readStart: () => [] })
         const checked = yield* unavailable.call("subagent", "root", { agent: "explore", description: "look", prompt: "find it" })
         const withoutReply = yield* unavailable.runTool(checked.input)
-        expect(withoutReply.output).toMatchObject({ status: "checking" })
+        expect(withoutReply.output).toMatchObject({ status: "unknown" })
         expect(withoutReply.output).not.toHaveProperty("observation")
         expect(withoutReply.output).not.toHaveProperty("latch")
         expect(unavailable.ran).toEqual([])

@@ -9,6 +9,7 @@ import { Fact, Undetermined, evolve, initial, present } from "../../kernel/child
 import { readMark } from "../../wake/latch.ts"
 import { ownedSessionOf, type Reads, type SessionInfo, type ShellInfo } from "../opencode/view.ts"
 import { subagents, visible } from "../subagent-row.ts"
+import { worksNow } from "../works.ts"
 
 export const liveEvents = (events: { subscribe(options: { readonly signal: AbortSignal }): AsyncIterable<object> }) => {
   let listeners = 0
@@ -33,15 +34,17 @@ export const mountRows = (data: Reads, base: string, root: string, child: string
   return createRoot((close) => {
     const scope = getOwner()
     const family = createMemo(() => reader(data, root))
-    const ready = Effect.callback<void>((resume) => {
+    const owner = () => family().sessions.find(({ id }) => id === child)?.lifecycle
+    const whenOwner = (matches: (state: ReturnType<typeof owner>) => boolean) => Effect.callback<void>((resume) => {
       runWithOwner(scope, () => createComputed(() => {
-        const fact = family().sessions.find(({ id }) => id === child)?.lifecycle
-        if (fact && fact.kind !== "checking") resume(Effect.void)
+        if (matches(owner())) resume(Effect.void)
       }))
     })
+    const ready = whenOwner((state) => Boolean(state && state.kind !== "checking"))
+    const fallback = whenOwner((state) => Option.isNone(Option.fromUndefinedOr(state)))
     const rows = () => subagents(family(), root)
-    const owner = () => family().sessions.find(({ id }) => id === child)?.lifecycle
-    return { close, ready, rows, owner }
+    const active = () => Option.isSome(Option.fromUndefinedOr(worksNow(family())(child)))
+    return { close, ready, rows, owner, active, fallback }
   })
 }
 
@@ -90,7 +93,7 @@ export const openBarrier = (client: RowsClient, base: string, root: string, chil
     return {
       notify: observer.notify, hideShell: observer.hideShell, next: observer.next,
       live: snapshot(), snapshot, revision: () => Number(observer.view.owner()?.revision), ready: observer.view.ready,
-      initial: initial.revision, listeners: observer.listeners,
+      initial: initial.revision, listeners: observer.listeners, active: observer.view.active, fallback: observer.view.fallback,
     }
   })
 
