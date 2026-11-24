@@ -11,6 +11,7 @@ import { Glob } from "bun"
 import { Effect, FileSystem, Option, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { describe, expect, it } from "effect-bun-test"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { parseNameStatus } from "./docs-guard.ts"
 import { ACCEPT_TESTS, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { importsOf, load, reach, readsOf } from "./reach.ts"
@@ -314,6 +315,7 @@ describe("the merge check's tests", () => {
       // HEAD against itself changes nothing: no file to lint, no test due.
       expect(steps.filter(([name]) => name === "tests" || name === "lint").map(([, command]) => command)).toEqual(["true", "true"])
     }).pipe(Effect.scoped),
+    hangGuard("short-fixture"),
   )
 
   it.live.layer(BunServices.layer)("oxlint reads the changed TypeScript still on disk: a rename's new path, never a deletion", () =>

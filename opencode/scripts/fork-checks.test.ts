@@ -130,6 +130,7 @@ describe("the fork a run checks", () => {
       expect(Number(out.code)).toBe(2)
       expect(out.said).toContain(`fork-checks: COULD NOT RUN: ${NO_FORK}`)
     }),
+    hangGuard("short-fixture"),
   )
 })
 

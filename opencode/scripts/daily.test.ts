@@ -519,7 +519,7 @@ describe("the upstream merge", () => {
     expect(f.head(f.fork, "prime-look")).toBe(before)
     expect(f.calls).toEqual([])
     expect(existsSync(f.options().report)).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   test("a clean merge whose checks pass goes to origin by its fetch URL, past the push URL work gives an adopted copy (post-land 2026-11-16), and only then fast-forwards prime-look, inside `landing` alone", async () => {
     using f = fixture()
@@ -558,7 +558,7 @@ describe("the upstream merge", () => {
     // The fork had prime-look checked out, so its working tree followed.
     expect(readFileSync(join(f.fork, "b.txt"), "utf8")).toBe("upstream\n")
     expect(existsSync(f.options().report)).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   test("a conflict aborts, leaves prime-look and origin unchanged, and reports the files", async () => {
     using f = fixture()
@@ -578,7 +578,7 @@ describe("the upstream merge", () => {
     expect(existsSync(join(f.options().worktree, ".git"))).toBe(true)
     expect(Bun.spawnSync(["git", "-C", f.options().worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"], { env }).exitCode).not.toBe(0)
     expect(readFileSync(join(f.fork, "a.txt"), "utf8")).toBe("ours\n")
-  })
+  }, hangGuard("local-fixture"))
 
   test("red checks leave prime-look and origin unchanged, keep the merge on a branch and report the check", async () => {
     using f = fixture()
@@ -603,7 +603,7 @@ describe("the upstream merge", () => {
     expect(report).toContain("typecheck packages/tui")
     expect(report).toContain("error TS2304")
     expect(existsSync(join(f.fork, "b.txt"))).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   /** The fork's checkout as it stands: its branch's commit and its working tree's status. */
   const checkoutOf = (f: ReturnType<typeof fixture>) => ({ head: f.head(f.fork, "prime-look"), status: git(f.fork, "status", "--porcelain") })
@@ -634,7 +634,7 @@ describe("the upstream merge", () => {
         expect(said).toHaveLength(1)
         expect(said[0]).toContain("refused by the test hook")
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("origin moving during the merge: the step starts over from origin's head and lands on top of it", () =>
     Effect.runPromise(
@@ -658,7 +658,7 @@ describe("the upstream merge", () => {
         expect(readFileSync(join(f.fork, "c.txt"), "utf8")).toBe("pushed meanwhile\n")
         expect(readFileSync(join(f.fork, "b.txt"), "utf8")).toBe("upstream\n")
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("origin moving on every try: the step gives up with prime-look and its working tree where they were, and says why", () =>
     Effect.runPromise(
@@ -678,7 +678,7 @@ describe("the upstream merge", () => {
         expect(existsSync(join(f.fork, "c.txt"))).toBe(false)
         expect(readFileSync(f.options().report, "utf8")).toContain("origin kept moving")
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("a prime-look with commits origin lacks is not merged: the merge would publish them", () =>
     Effect.runPromise(
@@ -695,7 +695,7 @@ describe("the upstream merge", () => {
         expect(f.head(f.origin, "prime-look")).toBe(origin)
         expect(f.calls).toEqual([])
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("the workbox, and --no-upstream, skip it without fetching", async () => {
     using f = fixture()
@@ -704,7 +704,7 @@ describe("the upstream merge", () => {
     expect(await mergeUpstream(f.options({ skip: true }))).toEqual({ kind: "skipped", reason: "--no-upstream" })
     expect(Bun.spawnSync(["git", "-C", f.fork, "rev-parse", "-q", "--verify", "refs/remotes/upstream/dev"], { env }).exitCode).not.toBe(0)
     expect(existsSync(f.options().worktree)).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   test("a dry run says what would merge and changes nothing", async () => {
     using f = fixture()
@@ -714,7 +714,7 @@ describe("the upstream merge", () => {
     expect(f.head(f.fork, "prime-look")).toBe(before)
     expect(existsSync(f.options().worktree)).toBe(false)
     expect(f.calls).toEqual([])
-  })
+  }, hangGuard("local-fixture"))
 
   // The fork checkout can fall behind origin when prime-look moved from another checkout; merging
   // upstream into the stale branch redoes conflicts origin already resolved and builds old code.
@@ -736,7 +736,7 @@ describe("the upstream merge", () => {
     expect(git(f.fork, "rev-parse", "prime-look^1")).toBe(pushed)
     // Current: nothing to do.
     expect(sync({ fork: f.fork, dryRun: false, log: () => {} })).toEqual({ kind: "current" })
-  })
+  }, hangGuard("local-fixture"))
 
   // 2026-11-20: prime-look moved to a commit with another lockfile and no install; its old packages
   // hung Code Mode and turned tests/image.test.ts red.
@@ -762,7 +762,7 @@ describe("the upstream merge", () => {
     expect(sync({ fork: f.fork, dryRun: false, log: (line) => lines.push(line), install: failing })).toMatchObject({ kind: "fast-forwarded" })
     expect(f.head(f.fork, "prime-look")).toBe(f.head(f.origin, "prime-look"))
     expect(lines.join("\n")).toContain(`bun install --frozen-lockfile in ${f.fork} failed`)
-  })
+  }, hangGuard("local-fixture"))
 
   test("a fork with local commits or tracked changes is left alone, and says so", () => {
     using f = fixture()
@@ -785,7 +785,7 @@ describe("the upstream merge", () => {
     expect(g.head(g.fork, "prime-look")).toBe(before)
     expect(readFileSync(join(g.fork, "a.txt"), "utf8")).toBe("edited\n")
     expect(said.join("\n")).toContain("uncommitted changes")
-  })
+  }, hangGuard("local-fixture"))
 
   test("a dry run says it would fast-forward and moves nothing", () => {
     using f = fixture()
@@ -793,7 +793,7 @@ describe("the upstream merge", () => {
     commitTo(f.origin, "prime-look", { "c.txt": "pushed elsewhere\n" })
     expect(sync({ fork: f.fork, dryRun: true, log: () => {} })).toEqual({ kind: "would-fast-forward", commits: 1 })
     expect(f.head(f.fork, "prime-look")).toBe(before)
-  })
+  }, hangGuard("local-fixture"))
 
   test("with a target commit, the fork fast-forwards to it and no further, though origin is past it", () => {
     using f = fixture()
@@ -803,7 +803,7 @@ describe("the upstream merge", () => {
     expect(sync({ fork: f.fork, dryRun: false, to: verified, log: () => {} })).toMatchObject({ kind: "fast-forwarded", to: verified, commits: 1 })
     expect(f.head(f.fork, "prime-look")).toBe(verified)
     expect(sync({ fork: f.fork, dryRun: false, to: verified, log: () => {} })).toEqual({ kind: "current" })
-  })
+  }, hangGuard("local-fixture"))
 
   test("the checks run Prime's, the TUI's CPU, mail and orchestrate acceptance tests", () => {
     const tests = exposedTests(resolve(import.meta.dir, ".."))
@@ -874,7 +874,7 @@ describe("the fork move", () => {
     const installs: Array<string> = []
     expect(installDotfiles(resolve("."), Effect.sync(() => installs.push("install")))).rejects.toThrow("routes no file to the merge driver effect-debt")
     expect(installs).toEqual([])
-  })
+  }, hangGuard("short-fixture"))
 
   test(
     "installs nothing when the fork did not move",

@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { scratch } from "../tests/scratch.ts"
 import { parseArgs, plan, type Row, render, secondsOf } from "./migrate-schedules.ts"
-import { stamp } from "../tests/hang-guard.ts"
+import { hangGuard, stamp } from "../tests/hang-guard.ts"
 
 const NOW = Date.parse("2026-11-06T18:00:00Z")
 const PROMPTS = "/state/opencode-wake/schedules"
@@ -116,7 +116,7 @@ describe("the dry run", () => {
     expect(out).toContain("  then: pause sch_watch")
     expect(out).toContain("  skip: cron (0 9 * * 1, UTC) has no wake equivalent")
     expect(await Bun.file(join(prompts, "sch_rest.md")).exists()).toBe(false)
-  })
+  }, hangGuard("short-fixture"))
 
   test("render says when there is nothing to move; the flags parse", () => {
     expect(render([], false)).toBe("No active schedules.")

@@ -163,6 +163,7 @@ describe("no assertion lost", () => {
         )
       }
     }),
+    hangGuard("local-fixture"),
   )
 
   it.live.layer(BunServices.layer)("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>

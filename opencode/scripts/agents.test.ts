@@ -6,6 +6,7 @@ import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Generated } from "../mods/orchestrate/role.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { build, DEFAULT_SOURCE, NO_BLOCK, orchestratorSection, ROOT } from "./agents.ts"
 
 
@@ -80,6 +81,7 @@ describe("the orchestrator entry", () => {
       expect(edited.code).toBe(1)
       expect(edited.stderr).toContain("stale:")
     })),
+    hangGuard("local-fixture"),
   )
 
   it.live.layer(BunServices.layer)("a skill that lost the rule fails the build, naming it", () =>
