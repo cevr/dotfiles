@@ -137,8 +137,11 @@ import * as Digest from "./digest.ts"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
 import { STATUS } from "@dotfiles/opencode-status/status"
-import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
+import { Latch, readMark, MARK_KEY, type Mark, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
+import { Observation } from "../../mods/kernel/child-lifecycle.ts"
+import { CHILD_ROWS, readRows, type OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
+import { observedPhase } from "../../mods/kernel/opencode/subagents.ts"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
@@ -507,35 +510,127 @@ interface Telling {
 const tellingOf = (fields: Telling): Telling =>
   Object.fromEntries(Object.entries(fields).filter(([, value]) => Predicate.isString(value) && value !== ""))
 
-/** What a latched call answers, as the subagent tool's output: why it waits, when it opens, and that its result wakes the parent. */
-const latchedResult = (latched: Model.LatchedStart, place: Place) => {
-  const event = latched.latched
-  const holds = event.hold === "sabbath" ? event.why : `${whoseOf(event.whose)} pace holds this agent: ${event.why}.`
+type HeldTiming = Pick<Mark, "hold" | "reason" | "opensAt"> & {
+  readonly recheck: Option.Option<number>
+  readonly words: string
+}
+
+/** Render a confirmed hold, or an explicit legacy Wake receipt in a standalone install. */
+const latchedResult = (latched: Model.LatchedStart, place: Place, timing: HeldTiming, observation: Option.Option<Observation>) => {
+  const { hold, reason, opensAt, recheck, words } = timing
   const latch = {
     id: latched.id,
-    hold: event.hold,
-    reason: event.why,
-    opensAt: event.opensAt,
-    opens: new Date(event.opensAt).toISOString(),
-    local: local(event.opensAt, place),
+    hold,
+    reason,
+    opensAt,
+    ...Option.match(recheck, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
+    opens: new Date(opensAt).toISOString(),
+    local: local(opensAt, place),
   }
   const output = [
-    `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${holds}`,
-    `It starts by itself in the background when the latch opens, about ${timeOf(event.opensAt, place)}${event.recheckAt < event.opensAt ? `, or sooner: it is decided again at ${new Date(event.recheckAt).toISOString()}` : ""}. You will be woken with its result, as for a background subagent.`,
+    `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${words}`,
+    `It starts by itself in the background when the latch opens, about ${timeOf(opensAt, place)}${Option.getOrElse(
+      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${new Date(at).toISOString()}`),
+      () => "",
+    )}. You will be woken with its result, as for a background subagent.`,
     "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
   ].join("\n")
   return {
     // `note` and `model` are what a kernel cell's handle reads of the answer (mods/kernel/worker/subagent-handle.ts).
-    output: { sessionID: latched.child, status: "latched" as const, output, latch, ...tellingOf({ note: output, model: event.model }) },
+    output: { sessionID: latched.child, status: "latched" as const, output, latch, ...tellingOf({ note: output, model: latched.latched.model }),
+      ...Option.match(observation, { onNone: () => ({}), onSome: (observation) => ({ observation }) }),
+    },
     content: output,
     metadata: { sessionID: latched.child, status: "latched", latch },
   }
 }
 
+const LatchChild = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const latchChild = Schema.decodeUnknownOption(LatchChild)
+const recheckFrom = (mark: ReturnType<typeof readMark>) => {
+  if (mark._tag === "Unreadable") return Option.none()
+  return Option.fromUndefinedOr(mark.mark.recheckAt)
+}
+const recheckOf = (ctx: Plugin.Context, child: string) =>
+  Effect.option(Effect.flatMap(Effect.fromOption(latchChild(child)), (sessionID) => ctx.session.get({ sessionID }))).pipe(
+    Effect.map(Option.flatMap((info) => recheckFrom(readMark(info.metadata)))),
+  )
+const ownerUnavailable = Schema.is(Schema.Union([
+  Schema.Struct({ type: Schema.Literal("rpc.unavailable") }),
+  // The simulation host reports unregistered RPC methods with this tag.
+  Schema.Struct({ _tag: Schema.Literal("RpcNotFoundError") }),
+]))
+const startObservation = (ctx: Plugin.Context, child: string) => ctx.rpc(CHILD_ROWS).read({ children: [child] }).pipe(
+  Effect.match({
+    onFailure: (error) => ({ standalone: ownerUnavailable(error), answer: Option.none<OwnerAnswer>() }),
+    onSuccess: (reply) => ({
+      standalone: false,
+      answer: Option.flatMap(readRows(reply), ({ rows }) =>
+        Arr.findFirst(rows, (row) => row.child === child && row.observation.child === child)),
+    }),
+  }),
+)
+
+const launchStatus = (observation: Observation): "checking" | "completed" | "latched" | "running" => {
+  if (observation.basis !== "current") return "checking"
+  switch (observation.phase._tag) {
+    case "Settled": return "completed"
+    case "Latched": return "latched"
+    case "Unknown": return "checking"
+    default: return "running"
+  }
+}
+const launchResult = (sessionID: string, answer: Option.Option<OwnerAnswer>, model?: string) => {
+  const observation = Option.map(answer, ({ observation }) => observation)
+  const status = Option.getOrElse(Option.map(observation, launchStatus), () => "checking" as const)
+  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => "checking")
+  const output = `Subagent ${sessionID}: ${phase}. Do not poll or duplicate its work.`
+  return {
+    output: { sessionID, status, output, ...tellingOf({ model }),
+      ...Option.match(observation, { onNone: () => ({}), onSome: (observation) => ({ observation }) }),
+    },
+    content: output,
+    metadata: { sessionID, status },
+  }
+}
+const unverifiedHoldReceipt = (latched: Model.LatchedStart, value: OwnerAnswer) => {
+  // `latched` is the legacy command receipt here, not a phase or a time.
+  const output = `Wake accepted the launch as “The subagent is latched” (sessionID: ${latched.child}). ${observedPhase(value.observation)}. Do not poll or duplicate its work.`
+  const status = "latched" as const
+  return {
+    output: { sessionID: latched.child, status, output, observation: value.observation, ...tellingOf({ model: latched.latched.model }) },
+    content: output,
+    metadata: { sessionID: latched.child, status },
+  }
+}
+type LaunchReply = ReturnType<typeof latchedResult> | ReturnType<typeof launchResult> | ReturnType<typeof unverifiedHoldReceipt>
+const heldAnswer = (ctx: Plugin.Context, latched: Model.LatchedStart, place: Place) => startObservation(ctx, latched.child).pipe(
+  Effect.flatMap(({ standalone, answer }): Effect.Effect<LaunchReply, never> => {
+    if (standalone) {
+      const { hold, why, whose, opensAt } = latched.latched
+      const words = hold === "sabbath" ? why : `${whoseOf(whose)} pace holds this agent: ${why}.`
+      return recheckOf(ctx, latched.child).pipe(Effect.map((recheck) =>
+        latchedResult(latched, place, { hold, reason: why, opensAt, recheck, words }, Option.none())))
+    }
+    if (Option.isSome(answer)) {
+      const { observation, mark } = answer.value
+      if (launchStatus(observation) === "latched" && mark._tag === "Readable") {
+        const { reason, recheckAt } = mark.mark
+        const timing = { ...mark.mark, recheck: Option.fromUndefinedOr(recheckAt), words: reason }
+        return Effect.succeed(latchedResult(latched, place, timing, Option.some(observation)))
+      }
+      if (observation.phase._tag === "Unknown" && !observation.phase.reason && mark._tag === "Unreadable") {
+        return Effect.succeed(unverifiedHoldReceipt(latched, answer.value))
+      }
+    }
+    return Effect.succeed(launchResult(latched.child, answer, latched.latched.model))
+  }),
+)
+
 /** The subagent tool's output, widened with the latched answer. */
 const SubagentOutput = Schema.Struct({
   sessionID: Schema.String,
-  status: Schema.Literals(["completed", "running", "latched"]),
+  status: Schema.Literals(["completed", "running", "latched", "checking"]),
   output: Schema.String,
   latch: Schema.optionalKey(
     Schema.Struct({
@@ -543,6 +638,7 @@ const SubagentOutput = Schema.Struct({
       hold: Schema.Literals(["pace", "sabbath"]),
       reason: Schema.String,
       opensAt: Schema.Number,
+      recheckAt: Schema.optionalKey(Schema.Number),
       opens: Schema.String,
       local: Schema.String,
     }),
@@ -551,6 +647,7 @@ const SubagentOutput = Schema.Struct({
   note: Schema.optionalKey(Schema.String),
   /** The model it runs on, when the guard chose one. */
   model: Schema.optionalKey(Schema.String),
+  observation: Schema.optionalKey(Observation),
 })
 
 /** What the parent reads first in a fallback agent's answer: where it ran, and why. */
@@ -1112,7 +1209,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
       // A latched call's answer, by its child: the call's input names the child, and the
       // subagent tool answers it from here instead of starting it. A kernel cell's calls
       // share one call id, so the child, not the call, is the key.
-      const latched = new Map<string, ReturnType<typeof latchedResult>>()
+      const latched = new Map<string, Model.LatchedStart>()
       // What a started call's answer tells, by its call (noteKey): a fallback's or lowered worker's note, put first in
       // the subagent tool's answer, and the model it runs on; both also as fields of its output.
       const tellings = new Map<string, Telling>()
@@ -1123,6 +1220,17 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
+          const executeOwned = (...args: Parameters<typeof execute>) => execute(...args).pipe(
+            Effect.flatMap((result) => {
+              const output = result.output
+              if (!isObject(output) || !Predicate.isString(output.sessionID)) return Effect.succeed(result)
+              const child = output.sessionID
+              return startObservation(ctx, child).pipe(Effect.map(({ standalone, answer }) => {
+                if (standalone) return result
+                return { ...result, ...launchResult(child, answer) }
+              }))
+            }),
+          )
           subagent = execute
           tool.output = SubagentOutput
           tool.execute = (input, context) => {
@@ -1133,7 +1241,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
             if (tells !== undefined) {
               tellings.delete(key)
               const said = (text: string) => [tells.note, text].filter(Predicate.isString).join("\n")
-              return execute(input, context).pipe(
+              return executeOwned(input, context).pipe(
                 Effect.map((result) => ({
                   ...result,
                   output: isObject(result.output) && typeof result.output.output === "string" ? { ...result.output, output: said(result.output.output), ...tells } : result.output,
@@ -1141,9 +1249,9 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
                 })),
               )
             }
-            if (child === undefined || answer === undefined) return execute(input, context)
+            if (child === undefined || answer === undefined) return executeOwned(input, context)
             latched.delete(child)
-            return Effect.succeed(answer)
+            return heldAnswer(ctx, answer, options.place)
           }
         }),
       )
@@ -1490,8 +1598,8 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
         const key = noteKey(event.sessionID, event.id, event.input)
         return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
           Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
-          Effect.map((outcome) => {
-            if (Option.isNone(outcome) || !isObject(event.input)) return outcome
+          Effect.flatMap((outcome) => {
+            if (Option.isNone(outcome) || !isObject(event.input)) return Effect.succeed(outcome)
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
@@ -1510,11 +1618,14 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
-              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
-              input.sessionID = outcome.value.child
+              const kept = outcome.value
+              latched.set(kept.child, kept)
+              input.sessionID = kept.child
+              event.input = input
+              return Effect.succeed(outcome)
             }
             event.input = input
-            return outcome
+            return Effect.succeed(outcome)
           }),
           // A step's start is a digest line once the host runs the call (`execute.after`): held here with its time, as
           // a later hook or the host may still refuse it.

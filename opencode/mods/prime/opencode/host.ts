@@ -5,7 +5,7 @@
 // The part, the context usage and the goal are worked out here from the
 // host's base reads (`partOf`, `contextUsage`, `opencode/goal.ts`).
 import { fromContext as answerFormsOf, openAnswer } from "@dotfiles/opencode-queue/opencode/answer"
-import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
+import { ownerRows } from "@dotfiles/opencode-subagents/solid/owner-rows"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
@@ -41,7 +41,7 @@ export function host(
 ): Host {
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
-  const family = familyReader()
+  const family = ownerRows(context)
   const queue = queues(context, family)
   const answerForms = answerFormsOf(context)
   // The tab openTab asked for, until the panel's tab bar shows it.

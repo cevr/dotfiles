@@ -3,8 +3,8 @@
 // A latched child's state is the wakes' mark in its metadata (mods/wake
 // latch.ts), which only the wakes write. A session's last words are its
 // newest assistant message's text, from the host's model context.
-import { Effect, Layer, Option, Schema } from "effect"
-import { Mark } from "@dotfiles/opencode-wake/latch"
+import { Effect, Layer, Option } from "effect"
+import { MARK_KEY, readMark } from "@dotfiles/opencode-wake/latch"
 import { Sessions } from "../service.ts"
 
 /** What the guard reads of a session. */
@@ -45,7 +45,6 @@ export type Messages = (sessionID: string) => Effect.Effect<ReadonlyArray<unknow
 export type InDirectory = (directory: string) => Effect.Effect<ReadonlyArray<string>, unknown>
 
 const orNone = Effect.catchCause(() => Effect.succeed(undefined))
-const markOf = Schema.decodeUnknownOption(Mark)
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
@@ -77,9 +76,9 @@ export const layer = (get: Get, messages: Messages, inDirectory: InDirectory = (
       return (yield* get(sessionID)).stopped === true
     }, Effect.catchCause(() => Effect.succeed(false))),
     latchOf: Effect.fn("Sessions.latchOf")(function* (sessionID: string) {
-      const mark = markOf((yield* get(sessionID)).latch)
-      if (mark._tag === "None" || mark.value.cancelledAt !== undefined || mark.value.failed !== undefined) return undefined
-      return mark.value.opensAt
+      const result = readMark({ [MARK_KEY]: (yield* get(sessionID)).latch })
+      if (result._tag === "Unreadable" || result.mark.cancelledAt !== undefined || result.mark.failed !== undefined) return undefined
+      return result.mark.opensAt
     }, orNone),
     directoryOf: Effect.fn("Sessions.directoryOf")(function* (sessionID: string) {
       return (yield* get(sessionID)).directory || undefined

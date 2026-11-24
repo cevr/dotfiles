@@ -76,6 +76,8 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
     let added: Added | undefined
     const host = {
       options,
+      location: { directory: work },
+      rpc: { register: () => Effect.succeed({ events: { emit: () => Effect.void }, dispose: Effect.void }) },
       tool: {
         list: () => Effect.succeed([...(world.tools ?? []), { id: "kernel", description: "itself", input: {}, execute: () => Effect.die("not called") }]),
         transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>
@@ -93,7 +95,10 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(deletions) },
+      event: { subscribe: (input?: { types?: ReadonlyArray<string> }) => {
+        if (input?.types?.length === 1) return Stream.fromQueue(deletions)
+        return Stream.never
+      } },
       // The plugin's own storage, where the frozen descriptions live.
       storage: {
         get: (key: string) => Effect.sync(() => stored.get(key)),

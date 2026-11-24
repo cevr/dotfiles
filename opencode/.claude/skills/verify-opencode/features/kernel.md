@@ -7,7 +7,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 - `kernel-bindings`: a binding made in one call is read in the next, and after a restart.
 - `kernel-tools`: `tools.<id>(input)` reaches another tool; `tools.list()` and `tools.docs(name)` describe them.
 - `kernel-parallel`: calls past 32 in flight wait; `tools.all`, `tools.map` (`concurrency`) and a returned object's calls run at once.
-- `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait, its report arrives as the next message). A subagent handle carries what its start answered: `.model`, the model it runs on when the start names one, and in `.note` the orchestrate plugin's fallback, lowered-effort or latch note; a plain start's note is empty.
+- `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait). A subagent handle carries its start's `.model` and `.note` when named. Its `.observation` separates phase from a diagnostic; a notice alone does not settle the child.
 - `kernel-attach`: `attach(path)` shows an image to the next request.
 - `kernel-transcript`: the cell's header is its description, over the rows of the tool calls it made.
 
@@ -20,7 +20,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 
 - **Preconditions:** none.
 - **States:** default, error (a cell that throws), refused (a tool not offered). Loading and empty are `n/a`.
-- **World suites:** none yet. A cell runs in a real Bun worker process, which the world's virtual time cannot host, so a drive of this feature runs its real checks with --real.
+- **World suites:** `cmd/kernel/settle-child-attempts.sim.test.ts`. This drives the direct child observation tool; a cell runs in a real Bun worker process, so drive the cell checks with --real.
 - **Code:** `mods/kernel/`, `cmd/kernel/`, `tests/kernel.test.ts`, `tests/kernel/` (its real check); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/kernel/worker/workers.test.ts` (a real worker: bindings, restarts, handles, calls in parallel and their overlap), `mods/kernel/operations.test.ts` (the journal and its overlap count), `mods/kernel/description.test.ts` (the words the model reads), `cmd/kernel/server.test.ts` (the plugin's seam).
 

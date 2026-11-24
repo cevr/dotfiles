@@ -16,6 +16,18 @@ import type { Family, Session } from "./family.ts"
 
 export type Works = "running" | "waiting" | "blocked" | "latched"
 
+function ownedWork(kind: NonNullable<Session["lifecycle"]>["kind"]) {
+  switch (kind) {
+    case "running": return "running"
+    case "blocked": return "blocked"
+    case "latched": return "latched"
+    case "undetermined":
+    case "continuing":
+    case "recovering":
+    case "checking": return "waiting"
+  }
+}
+
 /** A held start still waiting to open: latched, never run, neither cancelled nor failed. */
 export const latched = (session: Session) =>
   session.latch !== undefined &&
@@ -62,6 +74,7 @@ function worksOf(family: Family): (id: string) => Works | undefined {
     if (known.has(id)) return known.get(id)
     const session = byID.get(id)
     if (session === undefined || path.has(id)) return undefined
+    if (session.lifecycle) return ownedWork(session.lifecycle.kind)
     const inner = new Set([...path, id])
     const works: Works | undefined =
       session.permissions.length > 0 || session.questions.length > 0
@@ -70,7 +83,7 @@ function worksOf(family: Family): (id: string) => Works | undefined {
           ? "running"
           : latched(session)
             ? "latched"
-            : session.shells.length > 0 || (children.get(id) ?? []).some((child) => of(child.id, inner) !== undefined)
+            : session.shells.length > 0 || waitingForWake(session) || (children.get(id) ?? []).some((child) => of(child.id, inner) !== undefined)
               ? "waiting"
               : undefined
     known.set(id, works)
@@ -78,3 +91,5 @@ function worksOf(family: Family): (id: string) => Works | undefined {
   }
   return (id) => of(id, new Set())
 }
+
+export const waitingForWake = (session: Session) => session.wakePending === true && session.outcome !== "interrupted"

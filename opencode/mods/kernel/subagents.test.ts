@@ -3,7 +3,8 @@
 // that is not the caller's descendant; the state is read off the host's
 // session.
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Deferred, Effect, Fiber, Option } from "effect"
+import { TestClock } from "effect/testing"
 import { make, type Host, type Outcome, type Session, stateOf } from "./subagents.ts"
 
 /** A session the host holds: as the tool reads it, with its last words. */
@@ -62,11 +63,13 @@ const memory = (sessions: Map<string, Stored>) => {
     stop: (id) =>
       Effect.andThen(
         Effect.sync(() => void stopped.push(id)),
-        Effect.tap(end(id, "interrupted"), (ran) => Effect.sync(() => void (ran && interrupted.push(id)))),
+      Effect.tap(end(id, "interrupted"), (ran) => Effect.sync(() => void (ran && interrupted.push(id)))),
+    ).pipe(
+      Effect.map(Option.some),
       ),
     lastWords: (id) => Effect.sync(() => Option.match(find(id), { onNone: () => "", onSome: (held) => held.words })),
   }
-  return { stopped, interrupted, subagents: make(host) }
+  return { stopped, interrupted, host, subagents: make(host) }
 }
 
 /** The refusal an effect fails with: its tag and message. */
@@ -108,6 +111,25 @@ describe("a stop", () => {
         expect(world.interrupted).toEqual([])
         expect(world.stopped).toEqual(["b"])
       }),
+    ))
+
+  test("a timed-out stop is unknown, not a successful stop; a later host end is still visible", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const world = memory(tree())
+        const entered = yield* Deferred.make<boolean>()
+        const unavailable = make({ ...world.host, stop: () => Effect.andThen(Deferred.succeed(entered, true), Effect.never) })
+        const stopping = yield* Effect.forkChild(unavailable.stop("root", "a"))
+        yield* Deferred.await(entered)
+        // Both descendants and the target each have their own 30 s host-stop budget.
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(stopping)
+        expect(result.observation?.phase._tag).toBe("Unknown")
+        expect(result.state).toBe("running")
+        expect(result.note).toBe("stop not confirmed")
+        expect((yield* world.subagents.stop("root", "a")).state).toBe("stopped")
+        expect((yield* world.subagents.get("root", "a")).state).toBe("stopped")
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("reaches a descendant at any depth, and refuses another session's child, the caller's parent, itself, a sibling and an unknown one", () =>
