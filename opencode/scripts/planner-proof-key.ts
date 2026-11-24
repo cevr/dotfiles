@@ -46,7 +46,7 @@ export const plannerInputKey = (workspace: Workspace, file: string, selection: P
     if (!authority.has(file)) return []
     const patterns = inspectReads(workspace, test).patterns.filter((pattern) => pattern !== ALL_READS && readMatcher([pattern])(file))
     const reason = Option.getOrElse(Option.fromUndefinedOr(authority.subprocessReason), () => "")
-    return [[test, authority.unknown, reason, authority.observationsFor(file), patterns, authority.imports.includes(file)]]
+    return [[test, authority.unknown, reason, authority.observationsFor(file), patterns, authority.imports.includes(file), authority.linkKey]]
   })
   const changed = diff.map(({ status, paths }) => [status, paths])
   return hash(json([file, changed, rows, [...selection.merge].toSorted(), [...selection.swarm].toSorted(), [...selection.acceptance].toSorted()]))

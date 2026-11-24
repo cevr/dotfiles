@@ -26,12 +26,13 @@ import { existsSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { $ } from "bun"
-import { Option } from "effect"
+import { Effect, Option } from "effect"
 import { acceptKey, acceptSharedFrom } from "./accept-key.ts"
 import { decodeGitPaths, nulFields } from "./git-paths.ts"
 import { ALL_READS, readMatcher } from "./read-declarations.ts"
 import { compilerInputs, projectReads, type CompilerInputs } from "./test-compiler-inputs.ts"
-import observations from "./test-impact-observations.json" with { type: "json" }
+import { checkoutLinks, closeLinks, linkAliases, linkReads, linkTarget, predecessorLinks, type LinkInputs } from "./test-links.ts"
+import { emptyReadMap, loadReadMap, type RuntimeReads } from "./test-read-map.ts"
 import { projectReadChecker } from "./test-read-project.ts"
 import { isAcceptInput, packageOf } from "./test-population.ts"
 export { matchingReads, readsOf } from "./read-declarations.ts"
@@ -53,6 +54,8 @@ export const SHARED = [
   "scripts/effect-debt.ts",
   "scripts/reach.ts",
   "scripts/read-declarations.ts",
+  "scripts/test-read-map.ts",
+  "scripts/test-links.ts",
   "scripts/test-compiler-inputs.ts",
   "scripts/test-read-project.ts",
   "scripts/test-reads.ts",
@@ -76,7 +79,17 @@ export interface Workspace {
   /** Package directory (`mods/prime`) of each package. */
   readonly packages: ReadonlyMap<string, Package>
   readonly compilerInputs?: CompilerInputs
+  readonly runtimeReads?: RuntimeReads
+  readonly links?: LinkInputs
 }
+
+const NO_LINKS: LinkInputs = new Map()
+const repoRoot = path.dirname(ROOT)
+const workspaceFiles = (workspace: Workspace) => [...workspace.files, ...(workspace.siblings ?? [])]
+export const selectionPaths = (workspace: Workspace, base: string, changed: ReadonlyArray<string>) =>
+  predecessorLinks(repoRoot, base, changed).then((prior) =>
+    closeLinks(workspace.links || NO_LINKS, prior, changed, workspaceFiles(workspace)),
+  )
 
 interface Package {
   readonly dir: string
@@ -111,8 +124,10 @@ export const load = async (): Promise<Workspace> => {
     const deps = (manifests.get(dir)?.deps ?? []).flatMap((name) => dirOfName.get(name) ?? [])
     packages.set(dir, { dir, files: list, deps })
   }
-  return compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
-    ({ files, siblings, packages, head: head.trim(), compilerInputs }),
+  return Effect.runPromise(Effect.all([Effect.promise(() => loadReadMap(ROOT)), Effect.promise(() => checkoutLinks(cwd))], { concurrency: "unbounded" })).then(([runtimeReads, links]) =>
+    compilerInputs(ROOT, new Set(known), runtimeReads.compilerProjects).then((compilerInputs) =>
+      ({ files, siblings, packages, head: head.trim(), compilerInputs, runtimeReads, links }),
+    ),
   )
 }
 
@@ -155,7 +170,9 @@ export const importsOf = (file: string, source: string): ReadonlyArray<string> =
 
 const analyzers = new WeakMap<Workspace, ReturnType<typeof readAnalyzer>>()
 const readAnalyzer = (workspace: Workspace) => {
-  const check = projectReadChecker(ROOT, [...workspace.files, ...(workspace.siblings ?? [])], sourceText)
+  const links = workspace.links || NO_LINKS
+  const files = workspaceFiles(workspace).filter((file) => !Option.exists(Option.fromUndefinedOr(links.get(file)), ({ target }) => Option.isNone(target)))
+  const check = projectReadChecker(ROOT, [...files, ...files.flatMap((file) => linkAliases(links, file))], (file) => sourceText(linkTarget(links, file)))
   const result = new Map<string, ReturnType<typeof check>>()
   return (file: string) => {
     const existing = result.get(file)
@@ -172,12 +189,6 @@ export const inspectReads = (workspace: Workspace, file: string) => {
   return analyze(file)
 }
 
-interface RuntimeReads {
-  readonly paths: Readonly<Record<string, ReadonlyArray<string>>>
-  readonly untracedSubprocesses: Readonly<Record<string, string>>
-  readonly compilerProjects?: Readonly<Record<string, ReadonlyArray<string>>>
-}
-const runtimeReads: RuntimeReads = observations
 const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
 const workspacePaths = new WeakMap<Workspace, ReadonlySet<string>>()
 
@@ -194,7 +205,7 @@ const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArra
   if (!/^scripts\/[^/]+\.test\.tsx?$/.test(test)) return []
   const known = pathsOf(workspace)
   return importsOf(test, sourceText(test)).filter((specifier) => specifier.startsWith("../")).map((specifier) => {
-    const resolved = resolveLocal(known, test, specifier)
+    const resolved = resolveLocal(known, test, specifier, workspace.links)
     if (resolved) return resolved
     return path.posix.join(path.posix.dirname(test), specifier)
   })
@@ -202,20 +213,29 @@ const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArra
 
 const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
-  const configs = runtimeReads.compilerProjects?.[test] || []
+  const runtimeReads = workspace.runtimeReads || emptyReadMap
+  const configs = runtimeReads.compilerProjects[test] || []
   const compiler = projectReads(configs, workspace.compilerInputs)
   const compilerReason = (read.opensCompiler || configs.length > 0) && (configs.length === 0 || !compiler.ready) &&
     "TypeScript project: no complete native project inventory"
-  const subprocessReason = runtimeReads.untracedSubprocesses[test] || Option.getOrUndefined(Option.liftPredicate(compilerReason, Boolean))
-  const unknown = read.classification === "unknown" || Boolean(subprocessReason)
   const paths = runtimeReads.paths[test] ?? []
   const imports = externalScriptImports(workspace, test)
   const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports, ...compiler.exact])
   const directories = paths.filter((file) => file.endsWith("/"))
-  const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
-  const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
-  const observationsFor = (file: string) => [...paths.filter((entry) => entry === file || (entry.endsWith("/") && file.startsWith(entry))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
-  return { unknown, subprocessReason, exact, imports, positive, observationsFor, has: (file: string) => unknown || positive(file) }
+  const patterns = read.patterns.filter((pattern) => pattern !== ALL_READS)
+  const matches = readMatcher(patterns)
+  const direct = (file: string) => exact.has(file) || matches(file) || directories.some((prefix) => file.startsWith(prefix))
+  const links = workspace.links || NO_LINKS
+  const linked = linkReads(links, direct, exact, [...patterns, ...directories])
+  const linkReason = linked.unsafe && `tracked symlink is dangling or resolves outside checkout: ${linked.unsafe}`
+  const reason = runtimeReads.untracedSubprocesses[test] || compilerReason || linkReason
+  const subprocessReason = Option.getOrUndefined(Option.liftPredicate(reason, Boolean))
+  const unknown = read.classification === "unknown" || Boolean(subprocessReason)
+  const observationsFor = (file: string) => {
+    const spellings = [file, ...linkAliases(links, file)]
+    return [...paths.filter((entry) => spellings.some((name) => entry === name || (entry.endsWith("/") && name.startsWith(entry)))), ...configs.filter((config) => workspace.compilerInputs?.get(config)?.has(file))]
+  }
+  return { unknown, subprocessReason, exact: new Set([...exact, ...linked.canonical]), imports, positive: linked.has, observationsFor, linkKey: linked.fingerprint, has: (file: string) => unknown || linked.has(file) }
 }
 
 /** Runtime reads have one authority for selection, cache inputs and the coverage audit.
@@ -241,10 +261,17 @@ export const declaredInputs = (workspace: Workspace, file: string): ReadonlyArra
 export const readState = (workspace: Workspace, file: string): string =>
   (testReadInputs(workspace, file).unknown && workspace.head) || ""
 
+export const readKeyState = (workspace: Workspace, file: string) =>
+  [readState(workspace, file), testReadInputs(workspace, file).linkKey].filter(Boolean).join("\n")
+
 /** The workspace file a specifier from `from` names, if any. */
-const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string): string | undefined => {
+const resolveLocal = (known: ReadonlySet<string>, from: string, specifier: string, links: LinkInputs = NO_LINKS): string | undefined => {
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) if (known.has(candidate)) return candidate
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
+    if (known.has(candidate)) return candidate
+    const target = linkTarget(links, candidate)
+    if (known.has(target)) return target
+  }
   return undefined
 }
 
@@ -298,7 +325,7 @@ const edgesOf = (workspace: Workspace, known: ReadonlySet<string>, file: string)
   const edges: Array<string> = []
   for (const specifier of imports) {
     if (specifier.startsWith(".")) {
-      const local = resolveLocal(known, file, specifier)
+      const local = resolveLocal(known, file, specifier, workspace.links)
       if (local !== undefined) edges.push(local)
     } else if (specifier.startsWith("@dotfiles/")) {
       const name = specifier.split("/").slice(0, 2).join("/")
@@ -376,7 +403,7 @@ export const acceptReach = (workspace: Workspace, file: string, memo = new Map<s
 export const acceptSharedKey = (extra: ReadonlyArray<string>) => forkLine().then((fork) => acceptSharedFrom(hashOf, fork, extra))
 
 export const acceptReadKey = (workspace: Workspace, test: string, shared: string, reached: Iterable<string>) =>
-  acceptKey(shared, reached, hashOf, readState(workspace, test))
+  acceptKey(shared, reached, hashOf, readKeyState(workspace, test))
 
 /** A key over `files`' contents and the shared key. */
 export const keyOf = (shared: string, files: Iterable<string>) => {

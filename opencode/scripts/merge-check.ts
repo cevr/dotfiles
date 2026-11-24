@@ -162,17 +162,18 @@ const testLeg = (tests: ReadonlyArray<string>, tools: Tools): LegSpec => {
 }
 
 /** The merge check's legs over `changes` since `base`. */
-export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools): ReadonlyArray<LegSpec> => {
+export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools, inputs: ReadonlyArray<string> = named(changes)): ReadonlyArray<LegSpec> => {
   const lint = lintFiles(changes, tools.exists).filter((file) => !file.startsWith("../"))
-  const paths = named(changes)
   const workbox = new Set(workboxTests(tools.workbox))
   for (const file of tools.workbox.tests) {
-    if (paths.length === 0) break
+    if (inputs.length === 0) break
     const reads = tools.workboxReads?.(file)
-    if (reads && paths.some(reads)) workbox.add(file)
+    if (reads && inputs.some(reads)) workbox.add(file)
   }
-  const unit = Option.match(Option.fromUndefinedOr(tools.unit), { onNone: () => [], onSome: (tests) => affectedUnits(paths, tests) })
-  const tests = [...new Set([...scriptTests(changes, tools.exists, tools.scripts), ...[...workbox].toSorted(), ...unit])]
+  const unit = Option.match(Option.fromUndefinedOr(tools.unit), { onNone: () => [], onSome: (tests) => affectedUnits(inputs, tests) })
+  const actual = new Set(named(changes))
+  const derived = inputs.values().filter((file) => !actual.has(file)).map((file) => ({ status: "M", paths: [file] })).toArray()
+  const tests = [...new Set([...scriptTests([...changes, ...derived], tools.exists, tools.scripts), ...[...workbox].toSorted(), ...unit])]
   return [
     lintLeg(lint, tools),
     { name: "test-reads", argv: [tools.bun, "scripts/check-test-reads.ts"], note: "static read anchors" },

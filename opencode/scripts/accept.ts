@@ -58,7 +58,7 @@ import * as Swarm from "./accept-plan.ts"
 import { heading, isSerial, plan, poolWidth, requestedWidth, scenariosOf } from "./accept-plan.ts"
 import * as Accept from "./accept-ledger.ts"
 import * as Yield from "./accept-yield.ts"
-import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, testReadInputs, type Workspace } from "./reach.ts"
+import { acceptanceTests, acceptReadKey, acceptReach, acceptSharedKey, fromRepository, load, packageOf, ROOT, selectionPaths, testReadInputs, type Workspace } from "./reach.ts"
 import { swarmInputs } from "./test-impact.ts"
 import { decodeGitPaths, nulFields, parseNameStatus } from "./git-paths.ts"
 import { swarmTests } from "./test-population.ts"
@@ -215,7 +215,8 @@ const selectFrom = (candidates: ReadonlyArray<Accept.Candidate>, ledger: Accept.
 
 /** The affected argv command's plan, passed to live land and printed by `--list`. */
 export const affectedCommand = Effect.fn("Accept.affectedCommand")(function* (args: ReadonlyArray<string>, run: LandInputs) {
-  const changed = yield* changedSince(args)
+  const { files, base } = yield* changedSince(args)
+  const changed = yield* Effect.promise(() => selectionPaths(run.workspace, base, files))
   const affected = run.files.filter((file) => {
     const inputs = testReadInputs(run.workspace, file)
     const reached = run.reached.get(file) ?? new Set<string>()
@@ -298,7 +299,7 @@ const changedSince = Effect.fn("Accept.changedSince")(function* (args: ReadonlyA
   const base = yield* baseOf(args)
   const diff = yield* gitPaths(["-C", path.dirname(ROOT), "diff", "--name-status", "-z", "-M", "-C", base, "--"])
   const untracked = (!base.includes("..") && (yield* gitPaths(["-C", path.dirname(ROOT), "ls-files", "-z", "--others", "--exclude-standard"]))) || ""
-  return [...new Set([...parseNameStatus(diff).flatMap(({ paths }) => paths), ...nulFields(untracked)].map(fromRepository))]
+  return { files: [...new Set([...parseNameStatus(diff).flatMap(({ paths }) => paths), ...nulFields(untracked)].map(fromRepository))], base: base.split("..")[0] || "HEAD" }
 })
 
 /** Runs `order` `width` at a time under the window: a file starts only before its start bound and while no land run wants the lock, and is stopped at the stop bound, a signal or a yield. */

@@ -46,7 +46,7 @@ import { decodeGitPaths, parseNameStatus } from "./git-paths.ts"
 import { mergeLegs, type Tools } from "./merge-check.ts"
 import { mergeUnitInputs } from "./test-impact.ts"
 import { checkCommand, projects } from "./typecheck.ts"
-import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readState, ROOT, sharedKey, testReadInputs, unitTests, workboxTestFiles, type Workspace } from "./reach.ts"
+import { declaredInputs, fromRepository, importsOf, keyOf, load, mergeScriptTests, reach, readKeyState, ROOT, selectionPaths, sharedKey, testReadInputs, unitTests, workboxTestFiles, type Workspace } from "./reach.ts"
 
 const ENV = process.env
 const ARGV = process.argv.slice(2)
@@ -90,7 +90,7 @@ const unit = async (): Promise<Leg> => {
   const shared = await sharedKey(["unit", "--timeout 300000"])
   const memo = new Map<string, ReadonlyArray<string>>()
   const files = unitTests(workspace)
-  const keys = new Map(files.map((file) => [file, keyOf(`${shared}${readState(workspace, file)}`, new Set([...reach(workspace, [file], memo), ...declaredInputs(workspace, file)]))]))
+  const keys = new Map(files.map((file) => [file, keyOf(`${shared}${readKeyState(workspace, file)}`, new Set([...reach(workspace, [file], memo), ...declaredInputs(workspace, file)]))]))
   // Each file keeps the keys of its last few passes, so going back to an earlier state (a revert, a branch switch) hits too.
   const stored: Record<string, ReadonlyArray<string>> = existsSync(PASSED) ? JSON.parse(readFileSync(PASSED, "utf8")) : {}
   const passed = Object.fromEntries(Object.entries(stored).filter(([, list]) => Array.isArray(list)))
@@ -191,12 +191,14 @@ const printed = (say: typeof stdout): typeof run => (name, argv, _env, note) => 
 interface MergeAnalysis {
   readonly tools: Omit<Tools, "workbox">
   readonly workbox: ReadonlyArray<string>
+  readonly workspace: Workspace
 }
 
 /** The fixed inputs of one workspace snapshot. The caller must not reuse it after the checkout changes. */
 export const analyzeMerge = (workspace: Workspace): MergeAnalysis => {
   const imports = new Map<string, ReadonlyArray<string>>()
   return {
+    workspace,
     workbox: workboxTestFiles(workspace),
     tools: {
       workboxReads: (file) => testReadInputs(workspace, file).has,
@@ -225,13 +227,13 @@ export const analyzeMerge = (workspace: Workspace): MergeAnalysis => {
 /** The real Git diff is parsed anew even when its target tree's analysis can be reused. */
 const planned = (base: string, analyzed: Option.Option<MergeAnalysis>) =>
   changesSince(base).then((changes) => {
-    const legs = (analysis: MergeAnalysis) => mergeLegs(base, changes, {
+    const legs = (analysis: MergeAnalysis) => selectionPaths(analysis.workspace, base, changes.flatMap(({ paths }) => paths)).then((inputs) => mergeLegs(base, changes, {
       ...analysis.tools,
       workbox: {
         changes: changes.filter((change) => change.paths.some((file) => file.startsWith("../workbox/"))),
         tests: analysis.workbox,
       },
-    })
+    }, inputs))
     if (Option.isSome(analyzed)) return legs(analyzed.value)
     return load().then(analyzeMerge).then(legs)
   })

@@ -3,7 +3,7 @@ import { CryptoHasher, revision, version } from "bun"
 /** Inputs every acceptance run shares, except the lint and unit gate. */
 export const ACCEPT_SHARED = [
   "package.json", "bun.lock", "bunfig.toml", "tsconfig.json",
-  "scripts/reach.ts", "scripts/read-declarations.ts", "scripts/test-read-project.ts",
+  "scripts/reach.ts", "scripts/read-declarations.ts", "scripts/test-read-project.ts", "scripts/test-links.ts", "scripts/test-read-map.ts",
   "scripts/test-reads.ts", "scripts/test-reads-ast.ts", "scripts/test-reads-modules.ts",
   "scripts/test-population.ts", "scripts/link-fork.ts", "scripts/accept.ts",
   "scripts/accept-plan.ts", "scripts/accept-ledger.ts", "scripts/accept-key.ts", "scripts/leaks.ts", "scripts/fork.ts",
