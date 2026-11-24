@@ -5,7 +5,7 @@ import { Array as Arr, Deferred, Effect, Option, Queue, Result, Stream } from "e
 import { ownerRows, rowView, type RowsClient } from "./owner-rows.ts"
 import { CHILD_ROWS, readRows } from "../../kernel/opencode/child-row.ts"
 import { decodeEvent, durableFact, ownerAnswer } from "../../kernel/opencode/child-lifecycle.ts"
-import { Fact, Undetermined, evolve, initial, present, workOf } from "../../kernel/child-lifecycle.ts"
+import { Fact, Undetermined, evolve, initial, present } from "../../kernel/child-lifecycle.ts"
 import { readMark } from "../../wake/latch.ts"
 import { ownedSessionOf, type Reads, type SessionInfo, type ShellInfo } from "../opencode/view.ts"
 import { subagents, visible } from "../subagent-row.ts"
@@ -45,11 +45,11 @@ export const mountRows = (data: Reads, base: string, root: string, child: string
   })
 }
 
-const manualTransport = (client: RowsClient, base: string, root: string, child: string, info: SessionInfo, shell: ShellInfo) =>
+const manualTransport = (client: RowsClient, base: string, root: string, child: string, info: SessionInfo, shell?: ShellInfo) =>
   Effect.gen(function* () {
     const flights = yield* Queue.unbounded<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>()
     const listeners = new Set<(event: { details: object }) => void>()
-    const [processes, setProcesses] = createSignal<ReadonlyArray<ShellInfo>>([shell])
+    const [processes, setProcesses] = createSignal<ReadonlyArray<ShellInfo>>(Option.toArray(Option.fromUndefinedOr(shell)))
     const transport: RowsClient = { rpc: () => ({
       read: (input, options) => Effect.runPromise(Effect.gen(function* () {
         const release = yield* Deferred.make<boolean>()
@@ -79,7 +79,7 @@ const manualTransport = (client: RowsClient, base: string, root: string, child: 
   })
 
 /** The real RPC reads the real owner before the fixture withholds the wire reply. */
-export const openBarrier = (client: RowsClient, base: string, root: string, child: string, info: SessionInfo, shell: ShellInfo) =>
+export const openBarrier = (client: RowsClient, base: string, root: string, child: string, info: SessionInfo, shell?: ShellInfo) =>
   Effect.gen(function* () {
     const observer = yield* Effect.acquireRelease(manualTransport(client, base, root, child, info, shell),
       ({ view }) => Effect.sync(view.close))
@@ -105,29 +105,24 @@ export const replayRows = (
     const decoded = decodeEvent(event)
     if (Result.isFailure(decoded)) return ["invalid native event"]
     const host = decoded.success
-    Option.map(durableFact(host, root), (fact) => { state = evolve(state, fact) })
+    Option.map(durableFact(host, root), (fact) => { state = evolve(state, { ...fact, seenIn: 1 }) })
     if (host.type === "shell.exited" && host.data.id === shell.id) {
       const reason = Undetermined.make({ shellID: shell.id, exit: { id: host.id, at: host.created } })
-      state = evolve(state, Fact.cases.Exit.make({ child: failed.id, parent: root, reason }))
+      state = evolve(state, { ...Fact.cases.Exit.make({ child: failed.id, parent: root, reason }), seenIn: 1 })
     }
     if (host.type === "shell.created") {
-      state = evolve(state, Fact.cases.Work.make({
+      state = evolve(state, { ...Fact.cases.Work.make({
         child: failed.id, parent: root, id: shell.id,
         work: { kind: "Shell", native: true, backgrounded: true, running: true, at: host.created },
-      }))
+      }), seenIn: 1 })
       return []
     }
     if (host.type === "session.execution.started") running = true
-    const view = present({ ...state, observedIn: 1 }, { running, ...backgroundFields(workOf(state)) }, 1)
+    const view = present(state, { running }, 1)
     const row = ownedSessionOf(failed.id, { messages: [] }, failed, rowView(ownerAnswer(view, readMark(failed.metadata), host.created, state.rev)))
     return visible(subagents({ root, sessions: [row] }, root), host.created + 1).map(({ state, update }) => {
       if (update.startsWith("Undetermined:")) return "undetermined"
       return state
     })
   })
-}
-
-const backgroundFields = (background: Parameters<typeof present>[1]["background"]) => {
-  if (background) return { background }
-  return {}
 }

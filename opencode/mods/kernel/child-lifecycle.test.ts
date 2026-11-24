@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { Diagnostic, Fact, Projection, Terminal, Undetermined, evolve, initial, observe, rowFactOf, type Snapshot } from "./child-lifecycle.ts"
+import { Diagnostic, Fact, Phase, Projection, Terminal, Undetermined, decide, evolve, initial, observe, present, rowFactOf, type Snapshot } from "./child-lifecycle.ts"
 import { Schema } from "effect"
 import { RowFact } from "./child-row.ts"
 
@@ -56,7 +56,7 @@ test("delivery first closes only its inbox ID; late orderable admission correlat
   expect(rowFactOf(closedFirst, snap())._tag).toBe("ShellResultUndetermined")
   const matched = evolve(reloaded(closedFirst), admission())
   expect(rowFactOf(matched, snap())).toEqual(RowFact.cases.Failed.make({ at: 100 }))
-  expect(matched.inbox?.input).toEqual({ seq: 5, pending: false, shellID: "sh_fixture" })
+  expect(matched.inbox?.input).toEqual({ seq: 5, pending: false, shellID: "sh_fixture", terminalSeq: 3 })
   expect(evolve(matched, admission())).toBe(matched)
   expect(evolve(matched, closed(2))).toBe(matched)
 })
@@ -134,4 +134,40 @@ test("a monotone unread marker does not outrank a durable point; a different sna
   expect(newer).not.toHaveProperty("started")
   const disputed = observe(seed, snap({ busyAt: 100, idleAt: 105, outcome: "succeeded" }), true)
   expect(disputed.phase._tag).toBe("Unknown")
+})
+
+const cancel = (id: string, seq: number) => Fact.cases.Inbox.make({ child, parent, id, seq, disposition: "cancelled" })
+const inLifetime = (state: Projection, activation: number, ...facts: ReadonlyArray<Fact>) =>
+  facts.reduce((projection, fact) => evolve(projection, { ...fact, seenIn: activation }), state)
+
+test("the phase returns its own input and execution witnesses, not the child's newest observed event", () => {
+  const first = inLifetime(initial(child, parent), 1, start(1), end(3, "failed"), exit(), admission())
+  const old = reloaded(first)
+  const unrelated = inLifetime(old, 2, cancel("another-input", 5))
+  expect(decide(unrelated, snap(), 2).facts.map(({ subject, id }) => [subject, id])).toEqual([["execution", "evt_3"], ["input", "input"]])
+  expect(present(unrelated, snap(), 2)).toMatchObject({ phase: Phase.cases.Continuing.make({ on: "Wake" }), basis: "as-of-last-observation" })
+  expect(unrelated.inbox?.["another-input"]).toMatchObject({ seenIn: 2, disposition: "cancelled" })
+  expect(unrelated.segment?.seenIn).toBe(1)
+  const matched = inLifetime(unrelated, 2, cancel("input", 6))
+  const original = Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied", terminal: point(3) })
+  expect(present(matched, snap(), 2)).toMatchObject({ phase: original, basis: "current" })
+  expect(matched.segment?.confirmation).toEqual({ input: "input", seq: 6, seenIn: 2 })
+  expect(present(matched, snap(), 3)).toMatchObject({ phase: original, basis: "as-of-last-observation" })
+  const later = inLifetime(matched, 2, start(7), end(9, "succeeded"))
+  const late = inLifetime(reloaded(later), 3, end(3, "failed"), cancel("input", 10))
+  expect(present(late, snap(), 3)).toMatchObject({
+    phase: Phase.cases.Settled.make({ outcome: "succeeded", cause: "Unknown", terminal: point(9) }), basis: "as-of-last-observation",
+  })
+  expect(late.segment?.confirmation).toBeUndefined()
+})
+
+test("a legacy aggregate stamp is discarded without discarding its facts or revision", () => {
+  const failed = inLifetime(initial(child, parent), 1, start(1), end(3, "failed"))
+  const legacy = { ...failed, segment: { point: point(3), terminal: failed.segment?.terminal }, observedIn: 2 }
+  const decoded = Schema.decodeUnknownSync(Projection)(legacy)
+  expect(decoded).not.toHaveProperty("observedIn")
+  expect(present(decoded, snap(), 2)).toMatchObject({
+    revision: failed.rev, phase: Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied", terminal: point(3) }),
+    basis: "as-of-last-observation",
+  })
 })

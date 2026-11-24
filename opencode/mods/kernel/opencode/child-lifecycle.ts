@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, DateTime, Effect, Match, Option, Predicate, Ref, Schema, Semaphore, Stream, type Types } from "effect"
-import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, evolve, executionActive, initial, present, Projection, workOf, type Cause, type Snapshot } from "../child-lifecycle.ts"
+import { Diagnostic, Fact, Hold, Phase, Terminal, Undetermined, decide, evolve, executionActive, initial, present, Projection, workEvidence, type Cause, type Snapshot, type WorkEvidence } from "../child-lifecycle.ts"
 import { RowFact } from "../child-row.ts"
 import { Observation } from "../child-lifecycle.ts"
 import { readMark, MarkRead } from "../../wake/latch.ts"
@@ -156,7 +156,8 @@ export const inboxFact = (event: InboxEvent, parent: string): Fact =>
   })
 const inboxShell = (event: InboxEvent) => {
   if (event.type === "session.inbox.enqueued") return { shellID: event.data.item.payload.metadata.shellID }
-  return {}
+  if (event.type === "session.inbox.cancelled") return { disposition: "cancelled" as const }
+  return { disposition: "delivered" as const }
 }
 
 export const durableFact = (event: Event, parent: string): Option.Option<Fact> => {
@@ -171,7 +172,7 @@ const interrupted = (reason: string): typeof Terminal.Type => {
   return Terminal.cases.Ended.make({ outcome: "interrupted", cause: "Unknown" })
 }
 
-const snapshotOf = (info: Info, mark: MarkRead, background?: Snapshot["background"]): Snapshot => {
+const snapshotOf = (info: Info, mark: MarkRead): Snapshot => {
   const millis = (time: Info["time"]["busy"]) => Option.map(Option.fromUndefinedOr(time), DateTime.toEpochMillis)
   const busyAt = millis(info.time.busy)
   const idleAt = millis(info.time.idle)
@@ -180,7 +181,6 @@ const snapshotOf = (info: Info, mark: MarkRead, background?: Snapshot["backgroun
   if (info.outcome) value.outcome = info.outcome
   if (Option.isSome(busyAt)) value.busyAt = busyAt.value
   if (Option.isSome(idleAt)) value.idleAt = idleAt.value
-  if (background) value.background = background
   if (mark._tag === "Readable") {
     const { hold, opensAt, recheckAt, cancelledAt, failed } = mark.mark
     value.latchCancelled = Option.isSome(Option.fromUndefinedOr(cancelledAt))
@@ -200,18 +200,11 @@ const sameLocation = (actual: { readonly directory: string; readonly workspaceID
 
 type Work = typeof Fact.cases.Work.Type.work
 
-const displayOnly = Predicate.or(Predicate.isTagged("Diagnostic"), Predicate.isTagged("Attention"))
-const confirmsPhase = (fact: Fact, before: Projection, after: Projection) => {
-  if (displayOnly(fact)) return false
-  if (fact._tag === "Execution") return before.segment !== after.segment
-  return true
-}
-
 const oldFact = (view: Observation) => {
   const { phase } = view
   if (phase._tag === "Unknown" && phase.reason)
     return RowFact.cases.ShellResultUndetermined.make({ at: phase.reason.exit.at })
-  if (phase._tag === "Settled" && phase.outcome === "failed" && phase.terminal)
+  if (view.basis === "current" && phase._tag === "Settled" && phase.outcome === "failed" && phase.terminal)
     return RowFact.cases.Failed.make({ at: phase.terminal.at })
   return RowFact.cases.NoFact.make({})
 }
@@ -295,12 +288,15 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   })
   const isLive = Predicate.or(Predicate.isTagged("Running"), Predicate.isTagged("Continuing"))
   const liveDescendant = Effect.fn("ChildLifecycle.liveDescendant")(function* (candidate: Projection, child: string) {
-    if (candidate.child === child || !(executionActive(candidate) || workOf(candidate))) return false
-    if (!(yield* ownedBy(candidate.parent, child))) return false
+    const work = workEvidence(candidate)
+    if (candidate.child === child || !(executionActive(candidate) || Option.isSome(work))) return Option.none<WorkEvidence>()
+    if (!(yield* ownedBy(candidate.parent, child))) return Option.none<WorkEvidence>()
     const info = yield* infoOf(candidate.child).pipe(Effect.option)
-    if (Option.isNone(info)) return false
-    const snapshot = snapshotOf(info.value, readMark(info.value.metadata), workOf(candidate))
-    return isLive(present(candidate, snapshot, activation).phase)
+    if (Option.isNone(info)) return Option.none<WorkEvidence>()
+    const snapshot = snapshotOf(info.value, readMark(info.value.metadata))
+    const choice = decide(candidate, snapshot, activation, work)
+    if (!isLive(choice.phase)) return Option.none<WorkEvidence>()
+    return Option.some<WorkEvidence>({ kind: "Child", facts: choice.facts })
   })
   const childWork = Effect.fn("ChildLifecycle.childWork")(function* (child: string) {
     let page = yield* ctx.storage.scan({ prefix: locationPrefix, limit: 128 })
@@ -308,10 +304,11 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
       for (const entry of page.entries) {
         const decoded = readProjection(entry.value)
         if (Option.isNone(decoded)) continue
-        if (yield* liveDescendant(decoded.value, child)) return true
+        const live = yield* liveDescendant(decoded.value, child)
+        if (Option.isSome(live)) return live
       }
       const after = Option.fromUndefinedOr(page.next)
-      if (Option.isNone(after)) return false
+      if (Option.isNone(after)) return Option.none<WorkEvidence>()
       page = yield* ctx.storage.scan({ prefix: locationPrefix, after: after.value, limit: 128 })
     }
   })
@@ -416,10 +413,8 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
 
   const record = Effect.fn("ChildLifecycle.record")(function* (child: string, parent: string, fact: Fact) {
     const state = yield* load(child, parent)
-    const evolved = evolve(state, fact)
-    if (evolved === state) return
-    const next = { ...evolved }
-    if (confirmsPhase(fact, state, next)) next.observedIn = activation
+    const next = evolve(state, { ...fact, seenIn: activation })
+    if (next === state) return
     const written = yield* save(state, next)
     if (!written) return
     const publish = yield* Ref.get(announce)
@@ -449,11 +444,11 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     const info = yield* infoOf(child)
     if (!info.parentID) return { info, answer: Option.none() }
     const state = yield* load(child, info.parentID)
-    let background = workOf(state)
-    if (!background && !executionActive(state) && (yield* childWork(child))) background = "Child"
+    let background = workEvidence(state)
+    if (Option.isNone(background) && !executionActive(state)) background = yield* childWork(child)
     const mark = readMark(info.metadata)
-    const snapshot = snapshotOf(info, mark, background)
-    const observed = present(state, { ...snapshot, stopUncertain: Option.isSome(Option.fromUndefinedOr(state.stopAfter)) }, activation)
+    const snapshot = snapshotOf(info, mark)
+    const observed = present(state, { ...snapshot, stopUncertain: Option.isSome(Option.fromUndefinedOr(state.stopAfter)) }, activation, background)
     const created = Option.getOrElse(Option.map(Option.fromUndefinedOr(info.time.created), DateTime.toEpochMillis), () => 0)
     const at = rowAt(observed, snapshot, mark, created)
     const requests = Object.values(Option.getOrElse(Option.fromUndefinedOr(state.attention), () => ({})))

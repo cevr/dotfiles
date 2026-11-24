@@ -298,33 +298,40 @@ seeded("both public observers preserve the owner phase across every source cut i
     const events = yield* Queue.unbounded<FixtureEvent>()
     yield* world.load(fixtureLatch(make(live, () => Stream.fromQueue(events))), { directory: WORK, options: { codeOnly: false } })
     const hostID = "sh_every_cut"
+    const otherShell = "sh_second_cut"
     const inboxID = "msg_every_cut"
+    const otherID = "msg_second_cut"
     const terminal = { error: { type: "provider.content-filter" } }
     const admitted = { inboxID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: hostID } } } }
+    const other = { inboxID: otherID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: otherShell } } } }
     const put = (child: string, name: string, data: FixtureEvent["data"], seq = 0) =>
       Queue.offer(events, {
         type: name, id: `evt_${name}`, created: world.now(), location: { directory: WORK },
         data: { sessionID: child, ...data },
         ...durability(child, seq),
       }).pipe(Effect.andThen(world.advance(0)))
-    const trace = (child: string) => [
-      put(child, type.start, {}, 1),
-      put(child, "shell.created", { info: { id: hostID, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } } }),
-      put(child, type.step, terminal, 2),
-      put(child, type.fail, terminal, 3),
+    const shell = (child: string, id: string) => put(child, "shell.created", {
+      info: { id, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } },
+    })
+    const afterCut = [1, 11, 12, 13, 21, 31, 32, 33, 41, 51, 61, 71, 81, 91]
+    const trace = (child: string, reverse: boolean) => [
+      put(child, type.start, {}, 10), shell(child, hostID), shell(child, otherShell),
+      put(child, type.step, terminal, 20),
+      put(child, type.fail, terminal, 30),
       put(child, "shell.exited", { id: hostID }),
-      put(child, "session.inbox.enqueued", admitted, 4),
-      put(child, type.start, {}, 5),
-      put(child, "session.inbox.delivered", { inboxID }, 6),
-      put(child, type.end, {}, 7),
+      put(child, "shell.exited", { id: otherShell }),
+      put(child, "session.inbox.enqueued", admitted, 40),
+      put(child, "session.inbox.enqueued", other, 50),
+      put(child, "session.inbox.cancelled", reversed(reverse, otherID, inboxID), 60),
+      put(child, type.start, {}, 70),
+      put(child, "session.inbox.delivered", reversed(reverse, inboxID, otherID), 80),
+      put(child, type.end, {}, 90),
     ]
     const read = (child: string) => world.rpc(CHILD_ROWS, "read", { children: [child] }).pipe(
       Effect.flatMap((raw) => Effect.fromOption(Option.flatMap(readRows(raw), ({ rows }) => Option.fromUndefinedOr(rows[0])))),
     )
     const parent = yield* world.session(WORK)
-    for (let cut = 0; cut < 10; cut++) {
-      const child = yield* world.session(WORK, { parentID: parent, agent: "worker" })
-      const frames = trace(child)
+    const atCut = Effect.fn("LifecycleSim.cut")(function* (child: string, frames: ReturnType<typeof trace>, cut: number) {
       for (const frame of frames.slice(0, cut)) yield* frame
       const before = yield* read(child)
       const tool = yield* world.tool(parent, "subagents", { action: "get", sessionID: child })
@@ -340,13 +347,32 @@ seeded("both public observers preserve the owner phase across every source cut i
       if (reopened.observation.phase._tag === "Continuing" && reopened.observation.phase.on === "Wake") {
         expect(direct.output).toContain("continuing (awaiting host wake) (as of last observation)")
       }
+      // An independent inbox tombstone can land at any cut, including
+      // admission-before-start and after either terminal.
+      yield* put(child, "session.inbox.cancelled", { inboxID: "unrelated" }, afterCut[cut])
+      const unchanged = yield* read(child)
+      expect(unchanged.observation.phase).toEqual(reopened.observation.phase)
+      expect(unchanged.observation.basis).toBe(reopened.observation.basis)
+      expect(unchanged.observation.revision >= reopened.observation.revision).toBe(true)
       for (const frame of frames.slice(cut)) yield* frame
       const end = yield* read(child)
       expect(end.observation.phase).toMatchObject({ outcome: "succeeded" })
       expect(end.observation.revision >= reopened.observation.revision).toBe(true)
+    })
+    const length = trace(parent, false).length
+    for (const reverse of [false, true]) {
+      for (let cut = 0; cut <= length; cut++) {
+        const child = yield* world.session(WORK, { parentID: parent, agent: "worker" })
+        yield* atCut(child, trace(child, reverse), cut)
+      }
     }
   }),
 )
+
+const reversed = (reverse: boolean, first: string, second: string) => {
+  if (reverse) return { inboxID: second }
+  return { inboxID: first }
+}
 
 const durability = (child: string, seq: number) => {
   if (seq > 0) return { durable: { aggregateID: child, seq, version: 1 } }

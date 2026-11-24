@@ -85,7 +85,7 @@ interface SolidFixture {
     readonly rows: () => ReturnType<typeof subagents>
   }
   readonly replayRows: (info: SessionInfo, root: string, shell: ShellInfo, events: ReadonlyArray<HostEvent>) => ReadonlyArray<string>
-  readonly openBarrier: (client: Embedded, base: string, root: string, child: string, info: SessionInfo, shell: ShellInfo) => Effect.Effect<Barrier, unknown, Scope.Scope>
+  readonly openBarrier: (client: Embedded, base: string, root: string, child: string, info: SessionInfo, shell?: ShellInfo) => Effect.Effect<Barrier, unknown, Scope.Scope>
 }
 type Display = ReadonlyArray<{ readonly state: string; readonly update: string }>
 interface Barrier {
@@ -443,15 +443,40 @@ const silentExit = Effect.fn("LifecycleFixture.silentExit")(function* (
   const admitted = yield* promised("native inbox admission failed", () => instance.sessions.synthetic({
     sessionID: child, text: "Fixture shell result", metadata: { source: "shell", shellID: shell.id }, resume: false,
   }))
+  const unrelated = yield* promised("independent inbox admission failed", () => instance.sessions.synthetic({
+    sessionID: child, text: "Independent queued notice", metadata: { source: "fixture" }, resume: false,
+  }))
   const gap = yield* ask(instance, root, handle(child))
   const gapRows = yield* realRows(instance, base, root, child, gap, Option.none(), Number(exit.created) + 1)
   return {
-    root, child, inboxID: admitted.id, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
+    root, child, inboxID: admitted.id, unrelatedID: unrelated.id, shellID: shell.id, exit: { id: exit.id || "", at: Number(exit.created) },
     observation: takeAnswer(rebuilt, "kernel"), direct: takeAnswer(direct, "subagents"),
     previous: takeAnswer(previous, "kernel"), current: takeAnswer(current, "kernel"),
     pending: pending.length, rows, suppressed, scheduled, killed: takeAnswer(killed, "fixture_shell_suppress"),
     gap: takeAnswer(gap, "kernel"), gapRows: gapRows.visible, admittedRemount: gapRows.remount,
   }
+})
+
+const cancelBehindBarrier = Effect.fn("LifecycleFixture.cancelBehindBarrier")(function* (
+  instance: Embedded, events: AsyncIterator<HostEvent>, barrier: Barrier, root: string, child: string, inboxID: string,
+) {
+  yield* Effect.sync(() => barrier.notify({ type: "server.connected" }))
+  const old = yield* barrier.next
+  yield* promised("native inbox cancellation failed", () => instance.sessions.inbox.cancel({ sessionID: child, inboxID }))
+  const event = yield* nextEvent(events, "inbox cancellation", (item) =>
+    childEvent("session.inbox.cancelled", child)(item) && item.data?.inboxID === inboxID,
+  )
+  const changed = yield* nextEvent(events, "the owner persisted the disposition", (item) =>
+    item.type === "rpc.dotfiles-opencode.kernel.rows.changed" && item.data?.child === child && Number(item.data.revision) > old.revision,
+  )
+  const direct = yield* ask(instance, root, directObservation(child))
+  yield* Effect.sync(() => { barrier.notify(event); barrier.notify(changed) })
+  yield* old.release
+  const next = yield* barrier.next
+  const outstanding = barrier.snapshot()
+  yield* next.release
+  yield* barrier.ready
+  return { old: old.revision, accepted: barrier.revision(), outstanding, shown: barrier.snapshot(), direct: takeAnswer(direct, "kernel") }
 })
 
 const shellTrace = Effect.fn("LifecycleFixture.shellTrace")(function* (
@@ -607,15 +632,20 @@ const fixture = Effect.gen(function* () {
       return event.type === "log.synced"
     })
     const context = yield* ask(opened, first.root, handle(first.child))
-    const { root, child, inboxID } = first.silent
+    const { root, child, inboxID, unrelatedID } = first.silent
+    const events = yield* eventStream(opened)
     const retained = yield* ask(opened, root, directObservation(child))
     const direct = yield* ask(opened, root, fixtureCall("subagents", { action: "get", sessionID: child }))
     const retainedRows = yield* realRows(opened, base, root, child, retained, Option.none(), now + 1)
-    yield* promised("native inbox cancellation failed", () => opened.sessions.inbox.cancel({ sessionID: child, inboxID }))
+    const { openBarrier } = yield* solidFixture
+    const info = yield* promised("reopened child snapshot lost", () => opened.sessions.get({ sessionID: child }))
+    const barrier = yield* openBarrier(opened, base, root, child, info)
+    const unrelated = yield* cancelBehindBarrier(opened, events, barrier, root, child, unrelatedID)
+    const related = yield* cancelBehindBarrier(opened, events, barrier, root, child, inboxID)
     const cancelled = yield* ask(opened, root, handle(child))
     return { replayed: periods, recovered: takeAnswer(context, "kernel"),
       retained: takeAnswer(retained, "kernel"), retainedDirect: takeAnswer(direct, "subagents"),
-      retainedRows: retainedRows.visible, cancelled: takeAnswer(cancelled, "kernel") }
+      retainedRows: retainedRows.visible, unrelated, related, cancelled: takeAnswer(cancelled, "kernel") }
   })))
   const seen = yield* model.read
   yield* Console.log(encode({ ...first, ...reopened, content: seen.content, filtered: seen.filtered }))
@@ -630,6 +660,9 @@ const Remount = Schema.Struct({
 const CutEvidence = Schema.Struct({
   order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay, after: RowDisplay,
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
+})
+const InboxCut = Schema.Struct({
+  old: Schema.Int, accepted: Schema.Int, outstanding: RowDisplay, shown: RowDisplay, direct: Schema.String,
 })
 const ReadLatch = Schema.Struct({ child: Schema.String, mark: Schema.String, launch: Schema.String, rebuilt: Schema.String, listed: Schema.String })
 const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
@@ -652,7 +685,7 @@ const report = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
     suppressed: Schema.Struct({ row: Schema.String, visible: Schema.Array(Schema.String), remount: Remount }),
   }),
   opensAt: Schema.Number, retained: Schema.String, retainedDirect: Schema.String,
-  retainedRows: Schema.Array(Schema.String), cancelled: Schema.String,
+  retainedRows: Schema.Array(Schema.String), unrelated: InboxCut, related: InboxCut, cancelled: Schema.String,
 })))
 const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.Int,
@@ -740,9 +773,22 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   expect(result.retainedDirect).toContain("continuing (awaiting host wake) (as of last observation)")
   expect(result.retainedRows).toEqual(["waiting"])
   const cancelled = yield* parse(lastLine(result.cancelled))
-  expect(cancelled).toMatchObject({ phase: { ...Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) } })
+  expect(cancelled).toMatchObject({ basis: "current", phase: Phase.cases.Settled.make({ outcome: "failed", cause: "PolicyDenied" }) })
+  const unrelated = yield* parse(lastLine(result.unrelated.direct))
+  const related = yield* parse(lastLine(result.related.direct))
+  expect(unrelated).toMatchObject({ basis: "as-of-last-observation", phase: Phase.cases.Continuing.make({ on: "Wake" }) })
+  expect(related).toEqual(cancelled)
+  expect(result.unrelated.shown).toEqual([{ state: "waiting", update: expect.stringContaining("since before reload") }])
+  expect(result.related.shown.map(({ state }) => state)).toEqual(["failed"])
+  for (const cut of [result.unrelated, result.related]) {
+    expect(cut.outstanding).toEqual([{ state: "waiting", update: "Checking the last execution" }])
+    expect(cut.accepted).toBeGreaterThan(cut.old)
+  }
+  expect(unrelated).toHaveProperty("revision", result.unrelated.accepted)
+  expect(related).toHaveProperty("revision", result.related.accepted)
+  expect(result.related.old).toBe(result.unrelated.accepted)
   yield* Console.log(`native RPC cuts ${encode(result.silent.scheduled)}`)
-  yield* Console.log(`native admission reload ${encode({ before: gap, after: retained, cancelled })}`)
+  yield* Console.log(`native admission reload ${encode({ before: gap, after: retained, unrelated: result.unrelated, related: result.related, cancelled })}`)
 })
 
 if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {

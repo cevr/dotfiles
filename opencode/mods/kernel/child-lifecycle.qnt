@@ -5,27 +5,33 @@ module childLifecycle {
   type Row = Working | Waiting | Undetermined | Failure | Hidden | Other
   type RestartCut = NoCut | Cut({ before: Row, after: Row, afterLinger: Row, expectedAfterLinger: Row })
   type Basis = Current | AsOf
-  type Reply = { rev: int, seq: int, phase: Phase, end: End, basis: Basis, terminalFact: bool }
+  type Reply = { rev: int, seq: int, phase: Phase, end: End, basis: Basis, terminalFact: bool, used: Set[int], activation: int }
   type Observer = { last: Reply, inflight: Reply, requested: bool, checking: bool, floor: int }
-  var s: {
+  type State = {
     phase: Phase, generation: int, route: Route, compatible: bool, room: bool,
     refused: bool, sawNotice: bool, deniedThenStarted: bool, incompatibleStarted: bool,
     end: End, handBack: bool, closedRound: bool, delivered: int, seen: int,
     seq: int, stepError: bool, pendingShell: bool, pendingWake: bool, trace: str,
-    exitObserved: bool, cut: RestartCut
+    exitObserved: bool, cut: RestartCut,
+    activation: int, execution: int, executionSeen: int, oldExecutionSeen: int, shellSeen: int, exitSeen: int,
+    pending: Set[int], inputSeen: int -> int, inputExecution: int -> int, stopSeen: int, foreignPreserved: bool
   }
+  var s: State
 
   pure val empty = {
     phase: Held, generation: 1, route: None, compatible: false, room: false,
     refused: false, sawNotice: false, deniedThenStarted: false, incompatibleStarted: false,
     end: NoEnd, handBack: false, closedRound: false, delivered: 0, seen: 1,
     seq: 0, stepError: false, pendingShell: false, pendingWake: false, trace: "",
-    exitObserved: false, cut: NoCut
+    exitObserved: false, cut: NoCut,
+    activation: 1, execution: 0, executionSeen: 0, oldExecutionSeen: 0, shellSeen: 0, exitSeen: 0,
+    pending: Set(), inputSeen: Map(1 -> 0, 2 -> 0, 3 -> 0), inputExecution: Map(1 -> 0, 2 -> 0),
+    stopSeen: 0, foreignPreserved: true
   }
-  pure val noReply = { rev: 0, seq: 0, phase: Held, end: NoEnd, basis: Current, terminalFact: false }
+  pure val noReply = { rev: 0, seq: 0, phase: Held, end: NoEnd, basis: Current, terminalFact: false, used: Set(), activation: 1 }
   pure val noObserver = { last: noReply, inflight: noReply, requested: false, checking: true, floor: 0 }
-  var t: { owner: Reply, row: Observer, tool: Observer, history: Set[Reply], beforeReload: Reply }
-  pure val noTransport = { owner: noReply, row: noObserver, tool: noObserver, history: Set(noReply), beforeReload: noReply }
+  var t: { owner: Reply, row: Observer, tool: Observer, history: Set[Reply], reloadPreserved: bool }
+  pure val noTransport = { owner: noReply, row: noObserver, tool: noObserver, history: Set(noReply), reloadPreserved: true }
   action init = all { s' = empty, t' = noTransport }
 
   action readCatalog = {
@@ -38,7 +44,8 @@ module childLifecycle {
   }
   action admit = all {
     s.phase == Held, not(s.refused), or { s.room, s.compatible },
-    s' = { ...s, phase: Active, route: if (s.room) Primary else Secondary, seq: s.seq + 1 }
+    s' = { ...s, phase: Active, route: if (s.room) Primary else Secondary, seq: s.seq + 1,
+      execution: s.execution + 1, executionSeen: s.activation }
   }
   action notice = all {
     or { s.phase == Active, s.phase == Recovering, s.phase == ShellWork, s.phase == WakePending },
@@ -50,15 +57,15 @@ module childLifecycle {
   }
   action shutdown = all {
     s.phase == Active,
-    s' = { ...s, phase: Recovering, trace: "shutdown" }
+    s' = { ...s, phase: Recovering, trace: "shutdown", executionSeen: s.activation }
   }
   action resume = all {
     s.phase == Recovering, not(s.refused),
-    s' = { ...s, phase: Active, seq: s.seq + 1 }
+    s' = { ...s, phase: Active, seq: s.seq + 1, execution: s.execution + 1, executionSeen: s.activation }
   }
   action shellPending = all {
     s.phase == Active,
-    s' = { ...s, pendingShell: true }
+    s' = { ...s, pendingShell: true, shellSeen: s.activation }
   }
   action diagnostic = all {
     s.phase == Active,
@@ -67,42 +74,64 @@ module childLifecycle {
   action failedSegment = all {
     s.phase == Active, not(s.pendingWake),
     s' = { ...s, phase: if (s.pendingShell) ShellWork else Settled,
-      end: Failed, seq: s.seq + 1, trace: "failed", exitObserved: false }
+      end: Failed, seq: s.seq + 1, trace: "failed", exitObserved: false, executionSeen: s.activation }
   }
   action shellExited = all {
     s.pendingShell, or { s.phase == Active, s.phase == ShellWork },
     s' = { ...s, pendingShell: false, phase: if (s.phase == ShellWork) ResultUndetermined else Active,
-      exitObserved: s.phase == ShellWork, trace: "exited" }
+      exitObserved: s.phase == ShellWork, trace: "exited", exitSeen: s.activation }
   }
-  action wakeEnqueued = all {
-    s.phase == ResultUndetermined, s.end == Failed, s.delivered == 0,
-    s' = { ...s, pendingWake: true, phase: WakePending, trace: "enqueued", exitObserved: false }
+  action wakeEnqueuedFor(id: int): bool = all {
+    or { s.phase == ResultUndetermined, s.phase == WakePending }, s.end == Failed, s.delivered == 0,
+    not(s.pending.contains(id)), s.inputSeen.get(id) == 0,
+    s' = { ...s, pendingWake: true, phase: WakePending, trace: "enqueued", exitObserved: false,
+      pending: s.pending.union(Set(id)), inputSeen: s.inputSeen.set(id, s.activation), seq: s.seq + 1,
+      inputExecution: s.inputExecution.set(id, s.execution) }
   }
+  action wakeEnqueued = { nondet id = oneOf(Set(1, 2)); wakeEnqueuedFor(id) }
   action wakeCancelled = all {
-    s.phase == WakePending,
-    s' = { ...s, pendingWake: false, phase: Settled, trace: "cancelled" }
+    or { s.phase == WakePending, s.phase == Active },
+    nondet id = oneOf(s.pending)
+    val rest = s.pending.exclude(Set(id))
+    val done = rest == Set()
+    val closesEpoch = done and s.phase == WakePending and s.inputExecution.get(id) == s.execution
+    s' = { ...s, pending: rest, pendingWake: not(done), phase: if (closesEpoch) Settled else s.phase,
+      trace: "cancelled", inputSeen: s.inputSeen.set(id, s.activation), seq: s.seq + 1,
+      executionSeen: if (closesEpoch) s.activation else s.executionSeen }
+  }
+  action cancelForeign = {
+    val changed = { ...s, seq: s.seq + 1, inputSeen: s.inputSeen.set(3, s.activation) }
+    s' = { ...changed, foreignPreserved: basisAt(changed) == basisAt(s) }
+  }
+  action observeOlderExecution = all {
+    s.execution >= 2,
+    val changed = { ...s, oldExecutionSeen: s.activation }
+    s' = { ...changed, foreignPreserved: basisAt(changed) == basisAt(s) }
   }
   action wakeResumed = all {
     s.phase == WakePending, not(s.refused),
-    s' = { ...s, phase: Active, stepError: false, end: NoEnd, seq: s.seq + 1, trace: "resumed" }
+    s' = { ...s, phase: Active, stepError: false, end: NoEnd, seq: s.seq + 1, trace: "resumed",
+      execution: s.execution + 1, executionSeen: s.activation }
   }
   action wakeDelivered = all {
     s.phase == Active, s.pendingWake,
-    s' = { ...s, pendingWake: false, seq: s.seq + 1, trace: "delivered" }
+    nondet id = oneOf(s.pending)
+    val rest = s.pending.exclude(Set(id))
+    s' = { ...s, pending: rest, pendingWake: rest != Set(), inputSeen: s.inputSeen.set(id, s.activation), seq: s.seq + 1, trace: "delivered" }
   }
   action succeededSegment = all {
     s.phase == Active, not(s.pendingShell), not(s.pendingWake),
-    s' = { ...s, phase: Settled, pendingWake: false, end: Ok, seq: s.seq + 1, trace: "succeeded" }
+    s' = { ...s, phase: Settled, pendingWake: false, end: Ok, seq: s.seq + 1, trace: "succeeded", executionSeen: s.activation }
   }
   action stopTimesOut = all {
     or { s.phase == Active, s.phase == ShellWork, s.phase == WakePending, s.phase == ResultUndetermined, s.phase == Recovering },
-    s' = { ...s, pendingShell: false, pendingWake: false, phase: Unknown, trace: "timeout", exitObserved: false }
+    s' = { ...s, pendingShell: false, pendingWake: false, pending: Set(), phase: Unknown, trace: "timeout", exitObserved: false, stopSeen: s.activation }
   }
   action settle = all {
     or { s.phase == Active, s.phase == Recovering, s.phase == Unknown },
     not(s.pendingShell), not(s.pendingWake),
     nondet e = oneOf(Set(Ok, Failed, Cancelled))
-    s' = { ...s, phase: Settled, end: e, seq: s.seq + 1, trace: "settled" }
+    s' = { ...s, phase: Settled, end: e, seq: s.seq + 1, trace: "settled", executionSeen: s.activation }
   }
   action handBack = all {
     s.phase == Settled, s.end == Ok, not(s.refused),
@@ -116,7 +145,7 @@ module childLifecycle {
   action nextGeneration = all {
     s.phase == Settled, s.generation == 1, not(s.refused),
     s' = { ...s, generation: 2, route: None, phase: Held, end: NoEnd,
-      handBack: false, closedRound: false, delivered: 0, sawNotice: false, stepError: false }
+      handBack: false, closedRound: false, delivered: 0, sawNotice: false, stepError: false, inputSeen: empty.inputSeen }
   }
   action staleObservation = all {
     s.generation == 2,
@@ -160,7 +189,8 @@ module childLifecycle {
 
   action producers = any {
     readCatalog, readPace, admit, notice, stopAuthorization, shutdown, resume,
-    shellPending, diagnostic, failedSegment, shellExited, wakeEnqueued, wakeCancelled, wakeResumed, wakeDelivered, stopTimesOut,
+    shellPending, diagnostic, failedSegment, shellExited, wakeEnqueued, wakeCancelled, cancelForeign, observeOlderExecution,
+    wakeResumed, wakeDelivered, stopTimesOut,
     settle, handBack, deliver, nextGeneration, staleObservation, readLatest, observerRestart
   }
   pure def takeRead(observer: Observer, owner: Reply): Observer =
@@ -177,23 +207,41 @@ module childLifecycle {
     // A stale historical terminal stays Checking, never an authoritative badge.
     not(o.checking) and o.last.phase == Settled and o.last.basis == Current implies o.last.terminalFact,
   }
+  pure def evaluated(st: State): Set[int] =
+    if (st.phase == Held) Set()
+    else if (st.phase == Unknown) Set(st.stopSeen)
+    else if (st.phase == ShellWork) Set(st.executionSeen, st.shellSeen)
+    else if (st.phase == ResultUndetermined) Set(st.executionSeen, st.exitSeen)
+    else if (st.phase == WakePending)
+      Set(st.executionSeen, st.inputSeen.get(if (st.pending.contains(1)) 1 else 2))
+    else Set(st.executionSeen)
+  pure def basisAt(st: State): Basis =
+    if (evaluated(st).forall((seen) => seen == st.activation)) Current else AsOf
+  pure def answer(st: State, rev: int): Reply =
+    { rev: rev, seq: st.seq, phase: st.phase, end: st.end, basis: basisAt(st),
+      terminalFact: st.phase == Settled and st.executionSeen == st.activation, used: evaluated(st), activation: st.activation }
+  val ownerMatches = t.owner == answer(s, t.owner.rev)
   action refreshOwner = all {
-    t.owner.phase != s.phase or t.owner.end != s.end or t.owner.seq != s.seq,
-    val owner = { rev: t.owner.rev + 1, seq: s.seq, phase: s.phase, end: s.end, basis: Current, terminalFact: s.phase == Settled }
+    not(ownerMatches),
+    val owner = answer(s, t.owner.rev + 1)
     t' = { ...t, owner: owner, history: t.history.union(Set(owner)) },
     s' = s,
   }
   action kernelReload = all {
-    t.owner.basis == Current,
-    val owner = { ...t.owner, rev: t.owner.rev + 1, basis: AsOf }
-    t' = { ...t, owner: owner, history: t.history.union(Set(owner)), beforeReload: t.owner },
-    s' = s,
+    val after = { ...s, activation: s.activation + 1 }
+    val owner = answer(after, t.owner.rev + 1)
+    val before = answer(s, t.owner.rev)
+    all {
+      s' = after,
+      t' = { ...t, owner: owner, history: t.history.union(Set(owner)),
+        reloadPreserved: owner.phase == before.phase and owner.end == before.end and owner.seq == before.seq },
+    },
   }
   action observers = all {
     s' = s,
     any {
-      all { not(t.row.requested), t' = { ...t, row: takeRead(t.row, t.owner) } },
-      all { not(t.tool.requested), t' = { ...t, tool: takeRead(t.tool, t.owner) } },
+      all { ownerMatches, not(t.row.requested), t' = { ...t, row: takeRead(t.row, t.owner) } },
+      all { ownerMatches, not(t.tool.requested), t' = { ...t, tool: takeRead(t.tool, t.owner) } },
       all { t.row.requested, t' = { ...t, row: accept(t.row) } },
       all { t.tool.requested, t' = { ...t, tool: accept(t.tool) } },
       all { t.row.floor < t.owner.rev, t' = { ...t, row: invalidate(t.row, t.owner.rev) } },
@@ -218,6 +266,32 @@ module childLifecycle {
       } } },
     },
   }
+  action initMixCut = {
+    val shell = { ...empty, phase: ShellWork, end: Failed, seq: 3, execution: 1,
+      executionSeen: 1, pendingShell: true, shellSeen: 1 }
+    val live = answer(shell, 1)
+    all {
+      s' = { ...shell, phase: ResultUndetermined, pendingShell: false, exitObserved: true, exitSeen: 1 },
+      t' = { ...noTransport, owner: live, history: Set(noReply, live),
+        row: { ...noObserver, last: live, checking: false } },
+    }
+  }
+  action laundersProvenance = any {
+    step,
+    all {
+      or { s.phase == Settled, s.phase == WakePending }, basisAt(s) == AsOf,
+      val changed = { ...s, seq: s.seq + 1, executionSeen: s.activation,
+        inputSeen: s.inputSeen.set(1, s.activation).set(2, s.activation).set(3, s.activation) }
+      s' = { ...changed, foreignPreserved: basisAt(changed) == basisAt(s) },
+      t' = t,
+    },
+  }
+  action initLaunderCut = all {
+    s' = { ...empty, phase: WakePending, end: Failed, activation: 2, execution: 1, seq: 5, executionSeen: 1,
+      pending: Set(1, 2), pendingWake: true, inputSeen: empty.inputSeen.set(1, 1).set(2, 1),
+      inputExecution: empty.inputExecution.set(1, 1).set(2, 1) },
+    t' = noTransport,
+  }
   action step = any {
     all { producers, t' = t },
     refreshOwner, kernelReload, observers
@@ -225,14 +299,15 @@ module childLifecycle {
   // Fixed orders exported as ITF, compared against direct `subagents` after
   // each event. Both use the same transitions the bounded invariant explores.
   action initContinuation = all {
-    s' = { ...empty, phase: Active, seq: 1, pendingShell: true, trace: "started" },
+    s' = { ...empty, phase: Active, seq: 1, pendingShell: true, trace: "started",
+      execution: 1, executionSeen: 1, shellSeen: 1 },
     t' = noTransport,
   }
   action traceContinuation = all { t' = t, any {
     all { s.trace == "started", diagnostic },
     all { s.trace == "diagnostic", failedSegment },
     all { s.trace == "failed", shellExited },
-    all { s.trace == "exited", wakeEnqueued },
+    all { s.trace == "exited", wakeEnqueuedFor(1) },
     all { s.trace == "enqueued", wakeResumed },
     all { s.trace == "resumed", wakeDelivered },
     all { s.trace == "delivered", succeededSegment },
@@ -262,8 +337,10 @@ module childLifecycle {
   val safe = and {
     validObserver(t.row, t.history),
     validObserver(t.tool, t.history),
-    t.owner.basis != AsOf or
-      (t.owner.phase == t.beforeReload.phase and t.owner.end == t.beforeReload.end and t.owner.seq == t.beforeReload.seq),
+    t.owner.basis == (if (t.owner.used.forall((seen) => seen == t.owner.activation)) Current else AsOf),
+    t.reloadPreserved,
+    s.foreignPreserved,
+    s.pendingWake == (s.pending != Set()),
     not(s.closedRound) or (s.phase == Settled and s.end == Ok and s.handBack and not(s.refused)),
     s.delivered <= 1,
     s.delivered == 0 or s.phase == Settled,
