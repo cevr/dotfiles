@@ -2214,7 +2214,13 @@ for good, as Claude Code's `claude/hooks/guard-destructive.ts` does. It runs
 in the tool registry's `execute.before` hook for `shell` (and `bash`), so it
 sees a direct call and a kernel cell's `tools.shell`, which the runtime runs
 through the same hooks. The model reads the refusal as the tool's error:
-`guard-destructive: <reason>.`
+`Refused by guard-destructive: <reason>.`
+
+An old-revision run can instead get `Not a refusal: a command-shape rule.
+Run it this way and continue:`. The next line is the same command with the
+Chrome shim set. The guard only prints that form if it passes the guard.
+If the guard hits its path limit without a definitive finding, it instead
+says `Cannot tell:` and asks the caller to split the command into parts it can check.
 
 It refuses:
 
@@ -2258,7 +2264,7 @@ only lists pass.
 It also refuses a subagent's foreground shell call that opens by sleeping 30
 seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
 view`; units and summed operands as GNU `sleep` reads them), as
-`guard-sleep: <reason>.`. The reason names the replacement: start what it
+`Refused by guard-sleep: <reason>.`. The reason names the replacement: start what it
 waits on with `background: true` and wait on the handle with
 `shell({ action: "wait", id, ms })`, or run a check of outside state as a
 background `until` loop and wait on that (wake and monitor refuse a
@@ -2269,7 +2275,7 @@ nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
 a parent) is its contract.
 
 It refuses `git worktree add` in a checkout a workspace can copy, as
-`guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
+`Refused by guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
 workspace a copy-on-write one. A workspace can copy a checkout whose file system clones
 (`apfs`, `btrfs`, `xfs`, as `mount` names it), or one a base shares:
 the checkout itself, or a source with the same origin, SSH and HTTPS URLs
