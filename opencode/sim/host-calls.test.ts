@@ -11,7 +11,8 @@
 // ones the world does not load, and requires every operation to have a law.
 // @reads cmd/**/*.ts cmd/**/*.tsx mods/**/*.ts mods/**/*.tsx sim/tsconfig.host-calls.json
 import { describe, expect } from "bun:test"
-import { Effect } from "effect"
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
+import { Effect, FileSystem } from "effect"
 import { type Call, open } from "./host-calls.ts"
 import { LAWS as DECLARED_LAWS } from "./host-laws.ts"
 import { simulationTest } from "./seed.ts"
@@ -114,3 +115,23 @@ simulationTest("every server plugin host operation has a declared, exercised law
     `${operation} at ${file.slice(ROOT.length + 1)}:${line}`,
   )).toEqual([])
 }))
+
+simulationTest("the host scan fails if a new adapter cannot resolve or type its host context", Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const scratch = yield* fs.makeTempDirectoryScoped({ prefix: "host-context-unresolved-" })
+  const config = `${scratch}/tsconfig.json`
+  yield* fs.writeFileString(config, `{"extends":"${ALL_ADAPTERS}","files":["./adapter.ts","./bad-context.ts"]}`)
+  yield* fs.writeFileString(`${scratch}/adapter.ts`, `
+    import type { Plugin } from "@opencode/plugin/effect"
+    export const refresh = (ctx: Plugin.Context) => ctx.command.reload()
+  `)
+  yield* fs.writeFileString(`${scratch}/bad-context.ts`, `
+    type Host = Parameters<typeof import("${PLANTED_OPERATIONS}").planted>[0]
+    export const refresh = (ctx: Host["MissingContext"]) => ctx.command.reload()
+  `)
+  const failure = yield* Effect.flip(open(config, ROOT).pipe(Effect.as("the scanner accepted an untyped adapter")))
+  expect(failure.message).toContain("adapter.ts:2")
+  expect(failure.message).toContain("Cannot find module '@opencode/plugin/effect'")
+  expect(failure.message).toContain("bad-context.ts:3")
+  expect(failure.message).toContain("Property 'MissingContext' does not exist")
+}).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)))

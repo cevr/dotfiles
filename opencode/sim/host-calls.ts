@@ -23,7 +23,7 @@
 //   `reason="auto"`; a value the compiler cannot narrow to literals is `reason=?`;
 // - any other argument by its position, `#0`.
 import { Data, Effect, Option, Predicate, type Scope } from "effect"
-import { API, type Checker, type Project, type Signature, SignatureKind, type Type, TypeFlags } from "typescript/unstable/async"
+import { API, type Checker, DiagnosticCategory, type Project, type Signature, SignatureKind, type Type, TypeFlags } from "typescript/unstable/async"
 import type { CallExpression, Node, SourceFile } from "typescript/unstable/ast"
 import {
   isBindingElement,
@@ -96,6 +96,34 @@ const callsUnder = (root: SourceFile) => {
   return found
 }
 
+/** An unresolved or ill-typed context can look like `any` to the scanner. No empty scan is proof until the program checks. */
+const requireTyped = (project: Project, config: string) =>
+  Effect.gen(function* () {
+    const program = project.program
+    const diagnostics = [
+      ...yield* ask("project config diagnostics", () => program.getConfigFileParsingDiagnostics()),
+      ...yield* ask("program diagnostics", () => program.getProgramDiagnostics()),
+      ...yield* ask("global diagnostics", () => program.getGlobalDiagnostics()),
+      ...yield* ask("syntax diagnostics", () => program.getSyntacticDiagnostics()),
+      ...yield* ask("type diagnostics", () => program.getSemanticDiagnostics()),
+    ]
+    const errors = diagnostics.filter(({ category }) => category === DiagnosticCategory.Error)
+    if (errors.length === 0) return
+    const messages = yield* Effect.forEach(errors, ({ code, fileName, pos, text }) =>
+      Effect.gen(function* () {
+        const message = `TS${code}: ${text}`
+        if (!fileName) return message
+        const source = yield* maybe(`diagnostic source ${fileName}`, () => program.getSourceFile(fileName))
+        const location = Option.match(source, {
+          onNone: () => fileName,
+          onSome: (file) => `${fileName}:${lineOf(file, pos)}`,
+        })
+        return `${location}: ${message}`
+      }),
+    )
+    return yield* Effect.fail(new ScanFailed({ message: `Cannot scan host calls in ${config}:\n${messages.join("\n")}` }))
+  })
+
 /** Reads the project of `config` (a tsconfig.json, absolute), started in `cwd`; the compiler closes with the scope. */
 export const open = (config: string, cwd: string): Effect.Effect<Scanner, ScanFailed, Scope.Scope> =>
   Effect.gen(function* () {
@@ -105,6 +133,7 @@ export const open = (config: string, cwd: string): Effect.Effect<Scanner, ScanFa
     )
     const snapshot = yield* ask("open the project", () => api.updateSnapshot({ openProjects: [config] }))
     const project = yield* present(Option.fromUndefinedOr(snapshot.getProject(config)), `no project for ${config}`)
+    yield* requireTyped(project, config)
     const files = yield* ask("list the files", () => project.program.getSourceFileNames())
     const domains = yield* domainsOf(project, files)
     const declarations = yield* declarationsOf(project.checker, domains)
