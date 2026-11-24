@@ -3552,6 +3552,8 @@ sv_facts() {
   case "$f_ph:$f_kb" in
     copy:"$f_tg" | swap:"$f_tg" | carry:"$f_tg" | rollback:"$f_tg")
       f_where="$f_where; a switch to $(sv_words "$f_tg") exchanged and is not finished" ;;
+    copy:\? | swap:\? | carry:\? | rollback:\?)
+      f_where="$f_where; a switch to $(sv_words "$f_tg") is under way, and whether it exchanged does not read (the base's kind): look at both trees" ;;
     copy:* | swap:* | rollback:*)
       f_where="$f_where; a switch to $(sv_words "$f_tg") stopped before its exchange: the base never moved" ;;
     carry:*) f_where="$f_where; a switch to $(sv_words "$f_tg") is recorded after its exchange, but the base is not $(sv_words "$f_tg"): look at both trees" ;;
@@ -4485,7 +4487,7 @@ sv_switch() {
     sv_step swap "exchange $sv_base and $s_c"
     sv_renameat exchange "$sv_base" "$s_c" || { sv_why='the exchange failed'; sv_abort copy "$s_t"; }
     sv_step swapped "$sv_base is the copy; rename $s_c to $sv_old"
-    sv_renameat rename "$s_c" "$sv_old" || fail "rename $s_c $sv_old failed; $sv_base is the new tree, whole: run --apply again"
+    sv_renameat rename "$s_c" "$sv_old" || fail "rename $s_c $sv_old failed; $sv_base is the new tree, whole: run $(sv_command "$s_t") again"
     sv_keep_record
   else
     sv_phase_write swap kept "$s_t"
