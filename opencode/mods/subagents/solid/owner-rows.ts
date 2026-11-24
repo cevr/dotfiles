@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Effect, Match, Option, Schema } from "effect"
 import { CHILD_ROWS, readRows, rowsChanged, type OwnerAnswer, type RowsReply } from "../../kernel/opencode/child-row.ts"
-import { readerWithOwner, type FamilyReader } from "./reader.ts"
+import { readerWithOwner, type FamilyReader, type FollowRows } from "./reader.ts"
 import type { Lifecycle, OwnedRow } from "../family.ts"
 
 const metadataChanged = Schema.decodeUnknownOption(Schema.Struct({
@@ -59,15 +59,14 @@ export const rowView = ({ child, mark, observation, at, attention }: OwnerAnswer
   return { child, lifecycle }
 }
 
-/** An owner notification establishes the RPC's presence, not a row's phase. */
-export const ownerRows = (context: {
-  readonly data: object
-  readonly client: RowsClient
-  readonly location: Plugin.Context["location"]
-}): FamilyReader => {
-  const existing = readers.get(context.data)
-  if (existing) return existing
-  const reader = readerWithOwner((reads, children, publish) => {
+type OwnerContext = { readonly client: RowsClient; readonly location: Plugin.Context["location"] }
+
+/**
+ * How a family's children follow the owner's answers: read them now and again
+ * on each event that may change them, and publish each whole answer. An owner
+ * notification establishes the RPC's presence, not a row's phase.
+ */
+export const followOwner = (context: OwnerContext): FollowRows => (reads, children, publish) => {
     const abort = new AbortController()
     const groups = Array.from({ length: Math.ceil(children.length / 512) }, (_, index) => children.slice(index * 512, (index + 1) * 512))
     let reading = false
@@ -144,7 +143,13 @@ export const ownerRows = (context: {
       abort.abort()
       unlisten?.()
     }
-  })
+}
+
+/** The family reader over the owner's answers, one per host data. */
+export const ownerRows = (context: OwnerContext & { readonly data: object }): FamilyReader => {
+  const existing = readers.get(context.data)
+  if (existing) return existing
+  const reader = readerWithOwner(followOwner(context))
   readers.set(context.data, reader)
   return reader
 }

@@ -121,6 +121,7 @@ interface Barrier {
   readonly next: Effect.Effect<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>
   readonly initial: number
   readonly ready: Effect.Effect<void>
+  readonly answered: (revision: number) => Effect.Effect<void>
   readonly live: Display
   readonly snapshot: () => Display
   readonly shown: (now: number) => ReadonlyArray<string>
@@ -433,7 +434,7 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     const shownWhileSuperseded = barrier.shown(yield* Clock.currentTimeMillis)
     const activeDuringRead = barrier.active()
     yield* pending.release
-    yield* barrier.ready
+    yield* barrier.answered(pending.revision)
     const after = barrier.snapshot()
     const activeAfter = barrier.active()
     const accepted = barrier.revision()
