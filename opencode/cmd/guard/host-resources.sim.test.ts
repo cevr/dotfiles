@@ -1,11 +1,17 @@
 import { BunServices } from "@effect/platform-bun"
-import { Effect, FileSystem, Option, Path } from "effect"
+import { Effect, FileSystem, Option, Path, Result } from "effect"
 import { type Input } from "@dotfiles/opencode-guard/admission"
+import { type Reply } from "@dotfiles/opencode-guard/admission-wire"
+import {
+  EMPTY_OWNER, EMPTY_USAGE, holderOf, NO_PROOF, readHolderSnapshot, resourceHolders, resourceRef, UNKNOWN_OWNER,
+} from "@dotfiles/opencode-guard/host-resources"
 import { request, supply } from "@dotfiles/opencode-guard/memory/admission-acceptance"
+import { type ProcessPin } from "@dotfiles/opencode-guard/process/launchers"
+import { inheritedController, verifyInheritance } from "@dotfiles/opencode-guard/process/ownership"
 import { open } from "@dotfiles/opencode-guard/sqlite/admission"
-import * as Seed from "../../sim/seed.ts"
+import { runner } from "../../sim/seed.ts"
 
-const { seeded } = Seed.runner("cmd/guard/host-resources.sim.test.ts")
+const { seeded } = runner("cmd/guard/host-resources.sim.test.ts")
 const host = { hostId: "host-fixture", bootId: "boot-fixture" }
 const sample = supply({ cores: 12 })
 const openFixture = Effect.fn("openFixture")(function* () {
@@ -22,8 +28,8 @@ const launchRequest = (name: string): Input => ({
   op: "request", owner: `caller-${name}`,
   request: { ...request(`launch-${name}`), principal: { kind: "native-shell", scopeId: `session-${name}`, epoch: 4 } },
 })
-const claim = (id: string | null, name: string, binding: string): Input =>
-  ({ op: "claim", id: id ?? "missing-grant", owner: `caller-${name}`, generation: 1, binding })
+const claim = (id: Reply["id"], name: string, binding: string): Input =>
+  ({ op: "claim", id: Option.getOrElse(Option.fromNullishOr(id), () => "missing-grant"), owner: `caller-${name}`, generation: 1, binding })
 
 seeded("independent callers cannot both start work in the same native binding", ({ expect }) =>
   Effect.scoped(Effect.gen(function* () {
@@ -44,13 +50,51 @@ seeded("a detached live child joins the original session by the inherited bindin
   Effect.scoped(Effect.gen(function* () {
     const { a, b } = yield* openFixture()
     const offered = yield* a.ledger.transact(launchRequest("one"), sample)
-    const child = { parentPid: 1, binding: "inherited-pin" }
-    const start = yield* a.ledger.transact(claim(offered.reply.id, "one", child.binding), sample)
+    const child = { parentPid: 1, pid: 725, start: 150, binding: "inherited-pin" }
+    const pin: ProcessPin = {
+      ...host, ref: child.binding, pid: 300, start: 10, group: 300,
+      cgroup: Option.none(), descriptor: { file: "/fixture/private", device: "1", inode: "2" },
+    }
+    const id = Option.getOrThrow(Option.fromNullishOr(offered.reply.id))
+    const start = yield* a.bind({ id, owner: "caller-one", generation: 1 }, pin, sample)
     expect(start.reply.state).toBe("running")
-    const survey = yield* b.holder.list(0)
-    const owning = survey.records.find((holder) => holder.placement.confinementRef === child.binding)
-    expect(Option.fromNullishOr(owning?.owner.sessionId).pipe(Option.getOrElse(() => "unknown session")))
+    const survey = yield* readHolderSnapshot(b.holder)
+    const evidence = Option.getOrThrow(yield* verifyInheritance(host.bootId, pin, child, () => Effect.succeed([child])))
+    const owning = inheritedController(survey, evidence)
+    expect(Option.flatMap(owning, (row) => Option.fromNullishOr(row.owner.sessionId)).pipe(Option.getOrElse(() => "unknown session")))
       .toBe("session-one")
-    expect(owning?.state).toBe("live")
+    expect(Option.map(owning, (row) => row.state)).toEqual(Option.some("live"))
+  })).pipe(Effect.provide(BunServices.layer)),
+)
+
+seeded("the shared inventory joins scanner measurements without replacing the current controller", ({ expect }) =>
+  Effect.scoped(Effect.gen(function* () {
+    const { a, b } = yield* openFixture()
+    const offered = yield* a.ledger.transact(launchRequest("one"), sample)
+    yield* a.ledger.transact(claim(offered.reply.id, "one", "scope-world"), sample)
+    const view = yield* readHolderSnapshot(a.holder)
+    const controller = Option.getOrThrow(Option.fromNullishOr(view.records[0]))
+    const at = Option.getOrThrow(resourceRef(controller))
+    const scan = holderOf({
+      ...host, version: 1, resourceId: at.resourceId, incarnation: at.incarnation, holderId: "scanner-row",
+      revision: Option.none(), kind: "process-tree", owner: UNKNOWN_OWNER, relation: "observation",
+      parentResourceId: Option.none(), dependsOn: [], placement: { volumeId: Option.none(), objectRef: Option.none(), confinementRef: Option.none() },
+      lease: Option.none(), usage: {
+        cpuMilli: Option.some(250), cpuWindowMs: Option.some(50), memoryBytes: Option.none(), memoryBasis: Option.none(),
+        allocatedBytes: Option.none(), exclusiveBytes: Option.none(), sharedBytes: Option.none(), extentGroupRef: Option.none(),
+        ports: Option.none(), deviceSlots: Option.none(),
+      },
+      observedAtMs: 1, sampleBootMs: 1, lastUseAtMs: Option.none(), coverage: "partial",
+      state: "unknown", proof: NO_PROOF, protection: "unknown", producerId: "scanner", producerSeq: 1,
+    })
+    const denied = yield* Effect.result(b.holder.putObservations("scanner", [{ ...scan, holderId: at.holderId, state: "terminal" }], 1))
+    expect(Result.isFailure(denied)).toBe(true)
+    const [measurement] = yield* b.holder.putObservations("scanner", [scan], 1)
+    const work = resourceHolders(yield* readHolderSnapshot(a.holder), at)
+    const reclaim = resourceHolders(yield* readHolderSnapshot(b.holder), at)
+    expect(work).toEqual(reclaim)
+    expect(work).toEqual(Option.some([controller, measurement]))
+    expect(measurement?.owner).toEqual(EMPTY_OWNER)
+    expect(measurement?.usage).toEqual({ ...EMPTY_USAGE, cpuMilli: 250, cpuWindowMs: 50 })
   })).pipe(Effect.provide(BunServices.layer)),
 )
