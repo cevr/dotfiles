@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason subprocess reads at scripts/guarded-workbox-docs.test.ts: const child = yield* spawner.spawn(ChildProcess.make("python3", ["../linux/hetzner-workbox/test
+// @reads-reason subprocess reads at scripts/guarded-workbox-docs.test.ts: const child = yield* spawner.spawn(ChildProcess.make("python3", [script, ...args], {
 // Markup docs, provisioning text docs, and shell entry points the fixture inspects.
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Stream } from "effect"
