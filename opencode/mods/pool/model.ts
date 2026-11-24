@@ -28,6 +28,7 @@ import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type 
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { holdRecheckAt } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
 import type { ClaimAnswer, QuotaReading, QuotaWindow } from "./quota.ts"
@@ -423,7 +424,8 @@ export const layer = (config: Config) =>
           })
         const answer = asked.value
         if (!answer.ok) {
-          const retryAt = nextRetryAt(now, [answer.retryAt])
+          const retryAt = Option.getOrElse(Option.filter(Option.some(answer.retryAt), () => answer.reasonCode === "record-unreadable"),
+            () => nextRetryAt(now, [answer.retryAt]))
           const signIn = Option.fromUndefinedOr(answer.signIn)
           if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
           return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
@@ -1292,7 +1294,7 @@ export const layer = (config: Config) =>
           const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
-            onSome: (hold) => (hold.kind === "signin" || hold.kind === "record-unreadable") && hold.until <= before,
+            onSome: (hold) => (hold.kind === "signin" || hold.kind === "record-unreadable") && holdRecheckAt(hold) <= before,
             onNone: () => Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
           }))
           const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(

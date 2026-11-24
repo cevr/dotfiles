@@ -12,6 +12,7 @@
 // next start on any host before the readings show it.
 import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
 import type { RequestKind } from "./accounts.ts"
+import { holdRecheckAt } from "./hold.ts"
 import { DEFINED_MODEL_WINDOWS, limitsModel, SCOPE_REPORT_SAMPLES, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, signInReason, tryAgainAt, used } from "./usage-text.ts"
@@ -87,16 +88,15 @@ export const storeHeld = (retryAt: number): HeldPace => ({
 export const needsSignIn = (account: AccountStatus): boolean =>
   account.hold?.kind === "signin" || account.reading?.refusal?.kind === "signin"
 
-const unreadableAt = (accounts: ReadonlyArray<AccountStatus>, now: number) => accounts.flatMap(({ hold }) => {
+const unreadableAt = (accounts: ReadonlyArray<AccountStatus>) => accounts.flatMap(({ hold }) => {
   const damaged = Option.filter(Option.fromUndefinedOr(hold), (entry) => entry.kind === "record-unreadable")
   if (Option.isNone(damaged)) return []
-  if (damaged.value.until > now) return [damaged.value.until]
-  return [now + UNREAD_RETRY_MS]
+  return [holdRecheckAt(damaged.value)]
 })
-const unreadablePace = (now: number, times: ReadonlyArray<number>): HeldPace => ({
+const unreadablePace = (times: ReadonlyArray<number>): HeldPace => ({
   ok: false, measured: false, admission: "held", eligible: [], reasonCode: "record-unreadable",
   reason: "a login's hold record is unreadable; the pool checks fresh authenticated usage after its recheck time",
-  retryAt: nextRetryAt(now, times),
+  retryAt: Math.min(...times),
 })
 
 const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, required: ReadonlyArray<string> = []): Option.Option<HeldPace> => {
@@ -108,7 +108,7 @@ const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, r
     retryAt: now + UNREAD_RETRY_MS,
   })
   const ends: Array<number> = []
-  const unreadable = unreadableAt(accounts, now)
+  const unreadable = unreadableAt(accounts)
   for (const account of accounts) {
     if (account.hold?.kind === "record-unreadable") continue
     if (needsSignIn(account) || Option.isSome(unreportedScope(account, required))) continue
@@ -116,7 +116,7 @@ const fromAccountHolds = (accounts: ReadonlyArray<AccountStatus>, now: number, r
     if (Option.isSome(hold)) ends.push(hold.value.until)
   }
   if (ends.length + unreadable.length + signIn.length !== accounts.length) return Option.none()
-  if (unreadable.length > 0 && Math.min(...unreadable) <= Math.min(...ends)) return Option.some(unreadablePace(now, unreadable))
+  if (unreadable.length > 0 && Math.min(...unreadable) <= Math.min(...ends)) return Option.some(unreadablePace(unreadable))
   return Option.some({
     ok: false, measured: true, admission: "held", eligible: [], reasonCode: "account-held", signIn: [],
     reason: "all pool accounts are held", retryAt: nextRetryAt(now, ends),
@@ -593,10 +593,10 @@ export function dispatchPace(
       retryAt: nextRetryAt(now, ends),
     }],
   })
-  const damaged = unreadableAt(accounts, now)
+  const damaged = unreadableAt(accounts)
   const waitForLoginOrRepair = [
     ...waitForLogin,
-    ...Option.toArray(Option.map(Arr.head(damaged), () => unreadablePace(now, damaged))),
+    ...Option.toArray(Option.map(Arr.head(damaged), () => unreadablePace(damaged))),
   ]
   if (fresh.length === 0 && Option.isSome(unreadHold)) return selectHold(unreadHold.value, waitForLoginOrRepair)
   const alternatives = [...Option.toArray(unreadHold), ...waitForLoginOrRepair]

@@ -22,6 +22,7 @@ import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 import type { AccountStatus, Hold, SessionAccount } from "./status.ts"
 import { accountWide, type QuotaReading } from "./quota.ts"
+export { DEFAULT_HOLD_MS } from "./hold.ts"
 
 const MINUTE = 60_000
 
@@ -34,8 +35,6 @@ export const WINDOW_MS = 7 * 24 * 60 * MINUTE
 export const CACHE_LIFE_MS = 5 * MINUTE
 /** A pin with no request for this long belongs to a run that stopped without going idle. */
 export const PIN_IDLE_MS = 30 * MINUTE
-/** A refusal without a time, or a refused response without a reading, holds the account this long. */
-export const DEFAULT_HOLD_MS = 5 * MINUTE
 /** The share of an account's 5-hour window a pool spends before the account has no room. */
 export const FIVE_HOUR_SHARE = 0.9
 /** The share of any other window a pool spends before the account has no room. */

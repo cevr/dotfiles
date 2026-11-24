@@ -1375,6 +1375,16 @@ pane draws `status`, and the sidebar asks `session` for the login a session
 is on (or would go out on next), by its label, and `alerts` for the login store's lost logins
 and failing refreshes.
 
+If a stored hold cannot be read, only that login is held; other logins keep
+serving. The pool keeps the original record beside its recovery time and
+rechecks with authenticated usage. A readable end is capped at seven days.
+Without a readable end, a known rate limit uses the usual five minutes;
+usage limits and sign-in are checked against fresh provider evidence. An
+unknown kind with no readable end gets 60 seconds. If usage cannot reveal
+that refusal, the next request may get one 429 with no spend; the ordinary
+429 path holds the login again rather than sending a retry loop. A temporary
+gap in a login listing does not erase its unexpired hold.
+
 A store login is lost while its file holds a refresh token the token endpoint
 refused; `alerts` names it with the slot file to sign it in to again. A
 login store's refreshes are failing when every one has failed for

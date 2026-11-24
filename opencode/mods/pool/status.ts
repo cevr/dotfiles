@@ -9,8 +9,10 @@
 // for byte; the schemas below are the shapes its methods answer with. No
 // answer carries a secret.
 import { Schema } from "effect"
-import { QuotaReading, RefusalKind } from "./quota.ts"
+import { Hold } from "./hold.ts"
+import { QuotaReading } from "./quota.ts"
 import { Claim, Reset } from "./resets.ts"
+export { Hold } from "./hold.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
 export const POOL_STATUS = {
@@ -63,18 +65,6 @@ export const POOL_STATUS = {
   },
   events: {},
 } as const
-
-/** An account refused until `until`, set at `at` (epoch ms). */
-export const Hold = Schema.Struct({
-  kind: Schema.Union([RefusalKind, Schema.Literal("record-unreadable")]),
-  until: Schema.Finite,
-  at: Schema.Finite,
-  /** The stored kind when we cannot interpret the rest of its record. */
-  rawKind: Schema.optionalKey(Schema.String),
-  /** An explicit provider refusal remains binding until this time, even if a later response shows room. */
-  refusedUntil: Schema.optionalKey(Schema.Finite),
-})
-export type Hold = typeof Hold.Type
 
 /** One account as the status method reports it. */
 export const AccountStatus = Schema.Struct({

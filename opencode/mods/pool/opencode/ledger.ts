@@ -9,14 +9,15 @@
 // process may have kept a step per key, `<pool>/step/<at, 15 digits>/<sessionID>`:
 // those are read too, and folded into chunks. A ledger from before caches were
 // kept has no cache key and restores none.
-import { Clock, Effect, Layer, Option, Predicate, Schema, Semaphore } from "effect"
+import { Clock, Effect, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
 import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step, WINDOW_MS } from "../accounts.ts"
 import { HOLD_STORE_RETRY_MS } from "../handoff.ts"
-import { QuotaReading } from "../quota.ts"
+import { clampHoldEnd, Hold, HoldTime, recoveryDelay, UNREADABLE_HOLD_MS } from "../hold.ts"
+import { QuotaReading, RefusalKind } from "../quota.ts"
 import { HoldStoreUnavailable, Ledger } from "../service.ts"
-import { Hold } from "../status.ts"
 import * as Chunks from "./chunks.ts"
+export { UNREADABLE_HOLD_MS } from "../hold.ts"
 
 /** The plugin's storage, as the plugin provides it. */
 export interface Storage {
@@ -133,19 +134,51 @@ const decodeHold = Schema.decodeUnknownOption(Hold)
 const decodeReading = Schema.decodeUnknownOption(QuotaReading)
 const decodeMark = Schema.decodeUnknownOption(Mark)
 const recoveryFields = Schema.decodeUnknownOption(Schema.Struct({
-  kind: Schema.optionalKey(Schema.Unknown), until: Schema.optionalKey(Schema.Unknown),
+  kind: Schema.optionalKey(Schema.Unknown), rawKind: Schema.optionalKey(Schema.Unknown),
+  until: Schema.optionalKey(Schema.Unknown), refusedUntil: Schema.optionalKey(Schema.Unknown),
 }))
-const finiteTime = Schema.decodeUnknownOption(Schema.Finite)
-const rawKind = Schema.decodeUnknownOption(Schema.String)
-export const UNREADABLE_HOLD_MS = 60_000
-const unreadableHold = (fields: ReturnType<typeof recoveryFields>, now: number): Hold => {
-  const until = Option.getOrElse(Option.flatMap(fields, (record) => finiteTime(record.until)), () => now + UNREADABLE_HOLD_MS)
-  return {
-    kind: "record-unreadable", until, at: now,
-    ...Option.match(Option.flatMap(fields, (record) => rawKind(record.kind)), {
-      onNone: () => ({}), onSome: (kind) => ({ rawKind: kind }),
-    }),
+const decodeKindText = Schema.decodeUnknownOption(Schema.String)
+const decodeRefusalKind = Schema.decodeUnknownOption(RefusalKind)
+const EpochCandidate = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+const decodeCandidate = Schema.decodeUnknownResult(EpochCandidate)
+const decodeTime = Schema.decodeUnknownResult(HoldTime)
+const decodeJson = Schema.decodeUnknownOption(Schema.Json)
+const decodeRaw = Schema.decodeUnknownOption(Schema.Struct({
+  kind: Schema.Literal("record-unreadable"), raw: Schema.Json,
+}))
+const withinBound = (hold: Hold, now: number) =>
+  hold.until <= clampHoldEnd(hold.until, now) &&
+  !Option.exists(Option.fromUndefinedOr(hold.refusedUntil), (end) => end > hold.until)
+
+/** Recovery metadata is storage-only. A compatible build prefers the untouched original. */
+const storedHold = ({ value }: { readonly value: unknown }, now: number) => {
+  const decoded = Option.filter(decodeHold(value), (hold) => withinBound(hold, now))
+  if (Option.isSome(decoded) && decoded.value.kind !== "record-unreadable")
+    return { hold: decoded.value, replacement: Option.none<Hold>() }
+  const raw = Option.map(decodeRaw(value), (record) => record.raw)
+  if (Option.isSome(decoded)) {
+    const original = Option.filter(Option.flatMap(raw, decodeHold), (hold) =>
+      hold.kind !== "record-unreadable" && withinBound(hold, decoded.value.at))
+    return { hold: Option.getOrElse(original, () => decoded.value), replacement: Option.none<Hold>() }
   }
+  const fields = recoveryFields(value)
+  const kind = Option.flatMap(fields, (entry) => decodeKindText(entry.kind))
+  const rawKind = Option.orElse(Option.filter(kind, (kind) => kind !== "record-unreadable"),
+    () => Option.flatMap(fields, (entry) => decodeKindText(entry.rawKind)))
+  const delay = Option.match(Option.flatMap(rawKind, decodeRefusalKind), {
+    onNone: () => UNREADABLE_HOLD_MS, onSome: recoveryDelay,
+  })
+  const end = (field: "until" | "refusedUntil") =>
+    Option.flatMap(fields, (entry) => Result.getSuccess(Result.flatMap(decodeCandidate(entry[field]), (at) => decodeTime(clampHoldEnd(at, now)))))
+  const until = Math.max(Option.getOrElse(end("until"), () => clampHoldEnd(now + delay, now)),
+    Option.getOrElse(end("refusedUntil"), () => 0))
+  const hold: Hold = { kind: "record-unreadable", until, at: now,
+    ...Option.match(rawKind, { onNone: () => ({}), onSome: (rawKind) => ({ rawKind }) }),
+  }
+  const replacement = { ...hold, ...Option.match(Option.orElse(raw, () => decodeJson(value)), {
+    onNone: () => ({}), onSome: (raw) => ({ raw }),
+  }) }
+  return { hold, replacement: Option.some(replacement) }
 }
 
 /** A failed hold write fences a send until the store has accepted it. */
@@ -163,7 +196,6 @@ export const HOLD_AUTHORITY_VERSION = 1
 interface HoldAuthority {
   readonly lock: Semaphore.Semaphore
   readonly pending: Map<string, PendingHold>
-  readonly listed: Map<PoolId, ReadonlySet<string>>
   readonly available: () => boolean
   readonly enter: () => () => void
 }
@@ -171,7 +203,6 @@ const coordinator = () => ({
   [authorityKey]: true as const,
   lock: Semaphore.makeUnsafe(1),
   pending: new Map<string, PendingHold>(),
-  listed: new Map<PoolId, ReadonlySet<string>>(),
   versions: new Map<number, HoldAuthority>(),
   active: new Map<number, number>(),
 })
@@ -185,7 +216,6 @@ const forVersion = (shared: Coordinator, version: number): HoldAuthority => {
   const authority: HoldAuthority = {
     lock: shared.lock,
     pending: shared.pending,
-    listed: shared.listed,
     available: () => !Array.from(shared.active.keys()).some((current) => current < version),
     enter: () => {
       shared.active.set(version, count() + 1)
@@ -222,19 +252,44 @@ const boundedStore = <A, E>(operation: Effect.Effect<A, E>) =>
 /** Two refusals observed while the store was unread: never lift either. */
 const retainBoth = (before: Hold, next: Hold): Hold => {
   let kind = next.kind
-  if (before.kind === "signin" || (next.kind !== "signin" && before.until > next.until)) kind = before.kind
+  if (before.kind === "record-unreadable" || before.kind === "signin" || (next.kind !== "signin" && before.until > next.until)) kind = before.kind
   const refusedUntil = Math.max(
     Option.getOrElse(Option.fromUndefinedOr(before.refusedUntil), () => 0),
     Option.getOrElse(Option.fromUndefinedOr(next.refusedUntil), () => 0),
   )
   return {
     kind, at: Math.max(before.at, next.at), until: Math.max(before.until, next.until),
+    ...Option.match(Option.fromUndefinedOr(before.rawKind), { onNone: () => ({}), onSome: (rawKind) => ({ rawKind }) }),
     ...Option.match(Option.filter(Option.some(refusedUntil), (end) => end > 0), { onNone: () => ({}), onSome: (end) => ({ refusedUntil: end }) }),
   }
 }
 
 const settleHold = (storage: Storage, key: string, next: Option.Option<Hold>) =>
   boundedStore(Option.match(next, { onNone: () => storage.remove(key), onSome: (hold) => storage.set(key, hold) }))
+
+const scanHolds = (storage: Storage, prefix: string, now: number) =>
+  Effect.gen(function* () {
+    const snapshot: Record<string, Hold> = {}
+    const rawByKey = new Map<string, Schema.Json>()
+    let after = Option.none<string>()
+    do {
+      const page = yield* boundedStore(storage.scan({
+        prefix, limit: PAGE, ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
+      }))
+      for (const entry of page.entries) {
+        const { hold, replacement } = storedHold(entry, now)
+        if (hold.kind === "record-unreadable") {
+          const original = Option.flatMap(Option.orElse(replacement, () => Option.some(entry.value)), decodeRaw)
+          if (Option.isSome(original)) rawByKey.set(entry.key, original.value.raw)
+        }
+        // Persist the first recheck time without touching the writer's original.
+        if (Option.isSome(replacement)) yield* settleHold(storage, entry.key, replacement).pipe(Effect.ignore)
+        Object.defineProperty(snapshot, entry.key.slice(prefix.length), { value: hold, configurable: true, enumerable: true, writable: true })
+      }
+      after = Option.fromUndefinedOr(page.next)
+    } while (Option.isSome(after))
+    return { snapshot, rawByKey }
+  })
 
 const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAuthority>, pool: PoolId) =>
   Effect.gen(function* () {
@@ -243,28 +298,9 @@ const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAutho
     const now = yield* Clock.currentTimeMillis
     for (const [key, pending] of authority.pending) {
       if (!key.startsWith(prefix)) continue
-      if (Option.exists(Option.fromUndefinedOr(authority.listed.get(pool)), (ids) => !ids.has(pending.credentialID))) {
-        authority.pending.delete(key)
-        continue
-      }
       if (pending.retryAt > now) return yield* new HoldStoreUnavailable({ retryAt: pending.retryAt })
     }
-    const snapshot: Record<string, Hold> = {}
-    let after = Option.none<string>()
-    do {
-      const page = yield* boundedStore(storage.scan({
-        prefix, limit: PAGE, ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
-      }))
-      for (const entry of page.entries) {
-        const decoded = decodeHold(entry.value)
-        const hold = Option.getOrElse(decoded, () => unreadableHold(recoveryFields(entry.value), now))
-        // Persist a finite recovery time once, including when no date could
-        // be recovered. A later scan must not start the same timer over.
-        if (Option.isNone(decoded)) yield* settleHold(storage, entry.key, Option.some(hold)).pipe(Effect.ignore)
-        Object.defineProperty(snapshot, entry.key.slice(prefix.length), { value: hold, configurable: true, enumerable: true, writable: true })
-      }
-      after = Option.fromUndefinedOr(page.next)
-    } while (Option.isSome(after))
+    const { snapshot, rawByKey } = yield* scanHolds(storage, prefix, now)
     for (const [key, pending] of authority.pending) {
       if (!key.startsWith(prefix)) continue
       let next = pending.next
@@ -272,7 +308,10 @@ const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAutho
         const prior = Option.fromUndefinedOr(snapshot[pending.credentialID])
         next = Option.map(next, (hold) => Option.match(prior, { onNone: () => hold, onSome: (before) => retainBoth(before, hold) }))
       }
-      yield* settleHold(storage, key, next)
+      const preserved = Option.fromUndefinedOr(rawByKey.get(key))
+      yield* settleHold(storage, key, Option.map(next, (hold) => Option.match(preserved, {
+        onNone: () => hold, onSome: (raw) => ({ ...hold, raw }),
+      })))
       Option.match(next, {
         onNone: () => { delete snapshot[pending.credentialID] },
         onSome: (hold) => { snapshot[pending.credentialID] = hold },
@@ -284,7 +323,7 @@ const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAutho
   })
 
 /** The ledger the entries hold, with `steps`; an entry that does not decode is left out. */
-const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value: unknown }>, steps: ReadonlyArray<Step>): LedgerState => {
+const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value: unknown }>, steps: ReadonlyArray<Step>, now: number): LedgerState => {
   const holds: Record<string, Hold> = {}
   const readings: Record<string, QuotaReading> = {}
   const recent: Record<string, Mark> = {}
@@ -292,8 +331,7 @@ const ledgerOf = (entries: ReadonlyArray<{ readonly key: string; readonly value:
     const [kind, id] = key.split("/", 2)
     if (id === undefined) continue
     if (kind === "hold") {
-      const hold = Option.getOrUndefined(decodeHold(value))
-      if (hold !== undefined) holds[id] = hold
+      Object.defineProperty(holds, id, { value: storedHold({ value }, now).hold, configurable: true, enumerable: true, writable: true })
     } else if (kind === "reading") {
       const reading = Option.getOrUndefined(decodeReading(value))
       if (reading !== undefined) readings[id] = reading
@@ -336,26 +374,19 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
             after = page.next
           } while (after !== undefined)
         }
-        return ledgerOf(entries, yield* steps(pool).entries)
+        return ledgerOf(entries, yield* steps(pool).entries, yield* Clock.currentTimeMillis)
       },
-      Effect.catchCause(() => Effect.succeed(ledgerOf([], []))),
+      Effect.catchCause(() => Effect.succeed(ledgerOf([], [], 0))),
     ),
     // Holds are published before best-effort history. Until a failed write can
     // be retried, any decision for this pool fails closed.
     record: Effect.fn("Ledger.record")(function* (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") {
-      for (const event of events) {
-        if (!Predicate.isTagged(event, "LedgerPruned")) continue
-        const listed = Option.fromUndefinedOr(event.listed)
-        if (Option.isSome(listed)) authority.listed.set(pool, new Set(listed.value))
-      }
-      const listed = Option.fromUndefinedOr(authority.listed.get(pool))
       const writes = events.flatMap(writesOf)
       const isHold = (write: Write) => write.key.startsWith("hold/")
       for (const write of writes.filter(isHold)) {
         const key = `${pool}/${write.key}`
         const credentialID = write.key.slice("hold/".length)
         const next = Option.flatMap(Option.liftPredicate(write, (entry) => Predicate.isTagged(entry, "Put")), (put) => decodeHold(put.value))
-        if (Option.isSome(next) && Option.exists(listed, (ids) => !ids.has(credentialID))) continue
         if (shared === "unknown") {
           // The authoritative read failed. An old copy's expiration or
           // removal cannot clear a refusal it has not seen. Publish new

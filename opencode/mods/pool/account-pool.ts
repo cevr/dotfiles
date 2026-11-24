@@ -32,6 +32,7 @@ import {
 import { accountWide, carryOver, QuotaReading } from "./quota.ts"
 import { signInReason, tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
+import { holdRecheckAt } from "./hold.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
 export const PoolId = Schema.String.pipe(Schema.brand("PoolId"))
@@ -293,10 +294,16 @@ const takeReading = (
   const signedIn = Option.exists(current, (hold) => hold.kind === "signin" &&
     Option.isNone(Option.fromUndefinedOr(command.reading.refusal)) &&
     Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at > hold.at))
-  const repaired = command.freshUsage === true && Option.exists(current, (hold) => hold.kind === "record-unreadable" && hold.until <= now &&
-    Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at >= hold.until && usage.at >= hold.at))
+  const recovered = Option.filter(current, (hold) => hold.kind === "record-unreadable")
+  const repaired = command.freshUsage === true && Option.exists(recovered, (hold) => holdRecheckAt(hold) <= now &&
+    Option.isNone(Option.fromUndefinedOr(command.reading.refusal)) &&
+    Option.exists(Option.fromUndefinedOr(command.reading.usage), (usage) => usage.at >= holdRecheckAt(hold) && usage.at >= hold.at))
   const prior = Option.filter(current, () => !signedIn && !repaired)
-  const hold = readingHold(prior, Option.fromUndefinedOr(refused), until, now)
+  // Cached readings cannot overwrite the raw recovery row while it is still binding.
+  const waitingForRecovery = Option.exists(recovered, () => !repaired)
+  const hold = Option.match(Option.filter(Option.some(prior), () => !waitingForRecovery), {
+    onNone: () => Option.none<Hold>(), onSome: (entry) => readingHold(entry, Option.fromUndefinedOr(refused), until, now),
+  })
   const lifts = Option.isNone(hold) && (signedIn || repaired ||
     (until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)))
   return Effect.succeed([
@@ -427,8 +434,6 @@ export const PruneLedger = Schema.TaggedStruct("PruneLedger", { listed: Schema.o
 export interface PruneLedger extends Schema.Schema.Type<typeof PruneLedger> {}
 
 export const LedgerPruned = Schema.TaggedStruct("LedgerPruned", {
-  /** Inventory just confirmed by the login source, not an empty startup state. */
-  listed: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Steps out of the window. */
   steps: Schema.Array(Step),
   /** Accounts whose hold has passed. */
@@ -457,16 +462,14 @@ const pruneLedger = (
 ): Effect.Effect<ReadonlyArray<LedgerPruned>> => {
   const steps = state.steps.filter((step) => now - step.at >= WINDOW_MS)
   const listed = Option.map(Option.fromUndefinedOr(command.listed), (ids) => new Set(ids))
+  // Absence is not a proof of deletion: a damaged slot can reappear on the next listing.
   const holds = Object.entries(state.holds).filter(([id, hold]) =>
-    !liveHold(hold, now) || Option.exists(listed, (ids) => !ids.has(id)),
+    !liveHold(hold, now) || (holdRecheckAt(hold) <= now && Option.exists(listed, (ids) => !ids.has(id))),
   ).map(([id]) => id)
   const runs = Object.entries(state.runs).flatMap(([sessionID, mark]) => (now - mark.at >= PIN_IDLE_MS ? [sessionID] : []))
   const caches = Object.entries(state.recent).flatMap(([sessionID, mark]) => (markKept(rules, mark, now) ? [] : [{ sessionID, at: mark.at }]))
-  if (steps.length + holds.length + runs.length + caches.length === 0 && Option.isNone(listed)) return Effect.succeed([])
-  return Effect.succeed([LedgerPruned.make({
-    steps, holds, runs, caches,
-    ...Option.match(Option.fromUndefinedOr(command.listed), { onNone: () => ({}), onSome: (ids) => ({ listed: ids }) }),
-  })])
+  if (steps.length + holds.length + runs.length + caches.length === 0) return Effect.succeed([])
+  return Effect.succeed([LedgerPruned.make({ steps, holds, runs, caches })])
 }
 
 // ── ClearHold ──
