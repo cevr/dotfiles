@@ -20,6 +20,7 @@ const Quote = Schema.Struct({
 })
 type Quote = typeof Quote.Type
 const RpcOutput = Schema.Struct({ output: Schema.optionalKey(Schema.Json), data: Schema.optionalKey(Schema.Json) })
+const decodeCommit = Schema.decodeUnknownEffect(Schema.Struct({ held: Schema.Literal(true), until: Schema.Finite }))
 const LogEvent = Schema.Struct({ type: Schema.String, data: Schema.optionalKey(Schema.Struct({
   at: Schema.optionalKey(Schema.Finite),
   error: Schema.optionalKey(Schema.Struct({ type: Schema.String, message: Schema.String })),
@@ -252,8 +253,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const socket = target.sample.endsWith("websocket")
   const state: Fake = { sample: target.sample, hold, spent: target.sample === "http" && hold, deadline: quotaEpoch() + HOUR,
     sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void }
-  if (late || retry) state.deadline = quotaEpoch() + 2 * FUTURE
-  const expected = seconds(state.deadline) * 1_000
+  let expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
   const origin = HttpServer.formatAddress(httpd.address)
@@ -317,7 +317,7 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
       enabled_providers: ["openai"],
       plugins: [{ package: target.pool, options: {
         providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false,
-        usageURL: `${origin}/usage`, fixtureHold: expected,
+        usageURL: `${origin}/usage`,
         ...Option.match(Option.filter(Option.some("signin"), () => signedOut), { onNone: () => ({}), onSome: (fixtureKind) => ({ fixtureKind }) }),
       } }],
     }) },
@@ -326,7 +326,19 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
     type: "oauth", methodID: "synthetic-fixture", refresh: "synthetic-refresh", access: ACCESS, expires: quotaEpoch() + HOUR,
     metadata: { accountID: "fixture" },
   } })
-  const commitIn = (host: Client, at = writer) => host.rpc.call({ rpcID: "fixture.openai-send-hold", method: "commit", input: {}, location: { directory: at } })
+  // The open quote uses the healthy fake usage window. Start the separate
+  // hold's clock at the write it is supposed to simulate, not at SDK boot.
+  const lastsMs = Match.value(target.sample).pipe(
+    Match.when("signed-out-http", () => HOUR),
+    Match.when(Match.is("retry-http", "retry-websocket"), () => 2 * FUTURE),
+    Match.orElse(() => FUTURE),
+  )
+  const commitIn = (host: Client, at = writer) => host.rpc.call({
+    rpcID: "fixture.openai-send-hold", method: "commit", input: { lastsMs }, location: { directory: at },
+  }).pipe(
+    Effect.flatMap(({ output, data }) => decodeCommit(Option.getOrNull(Option.orElse(Option.fromUndefinedOr(output), () => Option.fromUndefinedOr(data))))),
+    Effect.tap(({ until }) => Effect.sync(() => { expected = until })),
+  )
   let signedOutHold = Option.none<Schema.Json>()
   if (signedOut) signedOutHold = yield* Effect.gen(function* () {
     const host = yield* target.host.create(configured)
