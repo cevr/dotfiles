@@ -233,7 +233,7 @@ describe("workrift's backend file", () => {
       expect({ root: filesUnder(b.root), home: filesUnder(b.home), dir: filesUnder(b.dir) }).toEqual(before)
     }
     expect(existsSync(calls)).toBe(false)
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /** A bench whose backend file says `work`, with WORK the binary, and `app` a base `work init` made. */
@@ -273,7 +273,7 @@ describeWork("workrift with the work backend", () => {
 
   test("WORK_BIN is a work binary that answers", () => {
     expect(JSON.parse(sh(scratchRoot, { ...process.env, XDG_DATA_HOME: join(scratchRoot, "data") } as Env, work, "--json", "bases"))).toEqual([])
-  })
+  }, hangGuard("process-fixture"))
 
   test("with no backend file it runs on work, as with one saying work (before the Rift backend went, no file meant Rift)", () => {
     const w = workBench("absent", work)
@@ -1746,7 +1746,7 @@ describeWork("workrift with the work backend", () => {
     const path = w.create(w.app, "feat/check")
     expect(sh(join(path), w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${w.app}`)
     expect(sh(lib, w.env, SCRIPT, "check").trim()).toBe(`Warm source checks passed: ${lib}`)
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /**
@@ -2599,7 +2599,7 @@ describeWork("workrift create under load (a create waited 1059 s on the workbox,
     expect(ran.err).toContain(`warning: the build output of ${w.app} is 12 moves behind its tree`)
     writeFileSync(join(stateOf(w.app), "staleness"), `1 ${Math.floor(Date.now() / 1000) - 90_000}\n`)
     expect(w.wr(w.app, "check").err).toContain("run workrift refresh at a quiet time")
-  })
+  }, hangGuard("process-fixture"))
 })
 
 /**
