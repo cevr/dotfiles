@@ -171,17 +171,29 @@ const runtimeReads: {
   readonly untracedSubprocesses: Readonly<Record<string, string>>
 } = observations
 const authorities = new WeakMap<Workspace, Map<string, ReturnType<typeof authorityOf>>>()
+const workspacePaths = new WeakMap<Workspace, ReadonlySet<string>>()
+
+/** Top-level script tests deliberately walk imports only inside scripts/; direct outer modules are still inputs. */
+const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArray<string> => {
+  if (!/^scripts\/[^/]+\.test\.tsx?$/.test(test)) return []
+  const known = workspacePaths.get(workspace) ?? new Set(workspace.files)
+  workspacePaths.set(workspace, known)
+  return importsOf(test, sourceText(test)).flatMap((specifier) =>
+    specifier.startsWith("../") ? resolveLocal(known, test, specifier) ?? [] : [],
+  )
+}
 
 const authorityOf = (workspace: Workspace, test: string) => {
   const read = inspectReads(workspace, test)
   const subprocessReason = runtimeReads.untracedSubprocesses[test]
   const unknown = read.classification === "unknown" || subprocessReason !== undefined
   const paths = runtimeReads.paths[test] ?? []
-  const exact = new Set(paths.filter((file) => !file.endsWith("/")))
+  const imports = externalScriptImports(workspace, test)
+  const exact = new Set([...paths.filter((file) => !file.endsWith("/")), ...imports])
   const directories = paths.filter((file) => file.endsWith("/"))
   const patterns = readMatcher(read.patterns.filter((pattern) => pattern !== ALL_READS))
   const positive = (file: string) => exact.has(file) || patterns(file) || directories.some((prefix) => file.startsWith(prefix))
-  return { unknown, subprocessReason, exact, positive, has: (file: string) => unknown || positive(file) }
+  return { unknown, subprocessReason, exact, imports, positive, has: (file: string) => unknown || positive(file) }
 }
 
 /** Runtime reads have one authority for selection, cache inputs and the coverage audit.
