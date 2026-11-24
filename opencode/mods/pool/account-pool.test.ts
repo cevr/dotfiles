@@ -39,6 +39,7 @@ const T0 = 1_800_000_000_000
 
 const story = Story.make(AccountPool(DEFAULT_RULES))
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))
+const recorded = Story.then
 /** A pool whose caches live an hour, as Claude's do when `bun run daily` asks for it. */
 const hourStory = Story.make(AccountPool({ cacheLifeMs: HOUR }))
 
@@ -94,7 +95,7 @@ describe("a request is placed", () => {
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 30_000, at: T0 } }),
+        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 30_000, at: T0, refusedUntil: T0 + 30_000 } }),
       ),
       ...placed("s1", "b", T0),
     )
@@ -103,7 +104,7 @@ describe("a request is placed", () => {
   test("every account held refuses the request, a run's own too, naming when the first opens", () => {
     const held = (credentialID: string, until: number) => [
       Story.given(
-        ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind: "rate-limit", until } }), hold: { kind: "rate-limit", until, at: T0 } }),
+        ReadingTaken.make({ credentialID, reading: reading({ refusal: { kind: "rate-limit", until } }), hold: { kind: "rate-limit", until, at: T0, refusedUntil: until } }),
       ),
     ]
     return run(
@@ -173,7 +174,7 @@ describe("a request is placed", () => {
       ...placed("s1", "a", T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: T0 + 20 * MINUTE, at: T0 } }),
+        ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: T0 + 20 * MINUTE, at: T0, refusedUntil: T0 + 20 * MINUTE } }),
       ),
       ...placed("s1", "b", T0),
       Story.clock(T0 + 21 * MINUTE),
@@ -294,7 +295,7 @@ describe("a session's cache keeps its account", () => {
       Story.given(took("s1", "a", 1, T0)),
       Story.clock(T0 + MINUTE),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 + MINUTE } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + HOUR, at: T0 + MINUTE, refusedUntil: T0 + HOUR } })),
       ...placed("s1", "b", T0 + MINUTE),
     )
   })
@@ -452,7 +453,9 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: reset, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: reset, at: T0, refusedUntil: reset } })),
+      Story.clock(T0 + MINUTE),
+      ...read("a", reading({ at: T0 + MINUTE, status: "allowed" })),
       Story.clock(reset - 1),
       ...placed("s1", "b", reset - 1),
       Story.clock(reset),
@@ -470,6 +473,30 @@ describe("an account is held", () => {
         ReadingTaken.make({ credentialID: "a", reading: exhausted, hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 } }),
       ),
       ...placed("s1", "b", T0),
+    )
+  })
+
+  test("a longer window-derived hold cannot erase a confirmed refusal", () => {
+    const reset = T0 + 2 * HOUR
+    const refused = reading({ refusal: { kind: "rate-limit", until: reset } })
+    const exhausted = reading({ at: T0 + MINUTE, windows: [{ name: "7d", utilization: 1, resetAt: T0 + 40 * HOUR }] })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      Story.when(TakeReading.make({ credentialID: "a", reading: refused })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "rate-limit", until: reset, at: T0, refusedUntil: reset } })),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: exhausted })),
+      recorded(ReadingTaken.make({
+        credentialID: "a", reading: exhausted,
+        hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 + MINUTE, refusedUntil: reset },
+      })),
+      Story.clock(reset - MINUTE),
+      ...read("a", reading({ at: reset - MINUTE, status: "allowed" })),
+      ...placed("before", "b", reset - MINUTE),
+      Story.clock(reset),
+      ...read("a", reading({ at: reset, status: "allowed" }), HoldCleared.make({ credentialID: "a" })),
+      ...placed("after", "a", reset),
     )
   })
 
@@ -560,7 +587,7 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: long })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: long, hold: { kind: "usage-limit", until: T0 + 5 * HOUR, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: long, hold: { kind: "usage-limit", until: T0 + 5 * HOUR, at: T0, refusedUntil: T0 + 5 * HOUR } })),
       ...read("a", short),
     )
   })
@@ -570,9 +597,9 @@ describe("an account is held", () => {
       accounts("a", "b"),
       Story.clock(T0),
       Story.when(RefuseRequest.make({ credentialID: "a", status: 429 })),
-      Story.then(RequestRefused.make({ credentialID: "a", hold: { kind: "rate-limit", until: T0 + DEFAULT_HOLD_MS, at: T0 } })),
+      Story.then(RequestRefused.make({ credentialID: "a", hold: { kind: "rate-limit", until: T0 + DEFAULT_HOLD_MS, at: T0, refusedUntil: T0 + DEFAULT_HOLD_MS } })),
       Story.when(RefuseRequest.make({ credentialID: "b", status: 401 })),
-      Story.then(RequestRefused.make({ credentialID: "b", hold: { kind: "unauthorized", until: T0 + DEFAULT_HOLD_MS, at: T0 } })),
+      Story.then(RequestRefused.make({ credentialID: "b", hold: { kind: "unauthorized", until: T0 + DEFAULT_HOLD_MS, at: T0, refusedUntil: T0 + DEFAULT_HOLD_MS } })),
       Story.when(RefuseRequest.make({ credentialID: "a", status: 429 })),
       Story.then(),
     ))
@@ -586,7 +613,7 @@ describe("an account is held", () => {
       Story.clock(T0),
       ...placed("s1", "a", T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: signin })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: signin, hold: { kind: "signin", until: T0 + 30 * MINUTE, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: signin, hold: { kind: "signin", until: T0 + 30 * MINUTE, at: T0, refusedUntil: T0 + 30 * MINUTE } })),
       ...placed("s1", "b", T0),
       ...placed("s2", "b", T0),
       ...placed("s3", "b", T0),
@@ -627,7 +654,7 @@ describe("the ledger is pruned", () => {
       ...placed("s1", "a", T0),
       ...stepped("s1", "a", 1, T0),
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
-      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 1000, at: T0 } })),
+      Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "rate-limit", until: T0 + 1000, at: T0, refusedUntil: T0 + 1000 } })),
       Story.when(PruneLedger.make({})),
       Story.then(),
       Story.clock(T0 + WINDOW_MS),

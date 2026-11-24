@@ -36,7 +36,7 @@ const decodeEvent = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ message: Schema.String }) })),
 )
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at (\S+Z)$/
 const RUN_TIMEOUT_MS = 120_000
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */

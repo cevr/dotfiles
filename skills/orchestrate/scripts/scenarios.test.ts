@@ -10,7 +10,7 @@ import { join } from 'node:path';
 const ROOT = join(import.meta.dir, '../../..');
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
 
-type Doc = 'planner' | 'implementor' | 'verifier' | 'worker' | 'principle' | 'skill';
+type Doc = 'planner' | 'implementor' | 'verifier' | 'worker' | 'principle' | 'skill' | 'hosts';
 /** Each document's text, once per format it ships in. */
 type Texts = Record<Doc, ReadonlyArray<{ format: string; text: string }>>;
 
@@ -38,6 +38,7 @@ function load(): Texts {
     ],
     principle: [{ format: 'skill', text: read('skills/principle-nothing-is-hard/SKILL.md') }],
     skill: [{ format: 'skill', text: read('skills/orchestrate/SKILL.md') }],
+    hosts: [{ format: 'skill', text: read('skills/orchestrate/references/hosts.md') }],
   };
 }
 
@@ -68,8 +69,9 @@ interface Row {
   readonly mutant: { readonly docs: ReadonlyArray<Doc>; readonly from: string; readonly to: string };
 }
 
-const REFUSAL =
-  '**Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through. Never work around it or ask for permission in chat. A refusal is authority, not difficulty.';
+const CALL_REFUSAL =
+  "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat.";
+const PROVIDER_HISTORY = "A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally.";
 const PRINCIPLE_REFUSAL = '- **A refusal is authority, not difficulty.**';
 
 export const TABLE: ReadonlyArray<Row> = [
@@ -78,7 +80,7 @@ export const TABLE: ReadonlyArray<Row> = [
     input: 'a permission refusal names no accepted form; one item is refused and another is runnable (22q principle B1)',
     expect: { planner: 'stop the step and report the allow rule', implementor: 'stop the step and report the allow rule', verifier: 'stop the step and report the allow rule', principle: 'none of its own: the role rule decides' },
     rules: [
-      { docs: [...ROLES], clause: '**Refusals.**', is: REFUSAL },
+      { docs: [...ROLES], clause: '**Refusals.**', is: `${CALL_REFUSAL} ${PROVIDER_HISTORY}` },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: /Whether or not it names an accepted form[^.]*your role's own rule decides/ },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: "the worker protocol's Refusals section" },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, lacks: /go on|continue|rest of the work|carry on|keep working/i },
@@ -90,7 +92,7 @@ export const TABLE: ReadonlyArray<Row> = [
     input: "a worker's first permission refusal names an accepted form (\"use a script file\") (22r text-fix B2)",
     expect: { implementor: 'stop the step and report that form; the form is used only in a later step that authorises it', principle: 'none of its own: the role rule decides first' },
     rules: [
-      { docs: [...ROLES], clause: '**Refusals.**', has: 'At the first permission or classifier refusal, stop that step and report the exact' },
+      { docs: [...ROLES], clause: '**Refusals.**', has: CALL_REFUSAL },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: 'used only in a later step that authorises it' },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, lacks: /follow (that|the) form|Otherwise your role/i },
     ],
@@ -99,6 +101,19 @@ export const TABLE: ReadonlyArray<Row> = [
       from: 'Whether or not it names an accepted form ("commit first", "use a script file"), your role\'s own rule decides what happens next',
       to: 'When it names the accepted form ("commit first", "use a script file"), follow that form. Otherwise your role\'s own rule decides what happens next',
     },
+  },
+  {
+    id: 'provider-stop-is-history',
+    input: 'a provider reports only that a worker session ended; its restarted worker reads the stop note',
+    expect: { planner: 'run the restarted step', implementor: 'run the restarted step', verifier: 'run the restarted step', hosts: 'continue once, then restart the step if interrupted again without a refusal' },
+    rules: [
+      { docs: [...ROLES], clause: '**Refusals.**', has: PROVIDER_HISTORY },
+      { docs: ['skill'], has: '[worker restarts](references/hosts.md#worker-restarts)' },
+      { docs: ['hosts'], clause: '- **Provider stop.**', has: 'reports only a session interruption, not a safety or policy refusal, send one plain continuation in that session' },
+      { docs: ['hosts'], clause: '- **Provider stop.**', has: 'if it ends again without a refusal, restart the step in a fresh session or on the other model family allowed for the role' },
+      { docs: ['hosts'], clause: '- **Provider stop.**', has: 'say in the brief that the provider ended the prior session without refusing the work' },
+    ],
+    mutant: { docs: [...ROLES], from: PROVIDER_HISTORY, to: 'If the unit files mention a previous provider stop, report a refusal and stop.' },
   },
   {
     id: 'discovery-in-owned-file-x-unfinished-item',
@@ -207,9 +222,9 @@ describe('the scenario table', () => {
   test('ids are unique, and each row is one the end-of-step table does not cover', () => {
     const ids = TABLE.map((row) => row.id);
     expect(new Set(ids).size).toBe(ids.length);
-    // The end-of-step cases live in ending.test.ts's table; these rows test what it does not: the principle, routing, questions, the worker's reminder.
+    // The end-of-step cases live in ending.test.ts's table; these rows cover the principle, provider restarts, routing, questions and the lean worker's reminder.
     expect(ids).toEqual([
-      'refusal-no-form', 'refusal-named-form', 'discovery-in-owned-file-x-unfinished-item', 'question-x-build-the-better-one',
+      'refusal-no-form', 'refusal-named-form', 'provider-stop-is-history', 'discovery-in-owned-file-x-unfinished-item', 'question-x-build-the-better-one',
       'provenance-unit-x-base', 'on-base-meaning', 'lean-worker-refusal',
     ]);
   });
