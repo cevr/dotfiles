@@ -25,7 +25,7 @@
 // `steer` when it carries the steer, `now` when it carries the second message.
 import { Effect, Schedule, Stream } from "effect"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()

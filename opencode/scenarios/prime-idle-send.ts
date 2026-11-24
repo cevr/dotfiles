@@ -14,7 +14,7 @@
 // - `busy.json`: from a steer's Enter, during a stalled turn, through a prompt sent to the queue, until both answered.
 import { Effect, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { watchdog } from "../tests/hang-guard.ts"
 
 const root = process.cwd()

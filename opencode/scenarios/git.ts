@@ -8,7 +8,7 @@ import { Effect, Schedule, Stream } from "effect"
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { devNull } from "node:os"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"

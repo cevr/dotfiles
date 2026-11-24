@@ -24,7 +24,7 @@
 // request, with when it came and from which session) and `wake-transcripts.json`.
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import * as SimClock from "./sim-clock.ts"
 import { stamp } from "../tests/hang-guard.ts"
 
@@ -203,4 +203,5 @@ export default OpenCodeDriver.use(
       yield* keep("epsilon", true)
       yield* dump
     }),
+  { fileWatching: "Reload the edited wake plugin and prove its pending alarm survives the reload." },
 )

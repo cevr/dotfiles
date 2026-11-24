@@ -20,7 +20,7 @@
 // session over the server's API: `server` runs `sleep 600`, `failed` exits 3.
 import { Deferred, Effect, Option, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { type Cols, FOOTERS, panelOf, shows as listed, subagentsShow, type Tab } from "./prime-panel-rows.ts"
 
 const root = process.cwd()
