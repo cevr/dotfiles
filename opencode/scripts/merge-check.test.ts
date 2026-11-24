@@ -16,6 +16,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { hangGuard } from "../tests/hang-guard.ts"
 import { acceptKey } from "./accept-key.ts"
 import { emptyLedger, select, tierOf, withPass } from "./accept-ledger.ts"
+import { analyzeMerge } from "./gate.ts"
 import { parseNameStatus as parseNulNameStatus } from "./git-paths.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
 import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
@@ -339,13 +340,20 @@ describe("the merge check's tests", () => {
 
   it.live.layer(BunServices.layer)("a change selects readers and unknown-input tests; an empty diff selects none", () =>
     Effect.gen(function* () {
-      const { expected, found, importers, tests } = yield* tree
+      const { expected, found, importers, tests, workspace } = yield* tree
       expect(tests("M\tthemes/prime.json\n")).toEqual(expected([], "themes/prime.json"))
       expect(tests("")).toEqual([])
       // The timing guard resolves imported literals: a declaration can change a runner cap without a test-file diff.
       const clock = "decider/tui-clock.ts"
       expect(tests(`M\t${clock}\n`)).toEqual(found(clock))
-      expect(tests(`M\t${clock}\n`)).toContain("scripts/wall-clock-assertions.test.ts")
+      const timing = "scripts/wall-clock-assertions.test.ts"
+      expect(testReadInputs(workspace, timing).positive(clock)).toBe(true)
+      const analysis = analyzeMerge(workspace)
+      const selected = mergeLegs("base", parseNameStatus(`M\t${clock}\n`), {
+        ...analysis.tools,
+        workbox: { changes: [], tests: analysis.workbox },
+      }).find((leg) => leg.name === "tests")
+      expect(selected?.argv).toContain(`./${timing}`)
       // Pins: its test runs the git-repo guard, beside the tests that read every test source (required-inputs.test's @reads).
       expect(tests("M\tthemes/prime.json\nM\tdecider/tui-clock.test.ts\n")).toEqual(expected([GIT_REPO_GUARD], "themes/prime.json", "decider/tui-clock.test.ts"))
       // Pins: mod source no scripts/ test imports runs only its readers, layout.test among them.
