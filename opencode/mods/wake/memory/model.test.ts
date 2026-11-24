@@ -659,7 +659,7 @@ describe("a latch", () => {
           title: "Add the export",
           agent: "implementor",
           model: "anthropic/claude-opus#high",
-          mark: { hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0 },
+          mark: { hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, recheckAt: 2 * MINUTE, at: 0 },
         })
         expect(w.sessions.started.get(latched.child)).toBeUndefined()
         expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(10 * MINUTE))
@@ -687,7 +687,7 @@ describe("a latch", () => {
         expect(w.opener.asked).toHaveLength(1)
         const held = w.store.entries.get(latched.id)
         expect(held?.kind === "latch" ? [held.reason, held.opensAt, held.recheckAt] : undefined).toEqual(["anthropic is at 95% of its 5h window", 20 * MINUTE, 4 * MINUTE])
-        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, at: 0 })
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, recheckAt: 4 * MINUTE, at: 0 })
         expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(20 * MINUTE))
         yield* until(4 * MINUTE - SECOND)
         expect(w.opener.asked).toHaveLength(1)
@@ -724,7 +724,7 @@ describe("a latch", () => {
         expect(yield* model.cancel("ses_a", latched.id)).toEqual([latched.id])
         expect(w.store.entries.has(latched.id)).toBe(false)
         expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
-        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0, cancelledAt: 30 * SECOND })
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, recheckAt: 2 * MINUTE, at: 0, cancelledAt: 30 * SECOND })
         yield* until(20 * MINUTE)
         expect(w.opener.asked).toEqual([])
       }),
