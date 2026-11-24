@@ -78,3 +78,32 @@ it.effect("lifecycle evidence is scoped, fresh and cannot stand in for a missing
     }
   }),
 )
+
+it.effect("the same owner name is a different authority after an epoch handoff", () =>
+  Effect.sync(() => {
+    const bound = Result.getOrThrow(changeControl(row, newControl(actor.epoch), actor,
+      OwnershipEvent.cases.bind.make({ at, objectRef: "object" }), 1, false))
+    const started = Result.getOrThrow(changeControl(bound.row, bound.control, actor,
+      OwnershipEvent.cases.publish.make({ at }), 2, false))
+    for (let epoch = 1; epoch <= 16; epoch++) {
+      const successor = { authorityId: actor.authorityId, epoch }
+      const offer = changeControl(started.row, started.control, actor, OwnershipEvent.cases.handoff.make({ at, successor }), 3, false)
+      if (epoch === 1) {
+        expect(Result.isFailure(offer)).toBe(true)
+        continue
+      }
+      const handed = Result.getOrThrow(offer)
+      expect(handed.row.state).toBe("handoff")
+      const adopt = OwnershipEvent.cases.adopt.make({ at })
+      expect(Result.isFailure(changeControl(handed.row, handed.control, actor, adopt, 4, false))).toBe(true)
+      const transferred = Result.getOrThrow(changeControl(handed.row, handed.control, { ...actor, epoch }, adopt, 4, false))
+      expect(transferred.row.state).toBe("unknown")
+      expect(transferred.control.epoch).toBe(epoch)
+      const report = OwnershipEvent.cases.reconcile.make({
+        at, objectRef: "object", fact: "live", witness: "checked", sequence: 1, sampleBootMs: 4,
+      })
+      expect(Result.isFailure(changeControl(transferred.row, transferred.control, actor, report, 4, false))).toBe(true)
+      expect(Result.getOrThrow(changeControl(transferred.row, transferred.control, { ...actor, epoch }, report, 4, false)).row.state).toBe("live")
+    }
+  }),
+)
