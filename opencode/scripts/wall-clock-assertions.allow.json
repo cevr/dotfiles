@@ -1,0 +1,807 @@
+[
+  {
+    "group": "bridge",
+    "file": "opencode/mods/work/laws.ts",
+    "count": 1,
+    "why": "shared Rifts law registration with a named earlier diagnostic"
+  },
+  {
+    "group": "bridge",
+    "file": "opencode/sim-tui/effect-test.ts",
+    "count": 1,
+    "why": "fork-Effect test registration with a named earlier diagnostic"
+  },
+  {
+    "group": "bridge",
+    "file": "opencode/sim/seed.ts",
+    "count": 1,
+    "why": "computed simulation deadline and its runner grace"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/anthropic-auth/server.test.ts",
+    "count": 56,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/digest/devices.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/mail/pair.test.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/mail/server.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/orchestrate/server.test.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/pool/server.test.ts",
+    "count": 29,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/cmd/wake/server.test.ts",
+    "count": 4,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/anthropic-auth/fetch/token.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/git/process/fake-gh.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/mail/model.test.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/pool/memory/fleet-claims.test.ts",
+    "count": 18,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/pool/memory/model.test.ts",
+    "count": 5,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/stall/inspector/profiler.test.ts",
+    "count": 1,
+    "why": "Inherited inspector workload, unchanged 300 ms: only Profiler.stop returns samples; main and R3 source blob 045a85ffda2e5cd9e0aee7f953d28e5c1c68c73e"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/mods/wake/process/runner.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/answer-latency.ts",
+    "count": 9,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/escape-send.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/escape-states.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/escape-subagent.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/image.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/job.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/lost-login.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/prime-emphasis.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/prime-escape.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/prime-idle-send.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/prime-precompute.ts",
+    "count": 4,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/question-latency.ts",
+    "count": 19,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/queue.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/rex-state.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/tui-cpu.ts",
+    "count": 4,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/tui-paint.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/wake-downtime.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/wake-repeat.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scenarios/wake.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scripts/accept.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scripts/leaks.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scripts/migrate-schedules.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scripts/pool-limits.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/scripts/post-land.test.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/testbeds/gamut/gamut.ts",
+    "count": 7,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/testbeds/gamut/pty-host.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/compaction-prefix/run.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/compaction-prefix/sim.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/dock-reconnect.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/fake-anthropic.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/fake-chatgpt.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/gamut.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/idle-compact/run.ts",
+    "count": 5,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/idle-compact/sim.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/mail-peer.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/mail-start.test.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/memory.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/orchestrate/run.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/owned.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-failover.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-fleet.test.ts",
+    "count": 4,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-resets.test.ts",
+    "count": 5,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-store-opencode.test.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-store-refresh.test.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pool-store.test.ts",
+    "count": 3,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/pty-host.test.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/questions/run.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/service.ts",
+    "count": 1,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "opencode/tests/update-badge.test.ts",
+    "count": 2,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "clock",
+    "file": "workbox/test/workrift-queue.test.ts",
+    "count": 6,
+    "why": "Existing live-peer timestamps, named fixture watchdogs, or reported telemetry"
+  },
+  {
+    "group": "infrastructure",
+    "file": "opencode/sim/seed.ts",
+    "target": "per-file simulation CPU verdict",
+    "budget": "<= 5000 cpu-ms on a settled host; exceeded on a loaded host is reported unjudged",
+    "assertingTests": [
+      "a file whose seeds spend more CPU than the budget on a settled host fails, naming its CPU and wall time",
+      "past the budget on a loaded host, a file passes, reported and not judged again for its other seeds"
+    ],
+    "why": "Runner infrastructure exception, not a product performance promise; sim/seed.test.ts proves both verdicts."
+  },
+  {
+    "group": "legacy",
+    "file": "workbox/test/workrift.test.ts",
+    "count": 106,
+    "why": "workrift-subvolume: retained unchanged for the live writer to migrate"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "cross-clock spend-authority mutation search",
+    "budget": "< 7000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "exhaustive three-host spend authority",
+    "budget": "< 12000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "exhaustive two-host spend authority",
+    "budget": "< 40000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "exhaustive two-host spend authority under clock skew",
+    "budget": "< 140000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "exhaustive two-host spend authority with an outside claimant",
+    "budget": "< 21000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/pool/spend-authority.test.ts",
+    "target": "no-quiet spend-authority mutation search",
+    "budget": "< 6000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/mods/work/process/land-receipts.test.ts",
+    "target": "land two receipted Rifts including Git",
+    "budget": "< 60000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept deep resumes once a marked land dies",
+    "budget": "< 2000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept land acquires the lock after a deep owner dies",
+    "budget": "< 1000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept land preempts deep and completes",
+    "budget": "< 20000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept land returns after a file overruns the run budget",
+    "budget": "< 12000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept land waits for the deep lock to yield",
+    "budget": "< 5000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/accept.test.ts",
+    "target": "accept swarm reaches the first failure inside its allotted box",
+    "budget": "< 9000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/scripts/test-runner-bridges.test.ts",
+    "target": "a controlled sample",
+    "budget": "< 20 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/sim/world.test.ts",
+    "target": "one simulated hour with three sessions, repeating alarms and compaction",
+    "budget": "< 2000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/dock-reconnect.test.ts",
+    "target": "dock settles after its first active-session read",
+    "budget": "< 20000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/host-laws.test.ts",
+    "target": "real host names an unloadable probe and returns",
+    "budget": "< 60000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/idle-compact.test.ts",
+    "target": "background shell does not move idle compaction before its due time",
+    "budget": ">= 0 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/idle-compact.test.ts",
+    "target": "idle compaction with a live background shell starts by the due-time grace",
+    "budget": "< 5000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/idle-compact.test.ts",
+    "target": "real idle compaction does not begin before cache due time",
+    "budget": ">= 0 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/idle-compact.test.ts",
+    "target": "real idle compaction requests its summary by the due-time grace",
+    "budget": "< 5000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/idle-compact.test.ts",
+    "target": "the held summary predates cache due time",
+    "budget": "> 5000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/job-events.test.ts",
+    "target": "backstop-off exit letter arrives before one recovery sweep",
+    "budget": "< 60000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/plugin-start.test.ts",
+    "target": "each server plugin's fastest isolated setup",
+    "budget": "< 150 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/plugin-start.test.ts",
+    "target": "service CPU per starting location with three opens",
+    "budget": "< 10000 cpu-ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/receipt-source-race.test.ts",
+    "target": "receipt reader retires after the configured I/O deadline",
+    "budget": "< 1500 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/stall.test.ts",
+    "target": "stall profile filename identifies a threshold crossing",
+    "budget": ">= 2000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/stall.test.ts",
+    "target": "stall summary records a threshold crossing",
+    "budget": ">= 2000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/tui-cpu.test.ts",
+    "target": "CPU while one long session and three subagents stream",
+    "budget": "< 0.25 fraction of a core",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/tui-paint.test.ts",
+    "target": "idle orchestrator frame rate with three workers",
+    "budget": "<= 2 fps",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/tui-paint.test.ts",
+    "target": "idle orchestrator paint sample has a full window",
+    "budget": "> 9000 ms",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "measured",
+    "file": "opencode/tests/tui-paint.test.ts",
+    "target": "idle TUI frame rate with nothing running",
+    "budget": "< 0.5 fps",
+    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
+  },
+  {
+    "group": "probe",
+    "file": "opencode/tests/scratch-cases.ts",
+    "count": 5,
+    "why": "Existing Bun interruption and late-release safety probes"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/cache/tui/ledger.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/herdr/opencode/asked.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/prime/tui/clock.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/subagents/solid/reader.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/update/filestore/stage.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/scripts/old-scheme-gone.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/sim-tui/law-server.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/testbeds/busy-agents.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/auto-title/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/cli-tree/run.ts",
+    "count": 3,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/compaction-prefix/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/dock-reconnect.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/guard/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/host-laws/real.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/idle-compact/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/kernel/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/mail-peer.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/memory/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/orchestrate/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/pool-fleet.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/pool-idle-release.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/questions/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/reconnect/fixture.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/update-badge.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/update-move.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/work/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  }
+]

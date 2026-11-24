@@ -7,6 +7,7 @@ import { expect } from "bun:test"
 import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "./effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const RUN_MS = 120_000
 const CASES = [
@@ -40,5 +41,5 @@ for (const { fixture, ends } of CASES)
       expect(`${stdout}\n${stderr}`).toMatch(ends)
       expect(yield* fs.readDirectory(tmp)).toEqual([])
     }),
-    RUN_MS,
+    hangGuard("installer"),
   )

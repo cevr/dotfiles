@@ -7,6 +7,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { closeSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const scratch = mkdtempSync(join(tmpdir(), "install-bin-test-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
@@ -156,10 +157,8 @@ describe("install-bin.sh refuses a file that would not run, before it replaces a
   })
 })
 
-// Every installed file is written beside its target and renamed over it. A poller reads each one while 20
-// installs alternate two trees of different, large files: it must never find one missing, empty, or other than
-// the old or the new file whole. (`install` alone unlinks the target, then writes it: on the workbox an agent
-// saw ~/.local/bin/workrift missing or empty 162 times in 20 installs, 2026-11-22.)
+// Hold each install at its open-for-write boundary. Across 20 installs a reader sees only complete old or new files
+// while the writer's destination is empty. GNU `install` alone can unlink a live target before writing it.
 describe("install-bin.sh replaces each file whole", () => {
   test(
     "across 20 installs every installed command and shell file is always the old or the new one, whole",
@@ -175,7 +174,12 @@ describe("install-bin.sh replaces each file whole", () => {
         zshrc: `alias from=${label}\n${`# ${"r".repeat(100)}\n`.repeat(800)}`,
       })
       const trees = [tree(root, "a", files("a")), tree(root, "b", files("b"))]
-      const watched = [...names.map((name) => join(home, ".local", "bin", name)), join(home, ".zshenv"), join(home, ".zshrc")]
+      const watched = [
+        ...names.map((name) => join(home, ".local", "bin", name)),
+        join(home, ".zshenv"),
+        join(home, ".zshrc"),
+        join(home, ".local", "share", "workbox", "host-identity.sh"),
+      ]
       const allowed = new Set<string>()
       for (const workbox of trees) {
         expect(run(workbox, home)).toEqual({ code: 0, stderr: "" })
@@ -187,31 +191,45 @@ describe("install-bin.sh replaces each file whole", () => {
       mkdirSync(gnu, { recursive: true })
       writeFileSync(
         join(gnu, "install"),
-        `#!/bin/sh\nmode=644\nif [ "$1" = -m ]; then mode=$2; shift 2; fi\nrm -f "$2"\ncat "$1" >"$2"\nchmod "$mode" "$2"\n`,
+        `#!/bin/sh\nmode=644\nif [ "$1" = -m ]; then mode=$2; shift 2; fi\nrm -f "$2"\n: >"$2"\nprintf 'opened\\n'\nread release || exit 1\ncat "$1" >"$2"\nchmod "$mode" "$2"\n`,
         { mode: 0o755 },
       )
       const gnuEnv = { ...env(home), PATH: `${gnu}:/usr/bin:/bin` }
       const seen = { reads: 0, missing: 0, empty: 0, partial: 0 }
       for (let at = 0; at < 20; at++) {
-        const install = Bun.spawn(["sh", join(trees[at % 2]!, "install-bin.sh")], { cwd: home, env: gnuEnv, stdout: "ignore", stderr: "ignore" })
-        while (install.exitCode === null) {
-          for (const path of watched) {
-            seen.reads++
-            try {
-              const bytes = readFileSync(path)
-              if (bytes.length === 0) seen.empty++
-              else if (!allowed.has(Bun.hash(bytes).toString())) seen.partial++
-            } catch {
-              seen.missing++
+        const install = Bun.spawn(["sh", join(trees[at % 2]!, "install-bin.sh")], { cwd: home, env: gnuEnv, stdin: "pipe", stdout: "pipe", stderr: "inherit" })
+        let carry = ""
+        let checkpoints = 0
+        try {
+          for await (const chunk of install.stdout.pipeThrough(new TextDecoderStream())) {
+            carry += chunk
+            const newline = carry.indexOf("\n")
+            if (newline < 0) continue
+            expect(carry.slice(0, newline)).toBe("opened")
+            carry = carry.slice(newline + 1)
+            checkpoints++
+            for (const path of watched) {
+              seen.reads++
+              try {
+                const bytes = readFileSync(path)
+                if (bytes.length === 0) seen.empty++
+                else if (!allowed.has(Bun.hash(bytes).toString())) seen.partial++
+              } catch {
+                seen.missing++
+              }
             }
+            install.stdin.write("go\n")
+            install.stdin.flush()
           }
-          await Bun.sleep(0)
+          expect(await install.exited).toBe(0)
+          expect(checkpoints).toBe(watched.length)
+        } finally {
+          install.stdin.end()
         }
-        expect(install.exitCode).toBe(0)
       }
-      expect({ ...seen, reads: seen.reads > 20 * watched.length }).toEqual({ reads: true, missing: 0, empty: 0, partial: 0 })
+      expect(seen).toEqual({ reads: 20 * watched.length ** 2, missing: 0, empty: 0, partial: 0 })
     },
-    120_000,
+    hangGuard("installer"),
   )
 })
 

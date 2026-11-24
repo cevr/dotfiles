@@ -27,6 +27,7 @@ import { Effect, Option, Schedule, Schema, Stream } from "effect"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT || "out"
@@ -163,10 +164,10 @@ export default OpenCodeDriver.use(
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
         if (s.includes("You name conversations")) {
-          requests.push({ session: "title", at: Date.now(), request: s })
+          requests.push({ session: "title", at: stamp(), request: s })
           return say("Image fixture")
         }
-        requests.push({ session: "root", at: Date.now(), request: s })
+        requests.push({ session: "root", at: stamp(), request: s })
         return reply(s)
       })
 

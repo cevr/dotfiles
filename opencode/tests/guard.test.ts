@@ -23,6 +23,7 @@ import type { Result, Spec } from "./guard/run.ts"
 import { CELL_TASK, CHILD_SLEEP, DIRECT_TASK, DONE, HARMLESS_FILE, HARMLESS_OUT, HEAVY_NICE, killByPattern, LIGHT_NICE, POLICY_TASK, SLEEP_TASK } from "./guard/sim.ts"
 import { owned } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/guard.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -98,7 +99,6 @@ const untouched = (result: Result & { work: string }) => {
   expect(readFileSync(join(result.work, HARMLESS_FILE), "utf8")).toBe(`${HARMLESS_OUT}\n`)
 }
 
-const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   // Real alone: the kernel's cell runs in a Bun worker, and the repository is on disk. The direct call's refusal and
@@ -112,7 +112,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(said(cell)).toContain("refused: tools.shell is not a tool here.")
       untouched(result)
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   // Real alone: the fork's subagent tool makes the child session, and the guard must know it as a subagent from what
@@ -130,7 +130,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(childSleep?.state.status).toBe("error")
       expect(said(childSleep)).toContain("guard-sleep: `sleep 60` would hold this subagent's turn for 60 s doing nothing")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   // Real alone: the niceness a process runs at, the launcher file on disk, and the host's own process table (`ps`)
@@ -157,7 +157,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(written).toHaveLength(1)
       expect(written[0]).toMatch(/^(ba|z|da|k)?sh$/)
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -175,6 +175,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       untouched(result)
       expect(JSON.stringify(result.messages)).toContain(DONE)
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 })

@@ -3,6 +3,7 @@
 // source loads its own plugins even when the test ran in an agent's shell under the installed build.
 import { Effect, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { owned } from "../tests/owned.ts"
 import { parentEnv } from "../tests/scratch.ts"
 import { isBindingVariable, outsideBuild } from "./bound-env.ts"
@@ -49,5 +50,6 @@ describe("an installed build's plugin binding", () => {
       expect(names(text)).toContain("PATH")
       expect(names(text).filter(isBindingVariable)).toEqual([])
     }),
+    hangGuard("short-fixture"),
   )
 })

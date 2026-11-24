@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/status.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -44,5 +45,5 @@ describe.skipIf(!fork)("/pool in the Prime look", () => {
     // Each row fits the sidebar, so the four are adjacent: none wraps.
     expect(section).toEqual([first, first + 1, first + 2, first + 3])
     expect(JSON.parse(readFileSync(join(out, "pool-session-query.json"), "utf8"))).toMatchObject({ sessionID: expect.stringMatching(/^ses_/), providerID: "simulation" })
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

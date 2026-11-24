@@ -9,9 +9,9 @@ import { request, supply } from "@dotfiles/opencode-guard/memory/admission-accep
 import { type ProcessPin } from "@dotfiles/opencode-guard/process/launchers"
 import { inheritedController, verifyInheritance } from "@dotfiles/opencode-guard/process/ownership"
 import { open } from "@dotfiles/opencode-guard/sqlite/admission"
-import { runner } from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 
-const { seeded } = runner("cmd/guard/host-resources.sim.test.ts")
+const { seeded } = simulationRunner("cmd/guard/host-resources.sim.test.ts")
 const host = { hostId: "host-fixture", bootId: "boot-fixture" }
 const sample = supply({ cores: 12 })
 const openFixture = Effect.fn("openFixture")(function* () {

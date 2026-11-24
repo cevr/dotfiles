@@ -20,6 +20,7 @@ import { unresolvedImports } from "../mods/update/filestore/trees.ts"
 import { COMMANDS, hostProvided, SEEDS } from "../mods/update/trees.ts"
 import * as Graph from "./cli-tree/graph.ts"
 import { checkoutRoot, commandChecks, moduleLinks, within } from "./cli-tree/run.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** Why the named installed tree cannot be checked. */
 class NoTree extends Schema.TaggedError<NoTree>()("NoTree", { message: Schema.String }) {}
@@ -102,7 +103,7 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
       })
       expect(copies).toEqual([])
     }),
-    120_000,
+    hangGuard("installer"),
   )
 
   commandChecks(installedRoot)

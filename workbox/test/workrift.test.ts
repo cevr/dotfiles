@@ -8,6 +8,7 @@
 // bases. Nothing here touches the real host: every path is under the scratch.
 import { afterAll, describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -17,8 +18,40 @@ const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const WORK_BIN = process.env.WORK_BIN ?? Bun.which("work") ?? undefined
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "workrift-test-")))
-afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
+// Hang guard, not a cleanup performance requirement. This tree holds every workspace the suite created.
+const CLEANUP_HANG_GUARD_MS = 120_000
+afterAll(() => rm(scratchRoot, { recursive: true, force: true }), CLEANUP_HANG_GUARD_MS)
 let scratchCount = 0
+
+// Run the real registered afterAll in a child runner. The child can pass its
+// own test even if the hook never removes anything; only the parent judges it.
+describe("workrift suite cleanup", () => {
+  test.skipIf(!process.env.WORKRIFT_CLEANUP_WITNESS)("publish a scratch tree for the cleanup witness", () => {
+    const witness = process.env.WORKRIFT_CLEANUP_WITNESS
+    if (!witness) throw new Error("missing cleanup witness file")
+    mkdirSync(join(scratchRoot, "nested"))
+    writeFileSync(join(scratchRoot, "nested", "keep-until-teardown"), "fixture")
+    writeFileSync(witness, scratchRoot)
+  })
+
+  test("the registered cleanup removes the scratch tree after the test exits", async () => {
+    const witness = join(scratchRoot, "cleanup-witness")
+    const child = Bun.spawn(
+      [process.execPath, "test", import.meta.path, "-t", "publish a scratch tree for the cleanup witness"],
+      { env: { ...process.env, TMPDIR: scratchRoot, WORKRIFT_CLEANUP_WITNESS: witness }, stdout: "ignore", stderr: "pipe" },
+    )
+    const watchdog = setTimeout(() => child.kill(), 15_000)
+    try {
+      const errors = await new Response(child.stderr).text()
+      expect(await child.exited, errors).toBe(0)
+      const tree = readFileSync(witness, "utf8")
+      expect(tree).toStartWith(join(scratchRoot, "workrift-test-"))
+      expect(existsSync(tree), `registered cleanup left ${tree}`).toBe(false)
+    } finally {
+      clearTimeout(watchdog)
+    }
+  }, 30_000)
+})
 
 type Env = Record<string, string>
 

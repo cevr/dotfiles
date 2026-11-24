@@ -17,12 +17,11 @@ import { fileURLToPath } from "node:url"
 import { BAR, FOOTERS, panelOf as panel, ROWS, SUBAGENTS, type Tab } from "../scenarios/prime-panel-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-panel.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
-/** OpenCode's start, a scripted turn and two walks of the panel: well past its usual 20 seconds. */
-const SCENARIO_MS = 180_000
 const LANES = [
   { role: "implementor", unit: "Corpus HP r1" },
   { role: "implementor", unit: "EX3 later clauses r1" },
@@ -135,6 +134,6 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
       }
       expectSubagents(wide, narrow)
     }),
-    SCENARIO_MS,
+    hangGuard("fork-session"),
   )
 })

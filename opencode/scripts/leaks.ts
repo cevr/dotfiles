@@ -65,6 +65,8 @@ export const isServer = (proc: Proc): boolean => /opencode-drive|(opencode[^\s]*
 export const servers = (procs: ReadonlyArray<Proc>): ReadonlyArray<Proc> => procs.filter(isServer)
 
 export interface Watch {
+  /** The descendants seen so far; refresh from the process table before returning. */
+  readonly sample: () => ReadonlyArray<Proc>
   /** Sample now, then stop sampling; every descendant the samples saw. */
   readonly stop: () => ReadonlyArray<Proc>
 }
@@ -74,14 +76,15 @@ export const watch = (root: number, everyMs = 1000, read: () => ReadonlyArray<Pr
   const seen = new Map<string, Proc>()
   const sample = () => {
     for (const proc of descendants(read(), root)) seen.set(`${proc.pid} ${proc.started}`, proc)
+    return [...seen.values()]
   }
   sample()
   const timer = setInterval(sample, everyMs)
   return {
+    sample,
     stop: () => {
       clearInterval(timer)
-      sample()
-      return [...seen.values()]
+      return sample()
     },
   }
 }

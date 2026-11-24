@@ -10,6 +10,7 @@ import { Effect, FileSystem, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { timedCounts, timedFilter } from "../scripts/accept-plan.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The real runs of scripts/accept.test.ts that carry a clock bound (scripts/accept-plan.ts `TIMED_RUNS`). */
 const TIMED_RUNS = timedFilter
@@ -49,6 +50,6 @@ describe("the accept lock by the clock", () => {
           passed: true,
         })
       }),
-    600_000,
+    hangGuard("deep-scenario"),
   )
 })

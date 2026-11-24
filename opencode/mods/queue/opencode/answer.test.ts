@@ -5,8 +5,8 @@ import { Effect } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { formOf } from "../answer.ts"
 import { type FormHost, FormRefused, openAnswer } from "./answer.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-const TIMEOUT_MS = 5_000
 const form = formOf("ses_root", { id: "panes", text: "Close old Claude panes" })
 
 const host = (pending: ReadonlyArray<string>, created: Array<{ readonly sessionID: string }>, refuses = false): FormHost => ({
@@ -30,6 +30,6 @@ describe("opening the answer form", () => {
       expect(yield* openAnswer(host([], created, true), "ses_screen", form)).toBe("failed")
       expect(created).toHaveLength(1)
     }),
-    TIMEOUT_MS,
+    hangGuard("local-fixture"),
   )
 })

@@ -6,6 +6,7 @@ import { Effect, FileSystem } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { gitInit, withProcessEnv } from "../tests/git-repo.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { forkLag } from "./verify.ts"
 
 const IDENTITY = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t.invalid" }
@@ -62,5 +63,6 @@ describe("verify:doctor's fork-branch check", () => {
       yield* git(dir, "update-ref", "-d", "refs/remotes/origin/prime-look")
       expect((yield* said(dir)).ok).toBe(true)
     }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
   )
 })

@@ -8,6 +8,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { commands } from "./command.ts"
 import { madeOnIn, madeOnOf, markBranch } from "./purpose.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const ENV = {
   GIT_AUTHOR_NAME: "Mark Test",
@@ -78,7 +79,7 @@ effectTest(
       expect(yield* madeOn(child)).toEqual(Option.none())
     }),
   ),
-  30_000,
+  hangGuard("local-fixture"),
 )
 
 test("madeOnIn reads the branch whose mark names the path, a branch with dots and slashes whole", () => {

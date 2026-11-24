@@ -10,7 +10,7 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { type Call, open } from "./host-calls.ts"
-import * as Seed from "./seed.ts"
+import { simulationTest } from "./seed.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -48,7 +48,7 @@ const scanned = (pick: (files: ReadonlyArray<string>) => ReadonlyArray<string>) 
   )
 
 describe("every argument a world plugin passes to the host is one a law passes", () => {
-  Seed.effect(
+  simulationTest(
     "a planted plugin's arguments no law passes are found: through a spread, a narrowed view and a constant",
     Effect.gen(function* () {
       const { laws, plugins } = yield* scanned(() => [PLANTED])
@@ -63,7 +63,7 @@ describe("every argument a world plugin passes to the host is one a law passes",
     }),
   )
 
-  Seed.effect(
+  simulationTest(
     "no world plugin passes one no law passes",
     Effect.gen(function* () {
       const { files, laws, plugins } = yield* scanned((all) => all.filter(isPlugin))

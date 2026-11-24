@@ -6,13 +6,13 @@ import { expect } from "bun:test"
 import { Effect, type Layer, Option } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { Sessions } from "./service.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** An implementation with one session `ses_a` on `sim/old`, metadata `{ latch: "kept" }`, and no session `ses_gone`. */
 export interface Bench {
   readonly layer: Layer.Layer<Sessions>
 }
 
-const LAW_MS = 5_000
 
 export const laws = (name: string, make: () => Bench) => {
   effectTest(
@@ -21,7 +21,7 @@ export const laws = (name: string, make: () => Bench) => {
       const found = yield* Sessions.use((sessions) => sessions.record("ses_gone"))
       expect(Option.isNone(found)).toBe(true)
     }).pipe(Effect.provide(make().layer)),
-    LAW_MS,
+    hangGuard("unit-law"),
   )
 
   effectTest(
@@ -32,7 +32,7 @@ export const laws = (name: string, make: () => Bench) => {
       const read = yield* sessions.record("ses_a")
       expect(Option.map(read, (record) => record.metadata)).toEqual(Option.some({ latch: "kept", modelNext: { x: 1 } }))
     }).pipe(Effect.provide(make().layer)),
-    LAW_MS,
+    hangGuard("unit-law"),
   )
 
   effectTest(
@@ -43,6 +43,6 @@ export const laws = (name: string, make: () => Bench) => {
       const read = yield* sessions.record("ses_a")
       expect(Option.map(read, (record) => record.model)).toEqual(Option.some({ providerID: "other", id: "new" }))
     }).pipe(Effect.provide(make().layer)),
-    LAW_MS,
+    hangGuard("unit-law"),
   )
 }

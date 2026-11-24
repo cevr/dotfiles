@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { gitInit } from "../tests/git-repo.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { dropMarkers, forkWork, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
 
 const AGENTS = [
@@ -119,7 +120,7 @@ describe("forkWork on a fixture fork", () => {
     expect(text[0]).toStartWith(`- drop fork commit ${made.wait.slice(0, 10)} (a subagent waiting on its own background work): upstream PR #63209 is merged into the fork`)
     expect(text.filter((line) => line.startsWith("- prefer upstream?"))).toHaveLength(4)
     expect(text.some((line) => line.includes(made.theme.slice(0, 10)))).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   test("after a conflict (nothing merged): the same candidates against the commits tried, the marked commit droppable once the merge lands; a lookup that fails is counted, not fatal", async () => {
     const made = fixture()
@@ -129,7 +130,7 @@ describe("forkWork on a fixture fork", () => {
     expect(work.closed).toEqual([])
     expect(work.unread).toBe(7)
     expect(forkWorkText(work).at(-1)).toBe("- 7 linked upstream issues or PRs could not be read (gh); their state is unchecked.")
-  })
+  }, hangGuard("local-fixture"))
 
   test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", () => {
     const dir = mkdtempSync(join(scratch, "repo-"))
@@ -156,7 +157,7 @@ describe("forkWork on a fixture fork", () => {
     })
     sh(dir, "checkout", "-q", "prime-look")
     return expect(forkWork({ fork: dir, branch: "prime-look", upstream: "dev", before, agents: "# nothing linked", lookup: lookup({}) })).resolves.toMatchObject({ candidates: [] })
-  })
+  }, hangGuard("local-fixture"))
 
   test("nothing new upstream and no marker: no fork work", async () => {
     const made = fixture()
@@ -165,5 +166,5 @@ describe("forkWork on a fixture fork", () => {
     const work = await forkWork({ fork: made.dir, branch: "prime-look", upstream: "dev", before: after, agents: "# nothing linked", lookup: lookup({}) })
     expect(work).toEqual({ candidates: [], closed: [], unread: 0, droppable: [] })
     expect(forkWorkText(work)).toEqual([])
-  })
+  }, hangGuard("local-fixture"))
 })

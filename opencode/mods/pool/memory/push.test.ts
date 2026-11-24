@@ -126,7 +126,7 @@ const world = (config: Partial<Model.Config> = {}, fleet: Fleet = { host: "workb
 }
 
 /** Let the review a held pace forked run: a real moment, on the test clock too. */
-const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
+const settle = TestClock.adjust(0)
 const onTestClock = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     yield* TestClock.setTime(T0)

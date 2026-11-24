@@ -13,6 +13,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { layer } from "../cmd/orchestrate/batch-inputs.ts"
 import { freeze, type InputRequest, type InputSnapshot, ReceiptSource, SourceRead, SourceRef } from "../mods/orchestrate/batch-input.ts"
 import type { ReceiptPlaces } from "../mods/orchestrate/filestore/receipt-source.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 /** How many freezes the reader tries, and how long it may take. */
 const FREEZES = 3000
@@ -59,6 +60,7 @@ const WITHIN_MS = 500
 const CHILD_MS = 145_000
 
 const DESCRIPTORS = `
+import { elapsedForReport, watchdog } from "${import.meta.resolve("./hang-guard.ts")}"
 const descriptors = () => readdirSync(process.platform === "linux" ? "/proc/self/fd" : "/dev/fd").filter((name) => {
   try { fstatSync(+name); return true }
   catch (error) { if (error.code === "EBADF") return false; throw error }
@@ -75,9 +77,9 @@ const initializeRuntime = async () => {
   })
 }
 const backAt = async (baseline, label) => {
-  const hangGuard = performance.now() + 65000
+  const deadline = watchdog(65000)
   for (let count; (count = descriptors()) !== baseline;) {
-    if (performance.now() >= hangGuard) throw new Error("65s descriptor retirement hang guard: " + label + " baseline=" + baseline + " observed=" + count)
+    if (deadline.expired()) throw new Error("65s descriptor retirement hang guard: " + label + " baseline=" + baseline + " observed=" + count)
     await new Promise((resolve) => setImmediate(resolve))
   }
   return baseline
@@ -93,7 +95,7 @@ const backAt = async (baseline, label) => {
 const CHILD = (imports: { readonly effect: string; readonly process: string; readonly bun: string; readonly inputs: string; readonly input: string }) => `import * as BunServices from "${imports.bun}"
 import { Effect, FileSystem, Layer, Schedule } from "${imports.effect}"
 import { ChildProcess, ChildProcessSpawner } from "${imports.process}"
-import { fstatSync, readdirSync } from "node:fs"
+import { existsSync, fstatSync, readdirSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { layer } from "${imports.inputs}"
 import { freeze } from "${imports.input}"
@@ -121,9 +123,9 @@ const gated = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, Effect.gen(f
     if (mode === "close-after-exit" || mode === "close-after-deadline") {
       const fixture = "use Time::HiRes qw(sleep); $| = 1; print 'U'; " +
         "my $fork = fork(); defined($fork) or die $!; exit 0 if $fork; " +
-        "sleep($ARGV[0]); close(STDOUT) or die $!; exit 0;";
+        "sleep($ARGV[0]); open(my $marker, '>', $ARGV[1]) or die $!; close($marker); close(STDOUT) or die $!; exit 0;";
       const wait = mode === "close-after-exit" ? "0.18" : "3";
-      const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", fixture, "--", wait], command.options))
+      const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", fixture, "--", wait, staged + ".closed"], command.options))
       readers.push(child)
       return child
     }
@@ -161,9 +163,10 @@ const report = Effect.gen(function* () {
   const warm = yield* once
   yield* Effect.promise(() => backAt(before, "warm production read"))
   armed.first = true
-  const began = performance.now()
+  const elapsed = elapsedForReport()
   const outcome = yield* once
-  const ms = Math.round(performance.now() - began)
+  const time = elapsed()
+  const closed = existsSync(staged + ".closed")
   const running = yield* Effect.forEach(readers, (child) => child.isRunning)
   const after = yield* Effect.promise(() => backAt(before, mode))
   // A new read in this SAME source must work, even after a hung open was terminated.
@@ -178,7 +181,7 @@ const report = Effect.gen(function* () {
   const afterRecovery = yield* Effect.promise(() => backAt(before, mode + " recovery"))
   const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
   const marker = mode !== "unlinked" && mode !== "slow" && mode !== "overflow" || (yield* fs.exists(staged + ".opened"));
-  return [words, ms, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker, afterRecovery]
+  return [words, time, before, after, !armed.first && warm._tag === "Success", running.some(Boolean), recovered._tag === "Success" && recovered.success.receipts.length === 1, marker, afterRecovery, closed]
 })
 const stats = await Effect.runPromise(report.pipe(Effect.provide(layer(places)), Effect.provide(gated), Effect.provide(BunServices.layer)))
 console.log(stats.join("\\t"))
@@ -530,7 +533,7 @@ describe("the receipt source under a real swap race", () => {
         expect([...tally.keys()].filter((kind) => kind !== "frozen good" && kind !== "refused a link" && kind !== "failed InputUnsettled")).toEqual([])
         yield* Effect.logInfo("receipt-source race", Object.fromEntries(tally))
       }).pipe(Effect.scoped),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.live.layer(BunServices.layer)(
@@ -591,30 +594,33 @@ describe("the receipt source under a real swap race", () => {
               })),
             )
             const ran = spawnSync(["bun", child, receipts, checkout, leaf, staged, `${WITHIN_MS}`, head, mode, good], { timeout: CHILD_MS, stdin: "ignore" })
-            const [words, ms, before, after, gated, running, recovered, started, afterRecovery] = new TextDecoder().decode(ran.stdout).trim().split("\t")
+            const [words, elapsed, before, after, gated, running, recovered, started, afterRecovery, closed] = new TextDecoder().decode(ran.stdout).trim().split("\t")
             const stderr = new TextDecoder().decode(ran.stderr).slice(-500)
-            expect({ mode, exit: ran.exitCode, gated, words, running, recovered, started, inBound: Number(ms) < 3 * WITHIN_MS, descriptorsLeft: Number(after) - Number(before), stderr }).toEqual({
-              mode, exit: 0, gated: "true", words: expected, running: "false", recovered: "true", started: "true", inBound: true, descriptorsLeft: 0, stderr: "",
+            expect({ mode, exit: ran.exitCode, gated, words, running, recovered, started, descriptorsLeft: Number(after) - Number(before), stderr }).toEqual({
+              mode, exit: 0, gated: "true", words: expected, running: "false", recovered: "true", started: "true", descriptorsLeft: 0, stderr: "",
             })
             expect(afterRecovery).toBe(before)
-            if (mode === "close-after-exit") expect(Number(ms)).toBeGreaterThanOrEqual(170)
-            if (mode === "close-after-deadline") expect(Number(ms)).toBeGreaterThanOrEqual(WITHIN_MS)
-            yield* Effect.logInfo("receipt-source gated case", { mode, ms, before, after, afterRecovery })
+            measured("receipt reader retires after the configured I/O deadline", "< 1500 ms", ({ sample }) =>
+              sample(Math.round(Number.parseFloat(elapsed ?? "")), mode),
+            )
+            if (mode === "close-after-exit") expect(closed).toBe("true")
+            if (mode === "close-after-deadline") expect(closed).toBe("false")
+            yield* Effect.logInfo("receipt-source gated case", { mode, elapsed, before, after, afterRecovery })
           }), { discard: true },
         )
       }).pipe(Effect.scoped),
-    160_000,
+    hangGuard("fork-reconnect"),
   )
 
   it.live.layer(BunServices.layer)(
     "every read-barrier schedule yields a complete published version or refuses, including a repeated tear",
     () => barriers,
-    60_000,
+    hangGuard("process-fixture"),
   )
   it.live.layer(BunServices.layer)(
     "every configured directory component refuses links and rooted substitutions before and after open",
     () => componentBarriers,
-    60_000,
+    hangGuard("process-fixture"),
   )
   it.live.layer(BunServices.layer)(
     "retires each reader's descriptors and bounds 250 seeded, consecutive mixed reads",
@@ -637,6 +643,6 @@ describe("the receipt source under a real swap race", () => {
       expect(report).toContain('"reads":250')
       yield* Effect.logInfo("reader descriptor lifecycle", report)
     }).pipe(Effect.scoped),
-    160_000,
+    hangGuard("fork-reconnect"),
   )
 })

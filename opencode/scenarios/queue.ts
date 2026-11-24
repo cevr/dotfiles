@@ -16,6 +16,7 @@
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { Llm, OpenCodeDriver } from "opencode-drive"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -32,7 +33,7 @@ const THOUGHTS: ReadonlyArray<readonly [string, string]> = [
 ]
 
 // Tomorrow at 09:30 local, so the row reads `◷ <Mon> <d> 09:30`.
-const tomorrow = new Date()
+const tomorrow = new Date(stamp())
 tomorrow.setDate(tomorrow.getDate() + 1)
 tomorrow.setHours(9, 30, 0, 0)
 

@@ -21,7 +21,7 @@
 import { expect } from "bun:test"
 import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from "effect"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, type Seeded as SeedSeeded, SeedFailed as SeedSeedFailed, simulationTest } from "../../sim/seed.ts"
 import { RECORD_CASES } from "../../sim/witness-cases.ts"
 import { assertEffectWitnessCases, witnesses } from "../../sim/witnesses.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
@@ -32,7 +32,7 @@ import { type Answer, type Happened, makeModel, okOf, type Reason, type State, t
 import { type Opened, SUBJECTS } from "./record-subject.ts"
 
 const FILE = "cmd/orchestrate/record-model.sim.test.ts"
-const { seeded } = Seed.runner(FILE)
+const { seeded } = simulationRunner(FILE)
 
 const STEPS = 120
 const OWNERS: Arr.NonEmptyReadonlyArray<string> = ["L1", "L2", "L3", "root"]
@@ -64,7 +64,7 @@ interface Books {
 interface Run {
   readonly world: World
   readonly random: Random.Random
-  readonly expect: Seed.Seeded["expect"]
+  readonly expect: SeedSeeded["expect"]
   readonly opened: Opened
   readonly held: { subject: Subject }
   readonly reference: Subject
@@ -383,7 +383,7 @@ const compared = (run: Run) => {
   }
 }
 
-const startRun = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened): Run => {
+const startRun = (seed: number, expect: SeedSeeded["expect"], open: (world: World) => Opened): Run => {
   const world = freshWorld()
   const opened = open(world)
   const books: Books = { promised: [], claimed: new Map(), decided: new Set(), epoch: new Map(), woken: new Set(), commits: [], handBacks: [], receipts: [], keys: [], counts: { roots: 1, minted: 0, step: 0 } }
@@ -393,7 +393,7 @@ const startRun = (seed: number, expect: Seed.Seeded["expect"], open: (world: Wor
   return run
 }
 
-const runSeed = (seed: number, expect: Seed.Seeded["expect"], open: (world: World) => Opened) => {
+const runSeed = (seed: number, expect: SeedSeeded["expect"], open: (world: World) => Opened) => {
   const run = startRun(seed, expect, open)
   const { books } = run
   for (books.counts.step = 0; books.counts.step < STEPS; books.counts.step += 1) {
@@ -536,7 +536,7 @@ const onSubject = <A>(body: (open: (world: World) => Opened) => A) =>
   Effect.gen(function* () {
     const name = yield* subjectName
     const make = yield* Effect.fromOption(Option.fromUndefinedOr(SUBJECTS.get(name))).pipe(
-      Effect.mapError(() => new Seed.SeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
+      Effect.mapError(() => new SeedSeedFailed({ message: `SUBJECT=${name}: not a subject; record-subject.ts names them` })),
     )
     return yield* Effect.acquireUseRelease(
       Effect.tap(Effect.sync(() => scratch("record-model-")), (dir) => Effect.scoped(SqliteRecord.open(`${dir.path}/record.db`, { readonly: false, now: 1_000_000 })).pipe(Effect.orDie)),
@@ -559,14 +559,14 @@ const recordCase = <Field extends keyof Evidence>(name: OmitWitness, field: Fiel
     return coverPromises(open, without)[field]
   }),
 })
-Seed.effect("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", assertEffectWitnessCases(RECORD_CASES, {
+simulationTest("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", assertEffectWitnessCases(RECORD_CASES, {
   "six promises": recordCase("six promises", "promises", ["w0", "w1", "w2", "w3", "w4", "w5"]),
   "follow-up": recordCase("follow-up", "followUp", { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") }),
   deferral: recordCase("deferral", "deferral", { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") }),
   decision: recordCase("decision", "decision", { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") }),
 }))
 
-Seed.effect(
+simulationTest(
   "every caller × operation × state × reason class × pointer kind × existence answers as the reference, through a reopen and a restart",
   onSubject((open) => {
     const world = freshWorld()

@@ -7,6 +7,7 @@ import { Effect, Exit, Queue } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import type { Json } from "../service.ts"
 import { connect } from "./cdp.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** A stand-in debugger: what it was sent, and a way to push events or close, for as long as the scope lasts. */
 const debuggerStandIn = Effect.gen(function* () {
@@ -71,7 +72,7 @@ describe("the DevTools client", () => {
         expect((yield* Effect.flip(tab.url)).message).toBe("the browser closed")
       }),
     ),
-    10_000,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -80,6 +81,6 @@ describe("the DevTools client", () => {
       const failed = yield* Effect.flip(connect("ws://127.0.0.1:9/devtools/page/1", "http://127.0.0.1:8765/"))
       expect(failed.message).toBe("cannot reach the browser's debugger at ws://127.0.0.1:9/devtools/page/1")
     })),
-    10_000,
+    hangGuard("in-memory"),
   )
 })

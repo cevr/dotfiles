@@ -6,6 +6,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Option, Result, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { ROOT } from "./reach.ts"
 import {
   answerOf,
@@ -258,5 +259,6 @@ describe("the dry run", () => {
       expect(Number(refused.code)).toBe(2)
       expect(refused.said).toContain("REFUSED")
     }),
+    hangGuard("local-fixture"),
   )
 })

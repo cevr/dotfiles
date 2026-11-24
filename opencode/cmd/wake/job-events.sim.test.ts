@@ -43,10 +43,10 @@ import { type CallAnswer, Changes, Courier, Runner, WakeStore } from "@dotfiles/
 import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/job-events.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/job-events.sim.test.ts")
 
 const WORK = "/scratch/project"
 const OTHER = "/scratch/other"
@@ -1244,7 +1244,7 @@ const okOf = (family: Family, seen: Effect.Success<ReturnType<typeof history>>) 
   return seen.owedAtStart && (once || held)
 }
 
-Seed.effect("each job's end reaches its owner once across two locations, a move, wait, kill, park, the runner's call, restart and the supervisor's claim, held or stopped at every write",
+simulationTest("each job's end reaches its owner once across two locations, a move, wait, kill, park, the runner's call, restart and the supervisor's claim, held or stopped at every write",
   Effect.gen(function* () {
     const failures: Array<unknown> = []
     let histories = 0
@@ -1270,7 +1270,7 @@ Seed.effect("each job's end reaches its owner once across two locations, a move,
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )
 
-Seed.effect("a moved owner can restart and settle a held end with its home closed; a read failure proves nothing even about a dead server",
+simulationTest("a moved owner can restart and settle a held end with its home closed; a read failure proves nothing even about a dead server",
   Effect.gen(function* () {
     const m = yield* matrixOf
     const home = yield* openPlace(m, "A")
@@ -1300,7 +1300,7 @@ Seed.effect("a moved owner can restart and settle a held end with its home close
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )
 
-Seed.effect("a result committed between the first read and the old server's death is not re-sent",
+simulationTest("a result committed between the first read and the old server's death is not re-sent",
   Effect.gen(function* () {
     const m = yield* matrixOf
     const home = yield* openPlace(m, "A")
@@ -1329,7 +1329,7 @@ Seed.effect("a result committed between the first read and the old server's deat
   }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([]))),
 )
 
-Seed.effect("an owner's wait on a running job reads nothing while it waits: fifty quiet seconds add no read, and its end wakes it",
+simulationTest("an owner's wait on a running job reads nothing while it waits: fifty quiet seconds add no read, and its end wakes it",
   Effect.gen(function* () {
     const m = yield* matrixOf
     const home = yield* openPlace(m, "A")

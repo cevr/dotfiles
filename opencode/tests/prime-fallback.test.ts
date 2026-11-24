@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-fallback.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -22,7 +23,7 @@ let frame: ReadonlyArray<string> = []
 
 describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-fallback-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-fallback-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-fallback.ts"], {
       cwd: root,
@@ -33,7 +34,7 @@ describe.skipIf(!fork)("a held subagent falls back to Codex (OPENCODE_DEV)", () 
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     frame = readFileSync(join(out, "fallback-done.txt"), "utf8").split("\n")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("the parent reads where it ran and why, first in the call's result, then the answer, and its row shows sol", kept.test(() => {
     expect(frame.join("\n")).toContain("Root heard: the export check passed.")

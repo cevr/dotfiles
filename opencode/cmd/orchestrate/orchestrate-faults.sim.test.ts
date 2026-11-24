@@ -16,11 +16,11 @@ import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { SIM_OPUS } from "./models.fixture.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-faults.sim.test.ts")
 
 const WORK = "/scratch/work"
 /** Wednesday 4 November 2026, 10:00 in Knowlton: 16 commands at most an hour apart stay clear of the Sabbath. */

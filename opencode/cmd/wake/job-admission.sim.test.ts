@@ -8,9 +8,9 @@ import * as Store from "@dotfiles/opencode-wake/memory/store"
 import * as Model from "@dotfiles/opencode-wake/model"
 import { Changes, JobRefused } from "@dotfiles/opencode-wake/service"
 import { admittedJobArgv, classifyJob } from "@dotfiles/opencode-wake/process/supervise"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 
-const { seeded } = Seed.runner("cmd/wake/job-admission.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/job-admission.sim.test.ts")
 
 // Observe the existing job-to-launcher seam on the exact base. Supply and
 // process execution are controlled boundaries; nothing starts on the host.

@@ -39,7 +39,7 @@
 // It runs on Bun's Effect platform layer (./host.ts): its files, child processes,
 // HTTP listeners and client are the platform's services.
 import { Cause, Clock, Data, Effect, Fiber, FileSystem, type Layer, Option, Schedule, Schema, type Scope, Stream } from "effect"
-import { expect, it } from "effect-bun-test"
+import { expect } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
 import { FetchHttpClient, Headers, HttpBody, HttpClient, HttpClientRequest, HttpMethod, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcessSpawner } from "effect/process"
@@ -519,9 +519,6 @@ const fixture = (root: string) =>
     yield* Effect.promise(() => client.experimental.session.wait({ sessionID: child.id }))
     return { ...base, parent, child: child.id } satisfies Fixture
   })
-
-/** A reconnect case's test: bun:test's, its Effect run on Bun's platform layer in a scope that stops its world when it ends. */
-export const test = it.scopedLive.layer(Platform)
 
 /**
  * A test body that builds the file's world in a fresh folder of `kept` and runs `body` in it;

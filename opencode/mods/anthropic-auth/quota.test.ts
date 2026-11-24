@@ -153,7 +153,7 @@ describe('readUsageBody', () => {
   test('reads model-scoped weekly windows by their model: the limits list as measured, and model_scoped', () => {
     // The shape /api/oauth/usage answered on 2026-11-09 (ids left out): Fable's
     // weekly window is a `weekly_scoped` entry of `limits`, scoped to its model.
-    const measured = {
+    const modelScopedReading = {
       five_hour: { utilization: 1, resets_at: '2026-11-10T02:30:00.291433+00:00' },
       seven_day: { utilization: 9, resets_at: '2026-11-16T09:00:00.291455+00:00' },
       seven_day_opus: null,
@@ -171,7 +171,7 @@ describe('readUsageBody', () => {
       ],
       weekly_scoped_shares: [{ limit_index: 2, used_percent_of_weekly: 0, allowance_percent_of_weekly: 50 }],
     }
-    expect(readUsageBody(measured, NOW)?.windows).toEqual([
+    expect(readUsageBody(modelScopedReading, NOW)?.windows).toEqual([
       { name: '5h', utilization: 0.01, resetAt: Date.parse('2026-11-10T02:30:00.291433+00:00') },
       { name: '7d', utilization: 0.09, resetAt: Date.parse('2026-11-16T09:00:00.291455+00:00') },
       // `weekly_scoped_shares` names Fable's entry (index 2): its whole allowance is half the weekly window, and its use took none of it.
