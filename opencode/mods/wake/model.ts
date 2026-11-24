@@ -1287,9 +1287,12 @@ export const layer = (config: Config) =>
         monitor: (sessionID, ask) => set(sessionID, (place) => monitorOf(ask, place)),
         latch: (ask) =>
           Effect.gen(function* () {
-            const child = yield* courier.newSession
+            const existing = Option.fromUndefinedOr(ask.child)
+            const child = yield* Option.match(existing, { onNone: () => courier.newSession, onSome: Effect.succeed })
             const latch = yield* locked(
               Effect.gen(function* () {
+                if (Option.isSome(existing) && (yield* store.entries).some((entry) => entry.kind === "latch" && entry.child === child))
+                  return yield* new WakeRejected({ reason: `subagent ${child} is already latched` })
                 const now = yield* Clock.currentTimeMillis
                 const made: Latch = {
                   kind: "latch",
@@ -1309,24 +1312,25 @@ export const layer = (config: Config) =>
                 return made
               }),
             )
-            // The child is made after the latch is kept: a latch whose child never came reads failed when it opens, and tells the parent.
-            const unmade = yield* courier
-              .child({
-                sessionID: child,
-                parentID: ask.sessionID,
-                directory: config.directory,
-                title: ask.subagent.description,
-                agent: ask.subagent.agent,
-                model: ask.subagent.model,
-                mark: markOf(latch),
-              })
-              .pipe(
-                Effect.as(undefined),
-                Effect.catchTag("DeliveryRefused", (refused) => Effect.succeed(refused)),
-              )
-            if (unmade !== undefined) {
+            // Mark an existing child, or make the new child after keeping the latch.
+            const unmade = yield* Option.match(existing, {
+              onSome: () => courier.mark(child, markOf(latch)).pipe(Effect.as(Option.none())),
+              onNone: () =>
+                courier
+                  .child({
+                    sessionID: child,
+                    parentID: ask.sessionID,
+                    directory: config.directory,
+                    title: ask.subagent.description,
+                    agent: ask.subagent.agent,
+                    model: ask.subagent.model,
+                    mark: markOf(latch),
+                  })
+                  .pipe(Effect.match({ onSuccess: Option.none, onFailure: Option.some })),
+            })
+            if (Option.isSome(unmade)) {
               yield* locked(store.remove(latch.id))
-              return yield* new WakeRejected({ reason: `the latched subagent's session could not be made: ${unmade.message}` })
+              return yield* new WakeRejected({ reason: `the latched subagent's session could not be made: ${unmade.value.message}` })
             }
             yield* changes.changed(ask.sessionID)
             yield* guard(latch)
