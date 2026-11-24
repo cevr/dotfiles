@@ -15,7 +15,13 @@ const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
 const PYTHON = Bun.which("python3") ?? "/usr/bin/python3"
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "workrift-subvolume-")))
 // WORKRIFT_TEST_KEEP=1 keeps every bench (its state, journal and trees) for a failure to be read after.
-afterAll(() => (process.env.WORKRIFT_TEST_KEEP ? console.log(`benches kept in ${scratch}`) : rmSync(scratch, { recursive: true, force: true })))
+/** The fd folders a test made unreadable (a process of another user): readable again before the scratch goes. */
+const hiddenFolders: Array<string> = []
+afterAll(() => {
+  for (const each of hiddenFolders) if (existsSync(each)) chmodSync(each, 0o700)
+  if (process.env.WORKRIFT_TEST_KEEP) console.log(`benches kept in ${scratch}`)
+  else rmSync(scratch, { recursive: true, force: true })
+})
 let benches = 0
 
 type Env = Record<string, string>
@@ -223,6 +229,32 @@ const DF = [
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
 
+/**
+ * sudo: `-n true` answers FAKE_SUDO=ok; `-n <command>` runs it with each hidden process's fd folder and working
+ * folder shown for the time it runs (the read a privilege allows), else refuses as sudo does with no password.
+ * Every call is logged in FAKE_SUDO_LOG.
+ */
+const SUDO = [
+  "#!/bin/sh",
+  'printf \'%s\\n\' "$*" >>"${FAKE_SUDO_LOG:-/dev/null}"',
+  '[ "${FAKE_SUDO:-}" = ok ] || { echo "sudo: a password is required" >&2; exit 1; }',
+  '[ "$1" = -n ] && shift',
+  'shown=',
+  'for a in "$@"; do',
+  '  case "$a" in',
+  '    */fd) [ -d "$a" ] && [ ! -r "$a" ] && chmod 700 "$a" && shown="$shown fd:$a" ;;',
+  '    */cwd) [ -f "${a%/cwd}/.cwd-hidden" ] && [ ! -L "$a" ] && ln -s "$(cat "${a%/cwd}/.cwd-hidden")" "$a" && shown="$shown cwd:$a" ;;',
+  '  esac',
+  'done',
+  '"$@"',
+  'rc=$?',
+  'for s in $shown; do',
+  '  case "$s" in fd:*) chmod 0 "${s#fd:}" ;; cwd:*) rm -f "${s#cwd:}" ;; esac',
+  'done',
+  'exit "$rc"',
+  "",
+].join("\n")
+
 /** A bench: the stand-ins first on PATH, a bare origin, the base `app` (a plain folder, work.toml, two branches). */
 const bench = (label: string) => {
   const dir = join(scratch, `${label}-${benches++}`)
@@ -233,7 +265,7 @@ const bench = (label: string) => {
   mkdirSync(join(sys, UUID, "allocation/metadata"), { recursive: true })
   writeFileSync(join(sys, UUID, "allocation/metadata/total_bytes"), `${57 * 2 ** 30}\n`)
   writeFileSync(join(sys, UUID, "allocation/metadata/bytes_used"), `${43 * 2 ** 30}\n`)
-  for (const [name, body] of [["flock", FLOCK], ["stat", STAT], ["btrfs", BTRFS], ["work", WORK], ["cp", CP], ["python3", PY], ["git", GIT], ["findmnt", FINDMNT], ["df", DF]] as const)
+  for (const [name, body] of [["flock", FLOCK], ["stat", STAT], ["btrfs", BTRFS], ["work", WORK], ["cp", CP], ["python3", PY], ["git", GIT], ["findmnt", FINDMNT], ["df", DF], ["sudo", SUDO]] as const)
     exe(join(bin, name), body)
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !/^(WORKRIFT_|RIFT_|WORK_|WORK$|XDG_|GIT_|FAKE_)/.test(entry[0])),
@@ -258,6 +290,7 @@ const bench = (label: string) => {
     FAKE_WORK_LOG: join(dir, "work-calls"),
     FAKE_LOG: join(dir, "phases.log"),
     FAKE_HOOKS_DONE: join(dir, "hooks-done"),
+    FAKE_SUDO_LOG: join(dir, "sudo-calls"),
     GIT_AUTHOR_NAME: "Workrift Test",
     GIT_AUTHOR_EMAIL: "workrift@example.invalid",
     GIT_COMMITTER_NAME: "Workrift Test",
@@ -330,16 +363,37 @@ const bench = (label: string) => {
   const phase = () => (existsSync(join(state, "subvolume/phase")) ? readFileSync(join(state, "subvolume/phase"), "utf8").trim() : "")
   const steps = () =>
     existsSync(join(state, "subvolume/log")) ? textLines(readFileSync(join(state, "subvolume/log"), "utf8")).map((line) => line.split(" ")[1]!.replace(/:$/, "")) : []
-  /** A process of the stand-in /proc: its working folder, command line and open files. */
-  const processAt = (pid: number, cwd: string, argv: ReadonlyArray<string> = ["sh"], fds: ReadonlyArray<string> = []) => {
+  /**
+   * A process of the stand-in /proc: its working folder, command line and open files; its stat (state, flags) and
+   * status (uid), which anyone reads. `hidden`: another user's, as root's is on the workbox: its fd folder refuses
+   * this user and its working folder does not show (the sudo stand-in shows both).
+   */
+  const processAt = (
+    pid: number,
+    cwd: string,
+    argv: ReadonlyArray<string> = ["sh"],
+    fds: ReadonlyArray<string> = [],
+    opts: { readonly uid?: number; readonly hidden?: boolean; readonly kthread?: boolean; readonly zombie?: boolean } = {},
+  ) => {
     const at = join(proc, String(pid))
     mkdirSync(join(at, "fd"), { recursive: true })
-    symlinkSync(cwd, join(at, "cwd"))
-    writeFileSync(join(at, "cmdline"), `${argv.join("\0")}\0`)
-    writeFileSync(join(at, "comm"), `${argv[0]?.split("/").at(-1) ?? "sh"}\n`)
+    if (opts.hidden) writeFileSync(join(at, ".cwd-hidden"), cwd)
+    else symlinkSync(cwd, join(at, "cwd"))
+    writeFileSync(join(at, "cmdline"), opts.kthread ? "" : `${argv.join("\0")}\0`)
+    const comm = argv[0]?.split("/").at(-1) ?? "sh"
+    writeFileSync(join(at, "comm"), `${comm}\n`)
+    // Fields 3 on: the state, the parent (1), then the flags as the seventh (PF_KTHREAD 0x00200000).
+    const flags = opts.kthread ? 0x00208040 : 0x00400100
+    writeFileSync(join(at, "stat"), `${pid} (${comm}) ${opts.zombie ? "Z" : "S"} 1 ${pid} ${pid} 0 -1 ${flags} ${Array.from({ length: 43 }, () => "0").join(" ")}\n`)
+    const uid = opts.uid ?? (opts.hidden ? 0 : 501)
+    writeFileSync(join(at, "status"), `Name:\t${comm}\nState:\tS (sleeping)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`)
     // A process of the owner's own: its environment reads (empty here).
     writeFileSync(join(at, "environ"), "")
     fds.forEach((file, i) => symlinkSync(file, join(at, "fd", String(10 + i))))
+    if (opts.hidden) {
+      chmodSync(join(at, "fd"), 0)
+      hiddenFolders.push(join(at, "fd"))
+    }
     return at
   }
   return { dir, bin, root, holds, proc, sys, env, envFor, base, head, paths, state, wr, wrAsync, kind, layout, refs, original, btrfsCalls, workCalls, records, premade, phase, steps, processAt, registered, move }
@@ -1250,6 +1304,132 @@ describe("workrift subvolume --back and --drop-old", () => {
     expect(none.code).toBe(0)
     expect(none.out).toContain("nothing to drop")
   }, 60_000)
+})
+
+describe("a process the walk cannot look into (another user's: root's, on the workbox)", () => {
+  /** The step log's lines (date and text). */
+  const stepLog = (b: Bench) => (existsSync(join(b.state, "subvolume/log")) ? readFileSync(join(b.state, "subvolume/log"), "utf8") : "")
+  const sudoCalls = (b: Bench) => (existsSync(b.env.FAKE_SUDO_LOG!) ? textLines(readFileSync(b.env.FAKE_SUDO_LOG!, "utf8")) : [])
+  const nextLine = (ran: Ran) => ran.err.split("\n").find((line) => line.startsWith("workrift subvolume: next: ")) ?? ""
+
+  test("with no sudo and no flag: refused, naming the count, the uid and both ways on; nothing changed", () => {
+    const b = bench("unknown-refused")
+    b.processAt(93001, join(b.base, "src"), ["rg"], [], { hidden: true })
+    const before = filesUnder(b.root)
+    for (const argv of [["subvolume"], ["subvolume", "--apply"]]) {
+      const ran = b.wr(argv)
+      expect(ran.code, said(ran)).toBe(1)
+      expect(said(ran)).toContain("1 process(es) of uid 0 could not be looked into")
+      expect(said(ran)).toContain("run it where sudo -n works")
+      expect(said(ran)).toContain("pass --beside-unreadable")
+      expect(nextLine(ran)).toContain("where sudo -n works, or")
+      expect(nextLine(ran)).toContain("subvolume --apply --beside-unreadable")
+    }
+    expect(filesUnder(b.root)).toEqual(before)
+    expect(b.btrfsCalls()).toEqual([])
+    // Asked once per run, never given: no read went past the refusal.
+    expect(sudoCalls(b)).toEqual(["-n true", "-n true"])
+  })
+
+  test("with sudo: the walk reads exactly the unknown process again, read only; one in the base is named and refused", () => {
+    const b = bench("unknown-sudo-holder")
+    const at = b.processAt(93002, join(b.base, "src"), ["rg"], [], { hidden: true })
+    b.processAt(93003, b.dir, ["zsh"])
+    const ran = b.wr(["subvolume", "--apply"], { FAKE_SUDO: "ok" })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93002 rg (uid 0, read with sudo)")
+    expect(said(ran)).not.toContain("93003")
+    expect(sudoCalls(b)).toEqual(["-n true", `-n find ${at}/fd ${at}/cwd -maxdepth 1 ( -lname ${b.base} -o -lname ${b.base}/* ) -print`])
+    // Refused at the preflight, before the hold: the command line is said on stderr (the step log is the switch's, written under the hold).
+    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -maxdepth 1`)
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+  })
+
+  test("with sudo: an unknown process outside the base is read and ruled out; the switch runs", () => {
+    const b = bench("unknown-sudo-none")
+    const at = b.processAt(93004, b.dir, ["sshd"], [join(b.dir, "x.log")], { hidden: true })
+    const ran = b.wr(["subvolume", "--apply"], { FAKE_SUDO: "ok" })
+    expect(ran.code, said(ran)).toBe(0)
+    expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
+    expect(stepLog(b)).toContain("the walk could not look into 1 process(es) of uid 0")
+    expect(stepLog(b)).toContain(`sudo -n find ${at}/fd ${at}/cwd`)
+  })
+
+  test("--beside-unreadable with no sudo: the switch runs beside them, and the step log says which", () => {
+    const b = bench("unknown-beside")
+    b.processAt(93005, b.dir, ["cron"], [], { hidden: true, uid: 0 })
+    b.processAt(93006, b.dir, ["postgres"], [], { hidden: true, uid: 70 })
+    const ran = b.wr(["subvolume", "--apply", "--beside-unreadable"])
+    expect(ran.code, said(ran)).toBe(0)
+    expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
+    expect(stepLog(b)).toMatch(/beside 2 process\(es\) of uid (0 70|70 0) it could not look into \(--beside-unreadable; no sudo -n here\): pids 9300[56] 9300[56]/)
+  })
+
+  test("a kernel thread or a zombie this user cannot look into holds no file: never unknown", () => {
+    const b = bench("unknown-kthread")
+    b.processAt(2, "/", ["kthreadd"], [], { hidden: true, kthread: true })
+    b.processAt(93007, b.base, ["defunct"], [], { hidden: true, zombie: true })
+    const ran = b.wr(["subvolume", "--apply"])
+    expect(ran.code, said(ran)).toBe(0)
+    expect(sudoCalls(b)).toEqual([])
+  })
+
+  test("a walk that fails for another reason (a process folder that does not list) stays a failure: refused", () => {
+    const b = bench("unknown-walk-fails")
+    const at = b.processAt(93008, b.dir, ["sh"])
+    chmodSync(at, 0)
+    hiddenFolders.push(at)
+    const ran = b.wr(["subvolume", "--apply", "--beside-unreadable"], { FAKE_SUDO: "ok" })
+    chmodSync(at, 0o700)
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain(`the processes in ${b.base} do not read (find over ${b.proc} failed): a process in it cannot be ruled out`)
+    expect(sudoCalls(b)).toEqual([])
+    expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
+  })
+
+  test("after the exchange, one that appears and cannot be looked into leaves the switch unfinished, never done; the printed next with the flag finishes it", () => {
+    const b = bench("unknown-after")
+    const pid = 93009
+    const at = join(b.proc, String(pid))
+    hiddenFolders.push(join(at, "fd"))
+    const hook = [
+      `mkdir -p '${at}/fd'`,
+      `printf '%s\\n' '${pid} (rg) S 1 ${pid} ${pid} 0 -1 4194560 0 0 0' >'${at}/stat'`,
+      `printf 'Uid:\\t0\\t0\\t0\\t0\\n' >'${at}/status'`,
+      `printf 'rg\\n' >'${at}/comm'`,
+      `printf 'rg\\0' >'${at}/cmdline'`,
+      `: >'${at}/environ'`,
+      `printf '%s' '${b.paths.old}' >'${at}/.cwd-hidden'`,
+      `chmod 0 '${at}/fd'`,
+    ].join("; ")
+    const ran = b.wr(["subvolume", "--apply"], { WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait", WORKRIFT_SUBVOLUME_HOOK: hook })
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toContain("not rolled back")
+    expect(ran.err).toContain("1 process(es) of uid 0 could not be looked into")
+    expect(nextLine(ran)).toContain("subvolume --apply --beside-unreadable")
+    expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "F" })
+    expect(b.phase()).toMatch(/^carry /)
+    // The printed way on with the flag finishes it (the process outside the base, as far as anyone can tell).
+    const again = b.wr(["subvolume", "--apply", "--beside-unreadable"])
+    expect(again.code, said(again)).toBe(0)
+    expect(b.phase()).toMatch(/^switched /)
+  })
+
+  test("--drop-old beside a process it cannot look into: refused with no sudo, nothing deleted", () => {
+    const b = bench("unknown-drop")
+    expect(b.wr(["subvolume", "--apply"]).code).toBe(0)
+    b.processAt(93010, b.paths.old, ["rg"], [], { hidden: true })
+    const ran = b.wr(["subvolume", "--drop-old", "--apply"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(ran.err).toContain("could not be looked into")
+    expect(ran.err).toContain("nothing deleted")
+    expect(nextLine(ran)).toContain("--drop-old --apply --beside-unreadable")
+    expect(existsSync(b.paths.old)).toBe(true)
+    const read = b.wr(["subvolume", "--drop-old", "--apply"], { FAKE_SUDO: "ok" })
+    expect(read.code, said(read)).toBe(1)
+    expect(read.err).toContain("93010 rg (uid 0, read with sudo)")
+    expect(existsSync(b.paths.old)).toBe(true)
+  })
 })
 
 describe("init and check on btrfs", () => {
