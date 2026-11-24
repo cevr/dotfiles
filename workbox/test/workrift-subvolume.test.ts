@@ -8,7 +8,7 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 const repo = join(import.meta.dir, "..", "..")
 const SCRIPT = process.env.WORKRIFT_SCRIPT ?? join(repo, "workbox/bin/workrift")
@@ -1470,6 +1470,35 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(read.err).toContain("93010 rg (uid 0, read with sudo)")
     expect(existsSync(b.paths.old)).toBe(true)
   })
+})
+
+describe("a ref Git skips (U1): the ref listing is strict", () => {
+  // Git lists neither and exits 0: a broken ref with a warning, a symbolic ref to nothing with no word at all. Read
+  // as deleted in the kept tree, the carry would delete the base's good copy.
+  for (const [kind, content] of [
+    ["broken", "not a sha"],
+    ["dangling symbolic", "ref: refs/heads/nowhere"],
+  ] as const)
+    test(`a ${kind} ref planted in the kept tree while the switch waits: the carry fails naming it, the base's copy survives; repaired, the next --apply finishes`, () => {
+      const b = bench(`ref-${kind.replace(" ", "-")}`)
+      sh(b.base, b.env, "git", "update-ref", "refs/heads/x", "refs/heads/feat-a")
+      const oid = sh(b.base, b.env, "git", "rev-parse", "refs/heads/x").trim()
+      const loose = join(b.paths.old, ".git/refs/heads/x")
+      const ran = b.wr(["subvolume", "--apply"], {
+        WORKRIFT_SUBVOLUME_HOOK_AT: "carry-wait",
+        WORKRIFT_SUBVOLUME_HOOK: `mkdir -p '${dirname(loose)}' && printf '%s\\n' '${content}' >'${loose}'`,
+      })
+      expect(ran.code, said(ran)).toBe(1)
+      expect(ran.err).toContain("not rolled back")
+      expect(ran.err).toMatch(/refs in the store of .* that git for-each-ref skips .*refs\/heads\/x|git for-each-ref in .* said: .*refs\/heads\/x/)
+      expect(sh(b.base, b.env, "git", "rev-parse", "refs/heads/x").trim()).toBe(oid)
+      expect(b.phase()).toMatch(/^carry /)
+      writeFileSync(loose, `${oid}\n`)
+      const again = b.wr(["subvolume", "--apply"])
+      expect(again.code, said(again)).toBe(0)
+      expect(sh(b.base, b.env, "git", "rev-parse", "refs/heads/x").trim()).toBe(oid)
+      expect(b.phase()).toMatch(/^switched /)
+    })
 })
 
 describe("init and check on btrfs", () => {
