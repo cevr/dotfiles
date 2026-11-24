@@ -181,7 +181,7 @@ describe("the real host law's acceptance leg", () => {
       const workspace = yield* Effect.promise(load)
       const file = "tests/host-laws.test.ts"
       const tier = tierOf(yield* fs.readFileString(matchingInput("tests/host-laws.test.ts")))
-      expect(readState(workspace, file)).toBe(workspace.head)
+      expect(readState(workspace, file)).toBe(workspace.head ?? "<missing workspace HEAD>")
       const runtime = testReadInputs(workspace, file)
       const imports = reach(workspace, [file])
       const inputs = acceptReach(workspace, file)
