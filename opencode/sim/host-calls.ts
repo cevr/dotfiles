@@ -23,9 +23,18 @@
 //   `reason="auto"`; a value the compiler cannot narrow to literals is `reason=?`;
 // - any other argument by its position, `#0`.
 import { Data, Effect, Option, Predicate, type Scope } from "effect"
-import { API, type Checker, type Project, SignatureKind, type Type, TypeFlags } from "typescript/unstable/async"
+import { API, type Checker, type Project, type Signature, SignatureKind, type Type, TypeFlags } from "typescript/unstable/async"
 import type { CallExpression, Node, SourceFile } from "typescript/unstable/ast"
-import { isCallExpression, isInterfaceDeclaration, isPropertyAccessExpression } from "typescript/unstable/ast/is"
+import {
+  isBindingElement,
+  isCallExpression,
+  isElementAccessExpression,
+  isIdentifier,
+  isInterfaceDeclaration,
+  isPropertyAccessExpression,
+  isStringLiteral,
+  isVariableDeclaration,
+} from "typescript/unstable/ast/is"
 
 /** The compiler could not answer. */
 export class ScanFailed extends Data.TaggedError("ScanFailed")<{ readonly message: string }> {}
@@ -52,6 +61,10 @@ interface Domain {
   readonly type: Type
   readonly members: ReadonlySet<string>
 }
+
+/** An OpenCode declaration survives a renamed or destructured reference to the host method. */
+const declarationOf = (signature: Signature) =>
+  Option.map(Option.fromUndefinedOr(signature.declaration), ({ path, index }) => `${path}:${index}`)
 
 /** The file declaring the plugin context, inside the fork. */
 const CONTEXT_FILE = "packages/plugin/src/effect/plugin.ts"
@@ -94,7 +107,8 @@ export const open = (config: string, cwd: string): Effect.Effect<Scanner, ScanFa
     const project = yield* present(Option.fromUndefinedOr(snapshot.getProject(config)), `no project for ${config}`)
     const files = yield* ask("list the files", () => project.program.getSourceFileNames())
     const domains = yield* domainsOf(project, files)
-    return { files, calls: (file: string) => callsOf(project, domains, file) }
+    const declarations = yield* declarationsOf(project.checker, domains)
+    return { files, calls: (file: string) => callsOf(project, domains, declarations, file) }
   })
 
 /** A file of the project, parsed. */
@@ -132,6 +146,26 @@ const domainsOf = (project: Project, files: ReadonlyArray<string>) =>
   })
 
 const joined = (path: string, name: string) => [path, name].filter((part) => part !== "").join(".")
+
+/** A declaration shared by two operations is ambiguous without the containing receiver. */
+const declarationsOf = (checker: Checker, domains: ReadonlyArray<Domain>) =>
+  Effect.gen(function* () {
+    const declarations = new Map<string, Set<string>>()
+    for (const domain of domains) {
+      for (const member of yield* ask("domain member declarations", () => checker.getPropertiesOfType(domain.type))) {
+        const type = yield* maybe(member.name, () => checker.getTypeOfSymbol(member))
+        if (Option.isNone(type)) continue
+        for (const signature of yield* ask("member signatures", () => checker.getSignaturesOfType(type.value, SignatureKind.Call))) {
+          const id = declarationOf(signature)
+          if (Option.isNone(id)) continue
+          const operations = Option.getOrElse(Option.fromUndefinedOr(declarations.get(id.value)), () => new Set<string>())
+          operations.add(joined(domain.path, member.name))
+          declarations.set(id.value, operations)
+        }
+      }
+    }
+    return declarations
+  })
 
 /** A union's or intersection's parts; a type of neither, none. */
 const partsOf = (type: Type) => {
@@ -227,27 +261,78 @@ const factsOf = (checker: Checker, passed: Type, declared: Option.Option<Type>, 
 /** The 1-based line of `position` in `source`. */
 const lineOf = (source: SourceFile, position: number) => source.text.slice(0, position).split("\n").length
 
+const fromReceiver = (checker: Checker, node: Node, op: string, domains: ReadonlyArray<Domain>) =>
+  Effect.gen(function* () {
+    const candidates = domains.filter((domain) => domain.members.has(op))
+    if (candidates.length === 0) return Option.none<string>()
+    const receiver = yield* maybe("a receiver's type", () => checker.getTypeAtLocation(node))
+    // An `any` or `unknown` receiver could be anything: it is no evidence of the host.
+    if (Option.isNone(receiver) || (receiver.value.flags & TypeFlags.AnyOrUnknown) !== 0) return Option.none<string>()
+    const domain = yield* Effect.findFirst(candidates, (candidate) => ask("assignable", () => checker.isTypeAssignableTo(candidate.type, receiver.value)))
+    return Option.map(domain, ({ path }) => joined(path, op))
+  })
+
+const memberName = (node: Node) => isIdentifier(node) || isStringLiteral(node) ? Option.some(node.text) : Option.none<string>()
+
+/** A shared signature (such as Transform) also needs its domain. Follow a local alias to its receiver. */
+const operationOf = (
+  checker: Checker, callee: Node, domains: ReadonlyArray<Domain>, visited: ReadonlySet<Node> = new Set(),
+): Effect.Effect<Option.Option<string>, ScanFailed> =>
+  Effect.gen(function* () {
+    if (isPropertyAccessExpression(callee)) return yield* fromReceiver(checker, callee.expression, callee.name.text, domains)
+    if (isElementAccessExpression(callee) && isStringLiteral(callee.argumentExpression)) {
+      return yield* fromReceiver(checker, callee.expression, callee.argumentExpression.text, domains)
+    }
+    if (!isIdentifier(callee) || visited.has(callee)) return Option.none()
+    const symbol = yield* maybe("the called binding", () => checker.getSymbolAtLocation(callee))
+    if (Option.isNone(symbol)) return Option.none()
+    for (const handle of symbol.value.declarations) {
+      const found = yield* maybe("the binding's declaration", () => handle.resolve())
+      if (Option.isNone(found)) continue
+      const node = found.value
+      if (isVariableDeclaration(node) && node.initializer) {
+        const operation = yield* operationOf(checker, node.initializer, domains, new Set([...visited, callee]))
+        if (Option.isSome(operation)) return operation
+      }
+      if (isBindingElement(node) && isVariableDeclaration(node.parent.parent) && node.parent.parent.initializer) {
+        const name = Option.flatMap(Option.fromUndefinedOr(node.propertyName), memberName).pipe(
+          Option.orElse(() => Option.flatMap(Option.fromUndefinedOr(node.name), memberName)),
+        )
+        if (Option.isSome(name)) return yield* fromReceiver(checker, node.parent.parent.initializer, name.value, domains)
+      }
+    }
+    return Option.none()
+  })
+
 /** The host calls in `file`. */
-const callsOf = (project: Project, domains: ReadonlyArray<Domain>, file: string) =>
+const callsOf = (project: Project, domains: ReadonlyArray<Domain>, declarations: ReadonlyMap<string, Set<string>>, file: string) =>
   Effect.gen(function* () {
     const checker = project.checker
     const source = yield* sourceOf(project, file)
     const found: Array<Call> = []
     for (const call of callsUnder(source)) {
       const callee = call.expression
-      if (!isPropertyAccessExpression(callee)) continue
-      const op = callee.name.text
-      const candidates = domains.filter((domain) => domain.members.has(op))
-      if (candidates.length === 0) continue
-      const receiver = yield* maybe("a receiver's type", () => checker.getTypeAtLocation(callee.expression))
-      // An `any` or `unknown` receiver could be anything: it is no evidence of the host.
-      if (Option.isNone(receiver) || (receiver.value.flags & TypeFlags.AnyOrUnknown) !== 0) continue
-      const domain = yield* Effect.findFirst(candidates, (candidate) => ask("assignable", () => checker.isTypeAssignableTo(candidate.type, receiver.value)))
-      if (Option.isNone(domain)) continue
+      const direct = isIdentifier(callee) ? Option.none<string>() : yield* operationOf(checker, callee, domains)
       // The host's own declaration (a generic's, not this call's instance), so a field is the host's and a choice its own.
       const resolved = yield* maybe("a call's signature", () => checker.getResolvedSignature(call))
       const target = yield* Effect.transposeOption(Option.map(resolved, (instance) => maybe("a signature's target", () => instance.getTarget())))
       const signature = Option.orElse(Option.flatten(target), () => resolved)
+      const possible = signature.pipe(
+        Option.flatMap(declarationOf),
+        Option.flatMap((id) => Option.fromUndefinedOr(declarations.get(id))),
+      )
+      const unique = possible.pipe(
+        Option.filter((paths) => paths.size === 1),
+        Option.flatMap((paths) => Option.fromUndefinedOr(paths.values().next().value)),
+        Option.orElse(() => direct),
+      )
+      const matching = Option.isNone(unique) && Option.isSome(possible)
+        ? yield* operationOf(checker, callee, domains)
+        : unique
+      if (Option.isNone(matching) && Option.isSome(possible)) {
+        return yield* Effect.fail(new ScanFailed({ message: `cannot identify ${file}:${lineOf(source, call.getStart(source))} as one of ${[...possible.value].join(", ")}; call it through a typed host domain` }))
+      }
+      if (Option.isNone(matching)) continue
       const facts = yield* Effect.forEach(call.arguments, (argument, index) =>
         Effect.gen(function* () {
           const passed = yield* maybe("an argument's type", () => checker.getTypeAtLocation(argument))
@@ -256,7 +341,7 @@ const callsOf = (project: Project, domains: ReadonlyArray<Domain>, file: string)
           return yield* factsOf(checker, passed.value, Option.flatten(declared), `#${index}`, FIELD_DEPTH)
         }),
       )
-      found.push({ operation: joined(domain.value.path, op), file, line: lineOf(source, call.getStart(source)), facts: [...new Set(facts.flat())] })
+      found.push({ operation: matching.value, file, line: lineOf(source, call.getStart(source)), facts: [...new Set(facts.flat())] })
     }
     return found
   })
