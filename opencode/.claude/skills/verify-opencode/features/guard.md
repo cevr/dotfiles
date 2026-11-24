@@ -23,7 +23,7 @@ A shell call that would lose work for good never runs: a recursive `rm` of the r
 
 - **Preconditions:** none beyond the baseline; the world's machine holds the process table, the repositories and the launchers.
 - **States:** refused and default (a command that passes). Loading is `n/a`; error is the guard-faults suite (a store or a process listing that fails, which refuses).
-- **World suites:** `cmd/guard/guard.sim.test.ts`, `cmd/guard/guard-faults.sim.test.ts`
+- **World suites:** `cmd/guard/guard.sim.test.ts`, `cmd/guard/guard-faults.sim.test.ts`, `cmd/guard/admission.sim.test.ts`
 - **Code:** `mods/guard/`, `cmd/guard/`, `sim/`; `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/guard/*.test.ts` (the verdicts, line by line).
 
