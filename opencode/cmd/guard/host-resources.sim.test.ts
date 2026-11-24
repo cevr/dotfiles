@@ -1,4 +1,4 @@
-import { BunServices } from "@effect/platform-bun"
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Option, Path, Result } from "effect"
 import { type Input } from "@dotfiles/opencode-guard/admission"
 import { type Reply } from "@dotfiles/opencode-guard/admission-wire"

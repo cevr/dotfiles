@@ -1,4 +1,4 @@
-import { BunServices } from "@effect/platform-bun"
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher } from "bun"
 import { Database } from "bun:sqlite"
 import { Effect, FileSystem, Option, Path, Predicate, Result, Schema } from "effect"
