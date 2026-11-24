@@ -15,6 +15,8 @@ import { FAST_AS_ASKED, FAST_AS_STARTED } from "@dotfiles/opencode-orchestrate/c
 import { paceOfReply, parseAdmission } from "@dotfiles/opencode-orchestrate/pace"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
@@ -137,8 +139,19 @@ const pool = (pace: Pace, now: () => number) =>
         .pipe(Effect.orDie, Effect.asVoid),
   })
 
+/** The owner's agent config naming a fast mode as the worker's model, as an agent file would (loaded after the plugin). */
+const workerOnFast = Plugin.define({
+  id: "fixture.worker-on-fast",
+  effect: (ctx) =>
+    ctx.agent.transform((editor) =>
+      editor.update("worker", (agent) => {
+        agent.model = { providerID: Provider.ID.make(FIRST.providerID), id: Model.ID.make(`${FIRST.id}-fast`) }
+      }),
+    ),
+})
+
 /** The run on one world: the root's ask, its start (and follow-up), until the root heard the answer. */
-const boot = (seed: number, asks: Asks, pace: Pace = "room", rootModel: World.CatalogModel = FIRST) =>
+const boot = (seed: number, asks: Asks, pace: Pace = "room", rootModel: World.CatalogModel = FIRST, config: ReadonlyArray<typeof workerOnFast> = []) =>
   Effect.gen(function* () {
     const seen: Array<Seen> = []
     const calls: Array<CallLine> = []
@@ -160,6 +173,7 @@ const boot = (seed: number, asks: Asks, pace: Pace = "room", rootModel: World.Ca
     yield* world.load(Plugins.orchestrate({ lines: calls, codex }), { directory: WORK, options })
     yield* world.load(Plugins.wake(world), { directory: WORK, options: { backstop: "off" } })
     yield* world.load(pool(pace, () => world.now()), { directory: WORK })
+    for (const plugin of config) yield* world.load(plugin, { directory: WORK })
     root = yield* world.session(WORK)
     yield* world.prompt(root, ASK)
     yield* world.until(() => world.messages(root).some((message) => message.type === "assistant" && message.text === HEARD), 120_000)
@@ -297,5 +311,16 @@ seeded("at depth 2, a child of a worker started fast runs standard unless it ask
     expect(asked.grand.length).toBeGreaterThan(0)
     for (const model of asked.grand) expect(model.id).toBe("gpt-sim-model-fast")
     expect(started(asked.calls)[1]).toMatchObject({ fast: FAST_AS_ASKED })
+  }),
+)
+
+seeded("an agent config naming a fast mode is not this start's ask: the worker runs standard and its line says so", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const { calls, worker, parent } = yield* boot(seed, { start: WORKER }, "room", FIRST, [workerOnFast])
+    expect(worker(BRIEF).length).toBeGreaterThan(0)
+    for (const model of worker(BRIEF)) expect(model.id).toBe("gpt-sim-model")
+    const said = "standard: simulation/gpt-sim-model-fast is a fast mode, and this start did not ask fast"
+    expect(started(calls)[0]).toMatchObject({ model: "simulation/gpt-sim-model", fast: said })
+    expect(parent).toContain(`orchestrate: this agent runs on simulation/gpt-sim-model: ${said}.`)
   }),
 )
