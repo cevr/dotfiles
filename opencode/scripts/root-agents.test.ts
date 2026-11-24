@@ -185,6 +185,23 @@ const registeredTools = Effect.gen(function* () {
 const codeWords = (markdown: string): ReadonlyArray<{ readonly span: string; readonly words: ReadonlyArray<string> }> =>
   [...markdown.matchAll(/`([^`\n]+)`/g)].map(([, span = ""]) => ({ span, words: [...span.matchAll(/[A-Za-z_][\w-]*/g)].map(([word]) => word) }))
 
+/** A name as a whole word: not part of a longer identifier, path or hyphenated word. */
+const whole = (name: string) => `(?<![\\w/.-])${name}(?![\\w-])`
+
+/**
+ * The tools `names` that prose names as tools, outside code spans too. Many tools are named like plain words
+ * (`principles`, `queue`, `message`, `image`, `job`, `monitor`, `wake`), and the rules use those words as words
+ * ("Read principles, don't ask which to apply"), so a plain word is a mention only where the prose calls it a tool:
+ * beside "tool" or "tools", or after "call" or "calls". A name that is an identifier (an underscore: `ask_user_async`)
+ * is no word at all, so it is a mention wherever it stands.
+ */
+const proseMentions = (text: string, names: ReadonlyArray<string>): ReadonlyArray<string> =>
+  names.flatMap((name) => {
+    const forms = [`${whole(name)}\\s+tools?\\b`, `\\btools?\\s+${whole(name)}`, `\\bcalls?\\s+(?:the\\s+)?${whole(name)}`]
+    if (name.includes("_")) forms.push(whole(name))
+    return [...text.matchAll(new RegExp(forms.join("|"), "gi"))].map(([match]) => match)
+  })
+
 /** The model families of the pool's price rows, and the catalog's spellings of a Claude or GPT id. */
 const MODEL_FAMILIES = [...new Set(Object.keys(PRICE).map((id) => familyOf(id).toLowerCase()))]
 const modelMentions = (text: string): ReadonlyArray<string> => [
@@ -225,6 +242,15 @@ describe("the root AGENTS.md names no plugin mechanics", () => {
     }),
   )
 
+  it.live.layer(BunServices.layer)("it names no plugin tool in prose either, but the allowed ones", () =>
+    Effect.gen(function* () {
+      const tools = yield* toolNames
+      const allowed = new Set(ALLOWED.flatMap((entry) => entry.tools))
+      const named = proseMentions(yield* rootAgents, Arr.filter([...tools], (tool) => !allowed.has(tool)))
+      expect(named).toEqual([])
+    }),
+  )
+
   it.live.layer(BunServices.layer)("it names no model id or family", () =>
     Effect.gen(function* () {
       expect(MODEL_FAMILIES).toContain("opus")
@@ -245,6 +271,10 @@ describe("the root AGENTS.md names no plugin mechanics", () => {
   it.effect("the checks catch what they are for: a tool in a code span, a model family in prose", () =>
     Effect.sync(() => {
       expect(codeWords("use the `queue` tool").flatMap((each) => each.words)).toContain("queue")
+      const names = ["queue", "principles", "ask_user_async", "wake_list"]
+      expect(proseMentions("the queue tool and call ask_user_async; tools wake_list", names)).toEqual(["queue tool", "call ask_user_async", "tools wake_list"])
+      // A tool named like a word, used as the word, names no tool; nor does a longer word that holds an identifier.
+      expect(proseMentions("Read principles, don't ask which to apply; the queue of work; my_ask_user_async_x", names)).toEqual([])
       expect(modelMentions("Fable plans, Opus first; newest standard Sol; gpt-6.1-sol-fast")).toEqual(["Opus", "Fable", "Sol", "sol", "gpt-6.1-sol-fast"])
     }),
   )
