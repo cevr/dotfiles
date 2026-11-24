@@ -42,6 +42,29 @@ import {
   WORTH_SHARE,
 } from "./claim-rule.ts"
 
+// Local to this import-fenced suite. Record each half only after Bun registers it.
+const registered = new Map<string, Array<"witness" | "control">>()
+const witness = <A>({ name, run, observe, without }: {
+  readonly name: string
+  readonly run: () => A
+  readonly observe: (result: A) => void | Promise<void>
+  readonly without: () => A
+}) => {
+  const add = (half: "witness" | "control", register: (name: string, body: () => void | Promise<void>) => void, play: () => A) => {
+    register(`W: ${name}`, () => observe(play()))
+    const halves = registered.get(name) ?? []
+    halves.push(half)
+    registered.set(name, halves)
+  }
+  add("witness", test, run)
+  add("control", test.failing, without)
+}
+
+const forecastName = (index: number) => `forecast ${index}: a useful credit is claimed`
+const expiryName = (index: number) => `expiry ${index}: an expiring credit goes first`
+const roomName = (index: number) => `room ${index}: the pool keeps its useful credit`
+const exhaustionName = (index: number) => `exhaustion ${index}: no-reset leaves a usable credit unclaimed`
+
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
@@ -397,11 +420,11 @@ describe("the rule on one pool, by example", () => {
   })
 
   const pool = (used: number, wait: number, expiry: number, index: number, running = 6, rule = decideClaim): Decision => {
-      const only = load("a", used, wait + index * MINUTE, 0.02)
-      const options = [option(only, "ra", { expiresAt: Option.some(NOW + expiry) })]
-      const live = situation([only], running)
-      const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
-      return { now: NOW, running: live.running, accounts, situation: live, options, verdict: rule(live, options) }
+    const only = load("a", used, wait + index * MINUTE, 0.02)
+    const options = [option(only, "ra", { expiresAt: Option.some(NOW + expiry) })]
+    const live = situation([only], running)
+    const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
+    return { now: NOW, running: live.running, accounts, situation: live, options, verdict: rule(live, options) }
   }
   const roomAt = (index: number) => pool(0.25, 2 * DAY, 30 * DAY, index, 3)
   const spentAt = (index: number) => pool(1, 3 * DAY, 30 * DAY, index)
@@ -420,34 +443,49 @@ describe("the rule on one pool, by example", () => {
     return spent
   }
   for (const index of Arr.range(0, 20)) {
-    test(`W: forecast ${index}: a useful credit is claimed`, () => {
-      const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
-      checkedRoom(index)
-      takes(forecast, "reset")
-      eachClaimHolds([forecast])
+    witness({
+      name: forecastName(index),
+      run: () => {
+        const forecast = pool(0.99, 3 * DAY, 30 * DAY, index)
+        checkedRoom(index)
+        eachClaimHolds([forecast])
+        return forecast
+      },
+      observe: (decision) => takes(decision, "reset"),
+      without: () => checkedRoom(index),
     })
-    test.failing(`W: forecast ${index}: a useful credit is claimed`, () => takes(checkedRoom(index), "reset"))
-    test(`W: expiry ${index}: an expiring credit goes first`, () => {
-      const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
-      checkedSpent(index)
-      takes(expiry, "expiring")
-      expiringGoFirst([expiry])
+    witness({
+      name: expiryName(index),
+      run: () => {
+        const expiry = pool(1, 3 * DAY, 12 * HOUR, index)
+        checkedSpent(index)
+        expiringGoFirst([expiry])
+        return expiry
+      },
+      observe: (decision) => takes(decision, "expiring"),
+      without: () => checkedSpent(index),
     })
-    test.failing(`W: expiry ${index}: an expiring credit goes first`, () => takes(checkedSpent(index), "expiring"))
   }
   for (const index of Arr.range(0, 100)) {
-    test(`W: room ${index}: the pool keeps its useful credit`, () => {
-      checkedSpent(index)
-      keeps(checkedRoom(index))
+    witness({
+      name: roomName(index),
+      run: () => {
+        checkedSpent(index)
+        return checkedRoom(index)
+      },
+      observe: keeps,
+      without: () => checkedSpent(index),
     })
-    test.failing(`W: room ${index}: the pool keeps its useful credit`, () => keeps(checkedSpent(index)))
-    test(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => {
-      const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
-      const spent = checkedSpent(index)
-      unclaimed(noReset)
-      claimedBeforeOut([spent])
+    witness({
+      name: exhaustionName(index),
+      run: () => {
+        const noReset = pool(1, 3 * DAY, 30 * DAY, index, 6, never)
+        claimedBeforeOut([checkedSpent(index)])
+        return noReset
+      },
+      observe: unclaimed,
+      without: () => checkedSpent(index),
     })
-    test.failing(`W: exhaustion ${index}: no-reset leaves a usable credit unclaimed`, () => unclaimed(checkedSpent(index)))
   }
 })
 
@@ -463,6 +501,7 @@ describe("the standing allowance's rule over generated weeks", () => {
     [31415527, "withholds a 5h credit while modeled demand would use more than half"],
   ])
   const zeroRoom = 18926016
+  const knownPoolClaimFailure = (name: string, law: () => void) => test.failing(`pool-claim-rule seed ${name}`, law)
 
   const weekHolds = (seed: number) => {
     const { accounts, decisions, periods } = simulate(seed)
@@ -478,15 +517,24 @@ describe("the standing allowance's rule over generated weeks", () => {
     for (const seed of Array.from({ length: 60 }, (_, index) => index + 1)) expect(out(simulate(seed).decisions), `seed ${seed}`).toBe(0)
   })
 
-  test.failing(`pool-claim-rule seed ${zeroRoom}: the aggregate flags zero room even though the expiring credit is claimed`, () => {
+  knownPoolClaimFailure(`${zeroRoom}: the aggregate flags zero room even though the expiring credit is claimed`, () => {
     expect(simulate(zeroRoom).decisions.filter((decision) => outWith(decision).length > 0).length, `seed ${zeroRoom}`).toBe(0)
   })
 
   for (const [seed, reason] of knownWeeks)
-    test.failing(`pool-claim-rule seed ${seed}: ${reason}`, () => weekHolds(seed))
+    knownPoolClaimFailure(`${seed}: ${reason}`, () => weekHolds(seed))
 
   for (const seed of new Set([...SEEDS, zeroRoom])) {
     if (knownWeeks.has(seed)) continue
     test(`seed ${seed}: every property holds`, () => weekHolds(seed))
   }
+})
+
+test("the witness registrar paired every forecast, expiry, room, and exhaustion case", () => {
+  const expected = [
+    ...Arr.range(0, 20).flatMap((index) => [forecastName(index), expiryName(index)]),
+    ...Arr.range(0, 100).flatMap((index) => [roomName(index), exhaustionName(index)]),
+  ]
+  expect([...registered.keys()].toSorted()).toEqual(expected.toSorted())
+  for (const name of expected) expect(registered.get(name), name).toEqual(["witness", "control"])
 })

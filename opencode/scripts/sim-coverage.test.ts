@@ -1,7 +1,7 @@
 // @reads cmd/guard/guard-faults.sim.test.ts cmd/memory/memory-faults.sim.test.ts cmd/orchestrate/record-model.sim.test.ts cmd/questions/questions-held.sim.test.ts mods/orchestrate/tools.test.ts mods/pool/claim-rule.test.ts mods/questions/opencode/form.test.ts mods/update/builds.test.ts mods/update/model.test.ts scripts/accept-yield.test.ts sim/witnesses.ts
 import { expect, expectTypeOf, test } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Effect, FileSystem, Option, Path } from "effect"
+import { Effect, FileSystem, Path } from "effect"
 import { it } from "effect-bun-test"
 import { assertWitness, witnesses } from "../sim/witnesses.ts"
 
@@ -13,33 +13,31 @@ test("required outcomes select explicit cases, in the declared order, with no se
 })
 
 test("a witness fails if its matched observation survives removal of the cause", () => {
+  expectTypeOf(assertWitness<string>).parameters.toEqualTypeOf<[string, string, string, string]>()
   assertWitness("letter delivered", "delivered", "delivered", "not delivered")
   expect(() => assertWitness("letter delivered", "delivered", "delivered", "delivered")).toThrow("removing the cause")
   expect(() => assertWitness("letter delivered", "delivered", "not delivered", "not delivered")).toThrow()
 })
 
-// The four domain packages cannot import the simulator. They register a positive
-// and a Bun expected failure with the same W: name at the same enumeration site.
-const registrations = (source: string) => {
-  const examples: Array<string> = []
-  const controls: Array<string> = []
-  for (const match of source.matchAll(/\btest(\.failing)?\(\s*(["`])(W: [^"`]+)\2/g)) {
-    const [, failing] = match
-    const name = Option.getOrThrow(Arr.get(match, 3))
-    if (failing) controls.push(name)
-    else examples.push(name)
-  }
-  return { examples: examples.toSorted(), controls: controls.toSorted() }
-}
+// Only ban escape hatches here. The fenced files inspect expanded Bun registrations themselves.
+const registrarForms = [
+  'register(`W: ${name}`, () => observe(play()))',
+  'add("control", test.failing, without)',
+]
+const poolDefectForm = "test.failing(`pool-claim-rule seed ${name}`, law)"
+const bareForms = (source: string, allowed: ReadonlyArray<string>) =>
+  [...allowed.reduce((rest, form) => rest.replace(form, ""), source)
+    .matchAll(/\btest\s*(?:\.\s*failing\b|\[\s*["']failing["']\s*\])|["'`]W:/g)].map(([form]) => form)
 
-const missing = (source: string) => {
-  const { examples, controls } = registrations(source)
-  return examples.filter((name) => !controls.includes(name))
-}
-
-test("the census names an example with no registered control", () => {
-  const text = 'test("W: live", run)\ntest.failing("W: live", control)\ntest("W: unchecked", run)'
-  expect(missing(text)).toEqual(["W: unchecked"])
+test("the source guard rejects a bare witness label or expected failure", () => {
+  const source = [
+    ...registrarForms,
+    'test.skip(\n  "W: unpaired", run)',
+    'expect(actual, "W: unpaired observation").toBe(want)',
+    'test . failing("bare", control)',
+    'test["failing"]("also bare", control)',
+  ].join("\n")
+  expect(bareForms(source, registrarForms)).toEqual(['"W:', '"W:', "test . failing", 'test["failing"]'])
 })
 
 const readSource = Effect.fn("WitnessCensus.readSource")(function* (file: string) {
@@ -51,34 +49,28 @@ const readSource = Effect.fn("WitnessCensus.readSource")(function* (file: string
 
 const live = it.live.layer(BunServices.layer)
 
-live("every fenced witness registration has exactly one control registration", () => Effect.gen(function* () {
+live("fenced files do not bypass their paired registrar", () => Effect.gen(function* () {
   const files = [
-    ["mods/orchestrate/tools.test.ts", 2],
-    ["mods/pool/claim-rule.test.ts", 4],
-    ["mods/update/builds.test.ts", 2],
-    ["mods/update/model.test.ts", 1],
+    ["mods/orchestrate/tools.test.ts", registrarForms],
+    ["mods/pool/claim-rule.test.ts", [...registrarForms, poolDefectForm]],
+    ["mods/update/builds.test.ts", registrarForms],
+    ["mods/update/model.test.ts", registrarForms],
   ] as const
-  for (const [file, groups] of files) {
-    const source = yield* readSource(file)
-    const { examples, controls } = registrations(source)
-    expect(examples, file).toHaveLength(groups)
-    expect(new Set(examples).size, file).toBe(groups)
-    expect(missing(source), file).toEqual([])
-    expect(controls, file).toEqual(examples)
+  for (const [file, allowed] of files) {
+    expect(bareForms(yield* readSource(file), allowed), file).toEqual([])
   }
 }))
 
-live("unfenced witnesses use the one helper that compares both post-run observations", () => Effect.gen(function* () {
+live("unfenced files do not assert a witness label outside the common helper", () => Effect.gen(function* () {
   const files = [
-    ["cmd/guard/guard-faults.sim.test.ts", 4],
-    ["cmd/memory/memory-faults.sim.test.ts", 2],
-    ["cmd/orchestrate/record-model.sim.test.ts", 4],
-    ["cmd/questions/questions-held.sim.test.ts", 2],
-    ["mods/questions/opencode/form.test.ts", 2],
-    ["scripts/accept-yield.test.ts", 12],
-  ] as const
-  for (const [file, sites] of files) {
-    const source = yield* readSource(file)
-    expect([...source.matchAll(/\bassertWitness\(/g)], file).toHaveLength(sites)
+    "cmd/guard/guard-faults.sim.test.ts",
+    "cmd/memory/memory-faults.sim.test.ts",
+    "cmd/orchestrate/record-model.sim.test.ts",
+    "cmd/questions/questions-held.sim.test.ts",
+    "mods/questions/opencode/form.test.ts",
+    "scripts/accept-yield.test.ts",
+  ]
+  for (const file of files) {
+    expect(bareForms(yield* readSource(file), []), file).toEqual([])
   }
 }))

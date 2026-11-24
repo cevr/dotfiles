@@ -12,6 +12,24 @@ import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
 
+// Local to this import-fenced suite. Record each half only after Bun registers it.
+const registered = new Map<string, Array<"witness" | "control">>()
+const witness = <A>({ name, run, observe, without }: {
+  readonly name: string
+  readonly run: () => A
+  readonly observe: (result: A) => void | Promise<void>
+  readonly without: () => A
+}) => {
+  const add = (half: "witness" | "control", register: (name: string, body: () => void | Promise<void>) => void, play: () => A) => {
+    register(`W: ${name}`, () => observe(play()))
+    const halves = registered.get(name) ?? []
+    halves.push(half)
+    registered.set(name, halves)
+  }
+  add("witness", test, run)
+  add("control", test.failing, without)
+}
+
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
 /** 2026-11-14T17:00:00Z, a Saturday noon in Knowlton: the Sabbath. */
@@ -1428,15 +1446,19 @@ describe("plugin trees", () => {
     for (const example of cases) {
       const observe = (ran: Ran) => expect(example.observe(ran), example.name).toEqual(example.want)
       const alternate = (ran: Ran) => expect(example.observe(ran), "control setup reached the alternate outcome").toEqual(example.otherwise)
-      test(`W: A4 ${example.name}`, () => check(Effect.all([runCase(example.example), runCase(example.control)]), ([positive, control]) => {
-        assertRuns([positive, control])
-        alternate(control.ran)
-        observe(positive.ran)
-      }))
-      test.failing(`W: A4 ${example.name}`, () => check(runCase(example.control), ({ ran }) => {
-        alternate(ran)
-        observe(ran)
-      }))
+      witness({
+        name: `A4 ${example.name}`,
+        run: () => Effect.map(Effect.all([runCase(example.example), runCase(example.control)]), ([positive, control]) => {
+          assertRuns([positive, control])
+          alternate(control.ran)
+          return positive.ran
+        }),
+        observe: (result) => check(result, observe),
+        without: () => Effect.map(runCase(example.control), ({ ran }) => {
+          alternate(ran)
+          return ran
+        }),
+      })
     }
 
     test("A4: over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, no step of the old scheme runs, a server config listing ours ends with no write and no restart, and a good build with no tree is never rolled back onto", () =>
@@ -1622,4 +1644,19 @@ describe("plugin trees", () => {
         expect(launched(ran.host)).toBe(NEW.version)
       }))
   })
+})
+
+test("the witness registrar paired all eight A4 outcomes", () => {
+  const expected = [
+    "both handoffs are proven",
+    "both handoffs roll back",
+    "both handoffs give up",
+    "both handoffs reject listed plugins before writes",
+    "cannot roll back to an untreed good build",
+    "make tree aborts before handoff",
+    "stage aborts before handoff",
+    "crash replaces the old service and opens a competing TUI before the explicit restart",
+  ].map((name) => `A4 ${name}`)
+  expect([...registered.keys()].toSorted()).toEqual(expected.toSorted())
+  for (const name of expected) expect(registered.get(name), name).toEqual(["witness", "control"])
 })

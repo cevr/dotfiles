@@ -317,6 +317,27 @@ const resolvedTexts = (resolved: Resolved): ReadonlyArray<string> => {
   return resolved.warnings
 }
 
+// Local to this import-fenced suite. Record each half only after Bun registers it.
+const registered = new Map<string, Array<"witness" | "control">>()
+const witness = <A>({ name, run, observe, without }: {
+  readonly name: string
+  readonly run: () => A
+  readonly observe: (result: A) => void | Promise<void>
+  readonly without: () => A
+}) => {
+  const add = (half: "witness" | "control", register: (name: string, body: () => void | Promise<void>) => void, play: () => A) => {
+    register(`W: ${name}`, () => observe(play()))
+    const halves = registered.get(name) ?? []
+    halves.push(half)
+    registered.set(name, halves)
+  }
+  add("witness", test, run)
+  add("control", test.failing, without)
+}
+
+const renderName = (index: number) => `render ${index}: eight land calls and a missing-purpose hint`
+const nextName = (index: number, action: string) => `next ${index}: ${action}`
+
 describe("every call an answer or a refusal names", () => {
   const checkTexts = (texts: ReadonlyArray<string>) => {
     for (const text of texts) {
@@ -347,16 +368,20 @@ describe("every call an answer or a refusal names", () => {
     const named = () => rendered(Option.some("checks the observed commands"))
     const observes = (lines: ReadonlyArray<string>) => expect(count(lines)).toBe(9)
     const alternate = (lines: ReadonlyArray<string>) => expect(count(lines), "control setup: the eight land calls remain").toBe(8)
-    test(`W: render ${index}: eight land calls and a missing-purpose hint`, () => {
-      const asked = rendered(Option.none())
-      checkTexts([...asked, ...named()])
-      alternate(named())
-      observes(asked)
-    })
-    test.failing(`W: render ${index}: eight land calls and a missing-purpose hint`, () => {
+    const without = () => {
       const lines = named()
       alternate(lines)
-      observes(lines)
+      return lines
+    }
+    witness({
+      name: renderName(index),
+      run: () => {
+        const asked = rendered(Option.none())
+        checkTexts([...asked, ...without()])
+        return asked
+      },
+      observe: observes,
+      without,
     })
   }
 })
@@ -740,17 +765,22 @@ describe("next", () => {
     for (const [expected, on, off, otherwise] of [["land", ready, noLane, [Option.some<"verify">("verify")]], ["verify", verify, notDue, []]] as const) {
       const observes = (next: ReturnType<typeof ready>) => expect(named(next)).toEqual([Option.some(expected)])
       const alternate = (next: ReturnType<typeof ready>) => expect(named(next), "control setup produced the alternate decision").toEqual([...otherwise])
-      test(`W: next ${index}: ${expected}`, () => {
-        const next = on()
-        alternate(off())
-        observes(next)
-        expect(decodedIn(next.line).map((call) => call.decoded)).toEqual([next.input])
-        expectCallsDecode(next.line)
-      })
-      test.failing(`W: next ${index}: ${expected}`, () => {
+      const without = () => {
         const next = off()
         alternate(next)
-        observes(next)
+        return next
+      }
+      witness({
+        name: nextName(index, expected),
+        run: () => {
+          const next = on()
+          without()
+          expect(decodedIn(next.line).map((call) => call.decoded)).toEqual([next.input])
+          expectCallsDecode(next.line)
+          return next
+        },
+        observe: observes,
+        without,
       })
     }
   }
@@ -908,4 +938,13 @@ describe("a unit's files", () => {
     const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "a", state: "ready", round: "3" }, { unit: "b", state: "ready" }] }]
     expect([roundIn("a", runs), roundIn("b", runs), roundIn("c", runs)]).toEqual([Option.some(3), Option.some(1), Option.none()])
   })
+})
+
+test("the witness registrar paired every render, land, and verify case", () => {
+  const expected = [
+    ...Arr.range(0, 199).map(renderName),
+    ...Arr.range(0, 10).flatMap((index) => [nextName(index, "land"), nextName(index, "verify")]),
+  ]
+  expect([...registered.keys()].toSorted()).toEqual(expected.toSorted())
+  for (const name of expected) expect(registered.get(name), name).toEqual(["witness", "control"])
 })
