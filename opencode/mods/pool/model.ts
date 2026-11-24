@@ -266,6 +266,9 @@ export const PUSH_RETRY_MS = 60_000
 
 /** A busy session not heard of (no step started) for this long lost its idle event: it no longer counts as running. */
 export const BUSY_MS = 60 * 60_000
+/** The whole provider evidence round, not a timeout paid once per stale login. */
+const DISPATCH_EVIDENCE_MS = 20_000
+const QUOTE_EVIDENCE_MS = 2_000
 
 export const layer = (config: Config) =>
   Layer.effect(
@@ -1236,14 +1239,11 @@ export const layer = (config: Config) =>
           )
           const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
             Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
-          ), { discard: true })
-          // Quotes must leave time for the caller's RPC. Placement instead waits
-          // for the provider/store's own bounded operations: otherwise a second
-          // expired login can be called "unread" before its refresh even runs.
-          if (unread.length > 0) {
-            if (work === "existing-request") yield* read
-            else yield* read.pipe(Effect.timeoutOption("2 seconds"))
-          }
+          ), { discard: true, concurrency: "unbounded" })
+          // A quote leaves time for the caller's RPC. Dispatch has its own
+          // overall deadline; it decides on all the outcomes in by that time.
+          const deadline = Option.getOrElse(Option.filter(Option.some(DISPATCH_EVIDENCE_MS), () => work === "existing-request"), () => QUOTE_EVIDENCE_MS)
+          if (unread.length > 0) yield* read.pipe(Effect.timeoutOption(deadline))
         }
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)

@@ -15,11 +15,12 @@ export const layer = (
   readings: ReadonlyMap<PoolId, ReadonlyMap<string, QuotaReading>>,
   published: ReadonlyMap<PoolId, Queue.Dequeue<PublishedReading>> = new Map(),
   claim: MemoryClaim = () => ({ outcome: "failed", message: "no claim in memory" }),
+  usage?: (pool: PoolId, credentialID: string) => Effect.Effect<QuotaReading | undefined>,
 ) => {
   const read = (pool: PoolId, credentialID: string) => Effect.sync(() => readings.get(pool)?.get(credentialID))
   return Layer.succeed(Quota, {
     reading: read,
-    usage: read,
+    usage: usage ?? read,
     readings: (pool: PoolId) => {
       const queue = published.get(pool)
       return queue === undefined ? Stream.empty : Stream.fromQueue(queue)

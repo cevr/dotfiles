@@ -4,7 +4,7 @@
 // session; the pool asks nothing, and withdraws any older question still
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { AccountsHeld, PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
@@ -51,7 +51,7 @@ interface Claimed {
 }
 
 /** The pool on memory layers: `readings` by pool and login, the claims sent recorded, each answered by `answer`. */
-const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>) => {
+const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>, usage?: Parameters<typeof QuotaTest.layer>[3]) => {
   const readings = new Map<PoolId, Map<string, QuotaReading>>([...connections.keys()].map((pool) => [pool, new Map()]))
   const claims: Array<Claimed> = []
   const owner = OwnerTest.empty()
@@ -69,7 +69,7 @@ const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ re
       const claim = { pool, ...input }
       claims.push(claim)
       return state.answer(claim)
-    }),
+    }, usage),
     LedgerTest.layer(),
     PeersTest.layer(new Map()),
     FleetTest.layer(),
@@ -91,6 +91,38 @@ const busy = (pool: Model.Pool["Service"], providerID: string) =>
 
 /** Let the review a held pace forked run. */
 const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
+
+test("dispatch starts every stale read together and ends a hung evidence round with a hold", () =>
+  scoped(Effect.gen(function* () {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"]
+    const tried: Array<string> = []
+    const now = 1_800_000_000_000
+    yield* TestClock.setTime(now)
+    const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
+      new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]),
+      (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)))
+    const pool = yield* fixture.pool
+    const request = yield* Effect.forkChild(Effect.result(pool.place({
+      providerID: "anthropic", sessionID: "hung", kind: "primary", model: "claude-haiku-4-5",
+    })))
+    yield* TestClock.adjust(1)
+    expect(tried.toSorted()).toEqual(ids)
+    yield* TestClock.adjust(19_998)
+    expect(request.pollUnsafe()).toBeUndefined()
+    yield* TestClock.adjust(1)
+    const finished = Option.fromUndefinedOr(request.pollUnsafe())
+    expect(Option.isSome(finished)).toBe(true)
+    if (Option.isSome(finished)) {
+      const deny = yield* Fiber.join(request)
+      expect(Result.match(deny, {
+        onSuccess: (placed) => placed,
+        onFailure: (error) => {
+          if (error._tag === "RequestHeld") return [error._tag, error.retryAt, error.reasonCode]
+          return [error._tag, error.retryAt]
+        },
+      })).toEqual(["RequestHeld", now + 80_000, "usage-unread"])
+    }
+  }).pipe(Effect.provide(TestClock.layer()))))
 
 test("an in-flight title's success cannot send a refused primary turn back to the same login", () =>
   scoped(
