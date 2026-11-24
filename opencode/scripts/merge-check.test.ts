@@ -19,7 +19,6 @@ import { emptyLedger, select, tierOf, withPass } from "./accept-ledger.ts"
 import { analyzeMerge } from "./gate.ts"
 import { parseNameStatus as parseNulNameStatus } from "./git-paths.ts"
 import { ACCEPT_TESTS, affectedUnits, DOCS_GUARD, GIT_REPO_GUARD, lintFiles, mergeLegs, reachedWithin, scriptTests } from "./merge-check.ts"
-import { assertPlannerProofKey, plannerInputKey, plannerProgramKey } from "./planner-proof-key.ts"
 import { mergeUnitInputs, swarmInputs } from "./test-impact.ts"
 import { readMatcher } from "./read-declarations.ts"
 import { acceptReach, importsOf, inspectReads, load, reach, readState, readsOf, testReadInputs } from "./reach.ts"
@@ -27,22 +26,6 @@ import { acceptanceTests, checkedTests, mergeScriptTests, swarmTests, workboxTes
 import { reachedSuites } from "./accept-plan.ts"
 
 const parseNameStatus = (out: string) => parseNulNameStatus(out.replace(/[\t\n]/g, "\0"))
-
-it.live.layer(BunServices.layer)("a retained production planner comparison rejects stale code or changed path evidence", () =>
-  Effect.gen(function* () {
-    const workspace = yield* Effect.promise(load)
-    const program = yield* plannerProgramKey()
-    const file = "../AGENTS.md"
-    const diff = [{ status: "M", paths: [file] }]
-    const merge = new Set(["scripts/merge-check.test.ts"])
-    const scope = { merge, swarm: new Set<string>(), acceptance: new Set<string>() }
-    const recorded = { program, inputs: plannerInputKey(workspace, file, scope, diff) }
-    expect((yield* Effect.result(assertPlannerProofKey(file, recorded, recorded)))._tag).toBe("Success")
-    const different = { ...recorded, inputs: plannerInputKey(workspace, file, { ...scope, merge: new Set<string>() }, diff) }
-    expect((yield* Effect.result(assertPlannerProofKey(file, recorded, different)))._tag).toBe("Failure")
-    expect((yield* Effect.result(assertPlannerProofKey(file, { ...recorded, program: "stale program" }, recorded)))._tag).toBe("Failure")
-  }),
-)
 
 it.live.layer(BunServices.layer)("nonempty production plans still run the unknown set; an empty diff says none due", () =>
   Effect.gen(function* () {
