@@ -10,7 +10,6 @@ import { spentAccount } from "../../tests/fake-chatgpt.ts"
 
 const { seeded } = simulationRunner("cmd/pool/pool-openai-send-hold.sim.test.ts")
 const decode = Schema.decodeUnknownSync(Pace)
-const MODEL = { providerID: "openai", id: "gpt-6.2-fixture" }
 const DIRECTORY = "/scratch/openai"
 const POOL = "dotfiles-opencode.pool"
 const heldSendOf = Schema.decodeUnknownSync(HeldSendAnswer)
@@ -18,8 +17,10 @@ const heldSendOf = Schema.decodeUnknownSync(HeldSendAnswer)
 for (const transport of ["http", "websocket"] as const)
 for (const sendRefusal of [false, true])
 for (const late of [false, true])
-seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (typed Step: ${String(sendRefusal)})`, ({ seed, expect }) =>
+for (const providerID of ["openai", "sim-openai"])
+seeded(`an OpenAI account hold (${String(late)} late) sends nothing via ${providerID} ${transport} (typed Step: ${String(sendRefusal)})`, ({ seed, expect }) =>
   Effect.gen(function* () {
+    const model = { providerID, id: "gpt-6.2-fixture" }
     const account = Provider.accounts(seed, ["sol"]).sol
     const quota = ChatGPT.make()
     const usage = spentAccount(account.access, "never-claim", World.START)
@@ -31,9 +32,9 @@ seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (ty
     const sends: Array<number> = []
     const receive = () => sends.push(world.now())
     const wire = Match.value(transport).pipe(
-      Match.when("websocket", () => ({ models: [{ ...MODEL, modelID: MODEL.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" as const } }] })),
+      Match.when("websocket", () => ({ models: [{ ...model, modelID: model.id, limit: { context: 128_000 }, cost: [], settings: { transport: "websocket" as const } }] })),
       Match.when("http", () => ({ provider: {
-        id: MODEL.providerID, baseURL: "http://127.0.0.1:11",
+        id: providerID, baseURL: "http://127.0.0.1:11",
         handle: () => Effect.sync(() => {
           receive()
           return new Response("data: {\"type\":\"message_stop\"}\n\n")
@@ -42,7 +43,7 @@ seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (ty
       Match.exhaustive,
     ) satisfies Partial<World.Options>
     const world = World.make({
-      seed, sendRefusal, model: MODEL, latency: [1, 10], script: () => { receive(); return World.say("synthetic answer") },
+      seed, sendRefusal, model, latency: [1, 10], script: () => { receive(); return World.say("synthetic answer") },
       ...wire,
       integrations: { openai: [{ id: "cred_sol", label: "Sol", ...account,
         expires: World.START + 86_400_000, methodID: "chatgpt-browser", metadata: { accountID: "fixture" } }] },
@@ -66,7 +67,7 @@ seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (ty
     const network = Provider.make({ seed, accounts: {}, chatgpt: quota }, world.runtime)
     yield* world.load(Plugins.pool(new Map(), Plugins.network(network)), {
       directory: DIRECTORY, options: {
-        providers: {}, paced: { openai: "openai" }, sweepMinutes: 0, resets: false, usageURL: ChatGPT.USAGE_URL,
+        providers: {}, paced: { [providerID]: "openai" }, sweepMinutes: 0, resets: false, usageURL: ChatGPT.USAGE_URL,
         limitsFile: "/nonexistent/sim/limits.json",
       },
     })
@@ -81,7 +82,7 @@ seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (ty
       }
     }
     const warm = sends.length
-    const quote = decode(yield* world.rpc(POOL, "pace", { providerID: MODEL.providerID, model: MODEL.id, dispatch: true }))
+    const quote = decode(yield* world.rpc(POOL, "pace", { providerID, model: model.id, dispatch: true }))
     if (late) expect(quote).toMatchObject({ ok: true, measured: true, eligible: ["cred_sol"] })
     else {
       expect(quote).toMatchObject({ ok: false, measured: true, eligible: [] })
@@ -91,7 +92,7 @@ seeded(`an OpenAI hold (${String(late)} late) sends nothing via ${transport} (ty
     yield* world.advance(until - world.now() - 1)
     expect(sends.slice(warm)).toEqual([])
     const held = heldSendOf(yield* world.rpc(POOL, "heldSend", { sessionID: session }))
-    expect(held.hold).toMatchObject({ sessionID: session, providerID: "openai", retryAt: until, reasonCode: "account-held" })
+    expect(held.hold).toMatchObject({ sessionID: session, providerID, retryAt: until, reasonCode: "account-held" })
     expect(world.sessions.get(session)?.running).toBe(sendRefusal)
     usage.fiveHour = 0
     usage.fiveHourResetAt = until + 3_600_000

@@ -4155,8 +4155,9 @@ login; the pool does not switch it. The pool can turn down a known durable
 hold during routing without reading usage. That early answer never admits a
 send: the pool checks the active login again at the concrete HTTP request
 or each WebSocket send, including on a socket another Step already used.
-An absent active login, unreadable authority, or unbound provider cannot grant
-admission. The token is never stored or shown by the pool.
+An absent active login or unreadable authority cannot grant admission. Provider
+aliases use the same hooks and check the account their configuration names.
+The token is never stored or shown by the pool.
 
 For OpenAI, a host with typed Step deferral retries the original Step at its hold's
 retry time. Older hosts stop it before sending and show when to retry.

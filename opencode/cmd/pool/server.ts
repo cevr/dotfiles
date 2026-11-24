@@ -231,13 +231,6 @@ export const Options = Schema.Struct({
 })
 export type Options = typeof Options.Type
 
-// A configured provider must have a binding on every transport it can use.
-// Anthropic's HTTP binding runs after signing in its auth plugin, via handoff.
-// OpenAI's HTTP and WebSocket bindings run here, on the host-selected login.
-const SEND_BINDINGS: ReadonlyMap<string, "signed-http" | "active-http-and-socket"> = new Map([
-  ["anthropic", "signed-http"],
-  ["openai", "active-http-and-socket"],
-])
 const SEND_HOLD_PREFIX = "held-send/"
 const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
 const decodeSendHold = Schema.decodeUnknownOption(HeldSend)
@@ -455,12 +448,13 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      for (const provider of Object.keys(options.providers))
-        if (SEND_BINDINGS.get(provider) !== "signed-http")
-          return yield* Effect.die(new Error(`dotfiles-opencode.pool: ${provider} has no signed placement send binding; check providers`))
-      for (const provider of Object.keys(options.paced))
-        if (!Object.hasOwn(options.providers, provider) && SEND_BINDINGS.get(provider) !== "active-http-and-socket")
-          return yield* Effect.die(new Error(`dotfiles-opencode.pool: ${provider} has no active-login send binding; check paced`))
+      // The established Anthropic signing path supplies its own final decision.
+      // Every other tracked route (including aliases) uses the host hooks.
+      const signed = (providerID: string) => providerID === "anthropic" && Object.hasOwn(options.providers, providerID)
+      const tracked = (providerID: string) => Option.orElse(
+        Option.filter(Option.fromUndefinedOr(options.providers[providerID]), () => Object.hasOwn(options.providers, providerID)),
+        () => Option.filter(Option.fromUndefinedOr(options.paced[providerID]), () => Object.hasOwn(options.paced, providerID)),
+      )
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
@@ -636,7 +630,7 @@ export const make = (
           Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
         )
       yield* ctx.session.hook("model.request", (event) => {
-        if (!Object.hasOwn(options.providers, event.model.providerID)) {
+        if (!signed(event.model.providerID)) {
           if (canDeferPrimary && event.kind === "primary") return Effect.void
           return gateActive(event, "known-hold", (hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.until))))
         }
@@ -671,15 +665,11 @@ export const make = (
         )
       })
 
-      const activePool = (providerID: string) => Option.filter(
-        Option.fromUndefinedOr(options.paced[providerID]),
-        () => SEND_BINDINGS.get(providerID) === "active-http-and-socket" && Object.hasOwn(options.paced, providerID),
-      )
       const gateActive = (event: { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
         readonly model: { readonly providerID: string; readonly id: string } }, phase: "known-hold" | "send",
         bind: (held: SendHold) => Effect.Effect<void>) =>
         Effect.gen(function* () {
-          const poolID = activePool(event.model.providerID)
+          const poolID = tracked(event.model.providerID)
           if (Option.isNone(poolID)) return
           const input = { providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind, model: event.model.id }
           const scope = { ...input, ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
@@ -709,12 +699,14 @@ export const make = (
       yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
         if (Option.isNone(stepIDOf(event))) return Effect.void
         canDeferPrimary = true
+        if (signed(event.model.providerID)) return Effect.void
         return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
       }))
-      if (Object.keys(options.paced).length > 0) {
-        yield* ctx.session.hook("http.request", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
-        yield* ctx.session.hook("experimental.ws.send", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
-      }
+      yield* ctx.session.hook("http.request", (event) => {
+        if (signed(event.model.providerID)) return Effect.void
+        return gateActive(event, "send", (hold) => refuseSend(event, hold))
+      })
+      yield* ctx.session.hook("experimental.ws.send", (event) => gateActive(event, "send", (hold) => refuseSend(event, hold)))
 
       // What a paced provider's response showed of the account's quota belongs
       // to the login OpenCode sends it on: the integration's active one.

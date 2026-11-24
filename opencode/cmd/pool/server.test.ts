@@ -803,14 +803,13 @@ describe("the options", () => {
     }
   })
 
-  test("rejects each tracked provider without its transport binding at activation", () =>
+  test("the installed Anthropic and OpenAI bindings and an arbitrary alias leave the pool available", () =>
     scenario(Effect.gen(function* () {
-      const configs = [
-        { options: { providers: { unknown: "anthropic" } }, message: "unknown has no signed placement send binding" },
-        { options: { providers: {}, paced: { unknown: "openai" } }, message: "unknown has no active-login send binding" },
-      ]
-      for (const { options, message } of configs)
-        expect(String(yield* Effect.exit(start(options)))).toContain(message)
+      const installed = { providers: { anthropic: "anthropic" }, paced: { openai: "openai" }, sweepMinutes: 0 }
+      const plugin = yield* start(installed)
+      expect(yield* plugin.request()).toBe("cred-a")
+      const alias = yield* start({ ...installed, paced: { ...installed.paced, sim: "anthropic" } })
+      expect(yield* alias.pace("sim")).toEqual(yield* alias.pace("anthropic"))
     })))
 })
 
@@ -1224,7 +1223,7 @@ describe("the ledger", () => {
         const root = yield* scratchRoot
         const published = yield* Queue.unbounded<PublishedReading>()
         const plugin = yield* start({ sweepMinutes: 0 }, state, () => Layer.merge(testLayers(state, published, root)(), slow), false)
-        expect(Object.keys(plugin.hooks).sort()).toEqual(["experimental.model.resolve", "http.response", "model.request", "retry"])
+        expect(Object.keys(plugin.hooks).sort()).toEqual(["experimental.model.resolve", "experimental.ws.send", "http.request", "http.response", "model.request", "retry"])
         yield* waitFor("the ledger read", () => scans > 0)
         const request = yield* Effect.forkChild(plugin.request("s1"))
         yield* settle
