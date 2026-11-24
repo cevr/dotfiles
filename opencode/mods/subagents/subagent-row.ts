@@ -41,7 +41,7 @@ import { unwrap } from "./envelope.ts"
 import type { Call, Family, Latch, Message, Session } from "./family.ts"
 import { modelName, type ModelName } from "./model.ts"
 import { label } from "./shell.ts"
-import { childrenOf, worksNow, type Works } from "./works.ts"
+import { childrenOf, waitingForWake, worksNow, type Works } from "./works.ts"
 
 /**
  * How a subagent stands. `working`, `waiting` and `latched` are live (see
@@ -157,9 +157,6 @@ function reason(text: string): string {
   return firstSentence(body.split("\n")[0] ?? "").replace(/^Subagent failed( \(sessionID: [^)]*\))?:?\s*/, "")
 }
 
-/** A subagent call that does not hold its turn: a background one, or a latched one, which answers at once. */
-const backgrounded = (call: Call) => call.input.background === true || call.metadata.status === "latched"
-
 const firstLine = (value: unknown) => (typeof value === "string" ? value.split("\n")[0]?.trim() || undefined : undefined)
 
 /** One piece of background work a session still waits on: what it is, and the step's call that started it (a kernel cell for its own calls). */
@@ -233,24 +230,30 @@ type Ending = { readonly state: State; readonly at?: number; readonly why?: stri
 
 const when = (at: number | undefined) => (at === undefined ? {} : { at })
 
-/** How a stopped subagent ended: its notice's verdict, else its foreground call's, else its session's outcome. */
+/** Only the host session's outcome can supply a coarse end, never a notice or a launch tool reply. */
 function ending(session: Session, found: ReturnType<typeof launch>): Ending {
-  const { call, notice } = found
-  if (notice) {
-    if (notice.state === "completed") return { state: "done", at: notice.at }
-    if (notice.state === "error") return { state: "failed", at: notice.at, why: reason(notice.text) }
-    return { state: "cancelled", at: notice.at }
-  }
-  if (call && !backgrounded(call) && !running(call)) {
-    if (call.status === "completed") return { state: "done", ...when(call.completed) }
-    const message = call.error ?? ""
-    if (message.startsWith("Subagent cancelled")) return { state: "cancelled", ...when(call.completed) }
-    return { state: "failed", ...when(call.completed), why: reason(message) }
-  }
+  if (session.execution?.kind === "failed") return { state: "failed", at: session.execution.at }
   if (session.outcome === "succeeded") return { state: "done", ...when(session.time.idle) }
   if (session.outcome === "failed") return { state: "failed", ...when(session.time.idle) }
   if (session.outcome === "interrupted") return { state: "cancelled", ...when(session.time.idle) }
-  return { state: "idle", ...when(session.time.updated) }
+  return { state: "idle", ...when(session.time.updated), why: diagnosis(found) }
+}
+
+const diagnosis = ({ call, notice }: Launch): string => {
+  if (notice?.state === "error") return reason(notice.text)
+  if (call?.status === "error" && call.error) return reason(call.error)
+  return ""
+}
+
+const continuationUpdate = (update: string, failed: boolean): string => {
+  if (!failed) return update
+  if (update === "") return "Step ended in error; work continues"
+  return `Step ended in error; work continues: ${update}`
+}
+
+const waitingText = (session: Session, pendings: ReadonlyArray<Pending>): string => {
+  if (pendings.length === 0 && waitingForWake(session)) return "awaiting host wake"
+  return waitingUpdate(session.messages, pendings)
 }
 
 /** When a running turn last started working: its start, or the end of the latest wait call it ran since. */
@@ -366,6 +369,7 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
     const busy = session.time.busy ?? session.time.created
     const heard = lastHeard(session.messages)
     const timed = (since: number) => ({ since, ...(heard === undefined ? {} : { heard }) })
+    if (session.lifecycle) return ownedRow(session, base, options, timed)
     const works = now(session.id)
     const permission = session.permissions[0]
     if (permission !== undefined) return { ...base, state: "blocked", update: `permission: ${permission}`.trim(), ...timed(busy) }
@@ -389,14 +393,68 @@ function rowsOf(family: Family, rootSessionID: string, options: ReadOptions): Re
       const pendings = pendingWork(session, children.get(session.id) ?? [], now)
       const idle = session.time.idle
       const since = idle !== undefined && idle >= busy ? idle : (heard ?? busy)
-      return { ...base, state: "waiting", update: waitingUpdate(session.messages, pendings), ...timed(since) }
+      const update = waitingText(session, pendings)
+      return {
+        ...base,
+        state: "waiting",
+        update: continuationUpdate(update, session.outcome === "failed" || session.execution?.kind === "failed"),
+        ...timed(since),
+      }
+    }
+    if (session.execution?.kind === "checking") return { ...base, state: "waiting", update: "Checking the last execution" }
+    if (session.execution?.kind === "undetermined") {
+      return {
+        ...base, state: "waiting",
+        update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
+        ...timed(session.execution.at),
+      }
     }
     const end = ending(session, found)
     const steps = stepCount(session.messages)
     // The symbol says how it ended (line.ts); the words say only what more there is.
-    const update = end.state === "done" ? plural(steps, "step") : end.state === "failed" ? (end.why ?? "") : ""
-    return { ...base, state: end.state, update, ...(end.at === undefined ? {} : { ended: end.at }) }
+    const update = end.state === "done" ? plural(steps, "step") : (end.why || "")
+    const row = { ...base, state: end.state, update, ...(end.at === undefined ? {} : { ended: end.at }) }
+    if (end.state === "idle" && found.notice) return { ...row, heard: found.notice.at }
+    return row
   })
+}
+
+function ownedRow(session: Session, base: Omit<Row, "state" | "update">, options: ReadOptions, timed: (since: number) => Pick<Row, "since" | "heard">): Row {
+  const view = session.lifecycle!
+  const qualify = (text: string) => {
+    if (view.sinceReload) return `${text} (since before reload)`
+    return text
+  }
+  switch (view.kind) {
+    case "checking": return { ...base, state: "waiting", update: "Checking the last execution" }
+    case "none":
+    case "unknown": return { ...base, state: "waiting", update: qualify("Current execution not known") }
+    case "recovering": return { ...base, state: "waiting", update: qualify("Recovering"), ...timed(view.at) }
+    case "running": return { ...base, state: "working", update: qualify(runningUpdate(session.messages)), ...timed(view.at) }
+    case "blocked": return { ...base, state: "blocked", update: qualify(`waiting for ${view.waitingOn}`), ...timed(view.at) }
+    case "latched": {
+      const latch = session.latch
+      if (latch) return { ...base, state: "latched", update: qualify(latchUpdate(latch, options.timeZone)), ...timed(view.at) }
+      return { ...base, state: "latched", update: qualify("Held start"), ...timed(view.at) }
+    }
+    case "continuing": {
+      const label = { Wake: "awaiting host wake", Shell: "shell still running", Child: "child still working", permission: "", question: "", "": "" }
+      const what = label[view.waitingOn]
+      const words = waitingUpdate(session.messages, []) || what
+      return { ...base, state: "waiting", update: qualify(continuationUpdate(words, view.diagnostic)), ...timed(view.at) }
+    }
+    case "undetermined": return {
+      ...base, state: "waiting",
+      update: qualify("Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered"),
+      ...timed(view.at),
+    }
+    case "done":
+    case "failed":
+    case "cancelled":
+      if (view.sinceReload) return { ...base, state: "waiting", update: "Checking the last execution (since before reload)" }
+      if (view.kind === "done") return { ...base, state: "done", update: plural(stepCount(session.messages), "step"), ended: view.at }
+      return { ...base, state: view.kind, update: "", ended: view.at }
+  }
 }
 
 /** How long a stopped subagent's row stays after it stopped. */
@@ -424,7 +482,9 @@ export function visible(
           ...(row.heard === undefined ? {} : { quiet: Math.max(0, now - row.heard) }),
         },
       ]
-    if (row.id === options.current || (row.ended !== undefined && now - row.ended < linger)) return [row]
+    if (row.id === options.current) return [row]
+    if (row.ended !== undefined && now - row.ended < linger) return [row]
+    if (row.state === "idle" && Number.isFinite(row.heard) && now - Number(row.heard) < linger) return [row]
     return []
   })
 }

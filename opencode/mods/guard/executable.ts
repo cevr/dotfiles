@@ -1292,7 +1292,14 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   const env = place.env || new Map<string, string>()
   const idle: ExecutionStep = { state, commands: [] }
   const [first, ...rest] = words
-  if (words.every(({ text }) => assignment.test(text))) return emptyStep(assignments(state, words))
+  if (words.every(({ text }) => assignment.test(text))) {
+    const assigned = assignments(state, words)
+    // An assignment to an exported CHROME changes the value inherited by later launchers.
+    const chrome = Option.fromUndefinedOr(assigned.vars.get("CHROME"))
+    if (env.has("CHROME") && Option.isSome(chrome))
+      return emptyStep({ ...assigned, place: { ...place, env: new Map([...env, ["CHROME", chrome.value]]) } })
+    return emptyStep(assigned)
+  }
   if (first?.text === "export" && rest.every(({ text }) => assignment.test(text) || /^[A-Za-z_]\w*$/.test(text))) {
     const assigned = assignments(state, rest.values().filter(({ text }) => assignment.test(text)).toArray())
     const exported = rest.map(({ text }) => text.split("=", 1)[0] || "")
@@ -1313,9 +1320,30 @@ const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, s
   const positionals = codePositionals(code, head, args, state)
   const command = { head, command: invocation.words.map(({ text }) => text).join(" "), cwd: runAt.cwd, unknownCwd: runAt.unknownCwd, env: projectNames(invocation.env, state.projection), code, sourceDepth, syntaxOnly, positionals }
   if (head === "git") return { state, commands: gitArgv(args, { ...place, ...at }, state).map((actual) => ({ ...command, args: actual })) }
+  // Keep the command observation, but do not let subsequent launches inherit an unset shim.
+  if (first?.text === "unset" && unsetsChrome(rest))
+    return { state: clearChrome(state, env), commands: [{ ...command, args }] }
   if (head !== "find") return { state, commands: [{ ...command, args }] }
   const tasks = findTasks(args).flatMap((task) => executionStep(task, [], { ...state, place: runAt }, sourceDepth).commands)
   return { state, commands: [{ ...command, args }, ...tasks] }
+}
+
+const unsetsChrome = (args: ReadonlyArray<Word>): boolean => {
+  for (const { text } of args) {
+    if (text === "--" || !text.startsWith("-")) break
+    if (text.includes("f")) return false // unset -f removes a function, not the variable.
+  }
+  return args.some(({ text }) => text === "CHROME")
+}
+
+const clearChrome = (state: ShellState, env: ReadonlyMap<string, string>): ShellState => {
+  const vars = new Map(state.vars)
+  const bindings = new Map(state.bindings)
+  const exported = new Map(env)
+  vars.delete("CHROME")
+  bindings.delete("CHROME")
+  exported.delete("CHROME")
+  return { ...state, vars, bindings, place: { ...state.place, env: exported } }
 }
 
 const codePositionals = (code: ReadonlyArray<CodeInput>, head: string, args: ReadonlyArray<Word>, state: ShellState): ReadonlyArray<string> => {

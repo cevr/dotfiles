@@ -11,6 +11,7 @@
 // log`, `sleep 1m; gh run view`. A sleep later in the line, or inside a loop,
 // is not read. A call with `background: true` holds no turn, so it runs.
 import { Schema } from "effect"
+import { renderRefusal } from "./message.ts"
 import { runningWords, simpleCommands } from "./shell-line.ts"
 
 /** The shortest opening sleep the guard refuses, in seconds. */
@@ -77,4 +78,4 @@ export const idleReason = ({ sleep, seconds }: OpeningSleep): string =>
   "wake and monitor are the root session's, not a subagent's"
 
 /** What the model reads of the refusal. */
-export const idleMessage = (reason: string): string => `guard-sleep: ${reason}.`
+export const idleMessage = (reason: string): string => renderRefusal("guard-sleep", reason)

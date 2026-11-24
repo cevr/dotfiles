@@ -21,7 +21,7 @@ const deny = (reason: string) => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: `guard-destructive: ${reason}.`,
+        permissionDecisionReason: `Refused by guard-destructive: ${reason}.`,
       },
     }),
   );
