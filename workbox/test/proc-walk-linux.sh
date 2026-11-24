@@ -23,6 +23,9 @@
 # (h) A proc mounted with hidepid=1: other users' processes are listed, but every entry of theirs answers EPERM
 #     ("Operation not permitted"): each is unread, read again with sudo -n (a root process in the folder named), or
 #     refused without it, or beside them with --beside-unreadable.
+# (i) workrift itself holds a descriptor in the folder, as it does under the switch's hold (the base's lock): the
+#     walk's own processes (the capture's subshell, find, find's sh -c grep) inherit it and end before they are
+#     judged; they ended, never processes in the folder (Rehearsal B run 2 on the workbox, B1, refused on them).
 set -u
 W=${1:?usage: proc-walk-linux.sh <workrift>}
 fails=0
@@ -268,6 +271,15 @@ $rheld "*"read with sudo"*) pass "(h) hidepid=1 with sudo -n: unread, read again
 else
   fail "(h) no root process ($rheld) or the proc mount with hidepid=1 did not mount"
 fi
+
+# (i) The walk's own processes.
+mkdir "$S/own" && : >"$S/own/lock"
+out=$(sh -c 'exec 7<"$1/lock"; exec sh "$2" processes "$1"' proc-walk-i "$S/own" "$W" 2>&1)
+rc=$?
+case "$rc:$out" in
+  0:*"none works in $S/own"*) pass "(i) workrift holding a descriptor in the folder: its own walk's processes ended, none in it ($rc)" ;;
+  *) fail "(i) workrift holding a descriptor in the folder: exit $rc: $out" ;;
+esac
 
 # (f) hidepid.
 mkdir "$S/proc"

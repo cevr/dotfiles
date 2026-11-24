@@ -3112,6 +3112,14 @@ EOF
     u_pid=${u_pid%%/*}
     case "$u_seen" in *" $u_pid "*) continue ;; esac
     u_seen="$u_seen$u_pid "
+    # Ended since the walk read its link (its folder gone): it holds nothing.
+    # So are the walk's own processes (the capture's subshell, find, the sh
+    # that greps the maps), which inherit what this one holds in the base
+    # (the lock's descriptors, under the hold) and end before they are judged.
+    if [ ! -e "$proc_root/$u_pid" ]; then
+      case "$u_gone" in *" $u_pid "*) ;; *) u_gone="$u_gone$u_pid " ;; esac
+      continue
+    fi
     ! sv_in_line "$u_pid" "$u_owners" || continue
     # The name is for a person only.
     printf 'use %s %s\n' "$u_pid" "$(cat "$proc_root/$u_pid/comm" 2>/dev/null || printf '?')"
