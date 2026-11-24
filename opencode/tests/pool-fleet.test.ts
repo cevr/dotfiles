@@ -104,7 +104,6 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
     writeFileSync(join(home, ".config/opencode/opencode.json"), JSON.stringify(config))
     const launch = forkLaunch(fork ?? "", process.execPath)
     const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], {
-        PATH: process.env.PATH ?? "",
         HOME: home,
         XDG_CONFIG_HOME: join(home, ".config"),
         XDG_DATA_HOME: join(home, ".local/share"),
