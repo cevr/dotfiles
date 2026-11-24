@@ -57,6 +57,8 @@ export const Hold = Schema.Struct({
   kind: RefusalKind,
   until: Schema.Number,
   at: Schema.Number,
+  /** An explicit provider refusal remains binding until this time, even if a later response shows room. */
+  refusedUntil: Schema.optionalKey(Schema.Finite),
 })
 export type Hold = typeof Hold.Type
 
