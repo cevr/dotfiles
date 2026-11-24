@@ -82,12 +82,15 @@ usage: workrift <command>
   settings                    give the warm source its host settings from workrift's
                               table (warm step, .env link); init does it too
   subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]
+            [--beside-unreadable]
                               make the warm source a btrfs subvolume (each workspace a
                               snapshot); --back makes it the plain folder it was;
                               --drop-old deletes the tree kept from the last switch;
                               a dry run (preflight and exact steps) unless --apply;
                               a removal of another base refuses it unless
-                              --beside-other-removals (one of this base always does)
+                              --beside-other-removals (one of this base always does);
+                              a process it cannot look into (another user's) is read
+                              with sudo -n, else refuses it unless --beside-unreadable
 
 The warm source is WORKRIFT_SOURCE, else the work base whose workspace (or
 itself) the current directory is, else the base with the same origin as the
@@ -2848,6 +2851,7 @@ sv_step() {
   # The step log is read by a person after, and decides nothing: a log that
   # cannot be written is said, and the switch goes on (a stop there would
   # leave a switch half done for a line of text).
+  sv_log_flush
   { mkdir -p "$sv_state" && printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$sv_state/log"; } 2>/dev/null ||
     printf 'workrift subvolume: the step log %s/log was not written (step %s); the switch goes on\n' "$sv_state" "$1" >&2
   # Tests only: a writer that lands at this step (WORKRIFT_SUBVOLUME_HOOK_AT,
@@ -2888,35 +2892,193 @@ $i_pid
 }
 
 # The processes outside workrift's line that work in the folder $1 or hold a
-# file open under it, `pid command` a line. One in line (a create waiting for
-# the base, a remove, their children) writes nothing in the base until its
-# turn, and by then it names the base by its path.
+# file open under it. One in line (a create waiting for the base, a remove,
+# their children) writes nothing in the base until its turn, and by then it
+# names the base by its path.
 #
-# Fails when the walk fails: a find that failed is never "nobody works there",
-# which would let a switch carry, or a drop delete, beside a live process. A
-# process that ends during the walk is no failure (-ignore_readdir_race).
+# Three answers, never two: `use <pid> <command>` a line for each process found
+# there; `unknown <pid> <uid>` for each process the walk could not look into
+# (its fd folder or working folder refused this user: another user's process,
+# root's on the workbox), which may or may not be there; and a status 1 when
+# the walk itself failed (anything but that refusal), which is never "nobody
+# works there". A process that ends during the walk is none
+# (-ignore_readdir_race); a kernel thread or a zombie holds no file, so it is
+# never unknown.
 sv_users() {
-  local u_dir="$1" u_owners u_links u_link u_pid u_seen=' ' u_ifs
+  local u_dir="$1" u_owners u_out u_line u_links='' u_rc='' u_pid u_rest u_seen=' ' u_ifs u_hidden=''
   u_owners=$(sv_line_pids) || return 1
-  u_links=$(find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 3 \
-    \( ! -path "$proc_root/[0-9]*" -prune \) -o \
-    \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" -prune \) -o \
-    \( \( -lname "$u_dir" -o -lname "$u_dir/*" \) -print \) 2>/dev/null) || return 1
+  # find's refusals go to the capture as they come; the paths it found follow
+  # it once it ended, each marked, so no line of one is cut by the other. Its
+  # status is taken, never a set -e stop of the capture (which keeps -e).
+  u_out=$({
+    u_frc=0
+    u_found=$(LC_ALL=C find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 3 \
+      \( ! -path "$proc_root/[0-9]*" -prune \) -o \
+      \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" -prune \) -o \
+      \( \( -lname "$u_dir" -o -lname "$u_dir/*" \) -print \) 2>&3) || u_frc=$?
+    printf 'rc %s\n' "$u_frc"
+    printf '%s\n' "$u_found" | while IFS= read -r u_line; do [ -z "$u_line" ] || printf 'L %s\n' "$u_line"; done
+  } 3>&1) || return 1
+  while IFS= read -r u_line; do
+    case "$u_line" in
+      'L '*) u_links="$u_links${u_line#L }
+" ;;
+      'rc '*) u_rc=${u_line#rc } ;;
+      *)
+        # A refusal of one process's fd or working folder names an unknown
+        # process; any other message is a failed walk.
+        u_rest=${u_line#"find: "}
+        u_rest=${u_rest#"'"}
+        case "$u_rest" in "$proc_root"/*) ;; *) return 1 ;; esac
+        u_rest=${u_rest#"$proc_root"/}
+        u_pid=${u_rest%%/*}
+        case "$u_pid" in '' | *[!0-9]*) return 1 ;; esac
+        case "${u_rest#"$u_pid"}" in
+          "/fd': Permission denied" | "/cwd': Permission denied" | "/fd: Permission denied" | "/cwd: Permission denied") ;;
+          *) return 1 ;;
+        esac
+        case "$u_hidden" in *" $u_pid "*) ;; *) u_hidden="${u_hidden:- }$u_pid " ;; esac
+        ;;
+    esac
+  done <<EOF
+$u_out
+EOF
+  case "$u_rc" in
+    0) ;;
+    '' | *[!0-9]*) return 1 ;;
+    *) [ -n "$u_hidden" ] || return 1 ;;
+  esac
   u_ifs=$IFS
   IFS='
 '
   set -f
-  for u_link in $u_links; do
-    u_pid=${u_link#"$proc_root"/}
+  for u_line in $u_links; do
+    u_pid=${u_line#"$proc_root"/}
     u_pid=${u_pid%%/*}
     case "$u_seen" in *" $u_pid "*) continue ;; esac
     u_seen="$u_seen$u_pid "
     ! sv_in_line "$u_pid" "$u_owners" || continue
     # The name is for a person only.
-    printf '%s %s\n' "$u_pid" "$(cat "$proc_root/$u_pid/comm" 2>/dev/null || printf '?')"
+    printf 'use %s %s\n' "$u_pid" "$(cat "$proc_root/$u_pid/comm" 2>/dev/null || printf '?')"
   done
   set +f
   IFS=$u_ifs
+  for u_pid in $u_hidden; do
+    case "$u_seen" in *" $u_pid "*) continue ;; esac
+    sv_unknown_pid "$u_pid" "$u_owners" || return 1
+  done
+}
+
+# Prints `unknown <pid> <uid>` for the process $1 the walk could not look into,
+# unless it holds no file (gone, a kernel thread, a zombie) or is in the line
+# $2. Its stat and status are readable by anyone: one that does not read while
+# the process is still there fails.
+sv_unknown_pid() {
+  local k_pid="$1" k_owners="$2" k_stat k_state k_flags k_key k_value k_uid='?'
+  [ -e "$proc_root/$k_pid" ] || return 0
+  if ! { IFS= read -r k_stat <"$proc_root/$k_pid/stat"; } 2>/dev/null; then
+    [ -e "$proc_root/$k_pid" ] || return 0
+    return 1
+  fi
+  # The fields after the command name (which may hold spaces and parentheses):
+  # the state, then the flags as the seventh; PF_KTHREAD is 0x00200000.
+  k_stat=${k_stat##*) }
+  set -f
+  # shellcheck disable=SC2086 # split into its fields on purpose
+  set -- $k_stat
+  set +f
+  k_state=${1:-}
+  k_flags=${7:-}
+  case "$k_flags" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$k_state" != Z ] || return 0
+  [ $((k_flags & 0x200000)) -eq 0 ] || return 0
+  ! sv_in_line "$k_pid" "$k_owners" || return 0
+  if { while read -r k_key k_value _; do [ "$k_key" != Uid: ] || k_uid=$k_value; done <"$proc_root/$k_pid/status"; } 2>/dev/null; then :; else
+    [ -e "$proc_root/$k_pid" ] || return 0
+    return 1
+  fi
+  printf 'unknown %s %s\n' "$k_pid" "$k_uid"
+}
+
+# The processes in the folder $1, every one known, into sv_users_found (`pid
+# command` a line). Unknown ones (sv_users) are read again with privilege
+# where sudo -n works: a read-only find of exactly their fd and working
+# folders, its command line in the step log. Where it does not, the switch
+# goes on beside them only with --beside-unreadable (said in the step log);
+# else status 2, sv_why naming them and the two ways on. Status 1 with sv_why
+# when a walk fails.
+sv_users_known() {
+  local k_all k_line k_users='' k_unknown='' k_n=0 k_uids=' ' k_pid k_uid k_found
+  sv_users_found=
+  sv_read k_all sv_users "$1" || { sv_why="the processes in $1 do not read (find over $proc_root failed)"; return 1; }
+  while IFS= read -r k_line; do
+    case "$k_line" in
+      'use '*) k_users="$k_users${k_line#use }
+" ;;
+      'unknown '*)
+        k_line=${k_line#unknown }
+        k_pid=${k_line%% *}
+        k_uid=${k_line#* }
+        k_unknown="$k_unknown $k_pid"
+        k_n=$((k_n + 1))
+        case "$k_uids" in *" $k_uid "*) ;; *) k_uids="$k_uids$k_uid " ;; esac
+        ;;
+    esac
+  done <<EOF
+$k_all
+EOF
+  k_uids=${k_uids# }
+  k_uids=${k_uids% }
+  if [ "$k_n" -gt 0 ]; then
+    if sudo -n true 2>/dev/null; then
+      sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only:"
+      for k_pid in $k_unknown; do
+        sv_log "  sudo -n find $proc_root/$k_pid/fd $proc_root/$k_pid/cwd -maxdepth 1 ( -lname $1 -o -lname $1/* ) -print"
+        if ! k_found=$(sudo -n find "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd" -maxdepth 1 \( -lname "$1" -o -lname "$1/*" \) -print 2>/dev/null); then
+          # One gone meanwhile holds nothing.
+          [ ! -e "$proc_root/$k_pid" ] || { sv_why="the privileged read of process $k_pid failed (sudo -n find over $proc_root/$k_pid)"; return 1; }
+          continue
+        fi
+        [ -z "$k_found" ] || k_users="$k_users$k_pid $(cat "$proc_root/$k_pid/comm" 2>/dev/null || printf '?') (uid $(sv_uid_of "$k_pid"), read with sudo)
+"
+      done
+    elif [ "${sv_beside_unreadable:-no}" = yes ]; then
+      sv_log "beside $k_n process(es) of uid $k_uids it could not look into (--beside-unreadable; no sudo -n here): pids$k_unknown"
+    else
+      sv_why="$k_n process(es) of uid $k_uids could not be looked into (their open files and working folders are another user's), so one in $1 cannot be ruled out: run it where sudo -n works (it reads them, read only), or pass --beside-unreadable to run beside them"
+      sv_unknown_next="$(sv_command "$sv_mode") where sudo -n works, or $(sv_beside_unreadable_command "$sv_mode")"
+      return 2
+    fi
+  fi
+  sv_users_found=${k_users%
+}
+}
+
+# The uid of the process $1 (status), ? if it does not read.
+sv_uid_of() {
+  local o_key o_value o_uid='?'
+  { while read -r o_key o_value _; do [ "$o_key" != Uid: ] || o_uid=$o_value; done <"$proc_root/$1/status"; } 2>/dev/null || :
+  printf '%s' "$o_uid"
+}
+
+# A line for a person on stderr now, and in the step log with the next step
+# (the log of the last switch is replaced only once this one starts) or a
+# refusal under the hold.
+sv_log() {
+  local l_at
+  printf 'workrift subvolume: %s\n' "$1" >&2
+  l_at=$(date -u +%FT%TZ) || l_at='(no clock)'
+  sv_log_held="${sv_log_held:-}$l_at $1
+"
+}
+
+# Writes the lines sv_log holds into the step log; one that cannot be written
+# is said, and the switch goes on (the log decides nothing).
+sv_log_flush() {
+  [ -n "${sv_log_held:-}" ] && [ -d "${sv_state:-}" ] || return 0
+  { printf '%s' "$sv_log_held" >>"$sv_state/log"; } 2>/dev/null ||
+    printf 'workrift subvolume: the step log %s/log was not written; the switch goes on\n' "$sv_state" >&2
+  sv_log_held=
 }
 
 # Removals running or in line, `this|other pid what` a line: a workrift remove
@@ -3238,13 +3400,22 @@ EOF
   else
     sv_check no "an older workrift runs, which would not wait for the switch; let it end: $(sv_joined "$p_list")"
   fi
-  if ! sv_read p_list sv_users "$sv_base"; then
-    sv_check no "the processes in $sv_base do not read (find over $proc_root failed): a process in it cannot be ruled out"
-  elif [ -z "$p_list" ]; then
-    sv_check ok "no process outside workrift's line works in $sv_base or holds a file open in it"
-  else
-    sv_check no "processes outside workrift's line work in $sv_base (run this from outside it; end them): $(sv_joined "$p_list")"
-  fi
+  sv_rc=0
+  sv_users_known "$sv_base" || sv_rc=$?
+  case $sv_rc in
+    0)
+      if [ -z "$sv_users_found" ]; then
+        sv_check ok "no process outside workrift's line works in $sv_base or holds a file open in it"
+      else
+        sv_check no "processes outside workrift's line work in $sv_base (run this from outside it; end them): $(sv_joined "$sv_users_found")"
+      fi
+      ;;
+    2)
+      sv_check no "$sv_why"
+      sv_next=$sv_unknown_next
+      ;;
+    *) sv_check no "$sv_why: a process in it cannot be ruled out" ;;
+  esac
   p_list=$(sv_git_locks "$sv_base")
   if [ -z "$p_list" ]; then
     sv_check ok 'no Git lock or gc file in the base'
@@ -3260,6 +3431,15 @@ sv_command() {
     S) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --apply' "$sv_base" ;;
     F) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --back --apply' "$sv_base" ;;
     drop) printf 'cd / && WORKRIFT_SOURCE=%s workrift subvolume --drop-old --apply' "$sv_base" ;;
+  esac
+  [ "${sv_beside_unreadable:-no}" = no ] || printf ' --beside-unreadable'
+}
+
+# sv_command $1 with --beside-unreadable.
+sv_beside_unreadable_command() {
+  case "${sv_beside_unreadable:-no}" in
+    yes) sv_command "$1" ;;
+    *) printf '%s --beside-unreadable' "$(sv_command "$1")" ;;
   esac
 }
 
@@ -3535,7 +3715,16 @@ sv_wait_users() {
   w_now=$(date +%s) || { sv_why="the clock does not read (date failed) before the wait for $1"; return 1; }
   w_until=$((w_now + sv_wait_seconds))
   while :; do
-    sv_read w_users sv_users "$1" || { sv_why="the processes in $1 do not read (find over $proc_root failed)"; return 1; }
+    sv_rc=0
+    sv_users_known "$1" || sv_rc=$?
+    case $sv_rc in
+      0) w_users=$sv_users_found ;;
+      2)
+        sv_unfinished_next=$sv_unknown_next
+        return 1
+        ;;
+      *) return 1 ;;
+    esac
     [ -n "$w_users" ] || return 0
     w_now=$(date +%s) || { sv_why="the clock does not read (date failed) while it waits for $1"; return 1; }
     if [ "$w_now" -ge "$w_until" ]; then
@@ -3597,8 +3786,16 @@ sv_drop_copy() {
   sv_kind_of d_kb "$sv_base"
   [ "$d_kb" = "$(sv_other "$d_t")" ] && sv_whole "$sv_base" ||
     fail "$sv_base is not the whole $(sv_words "$(sv_other "$d_t")") the copy was made from; $d_path is not deleted"
-  sv_read d_users sv_users "$d_path" ||
-    fail "the processes in $d_path do not read (find over $proc_root failed): nothing deleted"
+  sv_rc=0
+  sv_users_known "$d_path" || sv_rc=$?
+  case $sv_rc in
+    0) d_users=$sv_users_found ;;
+    2)
+      sv_next=$sv_unknown_next
+      fail "$sv_why: nothing deleted"
+      ;;
+    *) fail "$sv_why: nothing deleted" ;;
+  esac
   [ -z "$d_users" ] || fail "processes work in $d_path ($(sv_joined "$d_users")); end them, then run again"
   # The copy was never the base: the exchange is the only step that puts a
   # tree at the base's path, and the base is still the tree it was copied from.
@@ -4021,7 +4218,7 @@ sv_end() {
   sv_release
   sv_said "$1"
   if [ -n "${sv_unfinished:-}" ]; then
-    sv_next="$(sv_command "$1") once no process works in $sv_old (it carries what $sv_old gained and finishes the switch)"
+    sv_next=${sv_unfinished_next:-"$(sv_command "$1") once no process works in $sv_old (it carries what $sv_old gained and finishes the switch)"}
     fail "$sv_unfinished; not rolled back: $sv_base has been the live base since the exchange and stays $(sv_words "$1"); the switch is not finished: run workrift subvolume$([ "$1" = F ] && printf ' --back') --apply again (once no process works in $sv_old) to carry what $sv_old gained and finish it"
   fi
   if [ -n "${sv_unproved:-}" ]; then
@@ -4123,6 +4320,7 @@ sv_switch() {
   sv_refused=false
   sv_preflight_live >&2
   if [ "$sv_refused" = true ]; then
+    sv_log_flush
     sv_release
     fail 'refused under the hold: nothing changed'
   fi
@@ -4292,7 +4490,16 @@ sv_drop() {
   else
     printf '  nice -n 19 rm -rf --one-file-system -- %s   (a walk of every file)\n' "$sv_old"
   fi
-  sv_read d_users sv_users "$sv_old" || fail "the processes in $sv_old do not read (find over $proc_root failed): nothing deleted"
+  sv_rc=0
+  sv_users_known "$sv_old" || sv_rc=$?
+  case $sv_rc in
+    0) d_users=$sv_users_found ;;
+    2)
+      sv_next=$sv_unknown_next
+      fail "$sv_why: nothing deleted"
+      ;;
+    *) fail "$sv_why: nothing deleted" ;;
+  esac
   [ -z "$d_users" ] || fail "processes work in $sv_old ($(sv_joined "$d_users")): nothing deleted"
   # What the base would lose with it, said before it goes.
   sv_lacks_said
@@ -4324,10 +4531,11 @@ sv_drop() {
   printf 'workrift subvolume: deleted %s in %s s\n' "$sv_old" "$((d_now - create_started))"
 }
 
-# `workrift subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals]`.
+# `workrift subvolume [--back | --drop-old] [--check] [--apply] [--beside-other-removals] [--beside-unreadable]`.
 subvolume_command() {
   local a_mode=forward a_apply=false a_source a_bases
   sv_beside=no
+  sv_beside_unreadable=no
   sv_deleted=
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4336,6 +4544,7 @@ subvolume_command() {
       --check) ;;
       --apply) a_apply=true ;;
       --beside-other-removals) sv_beside=0 ;;
+      --beside-unreadable) sv_beside_unreadable=yes ;;
       *) usage >&2; exit 2 ;;
     esac
     shift

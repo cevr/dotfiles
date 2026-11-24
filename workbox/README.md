@@ -305,6 +305,21 @@ runs these steps:
    A removal of another base also refuses it, because the copy shares the
    file system's metadata with that removal. `--beside-other-removals` lets
    the command run beside such removals, and its output says how many it saw.
+
+   It finds processes in the base by their open files and working folders
+   under /proc. A process of another user (root's, on the workbox) does not
+   show those to this user, so it may or may not be in the base. The command
+   names such processes by count and uid and never takes them for none:
+   - where `sudo -n` works, it reads exactly those processes again, read
+     only (`sudo -n find /proc/<pid>/fd /proc/<pid>/cwd …`, the command line
+     said in the step log), and refuses if one is in the base;
+   - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
+     beside them, and the step log says how many and whose.
+
+   Kernel threads and zombies hold no files and never count. Any other
+   failure of the walk is a refusal of its own. The same three answers hold
+   after the exchange (an unknown process leaves the switch unfinished) and
+   for `--drop-old`.
 2. It takes the base's exclusive lock and its clone turn in line. Creates
    wait behind it and none fails. It waits at most
    `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
