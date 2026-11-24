@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/sqlite/admission.ts: const stat = yield* fs.lstat(dir).pipe(Effect.mapError(unavailable))
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { CryptoHasher } from "bun"
 import { Database } from "bun:sqlite"
