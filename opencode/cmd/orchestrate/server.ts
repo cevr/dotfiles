@@ -133,7 +133,7 @@ import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Cause, Clock, Context, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Context, DateTime, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
 import type { ChildProcessSpawner } from "effect/process"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
@@ -477,7 +477,7 @@ const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
   ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
 /** The ISO 8601 instant a readable time names: rounded up to the second, as `formatNotificationTime` rounds. */
-const isoOf = (ms: number) => new Date(Math.ceil(ms / 1000) * 1000).toISOString().replace(".000Z", "Z")
+const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(Math.ceil(ms / 1000) * 1000)).replace(".000Z", "Z")
 
 /**
  * A dated, zoned time as the model reads it at the configured place, then its ISO instant in brackets, so a model
