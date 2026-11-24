@@ -38,6 +38,13 @@ const exe = (path: string, body: string) => {
   chmodSync(path, 0o755)
 }
 
+const storageFixture = (dir: string) => {
+  const staging = join(dir, "workbox")
+  mkdirSync(join(staging, "bin"), { recursive: true })
+  writeScratchScript(join(staging, "host-identity.sh"), hostIdentityScript)
+  return writeScratchScript(join(staging, "bin/workbox-rift-storage"), readInputText("../workbox/bin/workbox-rift-storage"))
+}
+
 const bench = (fstabText: string) => {
   const dir = join(scratchRoot, `b-${count++}`)
   const bin = join(dir, "bin")
@@ -55,10 +62,7 @@ const bench = (fstabText: string) => {
   exe(join(bin, "findmnt"), `#!/bin/sh\ncase "$*" in *--mountpoint*) echo '/dev/loop0[/@workspaces]' ;; esac\n`)
   exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
   exe(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>'${calls}'\n`)
-  const staging = join(dir, "workbox")
-  mkdirSync(join(staging, "bin"), { recursive: true })
-  writeScratchScript(join(staging, "host-identity.sh"), hostIdentityScript)
-  const script = writeScratchScript(join(staging, "bin/workbox-rift-storage"), readInputText("../workbox/bin/workbox-rift-storage"))
+  const script = storageFixture(dir)
   const run = () => {
     const ran = spawnScratchShellFileSync(script, ["--fstab"], {
       cwd: dir, tools: bin, paths: { WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys },
@@ -131,12 +135,17 @@ describe("workbox-rift-storage --fstab", () => {
         "",
       ].join("\n"),
     )
-    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image, WORKBOX_EXPECT_MACHINE_ID: identity }
-    const apply = () => Bun.spawnSync(["sh", SCRIPT, "--apply"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const script = storageFixture(dir)
+    const apply = () => spawnScratchShellFileSync(script, ["--apply"], {
+      cwd: dir, tools: bin, paths: {
+        WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image,
+      },
+      values: { USER: process.env.USER ?? "user", WORKBOX_EXPECT_MACHINE_ID: identity },
+    })
     const ran = apply()
     expect(ran.exitCode, ran.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
-    expect(existsSync(join(mount, "bite"))).toBe(true)
+    expect(scratchExistsSync(join(mount, "bite"))).toBe(true)
     const again = apply()
     expect(again.exitCode, again.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
