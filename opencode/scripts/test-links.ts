@@ -107,14 +107,27 @@ export const linkAliases = (links: LinkInputs, file: string) => [...links].flatM
   return Option.match(tailUnder(canonical, file), { onNone: () => [], onSome: (suffix) => [`${name}${suffix}`] })
 })
 
-export const linkTarget = (links: LinkInputs, file: string) => {
+const resolve = (links: LinkInputs, file: string) => {
   let canonical = file
-  for (const [name, { target }] of links) {
-    const suffix = tailUnder(name, canonical)
-    if (Option.isSome(suffix) && Option.isSome(target) && (target.value.directory || !suffix.value))
-      canonical = below(target.value.file, suffix.value)
+  const seen = new Set([file])
+  for (let followed = 0; followed < 40; followed++) {
+    const next = nextTarget(links, canonical)
+    if (seen.has(next)) break
+    seen.add(next)
+    canonical = next
   }
-  return canonical
+  return { canonical, seen }
+}
+
+export const linkTarget = (links: LinkInputs, file: string) => resolve(links, file).canonical
+
+const nextTarget = (links: LinkInputs, file: string) => {
+  for (const [name, { target }] of links) {
+    const suffix = tailUnder(name, file)
+    if (Option.isSome(suffix) && Option.isSome(target) && (target.value.directory || !suffix.value))
+      return below(target.value.file, suffix.value)
+  }
+  return file
 }
 
 /** Match recorded spellings and resolved content, including deleted members of a linked directory. */
@@ -128,7 +141,10 @@ export const linkReads = (
     return alternativesOf.length > 0 && alternativesOf.flatMap(branches) || [scope]
   }
   const bounded = scopes.flatMap(branches)
-  const touches = (name: string) => read(name) || [...exact].some((file) => contains(name, file)) ||
+  const literal = bounded.filter((scope) => literalRoot(scope) === scope)
+  const resolved = [...exact, ...literal].map((file) => resolve(links, file))
+  const spellings = new Set(resolved.flatMap(({ seen }) => [...seen]))
+  const touches = (name: string) => read(name) || [...spellings].some((file) => contains(name, file)) ||
     bounded.some((scope) => {
       if (name.startsWith("../") !== scope.startsWith("../")) return false
       const root = literalRoot(scope)
@@ -136,7 +152,7 @@ export const linkReads = (
     })
   const used = [...links].filter(([name]) => touches(name))
   const unsafe = used.find(([, { target }]) => Option.isNone(target))
-  const canonical = new Set([...exact].map((file) => linkTarget(links, file)))
+  const canonical = new Set(resolved.flatMap(({ canonical, seen }) => (seen.size > 1 && [canonical]) || []))
   const fingerprint = json(used.map(([name, { payload, target }]) => [name, payload, Option.getOrNull(target)]).toSorted())
   const has = (file: string) => {
     const target = linkTarget(links, file)
