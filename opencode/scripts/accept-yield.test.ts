@@ -6,6 +6,8 @@
 // owed, exactly one. A failure names the seed and the command.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
+import { YIELD_CASES } from "../sim/witness-cases.ts"
+import { assertWitnessCases } from "../sim/witnesses.ts"
 import * as Yield from "./accept-yield.ts"
 
 const SEEDS = 200
@@ -72,21 +74,50 @@ describe("the accept lock's protocol", () => {
     expect(found).toEqual([])
   })
 
-  test("the generator reaches yields, stops, deaths and red files", () => {
-    const seen = new Set<string>()
-    for (let seed = 1; seed <= SEEDS; seed++) {
-      const draw = random(seed)
-      let state = Yield.initial()
-      for (let command = 1; command <= COMMANDS; command++) {
-        const enabled = Yield.actions(FILES).flatMap((action) => Option.toArray(Option.map(Yield.step(state, action, FILES), (next) => ({ action, next }))))
-        if (enabled.length === 0) break
-        const chosen = enabled[Math.floor(draw() * enabled.length)]!
-        seen.add(describeAction(chosen.action).replace(/ (deep|l1|l2|a|b|c)$/, "").replace("deepFileEnds", "ends"))
-        state = chosen.next
-      }
+  const actions: ReadonlyArray<Yield.Action> = [
+    { kind: "start", who: "deep" }, { kind: "deepTakes" }, { kind: "deepStartsFile", file: "a" },
+    { kind: "start", who: "l1" }, { kind: "mark", who: "l1" }, { kind: "deepStops" }, { kind: "deepYields" },
+    { kind: "landTakes", who: "l1" }, { kind: "landEnds", who: "l1" }, { kind: "deepTakes" },
+    { kind: "deepStartsFile", file: "a" }, { kind: "deepFileEnds", green: false },
+    { kind: "deepStartsFile", file: "b" }, { kind: "deepFileEnds", green: true },
+    { kind: "deepStartsFile", file: "c" }, { kind: "deepFileEnds", green: true },
+    { kind: "dies", who: "l2" }, { kind: "deepEnds" },
+  ]
+  const playActions = (script: ReadonlyArray<Yield.Action>) => {
+    let state = Yield.initial()
+    for (const action of script) {
+      const next = Option.getOrThrow(Yield.step(state, action, FILES))
+      expect(problems(state, action, next), describeAction(action)).toEqual([])
+      state = next
     }
-    expect([...seen].sort()).toEqual(["deepEnds", "deepStartsFile", "deepStops", "deepTakes", "deepYields", "dies", "ends false", "ends true", "landEnds", "landTakes", "mark", "start"])
-  })
+    return state
+  }
+  const phase = (who: Yield.Who) => (state: Yield.State) => Option.fromUndefinedOr(state.phase.get(who))
+  const holds = (state: Yield.State) => state.holder
+  const end = (state: Yield.State) => ({ over: Yield.over(state), report: [...state.report] })
+  const want: ReturnType<typeof end> = { over: true, report: [["a", "failed"], ["b", "passed"], ["c", "passed"]] }
+  const before = <A>(at: number, expected: A, observe: (state: Yield.State) => A) =>
+    ({ expected, run: (cause: boolean) => observe(playActions(actions.slice(0, at + Number(cause)))) })
+  test("W: a stopped file stays owed, the land takes the lock, and the resumed run records every verdict", () => assertWitnessCases(YIELD_CASES, {
+    "interrupted file stays owed": before(5, Option.some("owed"), (state) => Option.fromUndefinedOr(state.report.get("a"))),
+    "deep run starts waiting": before(0, Option.some("waiting"), phase("deep")),
+    "deep run takes the lock": before(1, Option.some<Yield.Who>("deep"), holds),
+    "file starts with the lock held": before(2, Option.some("a"), (state) => state.running),
+    "waiting land leaves a mark": before(4, true, (state) => state.wanted.has("l1")),
+    "deep run yields the lock": before(6, Option.none(), holds),
+    "land holds the lock": before(7, Option.some<Yield.Who>("l1"), holds),
+    "land ends and releases the lock": before(8, Option.some("done"), phase("l1")),
+    "deep run retakes the lock after land": before(9, Option.some<Yield.Who>("deep"), holds),
+    "resumed run records the failed and passed files": {
+      expected: want,
+      run: (cause) => {
+        if (cause) return end(playActions(actions))
+        return end(playActions(actions.slice(0, 9)))
+      },
+    },
+    "play finishes only once the other run has died": { expected: want, run: (cause) => end(playActions(actions.filter((action) => cause || action.kind !== "dies"))) },
+    "deep run ends after settling all files": { expected: Option.some("done"), run: (cause) => phase("deep")(playActions(actions.filter((action) => cause || action.kind !== "deepEnds"))) },
+  }))
 
   test("the rules the runner follows: who marks, whose wait is on the clock, when the deep run may take or start", () => {
     expect([Yield.marks("land", Option.some("owed")), Yield.marks("land", Option.some("all")), Yield.marks("land", Option.some("land")), Yield.marks("owed", Option.some("owed")), Yield.marks("land", Option.none())]).toEqual([true, true, false, false, false])

@@ -48,8 +48,11 @@ export const Reason = Schema.Literals([
   "whole-pool-held", "outside-busy",
 ])
 export type Reason = typeof Reason.Type
-export const qualifiedForm = (reason: Reason) => {
+export const qualifiedForm = (reason: Reason, storeVersion?: { readonly found: number; readonly supported: number }) => {
   switch (reason) {
+    case "incompatible":
+      if (!storeVersion) return "Use host-admit --help and host status --json for a qualified request."
+      return `Host admission store v${storeVersion.found}; this binary supports v${storeVersion.supported}. Upgrade host-admit to support store v${storeVersion.found}.`
     case "memory-limit": return "Request memoryBytes within host status --json maximumMemoryBytes; Linux requires a positive reservation."
     case "disk-limit": return "Request fewer bytes on a registered volume; leave its permanent disk floor unreserved."
     case "unknown-volume": return "Run host status --json from the executing volume and use its defaultVolume."
