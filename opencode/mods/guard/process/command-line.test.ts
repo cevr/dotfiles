@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test"
 import { Option } from "effect"
 import { spawnSync } from "bun"
-import { cpuDemand } from "./admission.ts"
-import { argvWidth, checkModel, demandOnVolume } from "./check-demand.ts"
-import { parseArgv, type CommandEnvironment } from "./command-line.ts"
-import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
+import { cpuDemand } from "../admission.ts"
+import { argvWidth, checkModel, demandOnVolume } from "../check-demand.ts"
+import { parseArgv, type CommandEnvironment } from "../command-line.ts"
+import { DEFAULT_HEAVY, heavyCommand } from "../heavy.ts"
 
 const program = "/usr/bin/env"
 const caller = { PATH: "/usr/bin:/bin", GOENV: "off", GOFLAGS: "-p=7 -cpu=9", GOMAXPROCS: "2", MAKEFLAGS: "-j8" }
