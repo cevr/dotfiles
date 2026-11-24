@@ -130,6 +130,14 @@ export const COMMANDS: ReadonlyArray<Command> = [
     ],
   },
   {
+    path: "cmd/guard/host-admit.ts",
+    packages: ["effect", "@effect/platform-bun"],
+    probes: [
+      { args: ["--version"], exit: 0, says: "host-admit 1" },
+      { args: ["holder", "list", "--json"], exit: 0, says: '"complete":true' },
+    ],
+  },
+  {
     path: "cmd/image/key.ts",
     packages: ["effect"],
     probes: [

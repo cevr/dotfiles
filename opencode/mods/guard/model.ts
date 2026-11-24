@@ -21,14 +21,15 @@
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer, Match, Option } from "effect"
+import { Context, Effect, Layer, Match, Option, Predicate } from "effect"
 import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
-import { isHeavy } from "./heavy.ts"
+import { parseShell } from "./command-line.ts"
+import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
-import { launcherName, launcherScript, type Limits } from "./launcher.ts"
+import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 import { workGcReason, workGcs } from "./work-gc.ts"
@@ -163,6 +164,7 @@ export interface PolicyConfig {
   /** The patterns of heavy commands (heavy.ts). */
   readonly heavy: ReadonlyArray<string>
   readonly limits: Limits
+  readonly admission?: ReadonlyArray<string>
 }
 
 export class ShellPolicy extends Context.Service<
@@ -170,11 +172,9 @@ export class ShellPolicy extends Context.Service<
   {
     /**
      * The shell to spawn `command` with in place of `shell`: a launcher under
-     * the limits for a heavy command, `shell` itself for any other. It never
-     * fails: when no launcher can be written, the command runs as it would
-     * have, and the failure is logged.
+     * the limits for a heavy command, `shell` itself for any other.
      */
-    readonly shellFor: (shell: string, command: string) => Effect.Effect<string>
+    readonly shellFor: (shell: string, command: string) => Effect.Effect<string, LauncherUnavailable>
   }
 >()("dotfiles-opencode/guard/ShellPolicy") {}
 
@@ -186,7 +186,11 @@ export const policyLayer = (config: PolicyConfig) =>
       const scopes = yield* Scopes
 
       const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
-        if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
+        const helper = config.admission
+        const parsed = parseShell(command)
+        if (Predicate.isNotUndefined(helper) && heavyCommand(parsed, [...DEFAULT_HEAVY, ...config.heavy]))
+          return yield* launchers.install(launcherName(shell), admissionLauncher(shell, helper, parsed))
+        if (!shell.startsWith("/") || !heavyCommand(parsed, config.heavy)) return shell
         const scope = yield* scopes.available
         const ionice = yield* scopes.ionice
         return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope, ionice })).pipe(
