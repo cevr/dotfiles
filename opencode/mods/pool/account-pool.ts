@@ -29,7 +29,7 @@ import {
   WINDOW_MS,
 } from "./accounts.ts"
 import { accountWide, carryOver, QuotaReading } from "./quota.ts"
-import { tryAgainAt } from "./usage-text.ts"
+import { signInReason, tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
 
 /** One pool: the integration whose logins it holds (`anthropic`). Several providers may share one. */
@@ -162,7 +162,7 @@ export class AccountsHeld extends Schema.TaggedError<AccountsHeld>()("AccountsHe
  */
 export const heldMessage = (error: AccountsHeld): string => {
   if (error.signIn.length > 0)
-    return `dotfiles-opencode.pool: every pool account needs a new sign-in (${error.signIn.join(", ")}). Sign in to them again; ${tryAgainAt(error.retryAt)} if a login is signed in.`
+    return `dotfiles-opencode.pool: ${signInReason(error.signIn)}; ${tryAgainAt(error.retryAt)} if a login is signed in.`
   return `dotfiles-opencode.pool: all pool accounts are held; ${tryAgainAt(error.retryAt)}`
 }
 

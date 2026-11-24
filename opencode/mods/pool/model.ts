@@ -379,18 +379,6 @@ export const layer = (config: Config) =>
         const policy = Option.match(auxiliary, { onNone: () => ({}), onSome: (kind) => ({ auxiliary: kind }) })
         const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
         const now = yield* Clock.currentTimeMillis
-        const accounts = status(yield* SynchronizedRef.get(where.pool), now, rules)
-        // Every account refused (a hold of the provider's or a sign-in): placement's own refusal names it, as before.
-        const holds = accounts.flatMap((account) => Option.toArray(Option.fromUndefinedOr(account.hold)))
-        if (holds.length > 0 && holds.length === accounts.length) {
-          const signIn = accounts.filter(() => holds.every((hold) => hold.kind === "signin"))
-          return yield* new AccountsHeld({
-            sessionID: input.sessionID,
-            kind: input.kind,
-            retryAt: nextRetryAt(now, holds.map((hold) => hold.until)),
-            signIn: signIn.map((account) => account.credentialID).toSorted(),
-          })
-        }
         if (Option.isNone(asked))
           return yield* new RequestHeld({
             sessionID: input.sessionID,
@@ -399,7 +387,12 @@ export const layer = (config: Config) =>
             retryAt: now + UNREAD_RETRY_MS,
           })
         const answer = asked.value
-        if (!answer.ok) return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt: nextRetryAt(now, [answer.retryAt]) })
+        if (!answer.ok) {
+          const retryAt = nextRetryAt(now, [answer.retryAt])
+          const signIn = Option.fromUndefinedOr(answer.signIn)
+          if (Option.isSome(signIn)) return yield* new AccountsHeld({ sessionID: input.sessionID, kind: input.kind, retryAt, signIn: signIn.value })
+          return yield* new RequestHeld({ sessionID: input.sessionID, reason: answer.reason, reasonCode: answer.reasonCode, retryAt })
+        }
         const command = PlaceRequest.make({
           sessionID: input.sessionID,
           kind: input.kind,
@@ -1143,7 +1136,7 @@ export const layer = (config: Config) =>
        * recovery, that claim pending in its words (`pendingWords`) and its ask again by the next sweep.
        */
       const withPending = (paced: Pace, pool: Option.Option<PoolId>, now: number): Effect.Effect<Pace> => {
-        if (paced.ok || Option.isNone(pool)) return Effect.succeed(paced)
+        if (paced.ok || Option.isNone(pool) || Option.exists(Option.fromUndefinedOr(paced.signIn), (ids) => ids.length > 0)) return Effect.succeed(paced)
         return Effect.map(resetsStore.read, (state) =>
           Option.match(ResetsModel.pendingWords(state.claims, pool.value, now), {
             onNone: () => paced,
@@ -1241,10 +1234,16 @@ export const layer = (config: Config) =>
           const unread = listed.filter((account) =>
             Option.isNone(Option.fromUndefinedOr(account.hold)) && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
           )
-          // A slow usage endpoint must return a held pace, not outlive the orchestrator's 8-second RPC deadline.
-          if (unread.length > 0) yield* Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
+          const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
             Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
-          ), { discard: true }).pipe(Effect.timeoutOption("2 seconds"))
+          ), { discard: true })
+          // Quotes must leave time for the caller's RPC. Placement instead waits
+          // for the provider/store's own bounded operations: otherwise a second
+          // expired login can be called "unread" before its refresh even runs.
+          if (unread.length > 0) {
+            if (work === "existing-request") yield* read
+            else yield* read.pipe(Effect.timeoutOption("2 seconds"))
+          }
         }
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
