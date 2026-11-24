@@ -23,7 +23,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { HAND_BACK, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { HAND_BACK, PROBE, ROOT_TASK, scriptedOpus, serve, UNITS_TASK } from "./sim.ts"
 
 export interface Spec {
   readonly scenario: "subagents" | "compaction" | "units" | "lane"
@@ -151,20 +151,7 @@ const content = {
         },
       },
     },
-    anthropic: {
-      name: "Scripted Opus",
-      ...fake,
-      models: {
-        "claude-opus-sim": {
-          name: "Scripted Opus",
-          family: "claude-opus",
-          releaseDate: "2099-01-01",
-          capabilities: { tools: true, input: ["text"], output: ["text"] },
-          limit: { context: 1_000_000, output: 16_000 },
-          variants: [{ id: "medium" }],
-        },
-      },
-    },
+    anthropic: scriptedOpus(sim.server.port),
   },
   plugins: [
     {

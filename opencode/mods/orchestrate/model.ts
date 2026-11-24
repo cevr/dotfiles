@@ -624,6 +624,8 @@ export const layer = (config: Config) =>
         // Only a planner keeps a Codex fallback: one an older build kept for another agent is dropped,
         // and that latch is decided on the model it was made on (codex-no-implement).
         const policy = roleModels(latch.agent)
+        let agent = latch.agent
+        if (policy.kind === "verification") agent = "verifier"
         const kept = Option.getOrUndefined(Option.filter(Schema.decodeUnknownOption(LatchModels)(latch.context.models), () => policy.kind === "planning"))
         // A planner latched on its first model (over the Sabbath) takes the planner's chain at its open, as a new
         // start would: the first model, else its own at its effort, then Codex.
@@ -663,7 +665,7 @@ export const layer = (config: Config) =>
           OpenLatch.make({
             call,
             from: latch.from,
-            agent: latch.agent,
+            agent,
             reason: reason._tag === "Some" ? reason.value : "kept",
             ...(primary === undefined ? {} : { model: primary }),
             description: latch.description,
@@ -694,7 +696,7 @@ export const layer = (config: Config) =>
             messageID: latch.messageID,
             callID: latch.callID,
             child: latch.child,
-            agent: latch.agent,
+            agent,
             description: latch.description,
             prompt: latch.prompt,
             ...(on === undefined ? {} : { model: on }),

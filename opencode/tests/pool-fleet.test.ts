@@ -19,7 +19,7 @@ import { ROOT } from "../scripts/agents.ts"
 import { fleetRows, type PaneFleet } from "../mods/status/pane.ts"
 import { fakeAccount, startFakeAnthropic } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
-import { ROOT_TASK, serve } from "./orchestrate/sim.ts"
+import { ROOT_TASK, scriptedOpus, serve } from "./orchestrate/sim.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 
@@ -178,6 +178,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         const a = await start("host-a", {
           model: "sim/sim-model",
           providers: {
+            anthropic: scriptedOpus(sim.server.port),
             sim: {
               name: "Sim",
               package: "@opencode/ai/providers/openai-compatible",

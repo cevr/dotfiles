@@ -915,7 +915,7 @@ describe("Opus first, Codex second", () => {
       expect(plugin.ran).toEqual([])
     } else {
       expect(opened).toEqual({ outcome: "opened" })
-      expect(plugin.ran.at(-1)?.input.model).toBe(entry.request.admitted)
+      expect(plugin.ran.at(-1)?.input).toMatchObject({ agent: "verifier", model: entry.request.admitted })
     }
   })
   test("verification is Opus only across start, continuation and latch open", () =>

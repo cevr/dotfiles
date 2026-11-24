@@ -22,6 +22,23 @@
  */
 
 export const ROOT_TASK = "orchestrate"
+
+/** A Claude Opus catalog entry with all traffic directed to the scripted loopback provider. */
+export const scriptedOpus = (port: number) => ({
+  name: "Scripted Opus",
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: "sim-key" },
+  models: {
+    "claude-opus-sim": {
+      name: "Scripted Opus",
+      family: "claude-opus",
+      releaseDate: "2099-01-01",
+      capabilities: { tools: true, input: ["text"], output: ["text"] },
+      limit: { context: 1_000_000, output: 16_000 },
+      variants: [{ id: "medium" }],
+    },
+  },
+})
 export const UNTYPED_TASK = "task-untyped"
 export const REVIEW_TASK = "task-review"
 export const SUMMARY = "## Objective\n- sim summary"

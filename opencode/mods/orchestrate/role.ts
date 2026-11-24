@@ -5,6 +5,7 @@ import { Array as Arr, Option, Schema } from "effect"
 import generated from "./agents.json"
 import { described, STEPS } from "./described.ts"
 import { immutable } from "./immutable.ts"
+import { parseModel } from "./pace.ts"
 import { policyFaults } from "./round-policy.ts"
 
 export const WORKER = "worker"
@@ -220,5 +221,9 @@ export const roleModels = (agent: string) => {
 }
 
 /** A verifier's explicit or persisted model must name an Anthropic Opus. */
-export const verificationModel = (model: string, providers: ReadonlyArray<string> = []) =>
-  /^anthropic\/claude-opus(?:[-.][\w.-]+)?(?:#[\w-]+)?$/.test(model) && !isCodexModel(model, providers)
+export const verificationModel = (model: string, providers: ReadonlyArray<string> = []) => {
+  const ref = parseModel(model)
+  if (ref?.providerID !== OPUS.providers[0] || isCodexModel(model, providers)) return false
+  const family = OPUS.family
+  return ref.id === family || ref.id.startsWith(`${family}-`) || ref.id.startsWith(`${family}.`)
+}
