@@ -31,7 +31,11 @@ const liveOf = (row: Row, work: Option.Option<Works>): Option.Option<Live> => {
     case "done":
     case "idle":
       return Option.some({ state: "done", ...since })
+    case "checking":
+    case "unknown":
+      return Option.none()
   }
+  return row.state satisfies never
 }
 
 /** The live state of every subagent of `family` under its root, by session id. */
