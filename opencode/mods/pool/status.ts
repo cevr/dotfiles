@@ -66,9 +66,11 @@ export const POOL_STATUS = {
 
 /** An account refused until `until`, set at `at` (epoch ms). */
 export const Hold = Schema.Struct({
-  kind: RefusalKind,
-  until: Schema.Number,
-  at: Schema.Number,
+  kind: Schema.Union([RefusalKind, Schema.Literal("record-unreadable")]),
+  until: Schema.Finite,
+  at: Schema.Finite,
+  /** The stored kind when we cannot interpret the rest of its record. */
+  rawKind: Schema.optionalKey(Schema.String),
   /** An explicit provider refusal remains binding until this time, even if a later response shows room. */
   refusedUntil: Schema.optionalKey(Schema.Finite),
 })

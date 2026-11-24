@@ -133,7 +133,7 @@ export const make = (worldOptions: WorldOptions) => {
         Option.flatMap(credential, (id) => decodeHold(entries.get(`anthropic/hold/${id}`))),
         () => decodeHold(entries.get(`anthropic/hold/store:${login}`) ?? entries.get(`anthropic/hold/${login}`)),
       )),
-      Option.filter((hold) => hold.until > at || hold.kind === "signin"),
+      Option.filter((hold) => hold.until > at || hold.kind === "signin" || hold.kind === "record-unreadable"),
     )
   }
   const options: Options = Option.match(provider, {

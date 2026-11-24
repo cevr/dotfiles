@@ -173,7 +173,8 @@ export const held = (state: AccountPoolState, credentialID: string, now: number)
 }
 
 /** A sign-in's date is an appointment to check again, not an expiry. */
-export const liveHold = (hold: Hold, now: number): boolean => hold.kind === "signin" || hold.until > now
+export const liveHold = (hold: Hold, now: number): boolean =>
+  hold.kind === "signin" || hold.kind === "record-unreadable" || hold.until > now
 
 /** The newest reading, with each window that has since reset read as empty. */
 const freshReading = (state: AccountPoolState, credentialID: string, now: number): QuotaReading | undefined => {

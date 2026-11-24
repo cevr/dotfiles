@@ -132,6 +132,21 @@ const stepsWrite = (store: Chunks.Store<Step>, event: Event): Effect.Effect<void
 const decodeHold = Schema.decodeUnknownOption(Hold)
 const decodeReading = Schema.decodeUnknownOption(QuotaReading)
 const decodeMark = Schema.decodeUnknownOption(Mark)
+const recoveryFields = Schema.decodeUnknownOption(Schema.Struct({
+  kind: Schema.optionalKey(Schema.Unknown), until: Schema.optionalKey(Schema.Unknown),
+}))
+const finiteTime = Schema.decodeUnknownOption(Schema.Finite)
+const rawKind = Schema.decodeUnknownOption(Schema.String)
+export const UNREADABLE_HOLD_MS = 60_000
+const unreadableHold = (fields: ReturnType<typeof recoveryFields>, now: number): Hold => {
+  const until = Option.getOrElse(Option.flatMap(fields, (record) => finiteTime(record.until)), () => now + UNREADABLE_HOLD_MS)
+  return {
+    kind: "record-unreadable", until, at: now,
+    ...Option.match(Option.flatMap(fields, (record) => rawKind(record.kind)), {
+      onNone: () => ({}), onSome: (kind) => ({ rawKind: kind }),
+    }),
+  }
+}
 
 /** A failed hold write fences a send until the store has accepted it. */
 type PendingHold = {
@@ -140,29 +155,63 @@ type PendingHold = {
   readonly next: Option.Option<Hold>
   readonly merge: boolean
 }
-const authorityKey = Symbol.for("dotfiles-opencode.pool.hold-authority.v1")
+// This key and the version-neutral lock and pending fence must survive a
+// format bump. A newer activation cannot approve a send alongside an older
+// one: drain the old registrations first, then settle their pending writes.
+const authorityKey = Symbol.for("dotfiles-opencode.pool.hold-authority.coordinator")
+export const HOLD_AUTHORITY_VERSION = 1
 interface HoldAuthority {
-  readonly [authorityKey]: true
   readonly lock: Semaphore.Semaphore
   readonly pending: Map<string, PendingHold>
+  readonly listed: Map<PoolId, ReadonlySet<string>>
+  readonly available: () => boolean
+  readonly enter: () => () => void
 }
-export const holdAuthority = (): HoldAuthority => ({
-  [authorityKey]: true,
+const coordinator = () => ({
+  [authorityKey]: true as const,
   lock: Semaphore.makeUnsafe(1),
   pending: new Map<string, PendingHold>(),
+  listed: new Map<PoolId, ReadonlySet<string>>(),
+  versions: new Map<number, HoldAuthority>(),
+  active: new Map<number, number>(),
 })
-const isAuthority = (value: unknown): value is HoldAuthority =>
+type Coordinator = ReturnType<typeof coordinator>
+const isCoordinator = (value: unknown): value is Coordinator =>
   Predicate.hasProperty(value, authorityKey) && value[authorityKey] === true
+const forVersion = (shared: Coordinator, version: number): HoldAuthority => {
+  const cached = Option.fromUndefinedOr(shared.versions.get(version))
+  if (Option.isSome(cached)) return cached.value
+  const count = () => Option.getOrElse(Option.fromUndefinedOr(shared.active.get(version)), () => 0)
+  const authority: HoldAuthority = {
+    lock: shared.lock,
+    pending: shared.pending,
+    listed: shared.listed,
+    available: () => !Array.from(shared.active.keys()).some((current) => current < version),
+    enter: () => {
+      shared.active.set(version, count() + 1)
+      return () => {
+        const left = count() - 1
+        if (left > 0) shared.active.set(version, left)
+        else shared.active.delete(version)
+      }
+    },
+  }
+  shared.versions.set(version, authority)
+  return authority
+}
+export const holdAuthority = (): HoldAuthority => forVersion(coordinator(), HOLD_AUTHORITY_VERSION)
 
 /** The native plugin loader may re-evaluate the pool graph while its old hooks finish. */
-export const processHoldAuthority = (): HoldAuthority => {
+export const processHoldAuthority = (version = HOLD_AUTHORITY_VERSION): HoldAuthority => {
   const existing = Option.flatMap(Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(globalThis, authorityKey)),
-    (property) => Option.liftPredicate(property.value, isAuthority),
+    (property) => Option.liftPredicate(property.value, isCoordinator),
   )
-  if (Option.isSome(existing)) return existing.value
-  const authority = holdAuthority()
-  Object.defineProperty(globalThis, authorityKey, { value: authority })
-  return authority
+  const shared = Option.getOrElse(existing, () => {
+    const fresh = coordinator()
+    Object.defineProperty(globalThis, authorityKey, { value: fresh })
+    return fresh
+  })
+  return forVersion(shared, version)
 }
 
 const unavailable = Clock.currentTimeMillis.pipe(Effect.map((now) => new HoldStoreUnavailable({ retryAt: now + HOLD_STORE_RETRY_MS })))
@@ -189,20 +238,33 @@ const settleHold = (storage: Storage, key: string, next: Option.Option<Hold>) =>
 
 const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAuthority>, pool: PoolId) =>
   Effect.gen(function* () {
+    if (!authority.available()) return yield* storeFailure()
     const prefix = `${pool}/hold/`
     const now = yield* Clock.currentTimeMillis
     for (const [key, pending] of authority.pending) {
       if (!key.startsWith(prefix)) continue
+      if (Option.exists(Option.fromUndefinedOr(authority.listed.get(pool)), (ids) => !ids.has(pending.credentialID))) {
+        authority.pending.delete(key)
+        continue
+      }
       if (pending.retryAt > now) return yield* new HoldStoreUnavailable({ retryAt: pending.retryAt })
     }
-    const page = yield* boundedStore(storage.scan({ prefix, limit: PAGE }))
-    if (Option.isSome(Option.fromUndefinedOr(page.next))) return yield* storeFailure()
     const snapshot: Record<string, Hold> = {}
-    for (const entry of page.entries) {
-      const decoded = decodeHold(entry.value)
-      if (Option.isNone(decoded)) return yield* storeFailure()
-      snapshot[entry.key.slice(prefix.length)] = decoded.value
-    }
+    let after = Option.none<string>()
+    do {
+      const page = yield* boundedStore(storage.scan({
+        prefix, limit: PAGE, ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
+      }))
+      for (const entry of page.entries) {
+        const decoded = decodeHold(entry.value)
+        const hold = Option.getOrElse(decoded, () => unreadableHold(recoveryFields(entry.value), now))
+        // Persist a finite recovery time once, including when no date could
+        // be recovered. A later scan must not start the same timer over.
+        if (Option.isNone(decoded)) yield* settleHold(storage, entry.key, Option.some(hold)).pipe(Effect.ignore)
+        Object.defineProperty(snapshot, entry.key.slice(prefix.length), { value: hold, configurable: true, enumerable: true, writable: true })
+      }
+      after = Option.fromUndefinedOr(page.next)
+    } while (Option.isSome(after))
     for (const [key, pending] of authority.pending) {
       if (!key.startsWith(prefix)) continue
       let next = pending.next
@@ -217,6 +279,7 @@ const confirmedHolds = (storage: Storage, authority: ReturnType<typeof holdAutho
       })
       authority.pending.delete(key)
     }
+    if (!authority.available()) return yield* storeFailure()
     return snapshot
   })
 
@@ -255,7 +318,9 @@ const ownSteps = (storage: Storage): Steps => {
 
 /** The holds, readings and caches are small and read by each copy; the steps come from `steps`, one store per process. */
 export const layer = (storage: Storage, steps: Steps = ownSteps(storage), authority = holdAuthority()) =>
-  Layer.succeed(Ledger, {
+  Layer.effect(Ledger, Effect.gen(function* () {
+    yield* Effect.acquireRelease(Effect.sync(authority.enter), (leave) => Effect.sync(leave))
+    return Ledger.of({
     holds: (pool) => confirmedHolds(storage, authority, pool),
     withHolds: (operation) => authority.lock.withPermits(1)(operation),
     // A ledger that cannot be read starts the pool empty.
@@ -278,12 +343,19 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
     // Holds are published before best-effort history. Until a failed write can
     // be retried, any decision for this pool fails closed.
     record: Effect.fn("Ledger.record")(function* (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") {
+      for (const event of events) {
+        if (!Predicate.isTagged(event, "LedgerPruned")) continue
+        const listed = Option.fromUndefinedOr(event.listed)
+        if (Option.isSome(listed)) authority.listed.set(pool, new Set(listed.value))
+      }
+      const listed = Option.fromUndefinedOr(authority.listed.get(pool))
       const writes = events.flatMap(writesOf)
       const isHold = (write: Write) => write.key.startsWith("hold/")
       for (const write of writes.filter(isHold)) {
         const key = `${pool}/${write.key}`
         const credentialID = write.key.slice("hold/".length)
         const next = Option.flatMap(Option.liftPredicate(write, (entry) => Predicate.isTagged(entry, "Put")), (put) => decodeHold(put.value))
+        if (Option.isSome(next) && Option.exists(listed, (ids) => !ids.has(credentialID))) continue
         if (shared === "unknown") {
           // The authoritative read failed. An old copy's expiration or
           // removal cannot clear a refusal it has not seen. Publish new
@@ -317,4 +389,5 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
           )
       }
     }),
-  })
+    })
+  }))

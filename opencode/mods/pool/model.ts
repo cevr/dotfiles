@@ -365,16 +365,24 @@ export const layer = (config: Config) =>
       const pooled = (providerID: string) => poolOf(Object.hasOwn(config.providers, providerID) ? config.providers[providerID] : undefined)
       type Pooled = NonNullable<ReturnType<typeof poolOf>>
       const every = [...pools].map(([id, pool]): Pooled => ({ id, pool }))
+      const inventoried = new Set<PoolId>()
 
       /** The provider's logins, read again when the list is old (or `force`d). */
       const refresh = ({ id, pool }: Pooled, force: boolean) =>
-        logins.list(id, force).pipe(Effect.flatMap((credentials) => apply(pool, id, ListLogins.make({ credentials }))))
+        logins.list(id, force).pipe(Effect.flatMap((credentials) => Effect.gen(function* () {
+          const previous = yield* SynchronizedRef.get(pool)
+          yield* apply(pool, id, ListLogins.make({ credentials }))
+          if (!inventoried.has(id) || force || previous.credentials.length !== credentials.length || previous.credentials.some((known) => !credentials.includes(known))) {
+            yield* apply(pool, id, PruneLedger.make({ listed: credentials }))
+            inventoried.add(id)
+          }
+        })))
 
       /** Take a reading in, and mark the login as needing a sign-in exactly when the reading says so. */
-      const take = ({ id, pool }: Pooled, credentialID: string, reading: QuotaReading | undefined) =>
+      const take = ({ id, pool }: Pooled, credentialID: string, reading: QuotaReading | undefined, freshUsage = false) =>
         reading === undefined
           ? Effect.void
-          : apply(pool, id, TakeReading.make({ credentialID, reading })).pipe(
+          : apply(pool, id, TakeReading.make({ credentialID, reading, freshUsage })).pipe(
               Effect.andThen(logins.markSignIn(id, credentialID, reading.refusal?.kind === "signin")),
               Effect.andThen(limits?.observe(id, credentialID, reading) ?? Effect.void),
               Effect.andThen(observeClaim(id, credentialID, reading)),
@@ -653,7 +661,7 @@ export const layer = (config: Config) =>
           Effect.gen(function* () {
             yield* refresh(where, true).pipe(Effect.ignore)
             for (const credentialID of (yield* SynchronizedRef.get(where.pool)).credentials)
-              yield* take(where, credentialID, yield* quota.usage(where.id, credentialID))
+              yield* take(where, credentialID, yield* quota.usage(where.id, credentialID), true)
             yield* apply(where.pool, where.id, PruneLedger.make({}))
           }),
         { discard: true },
@@ -1279,11 +1287,11 @@ export const layer = (config: Config) =>
           const listed = status(yield* SynchronizedRef.get(paced.pool), before, rules)
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
-            onSome: (hold) => hold.kind === "signin" && hold.until <= before,
+            onSome: (hold) => (hold.kind === "signin" || hold.kind === "record-unreadable") && hold.until <= before,
             onNone: () => Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
           }))
           const read = Effect.forEach(unread, (account) => quota.usage(paced.id, account.credentialID).pipe(
-            Effect.flatMap((reading) => take(paced, account.credentialID, reading)),
+            Effect.flatMap((reading) => take(paced, account.credentialID, reading, true)),
           ), { discard: true, concurrency: unread.length })
           // A quote leaves time for the caller's RPC. Dispatch has its own
           // overall deadline; it decides on all the outcomes in by that time.

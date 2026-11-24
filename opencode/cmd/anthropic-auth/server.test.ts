@@ -13,6 +13,7 @@ import {
   CLAUDE_CODE_VERSION,
 } from '@dotfiles/opencode-anthropic-auth/version'
 import { effectTest } from '../../sim-tui/effect-test.ts'
+import { Handoff, type HandoffInput } from '../../mods/pool/handoff.ts'
 import Plugin, { type Env, type Fetch, make, makeShared } from './server.ts'
 
 type Host = Parameters<(typeof Plugin)['effect']>[0]
@@ -201,13 +202,14 @@ function shiftedClock() {
  * The host's integration as promises, the way a test sets it up, and what
  * the plugin registers on the host once a test starts it with `plugin.setup`.
  */
-function makeMockContext() {
+function makeMockContext(directory = '/scratch/anthropic-auth-seam') {
   const integrationMethods: Registration[] = []
   const hooks = new Map<string, HostHook>()
   const rpcHandlers = new Map<string, QuotaHandlers>()
   const rpcEvents: Array<{ id: string; name: string; payload: Tree }> = []
   const connections: Array<{ type: 'credential'; id: string; label: string }> = []
   const agentSettings = new Map<string, Record<string, unknown>>()
+  const handoffs: Array<unknown> = []
   const { clock, advance } = shiftedClock()
   const ctx = {
     integration: {
@@ -269,8 +271,13 @@ function makeMockContext() {
           Effect.tryPromise({ try: () => ctx.integration.connection.resolve(connection), catch: (error) => error }),
       },
     },
-    location: { directory: '/scratch/anthropic-auth-seam' },
-    rpc: {
+    location: { directory },
+    rpc: Object.assign(() => ({
+      handoff: (input: HandoffInput) => Effect.sync(() => {
+        handoffs.push(input)
+        return Handoff.cases.Send.make({})
+      }),
+    }), {
       register: (definition: { id: string }, handlers: Record<'reading' | 'usage' | 'claim', HostHandler>) =>
         Effect.sync(() => {
           rpcHandlers.set(definition.id, {
@@ -286,7 +293,7 @@ function makeMockContext() {
             dispose: Effect.void,
           }
         }),
-    },
+    }),
     session: {
       hook: (name: string, callback: HostHook) =>
         Effect.sync(() => {
@@ -316,6 +323,7 @@ function makeMockContext() {
       },
     },
     integrationMethods,
+    handoffs,
     sessionHooks,
   }
 }
@@ -347,11 +355,42 @@ const plugin = {
   },
 }
 
-function createMockContext(): Mocked {
-  const mocked = makeMockContext()
+function createMockContext(directory?: string): Mocked {
+  const mocked = makeMockContext(directory)
   hosts.set(mocked.ctx, mocked)
   return mocked
 }
+
+effectTest('a retired request hook delegates to its own location’s current preparation, not another location', Effect.gen(function* () {
+  const proc = freshProcess()
+  const retired = createMockContext('/scratch/handoff-a')
+  const current = createMockContext('/scratch/handoff-a')
+  const beside = createMockContext('/scratch/handoff-b')
+  for (const [id, fixture] of [['retired', retired], ['current', current], ['beside', beside]] as const) {
+    fixture.connections.push({ type: 'credential', id, label: id })
+    fixture.ctx.integration.connection.resolve.mockResolvedValue({
+      type: 'oauth', methodID: 'claude-max', refresh: 'unused', access: `test-${id}`, expires: 9_000_000_000_000,
+    })
+  }
+  const closeRetired = yield* Effect.promise(() => plugin.setup(retired.ctx, proc))
+  yield* Effect.acquireRelease(Effect.promise(() => plugin.setup(current.ctx, proc)), (close) => Effect.promise(close))
+  yield* Effect.acquireRelease(Effect.promise(() => plugin.setup(beside.ctx, proc)), (close) => Effect.promise(close))
+  yield* Effect.promise(closeRetired)
+  for (const [id, owner] of [['current', retired], ['beside', beside]] as const) {
+    const event = {
+      sessionID: `ses_${id}`, agent: 'build', kind: 'primary', model: { providerID: 'anthropic', id: 'claude-haiku-4-5' },
+      request: new Request('https://api.anthropic.com/v1/messages', {
+        method: 'POST', body: '{}',
+        headers: { 'x-opencode-pool-handoff': '1', 'x-opencode-credential-id': id },
+      }),
+    }
+    yield* Effect.promise(() => owner.sessionHooks.get('http.request')(event))
+    expect(event.request.headers.get('authorization')).toBe(`Bearer test-${id}`)
+  }
+  expect(retired.handoffs).toHaveLength(0)
+  expect(current.handoffs).toHaveLength(1)
+  expect(beside.handoffs).toHaveLength(1)
+}).pipe(Effect.scoped), 5_000)
 
 describe('default export', () => {
   test('is a v2 plugin definition with an id and an effect', () => {

@@ -29,6 +29,7 @@ import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
 import { Handoff } from "@dotfiles/opencode-pool/handoff"
+import { below, generator } from "../../sim/runtime.ts"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
@@ -504,6 +505,63 @@ test("the final handoff reads the hold store once, adds no usage read, and keeps
     })
     state.holdAccess.unavailable = false
     expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+  })))
+
+test("a corrupt time becomes one finite recheck and asks for fresh usage before allowing the only login", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const now = 60_000
+    const end = now + LedgerLive.UNREADABLE_HOLD_MS
+    yield* TestClock.setTime(now)
+    state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until: "corrupt" })
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, reasonCode: "record-unreadable", retryAt: end })
+    yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS - 1)
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, reasonCode: "record-unreadable", retryAt: end })
+    yield* TestClock.adjust(1)
+    state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
+    expect(yield* plugin.request()).toBe("cred-a")
+    expect(state.storage.has("anthropic/hold/cred-a")).toBe(false)
+  })))
+
+test("an unknown hold kind only fences its own login until a fresh authenticated usage read repairs it", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    yield* TestClock.setTime(60_000)
+    state.storage.set("anthropic/hold/cred-a", { kind: "future-kind", at: 59_000, until: 61_000 })
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.request()).toBe("cred-b")
+    expect((yield* plugin.status).anthropic).toMatchObject({ accounts: [
+      { credentialID: "cred-a", hold: { kind: "record-unreadable", rawKind: "future-kind", until: 61_000 } },
+      { credentialID: "cred-b" },
+    ] })
+    expect(yield* plugin.handoff("cred-b")).toEqual(Handoff.cases.Send.make({}))
+    yield* TestClock.adjust(999)
+    expect(yield* plugin.request("ses_early")).toBe("cred-b")
+    yield* TestClock.adjust(1)
+    state.readings.set("cred-a", { ...quiet(61_000), usage: { at: 61_000, samples: 1 } })
+    yield* plugin.request("ses_repair")
+    expect(state.storage.has("anthropic/hold/cred-a")).toBe(false)
+  })))
+
+test("several pages of retired sign-ins are pruned against the current logins across generated session histories", () =>
+  onTestClock(Effect.gen(function* () {
+    const random = generator("retired-sign-in-histories")
+    for (let turn = 0; turn < 3; turn++) {
+      const state = world()
+      const history = LedgerLive.PAGE + 1 + below(random, 200)
+      for (let index = 0; index < history; index++) {
+        const credentialID = `retired-${index}`
+        state.storage.set(`anthropic/hold/${credentialID}`, { kind: "signin", until: 10, at: 0 })
+        state.storage.set(`anthropic/cache/ses_past_${index}`, { credentialID, at: 0 })
+      }
+      state.storage.set("anthropic/hold/cred-a", { kind: "signin", until: 10, at: 0 })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* plugin.request(`ses_current_${turn}`)).toBe("cred-b")
+      const holds = [...state.storage.keys()].filter((key) => key.startsWith("anthropic/hold/"))
+      expect(holds).toEqual(["anthropic/hold/cred-a"])
+    }
   })))
 
 describe("the options", () => {

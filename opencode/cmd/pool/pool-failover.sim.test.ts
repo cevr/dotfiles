@@ -15,6 +15,7 @@ import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 const { seeded } = Seed.runner("cmd/pool/pool-failover.sim.test.ts")
+const isolated = Seed.runner("cmd/pool/pool-failover.sim.test.ts", { past: [10285280, 10286953] })
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"
@@ -208,5 +209,38 @@ seeded("a refusal committed after the final hook counts as in flight, and the 42
     if (Option.isSome(yield* Config.option(Config.Int("SIM_SWARM_COUNT")))) {
       yield* Console.log(`pool-in-flight-at-refusal ${seed} ${world.inFlightAtRefusal()}`)
     }
+  }),
+)
+
+isolated.seeded("a separate writer publishes a hold after the answering copy placed its request, without a quota event", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const wait = 20 + below(generator(`pool-isolated-handoff:${seed}`), 40)
+    const accounts = Provider.accounts(seed, ["first", "second"])
+    const world = World.make({
+      seed, script: () => World.say(""),
+      anthropic: { accounts, script: ({ account }) => ({ kind: "ok", text: `answered on ${account}` }) },
+      integrations: { anthropic: Object.entries(accounts).map(([id, account]) => ({ id, label: id, ...account, expires: World.START + 8 * HOUR })) },
+    })
+    yield* world.load({
+      id: "sim.handoff-barrier",
+      effect: (ctx) => ctx.session.hook("http.request", () => Effect.sleep(wait)).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: WORK })
+    yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: WORK })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    yield* world.load({
+      id: POOL_STORE,
+      effect: (ctx) => ctx.session.hook("model.request", () =>
+        ctx.storage.set("anthropic/hold/first", { kind: "rate-limit", at: world.now(), until: world.now() + HOUR }),
+      ).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: OTHER })
+    const target = yield* world.session(WORK)
+    const writer = yield* world.session(OTHER, { model: World.SIM_MODEL })
+    yield* world.prompt(target, "pause a signed-in login before auth")
+    const records = Option.getOrThrow(Option.fromUndefinedOr(world.storage.get(POOL_STORE)))
+    expect(records.get(`anthropic/cache/${target}`)).toMatchObject({ credentialID: "first" })
+    yield* world.prompt(writer, "commit the refusal in the other copy")
+    expect(records.has("anthropic/hold/first")).toBe(true)
+    yield* world.until(() => world.sessions.get(target)?.running === false, RUN_LIMIT_MS)
+    expect(world.provider().received().filter((request) => request.path === "/v1/messages").map((request) => request.account)).toEqual(["second", "second"])
   }),
 )
