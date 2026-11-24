@@ -250,9 +250,9 @@ export function sessionOf(
   return {
     id,
     ...identityOf(model, info),
-    ...(info?.outcome === undefined ? {} : { outcome: info.outcome }),
+    ...(info?.outcome ? { outcome: info.outcome } : {}),
     time: {
-      created: time?.created ?? 0,
+      created: time?.created || 0,
       ...(time?.busy === undefined ? {} : { busy: time.busy }),
       ...(time?.idle === undefined ? {} : { idle: time.idle }),
       ...(time?.updated === undefined ? {} : { updated: time.updated }),
