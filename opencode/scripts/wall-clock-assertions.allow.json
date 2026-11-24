@@ -415,7 +415,7 @@
   {
     "group": "legacy",
     "file": "workbox/test/workrift.test.ts",
-    "count": 87,
+    "count": 79,
     "why": "workrift-subvolume: retained for the live writer to migrate; its own new and changed tests carry hangGuard kinds"
   },
   {

@@ -285,7 +285,7 @@ describeWork("workrift with the work backend", () => {
     const removed = w.wr(w.app, "remove", "feat/absent")
     expect(removed.code, removed.err).toBe(0)
     expect(existsSync(path)).toBe(false)
-  })
+  }, hangGuard("process-fixture"))
 
   /** mulberry32: a small seeded generator, so a failing sequence can be run again from its seed. */
   const random = (seed: number) => () => {
@@ -942,7 +942,7 @@ describeWork("workrift with the work backend", () => {
       expect(existsSync(p.three)).toBe(true)
       expect(existsSync(p.w.app)).toBe(true)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test.each(["trash", "no-trash"] as const)(
@@ -969,7 +969,7 @@ describeWork("workrift with the work backend", () => {
       // The name is free again: no -2 suffix.
       expect(p.w.create(p.w.app, "feat/two")).toBe(p.two)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test.each(["trash", "no-trash"] as const)(
@@ -1000,7 +1000,7 @@ describeWork("workrift with the work backend", () => {
       expect(p.gcCalls().sort()).toEqual(gcFor(mode, p.w.app, ids))
       for (const id of ids) expect(p.w.listed(p.w.app).some((each) => each.id === id)).toBe(false)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -1022,7 +1022,7 @@ describeWork("workrift with the work backend", () => {
       expect(p.gcCalls()).toEqual([])
       expect(p.w.active(p.w.app).map((each) => each.path)).toContain(p.two)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -1043,7 +1043,7 @@ describeWork("workrift with the work backend", () => {
       expect(p.files()).toEqual(p.without(before, p.two))
       expect(p.gcCalls().length).toBe(1)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -1058,7 +1058,7 @@ describeWork("workrift with the work backend", () => {
       expect(ran.err).toContain("not deleted")
       expect(existsSync(p.one)).toBe(true)
     },
-    60_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -1099,7 +1099,7 @@ describeWork("workrift with the work backend", () => {
       expect(readdirSync(real.trash).length).toBe(real.oldTrash.length + 1)
       expect(real.gcCalls()).toEqual([])
     },
-    120_000,
+    hangGuard("installer"),
   )
 
   test(
@@ -1120,7 +1120,7 @@ describeWork("workrift with the work backend", () => {
       })
       expect(outcomes).toEqual(malformedLists(p.two).map((each) => ({ label: each.label, code: 1, deleted: false, says: true })))
     },
-    120_000,
+    hangGuard("installer"),
   )
 
   test("a jq that fails on work's list of workspaces is no empty list: nothing is deleted, the trash is named (no workspace kept is told from it otherwise)", () => {
@@ -1133,7 +1133,7 @@ describeWork("workrift with the work backend", () => {
     expect(ran.err).toContain("nothing deleted, the trash stays")
     expect(ran.out).not.toContain("deleted:")
     expect(p.gcCalls()).toEqual([])
-  }, hangGuard("process-fixture"))
+  }, hangGuard("installer"))
 
   test("with work's trash = false, a jq -e that fails (neither listed nor not) on the list after the rm is no proof: workrift refuses to say deleted", () => {
     const p = purgeBench("notrash-jq", "no-trash")
@@ -1146,7 +1146,7 @@ describeWork("workrift with the work backend", () => {
     expect(ran.code).toBe(1)
     expect(ran.err).toContain("does not read (jq status 5)")
     expect(ran.out).not.toContain("deleted:")
-  }, hangGuard("process-fixture"))
+  }, hangGuard("installer"))
 
   /**
    * A folder a cut `workrift create` left (the server restarted mid-create, 2026-11-19): under app's storage, no .git
