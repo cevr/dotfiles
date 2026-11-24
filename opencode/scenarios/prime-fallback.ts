@@ -105,6 +105,7 @@ export default OpenCodeDriver.use(
           options: { now: PIN, log: `${out}/agents.jsonl`, codex: { providers: ["codex"], script: admit } },
         },
         { package: `${root}/cmd/wake`, options: { backstop: "off" } },
+        { package: `${root}/cmd/kernel`, options: { codeOnly: false } },
         { package: pool },
       ],
     },
@@ -135,21 +136,15 @@ export default OpenCodeDriver.use(
       })
       const until = (name: string, ready: (frame: string) => boolean, times = 400) =>
         ui.capture().pipe(
-          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
+          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.succeed(frame) : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() => ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame))))),
         )
-      const save = (name: string) =>
-        Effect.gen(function* () {
-          const { images: _, ...frame } = yield* ui.capture()
-          writeFileSync(`${out}/${name}.txt`, text(frame))
-          writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
-          console.log("screenshot:", yield* ui.screenshot(name))
-        })
-
       yield* ui.submit(ASK)
-      yield* until("fallback-done", (frame) => frame.includes(HEARD), 600)
-      yield* save("fallback-done")
+      const { images: _, ...frame } = yield* until("fallback-done", (frame) => frame.includes(HEARD) && /^ *◆ planner sol 6\.1  Check the export  /m.test(frame), 600)
+      writeFileSync(`${out}/fallback-done.txt`, text(frame))
+      writeFileSync(`${out}/fallback-done.json`, JSON.stringify(frame))
+      console.log("screenshot:", yield* ui.screenshot("fallback-done"))
       writeFileSync(
         `${out}/fallback-requests.json`,
         JSON.stringify({

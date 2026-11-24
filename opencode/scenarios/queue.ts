@@ -57,12 +57,13 @@ const call = (id: string, direct: ReadonlyArray<{ readonly name: string; readonl
 
 const step = (...parts: ReadonlyArray<ReturnType<typeof Llm.toolCall>>) => Stream.make(...parts, Llm.finish("tool-calls"))
 
-type Entry = string | { readonly package: string; readonly options: Readonly<Record<string, string>> }
+type Entry = { readonly package: string; readonly options: Readonly<Record<string, string | boolean>> }
 const plugins: Array<Entry> = [
   { package: `${root}/cmd/queue`, options: { dir: `${out}/${label}-queues` } },
   // A Wednesday afternoon, so the Sabbath never stops the subagents.
   { package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/${label}-agents.jsonl` } },
-  ...(via === "kernel" ? [`${root}/cmd/kernel`] : []),
+  // Prime and Queue read child state from Kernel even when the model calls the tools directly.
+  { package: `${root}/cmd/kernel`, options: { codeOnly: via === "kernel" } },
 ]
 
 export default OpenCodeDriver.use(
@@ -98,7 +99,8 @@ export default OpenCodeDriver.use(
         }
         if (!s.includes("call_start")) return step(...call("call_start", [{ name: "subagent", input: MONEY }], `await tools.subagent(${JSON.stringify(MONEY)})`))
         if (!s.includes("call_set")) {
-          const money = /sessionID[^A-Za-z0-9]{1,12}(ses_[A-Za-z0-9]+)/.exec(s)?.[1]
+          // The direct lifecycle receipt is prose; the kernel cell's output may carry the structured field.
+          const money = /(?:Subagent +|sessionID[^A-Za-z0-9]{1,12})(ses_[A-Za-z0-9]+)/.exec(s)?.[1]
           if (money === undefined) return Stream.make(Llm.text("No session id in the worker's result"), Llm.finish())
           const set = { set: items(money) }
           return step(
