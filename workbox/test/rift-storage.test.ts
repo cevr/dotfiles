@@ -3,16 +3,18 @@
 // /sys/fs/btrfs. The fstab is the workbox's own of 2026-11-19, whose UUID= lines for @home and @tmp failed the boot
 // (systemd-udevd is masked there, so /dev/disk/by-uuid never appears). Nothing here touches the real host.
 import { afterAll, describe, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { readInputText, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync } from "../../opencode/tests/read-path.ts"
+import { fixtureHostIdentity, spawnScratchShellFileSync, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
-const SCRIPT = join(import.meta.dir, "..", "bin", "workbox-rift-storage")
-const identity = Bun.spawnSync(["sh", "-c", '. "$1"; workbox_host_identity', "test", join(import.meta.dir, "..", "host-identity.sh")]).stdout.toString().trim()
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "rift-storage-test-")))
 // Hang guard: the file's last hook deletes the benches of the run (small folders and empty image files).
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }), hangGuard("local-fixture"))
+const hostIdentityScript = readInputText("../workbox/host-identity.sh")
+const identity = fixtureHostIdentity(scratchRoot, hostIdentityScript)
 let count = 0
 
 const UUID = "170ee675-18a3-48e1-931d-f0a84a51df83"
@@ -36,6 +38,13 @@ const exe = (path: string, body: string) => {
   chmodSync(path, 0o755)
 }
 
+const storageFixture = (dir: string) => {
+  const staging = join(dir, "workbox")
+  mkdirSync(join(staging, "bin"), { recursive: true })
+  writeScratchScript(join(staging, "host-identity.sh"), hostIdentityScript)
+  return writeScratchScript(join(staging, "bin/workbox-rift-storage"), readInputText("../workbox/bin/workbox-rift-storage"))
+}
+
 const bench = (fstabText: string) => {
   const dir = join(scratchRoot, `b-${count++}`)
   const bin = join(dir, "bin")
@@ -53,12 +62,15 @@ const bench = (fstabText: string) => {
   exe(join(bin, "findmnt"), `#!/bin/sh\ncase "$*" in *--mountpoint*) echo '/dev/loop0[/@workspaces]' ;; esac\n`)
   exe(join(bin, "sudo"), '#!/bin/sh\nexec "$@"\n')
   exe(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>'${calls}'\n`)
-  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_EXPECT_MACHINE_ID: identity }
+  const script = storageFixture(dir)
   const run = () => {
-    const ran = Bun.spawnSync(["sh", SCRIPT, "--fstab"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const ran = spawnScratchShellFileSync(script, ["--fstab"], {
+      cwd: dir, tools: bin, paths: { WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys },
+      values: { WORKBOX_EXPECT_MACHINE_ID: identity },
+    })
     return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() }
   }
-  const reloads = () => (existsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter((line) => line !== "")
+  const reloads = () => (scratchExistsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter((line) => line !== "")
   const backups = () => readdirSync(etc).filter((name) => name.startsWith("fstab.workbox-rift-storage."))
   return { etc, fstab, run, reloads, backups }
 }
@@ -123,12 +135,17 @@ describe("workbox-rift-storage --fstab", () => {
         "",
       ].join("\n"),
     )
-    const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, USER: process.env.USER ?? "user", WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image, WORKBOX_EXPECT_MACHINE_ID: identity }
-    const apply = () => Bun.spawnSync(["sh", SCRIPT, "--apply"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" })
+    const script = storageFixture(dir)
+    const apply = () => spawnScratchShellFileSync(script, ["--apply"], {
+      cwd: dir, tools: bin, paths: {
+        WORKBOX_RIFT_FSTAB: fstab, WORKBOX_SYSFS_BTRFS: sys, WORKBOX_RIFT_MOUNT: mount, WORKBOX_RIFT_IMAGE: image,
+      },
+      values: { USER: process.env.USER ?? "user", WORKBOX_EXPECT_MACHINE_ID: identity },
+    })
     const ran = apply()
     expect(ran.exitCode, ran.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)
-    expect(existsSync(join(mount, "bite"))).toBe(true)
+    expect(scratchExistsSync(join(mount, "bite"))).toBe(true)
     const again = apply()
     expect(again.exitCode, again.stderr.toString()).toBe(0)
     expect(readFileSync(calls, "utf8")).toBe(`subvolume create ${mount}/bite\n`)

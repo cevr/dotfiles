@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/pin.test.ts: spawnSync(["rm", "-rf", root])
 import { describe, expect, test } from "bun:test"
 import { argv, env, spawnSync, write } from "bun"
 import { gitInit } from "../../../tests/git-repo.ts"

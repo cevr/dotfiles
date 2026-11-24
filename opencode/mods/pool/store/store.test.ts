@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.test.ts: file: (label) => readFileSync(join(slots, label), "utf8"),
 // The login store source's refresh timing against a fake token endpoint and a
 // fake clock: when a token is refreshed, what a refresh that cannot happen
 // serves, how trades from one store are spaced, what the read that never trades

@@ -4,8 +4,8 @@
 // beneath the composer stay while the session's sidebar shows: wide, the
 // sidebar holds the session and the worker's row is under the dock's count;
 // narrow, with no sidebar, it is there too. It needs OPENCODE_DEV.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -45,7 +45,7 @@ describe.skipIf(!fork)("the subagent rows beside the sidebar in the Prime look (
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `sidebar-${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `sidebar-${name}.txt`), "utf8").split("\n")
   }), hangGuard("acceptance"))
 
   test("wide, the sidebar holds the session and the dock counts the worker", kept.test(() => {

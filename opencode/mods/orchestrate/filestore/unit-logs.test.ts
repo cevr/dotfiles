@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/filestore/unit-logs.test.ts: if (!existsSync(file)) return []
 // The units' logs on disk, written by this checkout's orchestrate log.ts, in a
 // scratch checkout: the laws, and a `~/` path.
 import { expect, test } from "bun:test"

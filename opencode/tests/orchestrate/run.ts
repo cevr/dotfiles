@@ -21,8 +21,9 @@
  *
  * @module
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { externalInput, matchingInput, readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../read-path.ts"
 import { HAND_BACK, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
 import { watchdog } from "../hang-guard.ts"
 
@@ -73,7 +74,7 @@ export interface Lane {
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
+const work = join(scratchInput(spec.base), "work")
 const config = join(spec.base, "config")
 const logFile = join(spec.base, "agents.jsonl")
 mkdirSync(work, { recursive: true })
@@ -169,11 +170,11 @@ const content = {
   },
   plugins: [
     {
-      package: spec.plugin,
+      package: matchingInput("cmd/orchestrate", spec.plugin),
       options: {
         log: logFile,
         now: spec.now,
-        unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"),
+        unitLog: matchingInput("../skills/orchestrate/scripts/log.ts", join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts")),
         ...codexOption,
       },
     },
@@ -207,7 +208,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 /** One OpenCode. */
 const open = () =>
   OpenCode.create({

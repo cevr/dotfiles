@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A window's tab row hides while the window holds only the session it shows
 // (owner, 2026-11-15, q68), on the simulated TUI (sim-tui/): the fork's real
 // TUI with Prime loaded by path, with the `window` scope `bun run daily` writes

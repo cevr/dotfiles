@@ -106,6 +106,14 @@ export class Models extends Context.Service<
      * without that variant, and none when it does not offer the model.
      */
     readonly at: (sessionID: string, model: string, variant: string | undefined) => Effect.Effect<string | undefined>
+    /**
+     * The fast mode of `model` (`provider/id[#variant]`) the session's host offers: the catalog's `<id>-fast`, a mode
+     * of the same model, at `model`'s variant when the mode offers it, bare when it does not. A fast mode is its own.
+     * None when the host offers no fast mode of it (or not `model`). Only a start that asks fast runs on one.
+     */
+    readonly fast: (sessionID: string, model: string) => Effect.Effect<Option.Option<string>>
+    /** The model a fast mode `model` is a mode of (`provider/<its modelID>[#variant]`); none for any other model. */
+    readonly standardOf: (sessionID: string, model: string) => Effect.Effect<Option.Option<string>>
   }
 >()("dotfiles-opencode/orchestrate/Models") {}
 

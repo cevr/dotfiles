@@ -5,6 +5,7 @@
 // summary request, sent as the first turn ended and before the next prompt,
 // none at the compaction, which finishes at once and reads as one finished
 // row with the background request's tokens. Needs OPENCODE_DEV.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -49,7 +50,7 @@ describe.skipIf(!fork)("an automatic compaction swaps in the summary written in 
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
     seen = JSON.parse(readFileSync(join(out, "requests.json"), "utf8")) as Requests
   }), hangGuard("acceptance"))
 

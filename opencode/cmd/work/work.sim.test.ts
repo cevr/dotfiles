@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The work plugin on the simulated host (sim/world.ts), at 20 seeds: `cmd/work/server.ts`'s `make` on the
 // world's context over its memory doubles (sim/plugins.ts `work`), driven by the verify model
 // (sim/verify-model.ts `worldScript`). The agent makes a workspace with `work`, lists it with the alias

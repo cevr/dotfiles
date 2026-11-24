@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at ../workbox/test/workrift-proc-walk.test.ts: const ran = Bun.spawnSync([...argv], { stdout: "pipe", stderr: "pipe" })
 // `workrift processes` on a real Linux /proc: proc-walk-linux.sh in a Lima VM, the Linux leg of the subvolume
 // switch's walk (the Mac's tests run it on a /proc of the bench). WORKRIFT_LIMA names the VM (wbnoble: Ubuntu
 // 24.04, sudo -n, setpriv); without it the leg is skipped, named. One VM at a time, outside the lease, at nice 10.

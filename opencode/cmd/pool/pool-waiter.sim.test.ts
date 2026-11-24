@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: readdirSync, read: (path) => readFileSync(path, "utf8"),
 // A model of the store's waiters on the simulated world, at 20 seeds and the past failing ones: one login of a store,
 // several resolves of it in this process (each a turn: resolve, send, and on a 401 tell the store), and another
 // process holding the same store that trades the login, fails its write some times, lands it, and holds the lock

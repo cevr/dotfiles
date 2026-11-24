@@ -7,6 +7,7 @@
 // ctrl+b moves a blocking
 // call; the dock's count opens the shell list, where ctrl+k kills one; the
 // dock's count follows each move and kill, and its line goes once none runs.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -57,7 +58,7 @@ describe.skipIf(!fork)("background shells in Prime", () => {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     const timeout = join(out, `${label}-timeout.txt`)
     if (code !== 0) throw new Error(`prime-shells scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n")
     requests = JSON.parse(readFileSync(join(out, `${label}-requests.json`), "utf8"))
   }), hangGuard("generated-schedule"))
 

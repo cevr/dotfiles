@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at testbeds/gamut/gamut.ts: readdirSync(pluginsDir, { withFileTypes: true })
 // accept: deep (53.5 s alone on a quiet host: 1-minute load 5.6–12.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // gamut's pure parts (arguments, presets, config, environment, the run's
 // database, the wait), the scripted model, and one end-to-end run of the
@@ -6,7 +8,8 @@
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { scratchExistsSync, scratchInput } from "./read-path.ts"
 import { dirname, join } from "node:path"
 import { ORCHESTRATOR, orchestrator } from "../mods/orchestrate/role.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -531,7 +534,7 @@ const runSync = (argv: ReadonlyArray<string>, env: ChildEnv, where: { readonly c
 }
 
 /** A JSON file's value. */
-const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"))
+const readJson = (file: string) => JSON.parse(readFileSync(scratchInput(file), "utf8"))
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -550,9 +553,9 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
 
   afterAll(() => {
     // A failed step still leaves nothing behind.
-    if (existsSync(state)) gamut("down")
-    rmSync(join(state, ".."), { recursive: true, force: true })
-  })
+    if (scratchExistsSync(state)) gamut("down")
+    rmSync(scratchInput(join(state, "..")), { recursive: true, force: true })
+  }, hangGuard("unit-law"))
 
   // The guard for the run that reached OpenCode's free hosted model (9ed8d7bc's deep run: the TUI sent the prompt on
   // opencode/big-pickle, the first model it lists, before it had the config's sim/sim-model). A sim run's OpenCode
@@ -615,7 +618,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const down = gamut("down")
       expect(down.code).toBe(0)
       expect(gamut("status").err).toContain("no gamut run is up")
-      expect(existsSync(work)).toBe(false)
+      expect(scratchExistsSync(work)).toBe(false)
     },
     hangGuard("generated-schedule"),
   )

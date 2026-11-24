@@ -1,10 +1,23 @@
 // Which diffs make a land's merge check run the verify-opencode docs guard (scripts/docs-guard.ts), read from
-// `git diff --name-status --relative` output as scripts/gate.ts reads it.
+// `git diff --name-status -z` output as scripts/gate.ts reads it.
 import { Effect } from "effect"
 import { describe, expect, it } from "effect-bun-test"
-import { docsGuardDue, parseNameStatus } from "./docs-guard.ts"
+import { docsGuardDue } from "./docs-guard.ts"
+import { decodeGitPaths, parseNameStatus } from "./git-paths.ts"
 
-const due = (out: string) => docsGuardDue(parseNameStatus(out))
+const due = (out: string) => docsGuardDue(parseNameStatus(out.replace(/[\t\n]/g, "\0")))
+
+it.effect("NUL keeps quoted, newline and dash paths intact, including both rename and copy operands", () =>
+  Effect.sync(() => {
+    expect(parseNameStatus(["R100", "a old\tfile", "-é\nfile", "C087", "old\"file", " new ", "M", "日本語", ""].join("\0"))).toEqual([
+      { status: "R", paths: ["a old\tfile", "-é\nfile"] },
+      { status: "C", paths: ["old\"file", " new "] },
+      { status: "M", paths: ["日本語"] },
+    ])
+    expect(() => decodeGitPaths(new Uint8Array([255, 0]))).toThrow()
+    expect(() => parseNameStatus("R100\0one\0")).toThrow()
+  }),
+)
 
 describe("the merge check's docs guard", () => {
   it.effect("a docs-only diff runs it: rex-state's change to features/rex.md reached main with the guard red (batch 2026-11-15cp)", () =>

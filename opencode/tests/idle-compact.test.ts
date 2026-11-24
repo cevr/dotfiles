@@ -1,3 +1,4 @@
+// @reads cmd/idle-compact
 // accept: one at a time (it bounds when the idle compaction fires against its due time).
 // accept: may skip 1 (the fork's version picks one of "recorded as automatic" and "records the idle compaction as manual")
 // Idle compaction in real OpenCode (the fork, through its SDK) on the scripted
@@ -12,11 +13,12 @@
 // each, the session is still compacted once. The rule and its timer are tested
 // beside their code in mods/idle-compact and cmd/idle-compact.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Result, Spec, Started } from "./idle-compact/run.ts"
 import { BACKGROUND_SECONDS, MARGIN_SECONDS, SUMMARY, TTL_SECONDS } from "./idle-compact/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 import { hangGuard, measured } from "./hang-guard.ts"
 
@@ -34,19 +36,18 @@ const run = async (name: string, options: { readonly background?: boolean; reado
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/idle-compact"), ...options } satisfies Spec))
-  const child = owned([process.execPath, join(import.meta.dir, "idle-compact/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = ownedCheckoutBun("tests/idle-compact/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])

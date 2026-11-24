@@ -1,23 +1,31 @@
+// @reads cmd/*/package.json
 // What a build's tree gives the TUI (`config/cli.json`, daily's `tuiEntries`): every plugin with a TUI
 // part, in the old scheme's order. A tree's server entries carry no TUI part, so this list is the only
 // way a TUI gets one.
-// @reads cmd/*/tui.ts cmd/*/tui.tsx cmd/*/package.json
 import { describe, expect, test } from "bun:test"
 import { Glob } from "bun"
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { tuiPluginsOf } from "../mods/update/trees.ts"
-import { pluginDir, tuiEntries } from "./daily.ts"
+import { matchingInput, readInputText } from "../tests/read-path.ts"
+import { pluginPackagesFrom, tuiEntriesFrom } from "./tui-entries.ts"
 
 /** This checkout's `opencode/` directory, which every plugin path starts with. */
-const ROOT = pluginDir("pool").slice(0, -"/cmd/pool".length)
+const ROOT = matchingInput("cmd/pool/package.json").slice(0, -"/cmd/pool/package.json".length)
 
 /** The TUI's plugin list a tree of this checkout gets, as its overlay's text. */
-const tuiText = () => Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(tuiEntries(ROOT, (name) => pluginDir(name)))
+const tuiText = () => {
+  const byName = new Map([...new Glob("cmd/*/package.json").scanSync()].map((name) => [
+    name.slice("cmd/".length, -"/package.json".length),
+    readInputText("cmd/*/package.json", name),
+  ]))
+  const packages = pluginPackagesFrom([...byName.keys()], (name) => Option.fromUndefinedOr(byName.get(name)))
+  return Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(tuiEntriesFrom(packages, (name) => `${ROOT}/cmd/${name}`))
+}
 
 describe("the TUI's plugin list in a build's tree", () => {
   test("lists every plugin with a TUI part: a tree's server entries carry none, so a TUI gets a TUI part only from it", () => {
     // Read straight off the tree of plugins, not through the derivation: each `cmd/<name>` with a TUI entry file.
-    const withTui = [...new Glob("cmd/*/tui.{ts,tsx}").scanSync(ROOT)].map((path) => `${ROOT}/${path.slice(0, path.lastIndexOf("/"))}`)
+    const withTui = [...new Glob("cmd/*/tui.{ts,tsx}").scanSync()].map((path) => `${ROOT}/${path.slice(0, path.lastIndexOf("/"))}`)
     const tui = tuiText()
     expect(withTui.filter((dir) => !tui.includes(`"${dir}"`))).toEqual([])
     expect(withTui.length).toBeGreaterThan(10)

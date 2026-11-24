@@ -23,7 +23,8 @@ const gitWith = (stdin: string, dir: string, ...args: ReadonlyArray<string>) => 
   })
   return { ok: ran.exitCode === 0, out: decoder.decode(ran.stdout).trim() }
 }
-const git = (dir: string, ...args: ReadonlyArray<string>) => gitWith("", dir, ...args)
+/** The Git operations consumed by the analysis, on the given checkout. */
+type ReadGit = typeof gitWith
 
 /** An upstream issue or PR AGENTS.md links to a fork change. */
 export interface Linked {
@@ -83,8 +84,8 @@ const FIELD = "\u0002"
 const significant = (line: string) => line.length >= 8 && /[A-Za-z0-9]{3}/.test(line)
 
 /** The commits of `range`, merges left out, with their added lines. */
-const commits = (dir: string, range: string): ReadonlyArray<Commit> => {
-  const log = git(dir, "log", "--no-merges", "-p", "--unified=0", "--no-color", "--no-ext-diff", `--format=${COMMIT}%H${FIELD}%s${FIELD}%B${FIELD}`, range)
+const commits = (read: ReadGit, dir: string, range: string): ReadonlyArray<Commit> => {
+  const log = read("", dir, "log", "--no-merges", "-p", "--unified=0", "--no-color", "--no-ext-diff", `--format=${COMMIT}%H${FIELD}%s${FIELD}%B${FIELD}`, range)
   if (!log.ok) return []
   return log.out
     .split(COMMIT)
@@ -114,9 +115,9 @@ const commits = (dir: string, range: string): ReadonlyArray<Commit> => {
  * generated list: packages/protocol/openapi.json, the client's generated types). Both sides regenerate
  * them, so a line they share there says nothing about the change itself.
  */
-const generated = (dir: string, source: string, files: ReadonlyArray<string>): ReadonlySet<string> => {
+const generated = (read: ReadGit, dir: string, source: string, files: ReadonlyArray<string>): ReadonlySet<string> => {
   if (files.length === 0) return new Set()
-  const ran = gitWith(files.join("\0"), dir, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated")
+  const ran = read(files.join("\0"), dir, "check-attr", "-z", "--stdin", `--source=${source}`, "linguist-generated")
   if (!ran.ok) return new Set()
   const fields = ran.out.split("\0")
   const marked = new Set<string>()
@@ -175,23 +176,25 @@ export interface ForkWork {
 }
 
 /** Drop-marked fork commits still on the branch whose upstream PR is in `upstream`. Git only, no lookup. */
-export const droppable = (input: Pick<ForkWorkInput, "fork" | "branch" | "upstream" | "agents">): ForkWork["droppable"] =>
+const droppableUsing = (input: Pick<ForkWorkInput, "fork" | "branch" | "upstream" | "agents">, read: ReadGit): ForkWork["droppable"] =>
   dropMarkers(input.agents).flatMap((marker) => {
-    if (!git(input.fork, "merge-base", "--is-ancestor", marker.commit, input.branch).ok) return []
-    const found = git(input.fork, "log", "--format=%H%x02%B%x01", "--fixed-strings", `--grep=#${marker.pr}`, input.upstream)
+    if (!read("", input.fork, "merge-base", "--is-ancestor", marker.commit, input.branch).ok) return []
+    const found = read("", input.fork, "log", "--format=%H%x02%B%x01", "--fixed-strings", `--grep=#${marker.pr}`, input.upstream)
     const by = found.out
       .split("\u0001")
       .map((entry) => entry.trim().split("\u0002"))
       .find(([, message = ""]) => names(message, marker.pr))?.[0]
     if (by === undefined || by === "") return []
-    return [{ ...marker, by, merged: git(input.fork, "merge-base", "--is-ancestor", by, input.branch).ok }]
+    return [{ ...marker, by, merged: read("", input.fork, "merge-base", "--is-ancestor", by, input.branch).ok }]
   })
 
-export const forkWork = async (input: ForkWorkInput): Promise<ForkWork> => {
-  const since = git(input.fork, "merge-base", input.before, input.upstream).out
-  const theirs = since === "" ? [] : commits(input.fork, `${since}..${input.upstream}`)
-  const mine = commits(input.fork, `${input.upstream}..${input.branch}`)
-  const skip = generated(input.fork, input.branch, [...new Set(mine.flatMap((commit) => [...commit.added.keys()]))])
+export const droppable = (input: Parameters<typeof droppableUsing>[0]) => droppableUsing(input, gitWith)
+
+export const forkWorkUsing = async (input: ForkWorkInput, read: ReadGit): Promise<ForkWork> => {
+  const since = read("", input.fork, "merge-base", input.before, input.upstream).out
+  const theirs = since === "" ? [] : commits(read, input.fork, `${since}..${input.upstream}`)
+  const mine = commits(read, input.fork, `${input.upstream}..${input.branch}`)
+  const skip = generated(read, input.fork, input.branch, [...new Set(mine.flatMap((commit) => [...commit.added.keys()]))])
   const fresh = theirs.map((commit) => authored(commit, skip))
   const ours = mine.map((commit) => authored(commit, skip))
   const linked = linkedIssues(input.agents)
@@ -232,9 +235,11 @@ export const forkWork = async (input: ForkWorkInput): Promise<ForkWork> => {
     candidates,
     closed: looked.flatMap(({ link, state }) => (state !== undefined && state.state !== "open" ? [{ ...link, ...state }] : [])),
     unread: looked.filter(({ state }) => state === undefined).length,
-    droppable: droppable(input),
+    droppable: droppableUsing(input, read),
   }
 }
+
+export const forkWork = (input: ForkWorkInput) => forkWorkUsing(input, gitWith)
 
 const short = (hash: string) => hash.slice(0, 10)
 

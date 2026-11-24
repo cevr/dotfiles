@@ -10,12 +10,14 @@ import { describe } from "bun:test"
 import { Clock, Data, Effect, FileSystem, Option, Ref, Schedule, Schema, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { Base64 } from "effect/encoding"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo } from "./fake-anthropic.ts"
 import { ENV, Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { externalInput, scratchInput } from "./read-path.ts"
+import { forkProcessCommand } from "./scratch-child.ts"
 import { ready } from "./service.ts"
 import { hangGuard } from "./hang-guard.ts"
 
@@ -88,7 +90,7 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     const home = `${root}/home`
     yield* fs.makeDirectory(`${home}/.config/opencode`, { recursive: true })
     yield* fs.makeDirectory(`${root}/work`)
-    const work = yield* fs.realPath(`${root}/work`)
+    const work = yield* fs.realPath(scratchInput(`${root}/work`))
     // The global config, which every Location the server opens reads.
     yield* fs.writeFileString(
       `${home}/.config/opencode/opencode.json`,
@@ -110,7 +112,6 @@ const turnOn = (root: string, turn: FakeAnswer) =>
       ANTHROPIC_BASE_URL: fake.url,
       ...launch.env,
     }
-    const [command = "", ...args] = launch.base
     // The login goes in on stdin, never in argv or a file.
     const login = {
       id: "cred_only",
@@ -121,14 +122,10 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     }
     const imported = yield* spawner
       .spawn(
-        ChildProcess.make(command, [...args, "auth", "import", "--standalone"], {
-          cwd: work,
-          env,
-          extendEnv: false,
+        forkProcessCommand([fork, work, ["auth", "import", "--standalone"], env], {
           stdin: Stream.make(new TextEncoder().encode(toJson([login]))),
           stdout: "ignore",
           stderr: "ignore",
-          forceKillAfter: "3 seconds",
         }),
       )
       .pipe(
@@ -139,13 +136,8 @@ const turnOn = (root: string, turn: FakeAnswer) =>
 
     // The server runs in a process group of its own; the test's scope stops the group.
     const server = yield* spawner.spawn(
-      ChildProcess.make(command, [...args, "serve", "--service", "--port", "0"], {
-        cwd: work,
-        env,
-        extendEnv: false,
-        stdin: "ignore",
+      forkProcessCommand([fork, work, ["serve", "--service", "--port", "0"], env], {
         stdout: "ignore",
-        forceKillAfter: "3 seconds",
       }),
     )
     const stderr = yield* Ref.make("")
@@ -157,7 +149,7 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     )
     const tail = Ref.get(stderr)
     const service = yield* Effect.promise(() => ready(`${home}/.local/state/opencode/service-local.json`, () => "the pool's server"))
-    const module = yield* Effect.promise((): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`))
+    const module = yield* Effect.promise((): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`)))
     const client = module.OpenCode.make({ baseUrl: service.url, headers: { authorization: `Basic ${Base64.encode(`opencode:${service.password}`)}` } })
     const location = { directory: work }
     // The work directory's copy of the plugin: the one that places the session's requests.

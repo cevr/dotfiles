@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Reset-backed pace on the simulated host, each test at 20 seeds: no request
 // on the pooled provider goes out over the pool's spend-evenly line unless a
 // reset the pool claimed, sent once and observed in a fresh reading, gave the

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/guard/sqlite/host-resources.test.ts: const bytes = yield* spawner.string(ChildProcess.make("git", [
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { argv, CryptoHasher } from "bun"
 import { Effect, FileSystem, Option, Path, Result, Schema } from "effect"

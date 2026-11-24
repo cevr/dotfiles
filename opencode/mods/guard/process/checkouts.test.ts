@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/process/checkouts.test.ts: const sh = (argv: ReadonlyArray<string>, env: Readonly<Record<string, string>>) => spawnSync([.
 // Checkouts over real git, df and mount in a scratch directory this test makes
 // and removes: a checkout with an origin and a directory in it, one with no
 // origin, a plain directory and a missing path; the warm sources from a

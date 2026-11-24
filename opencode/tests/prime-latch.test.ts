@@ -8,8 +8,8 @@
 // listing and the latch's decisions run on the simulated host:
 // cmd/orchestrate/orchestrate-latch.sim.test.ts (tests/parity/orchestrate.json).
 // It needs OPENCODE_DEV, the fork with the plugin hook points the Prime rows use.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
@@ -44,7 +44,7 @@ describe.skipIf(!fork)("a subagent latched on the pace (OPENCODE_DEV)", () => {
     })
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
   }), hangGuard("acceptance"))
 
   test("the held foreground call answers latched at once, and the parent goes on", kept.test(() => {

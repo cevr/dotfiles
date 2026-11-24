@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/stall/server.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "stall-seam"]).stdout.toString().trim()),
 // The plugin seam: two copies of the plugin in this process (as two locations
 // load it), on the real profiler and a scratch capture directory, their log
 // lines read as they come. A stall of this test's own main thread is captured

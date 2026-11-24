@@ -139,9 +139,11 @@ const packageOf = (specifier: string): string =>
  * an install put it there, inside `root`, with the links that leave `root` passed over: in a dev
  * checkout those are the fork's, made for typecheck and tests, which shadow the install's own copy a tree loads.
  */
-const installedUp = (root: string, file: string, specifier: string): boolean =>
+type Resolver = typeof resolved
+
+const installedUp = (root: string, file: string, specifier: string, resolve: Resolver): boolean =>
   Arr.unfold(dirOf(file), (dir) => Option.liftPredicate([dir, dirOf(dir)] as const, () => within(root, dir))).some((dir) =>
-    Option.isSome(Option.filter(resolved(`./node_modules/${packageOf(specifier)}/package.json`, `${dir}/file`), (at) => within(root, at))),
+    Option.isSome(Option.filter(resolve(`./node_modules/${packageOf(specifier)}/package.json`, `${dir}/file`), (at) => within(root, at))),
   )
 
 /** What one import lacks, if anything, and the source of ours it leads the walk on to, if any. */
@@ -151,30 +153,30 @@ interface Found {
 }
 
 /** What one bare or workspace import of `file` lacks in `root` for `host`, if anything; and the source it leads the walk on to. */
-const importOf = (root: string, host: Host, file: string, specifier: string): Found => {
-  const target = Option.filter(resolved(specifier, file), (path) => within(root, path))
+const importOf = (root: string, host: Host, file: string, specifier: string, resolve: Resolver): Found => {
+  const target = Option.filter(resolve(specifier, file), (path) => within(root, path))
   const importer = file.slice(root.length + 1)
   const next = Option.filter(target, (path) => ours(root, path))
   if (builtin(specifier) || (!workspaceImport(specifier) && hostProvided(host, specifier))) return { problem: Option.none(), next: Option.none() }
   if (workspaceImport(specifier)) return { problem: Option.map(Option.filter(Option.some(specifier), () => Option.isNone(target)), () => `${importer} imports ${specifier}, which does not resolve inside the tree`), next }
-  const lacking = Option.isNone(target) && !installedUp(root, file, specifier)
+  const lacking = Option.isNone(target) && !installedUp(root, file, specifier, resolve)
   return { problem: Option.map(Option.filter(Option.some(specifier), () => lacking), () => `${importer} imports ${specifier}, which the ${host} host does not serve and no install of the tree holds`), next }
 }
 
 /** The problems of one seed's walk: every source it reaches, each runtime import once per directory. */
-const walk = (root: string, seed: string, host: Host): ReadonlyArray<string> => {
+const walk = (root: string, seed: string, host: Host, disk: RuntimeInputs): ReadonlyArray<string> => {
   const reached = new Set<string>()
   const pending = [`${root}/${seed}`]
   const problems: Array<string> = []
   for (const file of pending) {
-    const source = sourceOf(file)
+    const source = disk.source(file)
     // The imports the source names: the TSX transform adds React's runtime, which the TUI's own Solid transform does not.
     const scanned = Option.getOrElse(Option.liftThrowable(() => transpilerOf(file).scanImports(source))(), () => [])
     for (const { path: specifier } of scanned.filter((each) => source.includes(`"${each.path}"`) || source.includes(`'${each.path}'`))) {
       const key = `${dirOf(file)}\u0000${specifier}`
       if (reached.has(key)) continue
       reached.add(key)
-      const found = importOf(root, host, file, specifier)
+      const found = importOf(root, host, file, specifier, disk.resolve)
       problems.push(...Option.toArray(found.problem).map((problem) => `${seed} (${host}): ${problem}`))
       pending.push(...Option.toArray(Option.filter(found.next, (next) => !pending.includes(next))))
     }
@@ -191,16 +193,28 @@ const walk = (root: string, seed: string, host: Host): ReadonlyArray<string> => 
  * A workspace import must resolve inside `root`. Synchronous: the check's step and the gate's
  * `scripts/runtime-imports.test.ts` both run it.
  */
-export const unresolvedImports = (root: string): ReadonlyArray<string> => {
+interface RuntimeInputs {
+  readonly resolve: Resolver
+  readonly source: (file: string) => string
+  readonly seeds: (root: string, glob: string) => ReadonlyArray<string>
+}
+
+export const unresolvedImportsFrom = (root: string, disk: RuntimeInputs): ReadonlyArray<string> => {
   // The root as Bun resolves into it, every link (macOS's /var → /private/var too) resolved.
-  const real = Option.getOrElse(Option.map(resolved("./package.json", `${root}/package.json`), dirOf), () => root)
+  const real = Option.getOrElse(Option.map(disk.resolve("./package.json", `${root}/package.json`), dirOf), () => root)
   return SEEDS.flatMap(({ glob, host }) =>
-    [...new Glob(glob).scanSync({ cwd: real })]
+    disk.seeds(real, glob)
       .filter((file) => !/\.(test|bench)\.tsx?$/.test(file))
       .sort()
-      .flatMap((seed) => walk(real, seed, host)),
+      .flatMap((seed) => walk(real, seed, host, disk)),
   )
 }
+
+export const unresolvedImports = (root: string) => unresolvedImportsFrom(root, {
+  resolve: resolved,
+  source: sourceOf,
+  seeds: (cwd, glob) => [...new Glob(glob).scanSync({ cwd })],
+})
 
 /**
  * Takes away every write permission under `dir`, but in each `node_modules`: on Linux Bun hardlinks a

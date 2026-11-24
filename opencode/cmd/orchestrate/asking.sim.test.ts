@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The orchestrate plugin's question tools on the simulated host, at the
 // file's seeds: by default it adds `ask_orchestrator` and `answer_subagent`,
 // and its agents' swap leaves a root (a primary agent) `ask_user_async` and a

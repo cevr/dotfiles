@@ -1,3 +1,4 @@
+// @reads ../skills/orchestrate/scripts ../skills/orchestrate/scripts/**/!(*.test.ts|*.test.tsx) mods/orchestrate mods/orchestrate/**/!(*.test.ts|*.test.tsx) mods/queue/stale.ts mods/status mods/status/**/!(*.test.ts|*.test.tsx)
 /**
  * The ratchet on parsing run state from prose (the commitments spec, "Parsers of run state"): every regular expression
  * (a literal, `RegExp(…)` with or without `new`, a string `.match`/`.matchAll`/`.search`, a `.split` on a marker line) in a non-test source of orchestrate, status, the queue's stale check and the orchestrate
@@ -6,16 +7,17 @@
  * program shrinks the list, and the last ends with only `stays` entries.
  *
  * It finds its sources by walking, not import, so it declares them for the gate's selection (scripts/reach.ts `readsOf`):
- * @reads mods/orchestrate/** mods/status/** mods/queue/stale.ts ../skills/orchestrate/scripts/** scripts/no-prose-state.allow.json
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Array as Arr, Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { parseSync, Visitor } from "oxc-parser"
+import { matchingInput } from "../tests/read-path.ts"
 
 
 /** The folders and files the ratchet watches, relative to the repository (the parent of opencode/, where the gate runs the suite). */
 const ROOTS = ["opencode/mods/orchestrate", "opencode/mods/status", "opencode/mods/queue/stale.ts", "skills/orchestrate/scripts"]
+const WATCHED = "{mods/orchestrate,mods/orchestrate/**/!(*.test.ts|*.test.tsx),mods/status,mods/status/**/!(*.test.ts|*.test.tsx),mods/queue/stale.ts,../skills/orchestrate/scripts,../skills/orchestrate/scripts/**/!(*.test.ts|*.test.tsx)}"
 
 const Entry = Schema.Struct({
   file: Schema.String,
@@ -27,27 +29,29 @@ type Entry = typeof Entry.Type
 const decodeAllow = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Entry)))
 
 /** A source the ratchet reads: TypeScript, not a test, not a dependency. */
-const isSource = (name: string) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)
+const isTestSource = (name: string) => /\.test\.tsx?$/.test(name)
+const isSource = (name: string) => /\.tsx?$/.test(name) && !isTestSource(name)
 
 /** The repository's root and the allow list: the list's paths are relative to the root. */
 const places = Effect.gen(function* () {
   const path = yield* Path.Path
   const opencode = path.resolve(".")
-  return { repo: path.join(opencode, ".."), allow: path.join(opencode, "scripts", "no-prose-state.allow.json") }
+  return { repo: path.join(opencode, ".."), opencode }
 })
 
 /** Every source under `at` (a file or a directory), relative to the repository. */
-const sourcesUnder = (repo: string, at: string): Effect.Effect<ReadonlyArray<string>, unknown, FileSystem.FileSystem | Path.Path> =>
+const sourcesUnder = (repo: string, opencode: string, at: string): Effect.Effect<ReadonlyArray<string>, unknown, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const full = path.join(repo, at)
+    const full = matchingInput(WATCHED, path.relative(opencode, path.join(repo, at)))
     if ((yield* fs.stat(full)).type !== "Directory") return [at]
-    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules")
+    const names = (yield* fs.readDirectory(full)).filter((name) => name !== "node_modules" && !isTestSource(name))
     const each = yield* Effect.forEach(names, (name) =>
       Effect.gen(function* () {
         const child = path.join(at, name)
-        if ((yield* fs.stat(path.join(repo, child))).type === "Directory") return yield* sourcesUnder(repo, child)
+        const target = matchingInput(WATCHED, path.relative(opencode, path.join(repo, child)))
+        if ((yield* fs.stat(target)).type === "Directory") return yield* sourcesUnder(repo, opencode, child)
         return Arr.filter([child], () => isSource(name))
       }),
     )
@@ -111,11 +115,11 @@ const ratchet = (sources: ReadonlyMap<string, string>, allow: ReadonlyArray<Entr
 const read = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  const { repo, allow } = yield* places
-  const files = (yield* Effect.forEach(ROOTS, (root) => sourcesUnder(repo, root))).flat()
-  const texts = yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(path.join(repo, file)), (text) => [file, text] as const))
+  const { repo, opencode } = yield* places
+  const files = (yield* Effect.forEach(ROOTS, (root) => sourcesUnder(repo, opencode, root))).flat()
+  const texts = yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(matchingInput(WATCHED, path.relative(opencode, path.join(repo, file)))), (text) => [file, text] as const))
   const sources: ReadonlyMap<string, string> = new Map(texts)
-  return { sources, allow: yield* decodeAllow(yield* fs.readFileString(allow)) }
+  return { sources, allow: yield* decodeAllow(yield* fs.readFileString("scripts/no-prose-state.allow.json")) }
 })
 
 describe("no run state parsed from prose", () => {

@@ -1,40 +1,14 @@
+// @reads all
+// @reads-reason computed read at cmd/kernel/server.test.ts: execute: (input: { readonly path: string }) => Effect.promise(() => Bun.file(input.path).text()
 // accept: deep (30.8 s alone on a quiet host: 1-minute load 69.7–77.6 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 import { describe, expect, test } from "bun:test"
 import { Array as Arr } from "effect"
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, scratchExistsSync } from "./read-path.ts"
 import { basename, join } from "node:path"
-import { fileURLToPath } from "node:url"
-import { owned, released } from "./owned.ts"
+import { ownedCheckoutTests, ownedTempFixture, released } from "./owned.ts"
 import { scratch } from "./scratch.ts"
 import { hangGuard } from "./hang-guard.ts"
-
-/**
- * The suites that made a temp directory and left it behind, run without OPENCODE_DEV (so the
- * OpenCode e2e suites skip, as in the gate), each from the opencode directory.
- */
-const SUITES = [
-  "cmd/kernel/server.test.ts",
-  "cmd/pool/server.test.ts",
-  "mods/kernel/filestore/files.test.ts",
-  "mods/kernel/worker/workers.test.ts",
-  "mods/pool/opencode/limits.test.ts",
-  "mods/pool/ssh/peers.test.ts",
-  "mods/wake/cron/backstop.test.ts",
-  "scripts/cache-audit.test.ts",
-  "scripts/daily.test.ts",
-  "scripts/migrate-schedules.test.ts",
-  "tests/dock-reconnect.test.ts",
-  "tests/mail-peer.test.ts",
-  "tests/mail-start.test.ts",
-  "tests/pool-failover.test.ts",
-  "tests/pool-fleet.test.ts",
-  "tests/pool-resets.test.ts",
-  "tests/pool-store-opencode.test.ts",
-  "tests/pool-store-refresh.test.ts",
-  "tests/pool-store.test.ts",
-  "tests/reconnect-session.test.ts",
-  "tests/update-badge.test.ts",
-]
 
 
 /**
@@ -96,17 +70,35 @@ describe("a scratch directory", () => {
     "the suites that make one leave none behind in the temp directory",
     async () => {
       using tmp = scratch("scratch-guard-")
+      using state = scratch("scratch-guard-state-")
       const before = readdirSync(tmp.path)
-      const child = owned([process.execPath, "test", "--timeout", String(SUITE_TEST_MS), ...SUITES.map((suite) => `./${suite}`)], {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: { ...process.env, OPENCODE_DEV: "", TMPDIR: tmp.path },
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "pipe",
-      })
+      // The suites that made temp directories and leaked them. No fork means the e2e scenarios skip.
+      const child = ownedCheckoutTests({ temp: tmp.path, state: state.path, timeout: SUITE_TEST_MS },
+        "cmd/kernel/server.test.ts",
+        "cmd/pool/server.test.ts",
+        "mods/kernel/filestore/files.test.ts",
+        "mods/kernel/worker/workers.test.ts",
+        "mods/pool/opencode/limits.test.ts",
+        "mods/pool/ssh/peers.test.ts",
+        "mods/wake/cron/backstop.test.ts",
+        "scripts/cache-audit.test.ts",
+        "scripts/daily.test.ts",
+        "scripts/migrate-schedules.test.ts",
+        "tests/dock-reconnect.test.ts",
+        "tests/mail-peer.test.ts",
+        "tests/mail-start.test.ts",
+        "tests/pool-failover.test.ts",
+        "tests/pool-fleet.test.ts",
+        "tests/pool-resets.test.ts",
+        "tests/pool-store-opencode.test.ts",
+        "tests/pool-store-refresh.test.ts",
+        "tests/pool-store.test.ts",
+        "tests/reconnect-session.test.ts",
+        "tests/update-badge.test.ts",
+      )
       const stderr = await new Response(child.stderr).text()
       const code = await child.exited
-      expectPassed(code, stderr, SUITES.length)
+      expectPassed(code, stderr, 21)
       expect(readdirSync(tmp.path)).toEqual(before)
     },
     hangGuard("generated-schedule"),
@@ -118,14 +110,9 @@ describe("a scratch directory", () => {
  * left there and its report. tests/scratch-cases.ts has no `.test.` in its name, so only this run
  * picks it up.
  */
-const runCases = async (tmp: string, ...args: ReadonlyArray<string>) => {
-  const child = owned([process.execPath, "test", "./tests/scratch-cases.ts", ...args], {
-    cwd: fileURLToPath(new URL("..", import.meta.url)),
-    env: { ...process.env, TMPDIR: tmp },
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "pipe",
-  })
+const runCases = async (tmp: string, filter?: string) => {
+  using state = scratch("scratch-cases-state-")
+  const child = ownedCheckoutTests({ temp: tmp, state: state.path, filter }, "tests/scratch-cases.ts")
   const output = await new Response(child.stderr).text()
   return { code: await child.exited, output, left: readdirSync(tmp) }
 }
@@ -142,20 +129,17 @@ const FAILING_CASES = [
   "closing-after-late-setup > setup",
 ]
 
-/** A child that makes the folders opencode-drive and OpenCode leave under TMPDIR, and prints its TMPDIR. */
-const MAKES_TEMP = ["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"']
-
 
 describe("an owned child's TMPDIR", () => {
   test(
     "is a folder of its own, removed with what opencode-drive and OpenCode made there once the child has stopped",
     async () => {
-      const child = owned(MAKES_TEMP, { stdout: "pipe", stderr: "ignore" })
+      const child = ownedTempFixture()
       const temp = await new Response(child.stdout).text()
       const code = await child.exited
-      const made = existsSync(join(temp, "opencode-drive"))
+      const made = scratchExistsSync(join(temp, "opencode-drive"))
       await released(child.pid)
-      expect({ code, own: basename(temp).startsWith("child-"), made, gone: !existsSync(temp) }).toEqual({ code: 0, own: true, made: true, gone: true })
+      expect({ code, own: basename(temp).startsWith("child-"), made, gone: !scratchExistsSync(temp) }).toEqual({ code: 0, own: true, made: true, gone: true })
     },
     hangGuard("local-pair"),
   )
@@ -164,7 +148,7 @@ describe("an owned child's TMPDIR", () => {
     "is the one the test chose for it, kept as it is",
     async () => {
       using chosen = scratch("scratch-chosen-")
-      const child = owned(MAKES_TEMP, { env: { ...process.env, TMPDIR: chosen.path }, stdout: "pipe", stderr: "ignore" })
+      const child = ownedTempFixture(chosen.path)
       const temp = await new Response(child.stdout).text()
       const code = await child.exited
       expect({ code, temp, made: existsSync(join(chosen.path, "opencode")) }).toEqual({ code: 0, temp: chosen.path, made: true })
@@ -202,7 +186,7 @@ describe("an e2e suite's directory", () => {
     "goes when a -t filter runs only some of a passing suite's tests",
     async () => {
       using tmp = scratch("scratch-cases-")
-      const { code, output, left } = await runCases(tmp.path, "-t", "^passing first$")
+      const { code, output, left } = await runCases(tmp.path, "^passing first$")
       expect({ code, passed: output.match(/(\d+) pass/)?.[1], left }).toEqual({ code: 0, passed: "1", left: [] })
     },
     hangGuard("process-fixture"),
@@ -212,13 +196,11 @@ describe("an e2e suite's directory", () => {
     "reconnect-session makes none when a -t filter runs none of its tests, with an old TUI binary to copy",
     async () => {
       using tmp = scratch("scratch-reconnect-")
-      const child = owned([process.execPath, "test", "./tests/reconnect-session.test.ts", "-t", "^no test is named this$"], {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: { ...process.env, TMPDIR: tmp.path, OPENCODE_RECONNECT_TUI_BINARY: fileURLToPath(import.meta.url) },
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "pipe",
-      })
+      using state = scratch("scratch-reconnect-state-")
+      const child = ownedCheckoutTests({
+        temp: tmp.path, state: state.path, filter: "^no test is named this$", fork: process.env.OPENCODE_DEV,
+        checkout: { OPENCODE_RECONNECT_TUI_BINARY: "tests/scratch.test.ts" },
+      }, "tests/reconnect-session.test.ts")
       const output = await new Response(child.stderr).text()
       await child.exited
       expect({ collected: /skipping [1-9]\d* tests/.test(output), left: readdirSync(tmp.path) }).toEqual({ collected: true, left: [] })

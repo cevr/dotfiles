@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/rex/show.test.ts: const child = Bun.spawn(["bun", SHOW, "tally", "x"], { env: { PATH: process.env.PATH }, stdout:
 // rex-show's seams: the arguments it takes, the run on memory systems from a
 // caller's pane (one showcase split off beside it, the viewer told the
 // spool), the refusal outside a pane, and the command's exit outside one.

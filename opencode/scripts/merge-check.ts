@@ -1,7 +1,5 @@
-// The legs of a land's merge check (scripts/gate.ts --merge <base>), from the changes since <base>. The merge check
-// runs no unit leg, so a change could break a scripts/ test and still land (batch 2026-11-15cq: accept.test and
-// accept-parity went red on main). Beside the link, the typecheck, oxlint and the debt ratchet over the changed
-// files, it runs the tests a change can break and the full gate's unit leg would have caught:
+// The legs of a land's merge check (scripts/gate.ts --merge <base>), from the changes since <base>.
+// Beside the link, typecheck, and changed-file lint and debt ratchet, the test leg includes:
 // - the docs guard, scripts/verify-docs.test.ts, when the change can turn it red (docs-guard.ts);
 // - for a changed scripts/<name>.ts its own scripts/<name>.test.ts and every scripts/ test whose imports reach it
 //   within scripts/, through any number of steps (fork.ts → daily.ts → daily.test), and a changed scripts/ test itself;
@@ -14,11 +12,14 @@
 // - tests/git-repo.test.ts, the guard that every test and testbed file makes its repositories through gitInit or
 //   gitClone, when a test or testbed file it scans is added or changed: it reads their text, it imports none, so no
 //   reach finds it (batch 2026-11-16cv: scripts/verify-fork.test.ts landed a raw `git init`).
-// - every workbox/test/ test when anything under the repository's workbox/ changes: the diff from opencode/ never
-//   sees that folder, and no gate leg ran its tests (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
-import { Glob } from "bun"
+// - every workbox/test/ test when anything under workbox/ changes, and its explicit @reads outside workbox/
+//   (batch 2026-11-16cy: workrift.test.ts landed red on the Mac).
+// - fixed-seed unit tests not run by the acceptance swarm: a changed test, its known or observed inputs,
+//   or any change while its input scope is unknown.
 import { Option } from "effect"
-import { docsGuardDue, type Change } from "./docs-guard.ts"
+import { docsGuardDue } from "./docs-guard.ts"
+import type { Change } from "./git-paths.ts"
+import { readMatcher } from "./read-declarations.ts"
 
 /** A leg the merge check runs: its name, its command (from opencode/) and what its summary notes. */
 export interface LegSpec {
@@ -36,6 +37,14 @@ export interface Tools {
   readonly exists: (file: string) => boolean
   readonly scripts: ScriptsTests
   readonly workbox: Workbox
+  readonly workboxReads?: (file: string) => (path: string) => boolean
+  readonly unit?: UnitTests
+}
+
+/** The fixed-seed population and the authority that matches each test's inputs. */
+export interface UnitTests {
+  readonly files: ReadonlyArray<string>
+  readonly inputs: (test: string) => Pick<ReadonlySet<string>, "has">
 }
 
 /** The repository's workbox/ folder, outside opencode/: its changes since the base and its tests, from opencode/ (`../workbox/test/…`). */
@@ -50,7 +59,6 @@ export const workboxTests = (workbox: Workbox): ReadonlyArray<string> => (workbo
 export const DOCS_GUARD = "scripts/verify-docs.test.ts"
 export const ACCEPT_TESTS = ["scripts/accept.test.ts", "scripts/accept-parity.test.ts"] as const
 export const GIT_REPO_GUARD = "tests/git-repo.test.ts"
-
 /** The path a change leaves on disk: a rename's or a copy's new path, else its only one; none for a deletion. */
 const left = (change: Change): ReadonlyArray<string> => {
   if (change.status === "D") return []
@@ -60,10 +68,11 @@ const left = (change: Change): ReadonlyArray<string> => {
 const named = (changes: ReadonlyArray<Change>) => changes.flatMap((change) => change.paths)
 
 const SCRIPT = /^scripts\/([\w.-]+)\.tsx?$/
+const IMPORTABLE = /^scripts\/(?:[\w.-]+\.tsx?|(?:[\w.-]+\/)*[\w.-]+\.json)$/
 const TEST = /^scripts\/[\w.-]+\.test\.tsx?$/
-const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || /\.sim\.test\.tsx?$/.test(path)
+const acceptTouched = (path: string) => path.startsWith("tests/") || /^scripts\/accept[\w-]*\.ts$/.test(path) || (!path.startsWith("../") && /\.sim\.test\.tsx?$/.test(path))
 /** A file tests/git-repo.test.ts scans for a raw `git init` or `git clone` (its `testFiles`). */
-const gitGuarded = (path: string) => /\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path)
+const gitGuarded = (path: string) => !path.startsWith("../") && (/\.test\.tsx?$/.test(path) || /^(tests|testbeds)\/.*\.tsx?$/.test(path))
 
 /**
  * The scripts/ tests, the import specifiers each scripts/ file holds (`import`, `export … from` and `import()`,
@@ -74,13 +83,14 @@ export interface ScriptsTests {
   readonly files: ReadonlyArray<string>
   readonly imports: (file: string) => ReadonlyArray<string>
   readonly reads: (file: string) => ReadonlyArray<string>
+  readonly runtime?: (file: string) => (path: string) => boolean
 }
 
 /** The scripts/ file a relative specifier in the scripts/ file `from` names, if it exists. */
 const resolved = (from: string, specifier: string, exists: (file: string) => boolean): ReadonlyArray<string> => {
   if (!specifier.startsWith("./")) return []
   const base = `${from.slice(0, from.lastIndexOf("/") + 1)}${specifier.slice(2)}`
-  return [base, `${base}.ts`, `${base}.tsx`].filter((file) => SCRIPT.test(file) && exists(file)).slice(0, 1)
+  return [base, `${base}.ts`, `${base}.tsx`].filter((file) => IMPORTABLE.test(file) && exists(file)).slice(0, 1)
 }
 
 /** Every scripts/ file `test` loads through its imports, any number of steps deep, itself included. */
@@ -95,7 +105,7 @@ export const reachedWithin = (test: string, scripts: ScriptsTests, exists: (file
 interface Inputs {
   readonly test: string
   readonly files: ReadonlySet<string>
-  readonly reads: ReadonlyArray<Glob>
+  readonly reads: (path: string) => boolean
 }
 
 /**
@@ -107,20 +117,32 @@ const testsOf = (path: string, inputs: ReadonlyArray<Inputs>): ReadonlyArray<str
   // A scripts/ test is its own; the tests that read it run too (required-inputs.test reads every test source, and
   // merge-check.test every scripts/ file: fe8b7bd1 and fe8d8243 added tests that only ran themselves and reddened it).
   const own = (TEST.test(path) && [path]) || Option.match(Option.fromNullishOr(SCRIPT.exec(path)), { onNone: () => [], onSome: (match) => [`scripts/${String(match[1])}.test.ts`] })
-  return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads.some((glob) => glob.match(path))) && [each.test]) || [])]
+  return [...own, ...inputs.flatMap((each) => ((each.files.has(path) || each.reads(path)) && [each.test]) || [])]
 }
 
 const NO_SCRIPTS: ScriptsTests = { files: [], imports: () => [], reads: () => [] }
 
 /** The scripts/ tests the changes can break, each once, sorted; only those on disk. */
 export const scriptTests = (changes: ReadonlyArray<Change>, exists: (file: string) => boolean, scripts: ScriptsTests = NO_SCRIPTS): ReadonlyArray<string> => {
+  if (changes.length === 0) return []
   const paths = named(changes)
-  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.reads(test).map((glob) => new Glob(glob)) }))
+  const reached = scripts.files.map((test) => ({ test, files: reachedWithin(test, scripts, exists), reads: scripts.runtime?.(test) ?? readMatcher(scripts.reads(test)) }))
   const due = new Set(paths.flatMap((path) => testsOf(path, reached)))
   if (paths.some(acceptTouched)) for (const test of ACCEPT_TESTS) due.add(test)
-  if (docsGuardDue(changes)) due.add(DOCS_GUARD)
+  if (docsGuardDue(changes.filter((change) => change.paths.some((path) => !path.startsWith("../"))))) due.add(DOCS_GUARD)
   if (changes.flatMap(left).some(gitGuarded)) due.add(GIT_REPO_GUARD)
   return [...due].filter(exists).toSorted()
+}
+
+/** A changed test or an affected runtime/import input selects the fixed-seed test. */
+export const affectedUnits = (paths: ReadonlyArray<string>, unit: UnitTests) => {
+  if (paths.length === 0) return []
+  const changed = new Set(paths)
+  return unit.files.filter((test) => {
+    if (changed.has(test)) return true
+    const inputs = unit.inputs(test)
+    return paths.some((file) => inputs.has(file))
+  })
 }
 
 /** The files oxlint reads among the changed ones still on disk. */
@@ -130,7 +152,7 @@ export const lintFiles = (changes: ReadonlyArray<Change>, exists: (file: string)
 /** oxlint over `files`; given no file oxlint lints the whole folder, so with none changed there is nothing to lint. */
 const lintLeg = (files: ReadonlyArray<string>, tools: Tools): LegSpec => {
   if (files.length === 0) return { name: "lint", argv: ["true"], note: "0 changed files" }
-  return { name: "lint", argv: [tools.oxlint, "--quiet", ...files], note: `${files.length} changed files` }
+  return { name: "lint", argv: [tools.oxlint, "--quiet", ...files.map((file) => (file.startsWith("-") && `./${file}`) || file)], note: `${files.length} changed files` }
 }
 
 /** `bun test` over `tests`; none due is a passed leg saying so. */
@@ -140,11 +162,21 @@ const testLeg = (tests: ReadonlyArray<string>, tools: Tools): LegSpec => {
 }
 
 /** The merge check's legs over `changes` since `base`. */
-export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools): ReadonlyArray<LegSpec> => {
-  const lint = lintFiles(changes, tools.exists)
-  const tests = [...scriptTests(changes, tools.exists, tools.scripts), ...workboxTests(tools.workbox)]
+export const mergeLegs = (base: string, changes: ReadonlyArray<Change>, tools: Tools, inputs: ReadonlyArray<string> = named(changes)): ReadonlyArray<LegSpec> => {
+  const lint = lintFiles(changes, tools.exists).filter((file) => !file.startsWith("../"))
+  const workbox = new Set(workboxTests(tools.workbox))
+  for (const file of tools.workbox.tests) {
+    if (inputs.length === 0) break
+    const reads = tools.workboxReads?.(file)
+    if (reads && inputs.some(reads)) workbox.add(file)
+  }
+  const unit = Option.match(Option.fromUndefinedOr(tools.unit), { onNone: () => [], onSome: (tests) => affectedUnits(inputs, tests) })
+  const actual = new Set(named(changes))
+  const derived = inputs.values().filter((file) => !actual.has(file)).map((file) => ({ status: "M", paths: [file] })).toArray()
+  const tests = [...new Set([...scriptTests([...changes, ...derived], tools.exists, tools.scripts), ...[...workbox].toSorted(), ...unit])]
   return [
     lintLeg(lint, tools),
+    { name: "test-reads", argv: [tools.bun, "scripts/check-test-reads.ts"], note: "static read anchors" },
     { name: "debt", argv: [tools.bun, "scripts/effect-debt.ts", "--check", "--since", base], note: "changed files" },
     { name: "types", argv: [...tools.typecheck, "--no-pretty"], note: `${tools.projects} projects` },
     testLeg(tests, tools),

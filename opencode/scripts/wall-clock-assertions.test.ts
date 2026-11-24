@@ -1,5 +1,6 @@
+// @reads all
+// @reads-reason computed read at scripts/wall-clock-assertions.test.ts: const candidate = yield* Effect.when(fs.readFileString(absolute).pipe(Effect.flatMap(decodeProc
 // Test timing: require the named runner cap and ban raw clock sources in test code.
-// @reads **/*.ts **/*.tsx **/*.mts **/*.cts **/*.js **/*.jsx **/*.mjs **/*.cjs **/*.json ../workbox/test/** ../package.json ../tsconfig*.json
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -96,7 +97,7 @@ const survey = (texts: ReadonlyMap<string, string>, resolve: ReturnType<typeof t
 
 const ceiling = Effect.gen(function* () {
   const base = (yield* git("merge-base", "HEAD", "origin/main")).trim()
-  const tracked = (yield* git("ls-tree", "--name-only", base, "--", ALLOW)).trim() === ALLOW
+  const tracked = (yield* git("ls-tree", "-z", "--name-only", base, "--", ALLOW)) === `${ALLOW}\0`
   if (tracked) {
     const rows = yield* git("show", `${base}:${ALLOW}`).pipe(Effect.flatMap(decode))
     return { base, rows, source: (file: string) => git("show", `${base}:${file}`) }
@@ -142,8 +143,8 @@ const checkProcesses = (root: string, base: string, observed: ReturnType<typeof 
   expect(observed.filter(({ file, site }) => introduced.includes(`${file} ${site}`)), 'real-process tests require a named hangGuard("kind")').toEqual([])
   expect(newSites(observedKeys, declared), "remove stale real-process baseline sites").toEqual([])
   if (declared.length === 0) return
-  const pinned = (yield* git("ls-tree", "--name-only", base, "--", PROCESS_ALLOW)).trim()
-  const old = yield* git("show", pinned === PROCESS_ALLOW && `${base}:${PROCESS_ALLOW}` || PROCESS_BOOTSTRAP).pipe(Effect.flatMap(decodeProcesses))
+  const pinned = (yield* git("ls-tree", "-z", "--name-only", base, "--", PROCESS_ALLOW)) === `${PROCESS_ALLOW}\0`
+  const old = yield* git("show", pinned && `${base}:${PROCESS_ALLOW}` || PROCESS_BOOTSTRAP).pipe(Effect.flatMap(decodeProcesses))
   expect(newSites(processRows(old), declared), "real-process baseline may only shrink from the landing base").toEqual([])
 })
 

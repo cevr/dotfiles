@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/orchestrate/codex/admission.ts: const child = Bun.spawn([process.execPath, script, "--codex", "--admit", "--model", model, "--r
 // The Codex admission over a stand-in for the orchestrate skill's budget
 // script, written to a scratch directory: it answers the laws' table as the
 // real script answers (`admit: …` with exit 0, `hold: …[; opens about

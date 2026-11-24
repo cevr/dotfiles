@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.test.ts: if (existsSync(join(dir, "locked"))) chmodSync(join(dir, "locked"), 0o755)
 // RepoRoots over a scratch directory this test makes and removes: a
 // repository, a directory in it, a plain directory, a missing path, and a
 // directory with no permissions, whose `.git` cannot be looked for.

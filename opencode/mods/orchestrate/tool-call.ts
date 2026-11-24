@@ -114,6 +114,8 @@ export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   lowered: Schema.optionalKey(Schema.String),
   /** The model the call named and does not run on: the role's own, or a Codex model an implementor named (Codex never implements). */
   dropped: Schema.optionalKey(Schema.String),
+  /** The start asked fast, and what came of it (`fastLine`): `fast, as asked`, or why it runs standard. */
+  fast: Schema.optionalKey(Schema.String),
 })
 export interface SubagentStarted extends Schema.Schema.Type<typeof SubagentStarted> {}
 
@@ -142,6 +144,8 @@ export const SubagentLatched = Schema.TaggedStruct("SubagentLatched", {
   lowered: Schema.optionalKey(Schema.String),
   /** The model the call named and does not run on. */
   dropped: Schema.optionalKey(Schema.String),
+  /** The start asked fast, and what came of it (`fastLine`). */
+  fast: Schema.optionalKey(Schema.String),
   hold: Hold,
   /** The pace's owner, for a pace hold. */
   whose: Schema.optionalKey(Whose),

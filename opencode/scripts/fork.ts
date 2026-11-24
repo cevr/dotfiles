@@ -47,12 +47,15 @@ const removeStray = (modules: string) => {
  * (`checkFork`). link-fork, accept, daily and post-land all take the fork through it.
  */
 export const readyFork = (dev: string | undefined): Fork =>
+  resolveNamedFork(dev, (named) => {
+    removeStray(path.join(path.resolve(named), FORK_MODULES))
+    return checkFork(named)
+  })
+
+export const resolveNamedFork = (dev: NodeJS.ProcessEnv[string], check: (named: string) => Fork): Fork =>
   Result.match(forkNamed(Option.none(), Option.fromUndefinedOr(dev)), {
     onFailure: (problem) => ({ problem }),
-    onSuccess: (named) => {
-      removeStray(path.join(path.resolve(named), FORK_MODULES))
-      return checkFork(named)
-    },
+    onSuccess: check,
   })
 
 /** What every script that takes the fork says when none is named; there is no guessed default. */
@@ -77,13 +80,21 @@ const broken = (modules: string): ReadonlyArray<string> =>
     return name.startsWith("@") && stat.isDirectory() ? broken(entry).map((each) => `${name}/${each}`) : []
   })
 
-/** Checks OPENCODE_DEV (`dev`) names an installed OpenCode checkout here; `problem` says what is wrong and how to fix it. */
-const checkFork = (dev: string): Fork => {
+/** Resolves the candidate and names a malformed or missing address before inspecting its install. */
+export const checkForkAddress = (dev: string, exists: (file: string) => boolean): Fork => {
   const fork = path.resolve(dev)
   const modules = path.join(fork, FORK_MODULES)
   const expected = `an OpenCode checkout with its packages installed (${FORK_MODULES})`
   if (dev.startsWith("~")) return { problem: `OPENCODE_DEV is '${dev}': the ~ reached the script unexpanded. Write the path with $HOME (OPENCODE_DEV=$HOME/${dev.slice(2)}).` }
-  if (!existsSync(fork)) return { problem: `OPENCODE_DEV is '${dev}', which does not exist on this machine (${hostname()}): expected ${expected} there. A path from another machine needs this machine's checkout instead.` }
+  if (!exists(fork)) return { problem: `OPENCODE_DEV is '${dev}', which does not exist on this machine (${hostname()}): expected ${expected} there. A path from another machine needs this machine's checkout instead.` }
+  return { fork, modules }
+}
+
+/** Checks OPENCODE_DEV (`dev`) names an installed OpenCode checkout here; `problem` says what is wrong and how to fix it. */
+const checkFork = (dev: string): Fork => {
+  const address = checkForkAddress(dev, existsSync)
+  if ("problem" in address) return address
+  const { fork, modules } = address
   if (!existsSync(path.join(fork, "packages/tui/package.json")))
     return { problem: `OPENCODE_DEV is '${dev}', which is not an OpenCode checkout: expected packages/tui/package.json in it.` }
   for (const name of ["@opencode/plugin", "solid-js"])

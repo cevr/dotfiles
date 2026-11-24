@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/guard/process/command-line.test.ts: const probe = spawnSync([...prefix, ...env("-0")], { env: caller, timeout: 1200 })
 import { expect, test } from "bun:test"
 import { Option } from "effect"
 import { spawnSync } from "bun"

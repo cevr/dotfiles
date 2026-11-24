@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at scripts/perf/plugin-start.test.ts: const child = owned([share.binary, "serve"])
 // The service's CPU time as plugin-start.ts reads it: `ps`'s `time` on macOS, `/proc/<pid>/stat` on Linux.
 // And the harnesses' rule that no harness starts an installed build by its path.
 import { describe, expect, test } from "bun:test"

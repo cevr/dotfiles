@@ -14,12 +14,13 @@
 // - A second 3 s stall inside the cooldown writes nothing more: the log says
 //   it is skipped, and the capture stays the only one.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { Effect, Schedule, Schema } from "effect"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { ROOT } from "../scripts/agents.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { ready } from "./service.ts"
 import { hangGuard, measured } from "./hang-guard.ts"
@@ -101,7 +102,7 @@ const serve = Effect.gen(function* () {
     ...launch.env,
   }
   yield* Effect.acquireRelease(
-    Effect.sync(() => owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env, stdout: "ignore", stderr: "ignore" })),
+    Effect.sync(() => ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], env], { stdout: "ignore", stderr: "ignore" })),
     (child) =>
       Effect.promise(() => {
         child.kill()

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The digest plugin on the simulated host (sim/world.ts), its log the memory one (sim/plugins.ts `digest`): the
 // append RPC keeps a line it is given and refuses one that is not an event or too long, keeping nothing of it; and a
 // writer on the same host (the queue plugin) reaches it through its relay, one line per change.

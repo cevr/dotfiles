@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/host-admit-terminal.test.ts: Effect.sync(() => spawn([...program], {
 import { argv, readableStreamToText, spawn } from "bun"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, FileSystem, Path, Predicate } from "effect"

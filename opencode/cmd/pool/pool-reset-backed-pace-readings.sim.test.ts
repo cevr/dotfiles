@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 import { Effect, Option } from "effect"
 import { claimEffect, type FakeClaimResult } from "../../tests/fake-anthropic.ts"
 import { boot, DAY, decodePace, fable, fleet, fixture, HOUR, POOL, quota, readOf, refunds, WORK, type Fixture } from "./pool-reset-backed-pace.fixture.ts"

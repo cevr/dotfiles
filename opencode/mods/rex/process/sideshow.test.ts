@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/rex/process/sideshow.ts: const out = Bun.spawnSync(["ps", "-o", "ppid=,comm=", "-p", String(pid)], { stdout: "pipe", std
 // The Sideshow adapter against a stand-in server on a free local port: the
 // session the CLI would use (its state file, else the folder's last active
 // session), posts, titles, assets and flattened posts read back, the token

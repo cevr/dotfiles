@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // ── The dispatch authority at the provider's bytes ──
 // The round-1 verifier's probes (round-1-receipts/adversarial.test.ts and
 // ping.test.ts), kept here: each counts the `/v1/messages` requests with tools

@@ -90,7 +90,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 | verifier | `subagent`, `agent: "verifier"` on Opus | `Agent` on Opus | never | medium | fresh each time |
 
 - Every role call runs in the background, names the role as its agent type, and has a `description` that starts like its hand-back line (`implementor auth r2`, `verifier batch-3 r1`); a reused agent (next round, lane) gets the new one; where the host keeps the old title, rename it. On OpenCode it names no `model`. Effort is the table's, always; an implementor that renders a look runs at max. Change effort, never the model. How each host starts, falls back and waits: [hosts](references/hosts.md).
-- The pool and model rules are `AGENTS.md`'s (Fable plans, Opus first, never Sonnet). Verification and review run only on Claude Opus. When Claude is held, latch and wait; never start a verifier on Codex.
+- Models: Fable plans, Opus first for every other role, the newest of each, never a pinned version, never Sonnet. Verification and review run only on Claude Opus. When Claude is held, latch and wait; never start a verifier on Codex.
 
 ## Between messages
 

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/git/process/pull-requests.ts: const run = Bun.spawn([gh, "pr", "view", "--json", PULL_REQUEST_FIELDS], {
 // Pull requests through a stand-in `gh` on a scratch PATH: a shell script
 // (shell builtins only, as PATH holds nothing else) that answers `gh pr view --json <the fields>` as the law's world says, and
 // fails any other call, so the laws also pin how `gh` is asked. The missing

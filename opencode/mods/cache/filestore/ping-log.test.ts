@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/cache/filestore/ping-log.ts: read: Effect.tryPromise({ try: () => file(path).exists(), catch: (cause) => new LedgerUnavailab
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
