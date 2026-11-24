@@ -10,7 +10,7 @@ const inputsOf = (workspace: Workspace) => {
     const cached = readers.get(test)
     if (cached) return cached
     const inputs = testReadInputs(workspace, test)
-    let reaches = (file: string) => {
+    let reaches = (file: string): boolean => {
       const reached = reach(workspace, [test], memo, known)
       reaches = (path) => reached.has(path)
       return reaches(file)

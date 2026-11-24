@@ -243,9 +243,12 @@ export const spawn = Effect.fn("EffectDebt.spawn")(function* (
   argv: ReadonlyArray<string>, cwd: string, timeoutMs: number, environment?: Readonly<Record<string, string>>,
 ) {
   const command = argv.join(" ").slice(0, 200)
+  const outputFault = () => new DebtError({ problems: [`cannot read ${command}`] })
   const stdoutOf = (body: ReadableStream<Uint8Array<ArrayBuffer>>) => {
-    if (argv[0] === "git" && argv.includes("-z")) return Bun.readableStreamToArrayBuffer(body).then(decodeGitPaths)
-    return Bun.readableStreamToText(body)
+    if (argv[0] === "git" && argv.includes("-z")) {
+      return Effect.tryPromise({ try: () => new Response(body).arrayBuffer(), catch: outputFault }).pipe(Effect.map(decodeGitPaths))
+    }
+    return Effect.tryPromise({ try: () => Bun.readableStreamToText(body), catch: outputFault })
   }
   return yield* Effect.acquireUseRelease(
     Effect.try({
@@ -255,7 +258,7 @@ export const spawn = Effect.fn("EffectDebt.spawn")(function* (
     (child) =>
       Effect.all(
         [
-          Effect.tryPromise({ try: () => stdoutOf(child.stdout), catch: () => new DebtError({ problems: [`cannot read ${command}`] }) }),
+          stdoutOf(child.stdout),
           Effect.tryPromise({ try: () => Bun.readableStreamToText(child.stderr), catch: () => new DebtError({ problems: [`cannot read ${command}`] }) }),
           Effect.tryPromise({ try: () => child.exited, catch: () => new DebtError({ problems: [`${command} did not exit`] }) }),
         ],
