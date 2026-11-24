@@ -49,7 +49,7 @@ const readingOf = (short: State, week: State, usage: boolean): QuotaReading => {
 
 const accountOf = (credentialID: string, reading: QuotaReading): AccountStatus => ({ credentialID, live: 0, load: 0, noRoom: false, reading })
 const reported = (state: State, at: (use: number) => boolean) => Match.value(state).pipe(Match.tag("Reported", ({ use }) => at(use)), Match.orElse(() => false))
-const describe = (state: State) => Match.value(state).pipe(Match.tag("Reported", ({ use }) => `reported at ${use}`), Match.orElse(({ _tag }) => _tag))
+const describeState = (state: State) => Match.value(state).pipe(Match.tag("Reported", ({ use }) => `reported at ${use}`), Match.orElse(({ _tag }) => _tag))
 const cases = Arr.cartesian(Arr.cartesian(statesOf("5h"), statesOf("7d")), [true, false])
 
 /** Every hold names a future, finite time to ask again. */
@@ -61,7 +61,7 @@ test("every combination of the three states, both windows, with and without a us
     const account = accountOf("a", readingOf(short, week, usage))
     const answer = dispatchPace([account], now, {}, 0.04, OPUS)
     const advisory = poolPace([account], now)
-    const label = `5h ${describe(short)}, 7d ${describe(week)}, usage read: ${usage}`
+    const label = `5h ${describeState(short)}, 7d ${describeState(week)}, usage read: ${usage}`
     expect([label, futureRetry(answer), futureRetry(advisory)]).toEqual([label, true, true])
     const anyReported = short._tag === "Reported" || week._tag === "Reported"
     const anyUnknown = short._tag === "Unknown" || week._tag === "Unknown"
