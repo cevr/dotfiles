@@ -435,7 +435,13 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   }
 
   const fold = Effect.fn("ChildLifecycle.fold")(function* (event: Event) {
-    if (event.location && !sameLocation(event.location, ctx.location)) return
+    if (event.location && !sameLocation(event.location, ctx.location)) {
+      if (event.type === "session.deleted")
+        yield* Effect.logDebug("subagents: ignored deletion with foreign location").pipe(
+          Effect.annotateLogs({ child: event.data.sessionID, event: event.id }),
+        )
+      return
+    }
     if (isBoundary(event)) return yield* boundary(event)
     if (isInboxEvent(event)) return yield* updateInbox(event)
     if ("durable" in event) return yield* absorb(event)

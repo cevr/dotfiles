@@ -5,7 +5,7 @@ import { make, live } from "./server.ts"
 import * as Seed from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { CHILD_ROWS, readRows } from "../../mods/kernel/opencode/child-row.ts"
-import { placement, routedDelete } from "./lifecycle-envelope.fixture.ts"
+import { lifecycleEnvelope, routedDelete } from "./lifecycle-envelope.fixture.ts"
 
 const { seeded } = Seed.runner("cmd/kernel/settle-child-attempts.sim.test.ts")
 const WORK = "/scratch/lifecycle"
@@ -109,8 +109,7 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     const read = () => world.tool(root, "subagents", { action: "get", sessionID: child })
     const emit = (kind: string, seq: number, fields: Readonly<Record<string, Schema.Json>> = {}, directory = WORK, sessionID = child) =>
       Queue.offer(events, {
-        type: kind, id: `evt_${seq}`, created: world.now(),
-        ...placement(kind, sessionID, seq, { directory }), ...foreignLocation(directory), data: { sessionID, ...fields },
+        ...lifecycleEnvelope(kind, `evt_${seq}`, world.now(), sessionID, seq, { directory }, fields), ...foreignLocation(directory),
       }).pipe(Effect.andThen(world.advance(0)))
     const latch = (sessionID: string, phase: typeof LatchInput.Type.phase) => world.tool(root, "fixture_latch", { child: sessionID, phase })
     const readChild = (sessionID: string) => world.tool(root, "subagents", { action: "get", sessionID })
@@ -133,9 +132,8 @@ seeded("the direct tool distinguishes live work, diagnostics and ordered settlem
     expect((yield* readChild(cancelled)).output).toContain(`${cancelled} settled: interrupted (UserStop)`)
     const withShell = yield* world.session(WORK, { parentID: root, agent: "worker" })
     const shellID = "sh_fixture"
-    const shell = (type: string, data: FixtureEvent["data"]) => Queue.offer(events, {
-      type, id: "evt_shell", created: world.now(), data, ...placement(type, "", 0, { directory: WORK }),
-    }).pipe(Effect.andThen(world.advance(0)))
+    const shell = (type: string, data: FixtureEvent["data"]) =>
+      Queue.offer(events, lifecycleEnvelope(type, "evt_shell", world.now(), "", 0, { directory: WORK }, data)).pipe(Effect.andThen(world.advance(0)))
     const continued: string[][] = []
     const earlier: string[][] = []
     const readPoint = (trace: string[][], child: string, step: string, phase: string) => Effect.gen(function* () {
@@ -307,11 +305,7 @@ seeded("both public observers preserve the owner phase across every source cut i
     const admitted = { inboxID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: hostID } } } }
     const other = { inboxID: otherID, item: { type: "synthetic", payload: { metadata: { source: "shell", shellID: otherShell } } } }
     const put = (child: string, name: string, data: FixtureEvent["data"], seq = 0) =>
-      Queue.offer(events, {
-        type: name, id: `evt_${name}`, created: world.now(),
-        data: { sessionID: child, ...data },
-        ...placement(name, child, seq, { directory: WORK }),
-      }).pipe(Effect.andThen(world.advance(0)))
+      Queue.offer(events, lifecycleEnvelope(name, `evt_${name}`, world.now(), child, seq, { directory: WORK }, data)).pipe(Effect.andThen(world.advance(0)))
     const shell = (child: string, id: string) => put(child, "shell.created", {
       info: { id, status: "running", metadata: { sessionID: child, background: true }, time: { started: world.now() } },
     })
@@ -386,7 +380,7 @@ const foreignLocation = (directory: string) => {
   return { location: { directory } }
 }
 
-type Recreation = "created" | "deleted" | "foreign-delete" | "wrong-aggregate" | "marker" | "same-marker"
+type Recreation = "created" | "deleted" | "foreign-delete" | "foreign-workspace" | "wrong-aggregate" | "marker" | "same-marker"
 type InboxTrace = "exact" | "reuse" | "hole" | "gap" | "hidden-reuse"
 
 seeded("an inbox close binds only a continuously observed admission in the same session instance", ({ seed, expect }) =>
@@ -411,10 +405,8 @@ seeded("an inbox close binds only a continuously observed admission in the same 
     )
     const seedInstance = Effect.fn("LifecycleSim.seedInstance")(function* () {
       const child = yield* world.session(WORK, { parentID: parent })
-      const frame = (type: string, seq: number, data: FixtureEvent["data"] = {}): FixtureEvent => ({
-        type, id: `event_${type}_${seq}`, created: world.now(),
-        data: { sessionID: child, ...data }, ...placement(type, child, seq, { directory: WORK }),
-      })
+      const frame = (type: string, seq: number, data: FixtureEvent["data"] = {}): FixtureEvent =>
+        lifecycleEnvelope(type, `event_${type}_${seq}`, world.now(), child, seq, { directory: WORK }, data)
       const deliver = (frame: FixtureEvent) => Queue.offer(events, frame).pipe(Effect.andThen(world.advance(0)))
       const emit = (type: string, seq: number, data: FixtureEvent["data"] = {}) => deliver(frame(type, seq, data))
       const inboxID = "msg_reuse"
@@ -447,9 +439,16 @@ seeded("an inbox close binds only a continuously observed admission in the same 
       if (mode === "created") yield* emit("session.created", 1)
       if (mode === "wrong-aggregate") yield* deliver(routedDelete(child, parent, world.now()))
       if (mode === "foreign-delete") yield* deliver({ ...routedDelete(child, child, world.now()), location: { directory: OTHER } })
+      if (mode === "foreign-workspace") yield* deliver({ ...routedDelete(child, child, world.now()), location: { directory: WORK, workspaceID: "wrk_other" } })
+      const foreign = mode === "foreign-delete" || mode === "foreign-workspace"
+      const diagnostic = world.logs().filter(({ message, annotations }) =>
+        message === "subagents: ignored deletion with foreign location" && annotations.child === child,
+      )
+      expect(diagnostic).toHaveLength(Number(foreign))
+      if (foreign) expect(diagnostic[0]).toMatchObject({ level: "Debug", annotations: { child, event: "evt_routed_delete" } })
       const reopened = yield* read(child)
       expect(reopened.revision >= before.revision).toBe(true)
-      if (mode === "same-marker" || mode === "foreign-delete" || mode === "wrong-aggregate") {
+      if (mode === "same-marker" || foreign || mode === "wrong-aggregate") {
         // The owner retains the qualified wake; it cannot tell.
         expect(reopened.phase).toEqual(before.phase)
         expect(reopened.basis).toBe("as-of-last-observation")
@@ -497,7 +496,7 @@ seeded("an inbox close binds only a continuously observed admission in the same 
         else expect(after.phase._tag).toBe("Unknown")
       }
     })
-    for (const mode of ["created", "deleted", "foreign-delete", "wrong-aggregate", "marker", "same-marker"] as const) yield* recreate(mode)
+    for (const mode of ["created", "deleted", "foreign-delete", "foreign-workspace", "wrong-aggregate", "marker", "same-marker"] as const) yield* recreate(mode)
     for (const mode of ["exact", "reuse"] as const) yield* instance(mode, 0)
     for (let cut = 4; cut < 10; cut++) yield* instance("hole", cut)
     for (let cut = 4; cut < 9; cut++) {

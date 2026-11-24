@@ -11,7 +11,7 @@ import { message, type Reads, type SessionInfo, type ShellInfo } from "../mods/s
 import { subagents, visible } from "../mods/subagents/subagent-row.ts"
 import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.ts"
 import { lifecycleEventTypes } from "../mods/kernel/lifecycle-event-types.ts"
-import { placement, routedDelete } from "../cmd/kernel/lifecycle-envelope.fixture.ts"
+import { envelopeFields, lifecycleEnvelope, routedDelete } from "../cmd/kernel/lifecycle-envelope.fixture.ts"
 import { readMark, type MarkRead } from "../mods/wake/latch.ts"
 import { owned, released } from "./owned.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
@@ -753,36 +753,46 @@ const captureHeader = Schema.decodeUnknownEffect(Schema.Struct({
   type: Schema.String, created: Schema.Finite, data: Schema.JsonObject,
   durable: Schema.optionalKey(Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int })),
 }))
-type RoutingKeys = Pick<ReturnType<typeof placement>, "location" | "durable">
-const routingFields = (frame: Schema.JsonObject | RoutingKeys) => ({
-  location: Reflect.has(frame, "location"), durable: Reflect.has(frame, "durable"),
-})
 const envelopeFrames = (stdout: string) => {
   const prefix = "lifecycle-envelope "
   expect(stdout).not.toContain("lifecycle-rejected")
   return stdout.split("\n").filter((line) => line.startsWith(prefix)).map((line) => rawCapture(line.slice(prefix.length)))
 }
-const verifyEnvelope = Effect.fn("LifecycleFixture.verifyEnvelope")(function* (frames: ReadonlyArray<Schema.JsonObject>, kind: typeof lifecycleEventTypes[number]) {
-  const captured = yield* Effect.fromOption(Option.fromUndefinedOr(frames.find((frame) => frame.type === kind))).pipe(
+const nativeEnvelope = (frames: ReadonlyArray<Schema.JsonObject>, kind: typeof lifecycleEventTypes[number]) =>
+  Effect.fromOption(Option.fromUndefinedOr(frames.find((frame) => frame.type === kind))).pipe(
     Effect.mapError(() => fault(`no location-scoped native conformance sample: ${kind}`)),
   )
+const verifyEnvelope = Effect.fn("LifecycleFixture.verifyEnvelope")(function* (frames: ReadonlyArray<Schema.JsonObject>, kind: typeof lifecycleEventTypes[number]) {
+  const captured = yield* nativeEnvelope(frames, kind)
   const event = yield* captureHeader(captured)
   const point = Option.fromUndefinedOr(event.durable)
   expect(event.type, kind).toBe(kind)
+  let built = lifecycleEnvelope(kind, "evt_fixture", event.created,
+    Option.getOrElse(Option.map(point, ({ aggregateID }) => aggregateID), () => "ses_fixture"),
+    Option.getOrElse(Option.map(point, ({ seq }) => seq), () => 0), { directory: "/scratch/location-probe" })
   if (event.type === "session.deleted") {
     const id = yield* Schema.decodeUnknownEffect(Schema.String)(event.data.sessionID)
     const durable = yield* Effect.fromOption(point)
-    const built = routedDelete(id, durable.aggregateID, event.created)
-    expect(routingFields(captured), kind).toEqual(routingFields(built))
+    built = routedDelete(id, durable.aggregateID, event.created)
     expect(durable.aggregateID, kind).toBe(id)
     expect(built.durable?.version, kind).toBe(durable.version)
   } else {
-    const { aggregateID, seq } = Option.getOrElse(point, () => ({ aggregateID: "", seq: 0 }))
-    const built = placement(kind, aggregateID, seq, { directory: "/scratch/location-probe" })
-    expect(routingFields(captured), kind).toEqual(routingFields(built))
     expect(built.durable, kind).toEqual(event.durable)
   }
+  expect(envelopeFields(built, built.data), kind).toEqual(envelopeFields(captured, event.data))
   yield* Console.log(`lifecycle-envelope ${encode(captured)}`)
+})
+
+const extraDataControl = Effect.fn("LifecycleFixture.extraDataControl")(function* (frames: ReadonlyArray<Schema.JsonObject>) {
+  const kind = "session.inbox.cancelled"
+  const captured = yield* nativeEnvelope(frames, kind)
+  const event = yield* captureHeader(captured)
+  const point = yield* Effect.fromOption(Option.fromUndefinedOr(event.durable))
+  const base = lifecycleEnvelope(kind, "evt_fixture", event.created, point.aggregateID, point.seq, { directory: "/scratch" })
+  const expected = envelopeFields(captured, event.data)
+  expect(envelopeFields(base, base.data)).toEqual(expected)
+  const mutant = { ...base, data: { ...base.data, invented: "not sent by the host" } }
+  expect(() => expect(envelopeFields(mutant, mutant.data)).toEqual(expected)).toThrow()
 })
 const successOf = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({
   version: Schema.Literal(1), child: Schema.String, revision: Schema.Int,
@@ -933,6 +943,8 @@ if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
     for (const kind of lifecycleEventTypes) {
       it.live(`native envelope through Kernel: ${kind}`, () => native.pipe(Effect.flatMap(({ frames }) => verifyEnvelope(frames, kind))), 55_000)
     }
+    it.live("the native envelope comparison rejects an invented builder data field", () =>
+      native.pipe(Effect.flatMap(({ frames }) => extraDataControl(frames))), 55_000)
     it.live("a child with an ended step keeps its identity through shell wake and host restart", () =>
       Effect.gen(function* () {
         const { result } = yield* native
