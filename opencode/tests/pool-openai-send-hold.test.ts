@@ -6,7 +6,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
-import { USAGE_TIMEOUT_MS } from "../mods/pool/quota.ts"
+import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS } from "../mods/pool/quota.ts"
 import { hangGuard } from "./hang-guard.ts"
 import { forkRuns } from "./scratch.ts"
 
@@ -27,6 +27,10 @@ const Fresh = Schema.fromJsonString(Schema.Struct({ held: Schema.Struct({
   before: Schema.Finite, usage: Schema.Finite, began: Schema.Finite, start: Schema.Finite, end: Schema.Finite, sent: Schema.Array(Send),
   outcome: Schema.String, message: Schema.String, status: Schema.Json, heldSend: Schema.Json,
 }) }))
+const MeasurementStatus = Schema.Struct({ openai: Schema.Struct({ accounts: Schema.Array(Schema.Struct({
+  measurement: Schema.Literals(["measured", "unmeasured"]),
+  usageReadFailure: Schema.optionalKey(Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })),
+})) }) })
 const Override = Schema.fromJsonString(Schema.Struct({ compilerOptions: Schema.Struct({ paths: Schema.Record(Schema.String, Schema.Array(Schema.String)) }) }))
 const ResultJson = Schema.fromJsonString(Schema.Json)
 const toJson = Schema.encodeSync(ResultJson)
@@ -124,8 +128,11 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
         expect(held.usage).toBe(1)
         expect(held.before).toBe(0)
         expect(held.start).toBeGreaterThan(0)
+        const status = yield* Schema.decodeUnknownEffect(MeasurementStatus)(held.status)
+        const account = Option.getOrThrow(Arr.head(status.openai.accounts))
         const measurement = Match.value(sample).pipe(Match.when("fresh-timeout", () => "unmeasured"), Match.orElse(() => "measured"))
-        expect(held.status).toMatchObject({ openai: { accounts: [expect.objectContaining({ measurement })] } })
+        expect(account.measurement).toBe(measurement)
+        yield* Console.log(`first usage native ${sample}: read began +${held.start - held.began} ms, handler ${held.end > 0 ? `${held.end - held.start} ms` : "stalled"}, first send ${held.sent[0] === undefined ? "none" : `+${held.sent[0].at - held.began} ms`}`)
         if (sample === "fresh-spent") {
           expect(held.sent).toEqual([])
           expect(held.message).toContain("held by the pool until")
@@ -134,9 +141,14 @@ describe.skipIf(!forkRuns)("OpenAI final hold on native OpenCode", () => {
         }
         expect(held.outcome).toBe("session.execution.succeeded")
         expect(held.sent).toHaveLength(1)
-        const finished = Match.value(sample).pipe(Match.when("fresh-timeout", () => held.began + USAGE_TIMEOUT_MS), Match.orElse(() => held.end))
+        const finished = Match.value(sample).pipe(Match.when("fresh-timeout", () => held.began + FIRST_USAGE_WAIT_MS), Match.orElse(() => held.end))
         const sent = Option.getOrThrow(Option.fromUndefinedOr(held.sent[0]))
         expect(sent.at).toBeGreaterThanOrEqual(finished)
+        if (sample === "fresh-timeout") {
+          const failure = Option.getOrThrow(Option.fromUndefinedOr(account.usageReadFailure))
+          expect(failure.nextTryAt - failure.failedAt).toBe(FIRST_USAGE_RETRY_MS)
+          expect(sent.at).toBeGreaterThanOrEqual(failure.failedAt)
+        }
         expect(held.heldSend).toEqual({})
       }).pipe(Effect.scoped), hangGuard("fork-turn"))
   for (const sample of ["retry-http", "retry-websocket"] as const)

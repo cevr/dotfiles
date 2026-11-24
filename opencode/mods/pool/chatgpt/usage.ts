@@ -72,13 +72,17 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 /** The pool's name for a window of `minutes`: the 5-hour and the weekly windows by their usual names. */
 export const windowName = (minutes: number) => (minutes === 300 ? "5h" : minutes === 10_080 ? "7d" : `${minutes}m`)
 
+// Codex reports a whole-second floor, not the instant the provider admits.
+// Use the next second plus the one-ms margin used for a pace catch-up.
+const resetAfter = (seconds: number) => (Math.floor(seconds) + 1) * 1_000 + 1
+
 const window = (usedPercent: number, minutes: number | undefined, resetSeconds: number | undefined): QuotaWindow | undefined =>
   minutes === undefined || minutes <= 0
     ? undefined
     : {
         name: windowName(minutes),
         utilization: Math.min(Math.max(usedPercent / 100, 0), 1),
-        ...(resetSeconds === undefined ? {} : { resetAt: resetSeconds * 1000 }),
+        ...(resetSeconds === undefined ? {} : { resetAt: resetAfter(resetSeconds) }),
       }
 
 /**

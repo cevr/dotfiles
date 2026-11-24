@@ -3,8 +3,15 @@
 // it over the quota protocol (opencode/quota.ts) and checks it here field by field.
 import { Option, Schema } from "effect"
 
-/** Bound for a paced login's first usage read, shared by the model and quota adapter. */
+/** Bound for the provider's usage read, including the body and optional reset credits. */
 export const USAGE_TIMEOUT_MS = 10_000
+/** The part of that read a first send waits for. Its result can still arrive in the background. */
+export const FIRST_USAGE_WAIT_MS = 3_000
+export const FIRST_USAGE_RETRY_MS = 60_000
+
+/** An unmeasured login last failed to return a reading in time for its send. */
+export const UsageReadFailure = Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })
+export type UsageReadFailure = typeof UsageReadFailure.Type
 
 export const QuotaStatus = Schema.Literals(["allowed", "allowed_warning", "rejected"])
 export type QuotaStatus = typeof QuotaStatus.Type

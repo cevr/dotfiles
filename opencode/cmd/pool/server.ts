@@ -234,8 +234,10 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 const SEND_HOLD_PREFIX = "held-send/"
+const SEND_HOLD_RETENTION_MS = 24 * 60 * 60 * 1000
 const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
 const decodeSendHold = Schema.decodeUnknownEffect(HeldSend)
+const sendHoldOf = Schema.decodeUnknownOption(HeldSend)
 const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
 type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
@@ -526,6 +528,25 @@ export const make = (
         const key = sendHoldKey(sessionID)
         if (Option.isSome(Option.fromUndefinedOr(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
       })
+      const pruneHeldSends = Effect.gen(function* () {
+        const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
+        const expired = (value: unknown) => Option.exists(sendHoldOf(value), (hold) => hold.retryAt <= cutoff)
+        let after = Option.none<string>()
+        do {
+          const page = yield* ctx.storage.scan({
+            prefix: SEND_HOLD_PREFIX,
+            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+          })
+          for (const { key, value } of page.entries) {
+            if (!expired(value)) continue
+            // Admission or a new refusal may have changed the row since the scan.
+            yield* sendRecords.withPermits(1)(Effect.gen(function* () {
+              if (expired(yield* ctx.storage.get(key))) yield* ctx.storage.remove(key)
+            }))
+          }
+          after = Option.fromUndefinedOr(page.next)
+        } while (Option.isSome(after))
+      }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const services = yield* Layer.build(
@@ -555,7 +576,11 @@ export const make = (
 
           if (options.sweepMinutes > 0)
             yield* Effect.forkScoped(
-              pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
+              pool.sweep.pipe(
+                Effect.andThen(pruneHeldSends.pipe(Effect.catchDefect((cause) => Effect.logWarning("pool held-send cleanup failed", cause)))),
+                Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)),
+                Effect.delay(FIRST_SWEEP),
+              ),
             )
 
           if (options.fleet.peers.length > 0)

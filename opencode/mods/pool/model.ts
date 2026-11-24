@@ -1518,12 +1518,13 @@ export const layer = (config: Config) =>
           const pacedOnly = !placedPools.has(id)
           if (pacedOnly) yield* refresh(where, false).pipe(Effect.ignore)
           const snapshot = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
-          const accounts = Option.match(Option.filter(Option.some(snapshot), () => pacedOnly), {
-            onNone: () => snapshot,
-            onSome: (items) => items.map((account) => ({ ...account, measurement: Option.match(Option.fromUndefinedOr(account.reading), {
-              onNone: () => "unmeasured" as const, onSome: () => "measured" as const,
-            }) })),
-          })
+          const accounts = pacedOnly ? yield* Effect.forEach(snapshot, (account) => Effect.gen(function* () {
+            if (account.reading !== undefined) return { ...account, measurement: "measured" as const }
+            const failed = yield* ledger.firstReadingFailure(id, account.credentialID)
+            return { ...account, measurement: "unmeasured" as const, ...Option.match(failed, {
+              onNone: () => ({}), onSome: (usageReadFailure) => ({ usageReadFailure }),
+            }) }
+          })) : snapshot
           const sources = yield* logins.sources(id)
           answer[id] = { accounts, ...(sources.length === 0 ? {} : { sources }) }
         }

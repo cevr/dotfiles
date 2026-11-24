@@ -82,6 +82,7 @@ interface Fake {
   readonly hold: boolean
   spent: boolean
   deadline: number
+  providerReadyAt: number
   readonly sent: Array<Sample>
   usage: number
   commit: Effect.Effect<void>
@@ -114,7 +115,7 @@ const socketFrames = (i: number): ReadonlyArray<Schema.Json> => {
   ]
 }
 const createFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("response.create") })))
-const seconds = (ms: number) => Math.round(ms / 1_000)
+const seconds = (ms: number) => Math.floor(ms / 1_000)
 const shortWindow = (fake: Fake, minutes: number) => ({
   used_percent: Match.value(fake.spent).pipe(Match.when(true, () => 100), Match.orElse(() => 0)),
   window_minutes: minutes,
@@ -145,7 +146,12 @@ const upgrade = (state: Fake, request: HttpServerRequest.HttpServerRequest) =>
         if (state.hold && state.sample === "websocket" && i === 1) {
           state.spent = true
           state.deadline = quotaEpoch() + FUTURE
+          state.providerReadyAt = state.deadline
           yield* writer.write(serialize({ type: "codex.rate_limits", rate_limits: { primary: shortWindow(state, 300), secondary: week() } }))
+        }
+        if (i > 1 && quotaEpoch() < state.providerReadyAt) {
+          yield* writer.write(serialize({ type: "error", code: "rate_limit_exceeded", message: "synthetic provider reset is not ready" }))
+          return
         }
         yield* Effect.forEach(socketFrames(i), (frame) => writer.write(serialize(frame)), { discard: true })
       }), { discard: true })),
@@ -183,6 +189,7 @@ const server = (state: Fake) => Effect.gen(function* () {
     yield* state.commit
     return HttpServerResponse.text("synthetic retryable provider failure", { status: 500 })
   }
+  if (quotaEpoch() < state.providerReadyAt) return HttpServerResponse.text("synthetic provider reset is not ready", { status: 429 })
   return eventStream([chunk({ role: "assistant", content: "loopback answer" }, {}), chunk({}, { finish_reason: "stop" })])
 }).pipe(Effect.orDie)
 
@@ -283,7 +290,8 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
   const socket = target.sample.endsWith("websocket")
   const measurement = { started: yield* Latch.make(), release: yield* Latch.make(), start: 0, end: 0 }
   const state: Fake = { sample: target.sample, hold, spent: (target.sample === "http" && hold) || target.sample === "fresh-spent",
-    deadline: quotaEpoch() + HOUR, sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void, measurement }
+    deadline: quotaEpoch() + HOUR, providerReadyAt: 0, sent: [], upgrades: 0, fallback: 0, usage: 0, commit: Effect.void, measurement }
+  if (target.sample === "fresh-spent") state.providerReadyAt = state.deadline
   let expected = seconds(state.deadline) * 1_000
   yield* HttpServer.serveEffect(server(state))
   const httpd = yield* HttpServer.HttpServer
@@ -324,7 +332,10 @@ const run = (target: Target, hold: boolean) => Effect.gen(function* () {
         const limit = Match.value(hold && socket).pipe(Match.when(true, () => 2), Match.orElse(() => 1))
         if (freshCase(target.sample) || quotes.length >= limit) return
         typed = Option.isSome(step)
-        if (state.spent && !socket) state.deadline = quotaEpoch() + FUTURE
+        if (state.spent && !socket) {
+          state.deadline = quotaEpoch() + FUTURE
+          state.providerReadyAt = state.deadline
+        }
         const input = { providerID: MODEL.providerID, model: MODEL.id, sessionID: event.sessionID, dispatch: true }
         const quote = yield* ctx.rpc(protocol).pace(input).pipe(Effect.flatMap(toQuote))
         quotes.push(quote)

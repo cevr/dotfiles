@@ -10,7 +10,7 @@
 // a secret.
 import { Schema } from "effect"
 import { Hold } from "./hold.ts"
-import { QuotaReading } from "./quota.ts"
+import { QuotaReading, UsageReadFailure } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"
 import { Claim, Reset } from "./resets.ts"
 import { NoPoolLogin } from "./pace.ts"
@@ -78,6 +78,7 @@ export const AccountStatus = Schema.Struct({
   hold: Schema.optionalKey(Hold),
   reading: Schema.optionalKey(QuotaReading),
   measurement: Schema.optionalKey(Schema.Literals(["measured", "unmeasured"])),
+  usageReadFailure: Schema.optionalKey(UsageReadFailure),
   /** USD recorded on it in the window. */
   load: Schema.Number,
   /** Sessions whose run or cache is on it now. */
