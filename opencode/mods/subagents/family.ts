@@ -76,7 +76,7 @@ export type Latch = {
 }
 
 export type Execution =
-  | { readonly kind: "checking" | "none"; readonly at?: never }
+  | { readonly kind: "none"; readonly at?: never }
   | { readonly kind: "failed" | "undetermined"; readonly at: number }
 
 /** One owner-produced display phase. Its clocks and authority belong to its revision. */

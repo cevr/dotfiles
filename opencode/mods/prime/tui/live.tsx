@@ -11,7 +11,7 @@ import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { subagents, visible, type Row as SubagentRow } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, MouseEvent, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, Index, on, Show, type Accessor } from "solid-js"
 import { wholeSecond } from "../clock.ts"
 import { compact, countLine, scrolled, windowed } from "../rows.ts"
 import { useNow } from "./clock.ts"
@@ -121,6 +121,9 @@ function Row(props: {
   marked: boolean
   marking: boolean
 }) {
+  // Demand follows the rendered child, not the family, a timer tick, or a
+  // streamed token. A fresh TUI must request the same history as a warm one.
+  createEffect(on(() => props.row.id, (sessionID) => props.host.syncSubagentMessages(sessionID)))
   const theme = () => props.host.theme()
   const link = useSessionLink(props.host, () => (props.marked ? undefined : props.row.id))
   // A reading that draws the same words keeps the segments, so it requests no frame.

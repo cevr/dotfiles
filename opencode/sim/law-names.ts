@@ -79,6 +79,8 @@ export const LAW_MOVED = "-moved"
 
 export const LAW = {
   stop: "session.stop answers interrupted only for a live turn, drops the queued input and leaves a stopped session ready for a fresh prompt",
+  permission: "permission.assert returns void for an allowed resource and fails with a Tool.Error carrying the denied resource and rules",
+  skills: "skill.list reads the location's catalog, a skill.transform registers entries until disposed, and skill.reload refreshes a cached entry",
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
   prompt:
     "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, the answer the assistant message's text content; a second admission of its id is not taken again",

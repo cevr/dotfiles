@@ -34,6 +34,7 @@ export function activeOf(state: Lifecycle): Activity {
     case "failed":
     case "cancelled": return
   }
+  return state.kind satisfies never
 }
 
 /** A held start still waiting to open: latched, never run, neither cancelled nor failed. */
