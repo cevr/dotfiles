@@ -13,6 +13,7 @@
 // - the family of a root is one memo, shared by every computation in the
 //   process that reads it, and disposed once none reads it.
 import { createComputed, createMemo, createRoot, createSignal, getOwner, onCleanup, type Accessor } from "solid-js"
+import { Option } from "effect"
 import type { Family, Latch, Lifecycle, Message, OwnedRow, Session, Shell } from "../family.ts"
 import { familyOf, message, ownedSessionOf, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
 import { fields, is, list } from "../same.ts"
@@ -178,29 +179,30 @@ function cachedReader(source: Source, bare: (reads: Reads, root: string, locatio
   }
 }
 
-export const readerWithOwner = (follow: FollowRows): FamilyReader => cachedReader((reads, root, _location, ids) => {
+export const readerWithOwner = (follow: FollowRows): FamilyReader => cachedReader((reads, root, location, ids) => {
   const [owned, setOwned] = createSignal(new Map<string, OwnedRow>())
+  const native = nativeSource(reads, location)
   createComputed(() => {
     const children = ids().filter((id) => id !== root)
+    setOwned(new Map())
     if (children.length === 0) return
     onCleanup(follow(reads, children, (next) => setOwned(new Map(next.map((row) => [row.child, row])))))
   })
-  return (id, told) => ownedSessionOf(id, told, reads.session.get(id), owned().get(id))
-}, (reads, root, _location, convert) => ({
-  root,
-  sessions: familyOf(reads, root).map((id) =>
-    ownedSessionOf(id, transcript(reads.session.message.list(id), convert), reads.session.get(id)),
-  ),
-}))
-
-const shared = cachedReader((reads, _root, location) => {
-  const shells = createMemo(() => shellsBySession(reads.shell.list(location)))
-  return (id, told) => sessionOf(reads, id, shells().get(id) ?? NONE, told)
+  return (id, told) => Option.match(Option.fromUndefinedOr(owned().get(id)), {
+    onNone: () => native(id, told),
+    onSome: (row) => ownedSessionOf(id, told, reads.session.get(id), row),
+  })
 }, read)
 
+const nativeSource = (reads: Reads, location: Location): SessionReader => {
+  const shells = createMemo(() => shellsBySession(reads.shell.list(location)))
+  return (id, told) => sessionOf(reads, id, shells().get(id) ?? NONE, told)
+}
+const shared = cachedReader((reads, _root, location) => nativeSource(reads, location), read)
+
 /**
- * Standalone host-snapshot reader used by the legacy fixture and benchmark.
- * Production surfaces use `readerWithOwner`, which has no shell registry input.
+ * Host snapshot without an owner. The owner reader uses this same source while
+ * no owner answer is available, and doesn't join its facts into owner rows.
  */
 export function familyReader(): FamilyReader {
   return shared

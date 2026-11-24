@@ -5,6 +5,8 @@ import { make, live } from "./server.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { CHILD_ROWS, readRows } from "../../mods/kernel/opencode/child-row.ts"
+import { rowView } from "../../mods/subagents/solid/owner-rows.ts"
+import { activeOf } from "../../mods/subagents/works.ts"
 import { lifecycleEnvelope, routedDelete } from "./lifecycle-envelope.fixture.ts"
 
 const { seeded } = simulationRunner("cmd/kernel/settle-child-attempts.sim.test.ts")
@@ -399,10 +401,10 @@ seeded("an inbox close binds only a continuously observed admission in the same 
       }),
     }), { directory: WORK, options: { codeOnly: false } })
     const parent = yield* world.session(WORK)
-    const read = (child: string) => world.rpc(CHILD_ROWS, "read", { children: [child] }).pipe(
+    const answer = (child: string) => world.rpc(CHILD_ROWS, "read", { children: [child] }).pipe(
       Effect.flatMap((raw) => Effect.fromOption(Option.flatMap(readRows(raw), ({ rows }) => Option.fromUndefinedOr(rows[0])))),
-      Effect.map(({ observation }) => observation),
     )
+    const read = (child: string) => answer(child).pipe(Effect.map(({ observation }) => observation))
     const seedInstance = Effect.fn("LifecycleSim.seedInstance")(function* () {
       const child = yield* world.session(WORK, { parentID: parent })
       const frame = (type: string, seq: number, data: FixtureEvent["data"] = {}): FixtureEvent =>
@@ -446,7 +448,8 @@ seeded("an inbox close binds only a continuously observed admission in the same 
       )
       expect(diagnostic).toHaveLength(Number(foreign))
       if (foreign) expect(diagnostic[0]).toMatchObject({ level: "Debug", annotations: { child, event: "evt_routed_delete" } })
-      const reopened = yield* read(child)
+      const response = yield* answer(child)
+      const reopened = response.observation
       expect(reopened.revision >= before.revision).toBe(true)
       if (mode === "same-marker" || foreign || mode === "wrong-aggregate") {
         // The owner retains the qualified wake; it cannot tell.
@@ -455,6 +458,9 @@ seeded("an inbox close binds only a continuously observed admission in the same 
         return
       }
       expect(reopened.phase._tag).toBe("Unknown")
+      const view = yield* Effect.fromOption(Option.fromUndefinedOr(rowView(response).lifecycle))
+      expect(view.kind).toBe("unknown")
+      expect(activeOf(view)).toEqual(Option.none())
       yield* close(4)
       expect((yield* read(child)).phase._tag).toBe("Unknown")
     })

@@ -12,19 +12,27 @@
 // notice is not work once the registry no longer lists its shell or its child
 // stopped. A notice that never comes (a shell killed by PID or by the agent through its handle,
 // a server restart) leaves nothing behind.
-import type { Family, Session } from "./family.ts"
+import type { Family, Lifecycle, Session } from "./family.ts"
+import { Option } from "effect"
 
 export type Works = "running" | "waiting" | "blocked" | "latched"
 
-function ownedWork(kind: NonNullable<Session["lifecycle"]>["kind"]) {
-  switch (kind) {
-    case "running": return "running"
-    case "blocked": return "blocked"
-    case "latched": return "latched"
-    case "undetermined":
+/** Row visibility is not evidence of activity. Historical and unconfirmed rows stay visible without counting. */
+export function activeOf(state: Lifecycle): Option.Option<Works> {
+  if (state.sinceReload) return Option.none()
+  switch (state.kind) {
+    case "running": return Option.some("running")
+    case "blocked": return Option.some("blocked")
+    case "latched": return Option.some("latched")
     case "continuing":
-    case "recovering":
-    case "checking": return "waiting"
+    case "recovering": return Option.some("waiting")
+    case "checking":
+    case "unknown":
+    case "undetermined":
+    case "none":
+    case "done":
+    case "failed":
+    case "cancelled": return Option.none()
   }
 }
 
@@ -74,7 +82,7 @@ function worksOf(family: Family): (id: string) => Works | undefined {
     if (known.has(id)) return known.get(id)
     const session = byID.get(id)
     if (session === undefined || path.has(id)) return undefined
-    if (session.lifecycle) return ownedWork(session.lifecycle.kind)
+    if (session.lifecycle) return Option.getOrUndefined(activeOf(session.lifecycle))
     const inner = new Set([...path, id])
     const works: Works | undefined =
       session.permissions.length > 0 || session.questions.length > 0
