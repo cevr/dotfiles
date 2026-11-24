@@ -267,6 +267,32 @@ describe("the plan and the forecast", () => {
     expect(high.wasted).toEqual([])
     expect(forecastText(high)).toBeUndefined()
   })
+  test("absent windows in plan and forecast: no week claims no resets, no NaN/undefined/unread for absent windows, and empty pools stay unread", () => {
+    const weekless: AccountStatus = {
+      ...account("w", [window("5h", 0.4, T0 + 2 * HOUR)], [grant("g-w", T0 + 2 * DAY, FULL)]),
+      reading: { at: T0, windows: [window("5h", 0.4, T0 + 2 * HOUR)], absent: [{ name: "7d", at: T0 }], resets: { available: 1, credits: [grant("g-w", T0 + 2 * DAY, FULL)] } },
+    }
+    const ultra: AccountStatus = {
+      ...account("u", [window("7d", 0.5, T0 + 3.5 * DAY)], [grant("g-u", T0 + 10 * DAY, WEEKLY)]),
+      reading: { at: T0, windows: [window("7d", 0.5, T0 + 3.5 * DAY)], absent: [{ name: "5h", at: T0 }], resets: { available: 1, credits: [grant("g-u", T0 + 10 * DAY, WEEKLY)] } },
+    }
+    const weeklessPlan = planOf({ views: [pool([weekless])], grant: { max: 2 }, now: T0, need: { units: 2, cost: 0.2 } })
+    expect(weeklessPlan.resets).toEqual([])
+    const weeklessText = planText(weeklessPlan)
+    expect(weeklessText).toContain("absent (its usage reports none)")
+    expect(weeklessText).toContain("report no weekly window")
+    expect(weeklessText).not.toMatch(/NaN|undefined|unread/)
+    expect(forecastOf(pool([weekless]), T0).wasted).toEqual([])
+
+    const ultraPlan = planOf({ views: [pool([ultra])], grant: { max: 2 }, now: T0 })
+    const ultraText = planText(ultraPlan)
+    expect(ultraText).toContain("5-hour window absent (its usage reports none)")
+    expect(ultraText).not.toMatch(/NaN|undefined|unread/)
+
+    const emptyText = planText(planOf({ views: [pool([])], grant: { max: 1 }, now: T0, need: { units: 1, cost: 0.1 } }))
+    expect(emptyText).not.toContain("absent")
+    expect(emptyText).toContain("unread")
+  })
 })
 
 describe("an account's line with several resets", () => {

@@ -21,7 +21,7 @@ import { Option, Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 import type { AccountStatus, Hold, SessionAccount } from "./status.ts"
-import { accountWide, type QuotaReading } from "./quota.ts"
+import { tracked, type QuotaReading } from "./quota.ts"
 export { DEFAULT_HOLD_MS } from "./hold.ts"
 
 const MINUTE = 60_000
@@ -187,9 +187,9 @@ const freshReading = (state: AccountPoolState, credentialID: string, now: number
   }
 }
 
-/** At its share: a window of the whole account spent to the pool's share of it; a model's own window limits only that model. */
+/** At its share: a tracked window spent to the pool's share of it; a model's own window limits only that model, and an unknown window never binds. */
 const noRoom = (reading: QuotaReading | undefined): boolean =>
-  reading !== undefined && reading.windows.some((window) => accountWide(window) && window.utilization >= shareOf(window.name))
+  reading !== undefined && reading.windows.some((window) => tracked(window.name) && window.utilization >= shareOf(window.name))
 
 /** Each session whose run, or cache, is on an account now. */
 const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<string, string> => {

@@ -369,6 +369,25 @@ describe("Claude", () => {
     expect(told.text).toStartWith("Claimed the full reset on 4: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h).")
     expect(told.text).toEndWith("1 reset left this week; next expires 2027-03-09 00:00Z.")
   })
+  test("a stored reset is not claimed for an account whose weekly window is absent", () => {
+    const weekless: AccountStatus = {
+      credentialID: "cred-weekless",
+      load: 0,
+      live: 0,
+      noRoom: false,
+      reading: {
+        at: T0,
+        windows: [{ name: "5h", utilization: 1, resetAt: T0 + 2 * HOUR }],
+        absent: [{ name: "7d", at: T0 }],
+        resets: { available: 1, credits: [codexCredit("ending", 5 * HOUR)] },
+      },
+    }
+    const { events } = run([
+      [T0, NoteWait.make({ pool: "openai", sessionID: "ses_root" })],
+      [T0, Review.make({ pools: [codex([weekless])] })],
+    ])
+    expect(tags(events)).toEqual(["WaitNoted"])
+  })
 })
 
 test("a claim's record says whether the weekly reset moved", () => {

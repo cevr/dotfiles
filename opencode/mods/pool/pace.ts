@@ -10,10 +10,10 @@
 // the fleet (fleet.ts): each start that has not settled yet is charged a fixed
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
-import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
+import { Array as Arr, DateTime, Match, Option, Order, Schema } from "effect"
 import type { RequestKind } from "./accounts.ts"
 import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
-import { DEFINED_MODEL_WINDOWS, limitsModel, SCOPE_REPORT_SAMPLES, scopeOf } from "./quota.ts"
+import { accountWindow, DEFINED_MODEL_WINDOWS, limitsModel, type QuotaWindow, Reported, SCOPE_REPORT_SAMPLES, scopeOf, tracked, TRACKED_WINDOWS, windowReading, type WindowReading } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, iso, signInReason, tryAgainAt, used } from "./usage-text.ts"
 
@@ -40,8 +40,36 @@ const windowsOf = (account: AccountStatus) =>
 /** A window of an account's reading, by name. */
 const windowOf = (account: AccountStatus, name: string) => Arr.findFirst(windowsOf(account), (w) => w.name === name)
 
-/** The account-wide week of an account's reading. */
+/** The account-wide week of an account's reading, when REPORTED. */
 const weekOf = (account: AccountStatus) => windowOf(account, "7d")
+
+/** Whether the usage endpoint said, in the last STALE_AFTER_MS, that the account has no window `name`: it imposes nothing. */
+const freshlyAbsent = (account: AccountStatus, name: string, now: number): boolean =>
+  Match.value(accountWindow(account, name)).pipe(
+    Match.tag("Absent", ({ at }) => at <= now && now - at <= STALE_AFTER_MS),
+    Match.orElse(() => false),
+  )
+
+/**
+ * A REPORTED window that holds a start, with the reset it waits for. Built only
+ * here, from the window's own reset through futureRetryAt: an ABSENT or UNKNOWN
+ * window has no reset and so holds nothing, and a hold with no reset to wait
+ * for cannot be made.
+ */
+interface Binding {
+  readonly name: string
+  readonly resetAt: FutureRetryAt
+}
+const bindingOf = (state: WindowReading, now: number, holds: (window: QuotaWindow) => boolean): Option.Option<Binding> =>
+  Match.value(state).pipe(
+    Match.tag("Reported", ({ window }) =>
+      Option.flatMap(
+        Option.filter(Option.fromUndefinedOr(window.resetAt), () => holds(window)),
+        (at) => Option.map(futureRetryAt(now, at), (resetAt) => ({ name: window.name, resetAt })),
+      ),
+    ),
+    Match.orElse(() => Option.none()),
+  )
 
 /**
  * What room admits a start or a request: `ordinary`, the even line with its
@@ -57,6 +85,8 @@ export const HoldReason = Schema.Literals([
   "even-line", "reset-room", "auxiliary", "placement-changed",
 ])
 export type HoldReason = typeof HoldReason.Type
+/** The holds a REPORTED window makes: a person is told of these before an unread login's. */
+const REPORTED_LIMITS: ReadonlyArray<HoldReason> = ["model-limit", "quota-limit", "even-line"]
 
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 export const NoPoolLogin = Schema.Literal("not-tracked-no-pool-login")
@@ -198,15 +228,15 @@ const blockedUntil = (account: AccountStatus, now: number, model: string | undef
 }
 
 /** The windows of `model`'s own on an account (`7d:Fable`) that are spent now, by name, with when each resets. */
-const spentOwn = (account: AccountStatus, now: number, model?: string): ReadonlyArray<{ readonly name: string; readonly resetAt: number }> =>
-  model === undefined
-    ? []
-    : (account.reading?.windows ?? []).flatMap((w) => {
-        const scope = scopeOf(w.name)
-        return scope !== undefined && limitsModel(scope, model) && w.utilization >= 1 && w.resetAt !== undefined && w.resetAt > now
-          ? [{ name: w.name, resetAt: w.resetAt }]
-          : []
-      })
+const spentOwn = (account: AccountStatus, now: number, model?: string): ReadonlyArray<Binding> =>
+  Option.match(Option.fromUndefinedOr(model), {
+    onNone: () => [],
+    onSome: (id) =>
+      windowsOf(account).flatMap((window) =>
+        Option.toArray(bindingOf(Reported.make({ window }), now, (w) =>
+          Option.exists(Option.fromUndefinedOr(scopeOf(w.name)), (scope) => limitsModel(scope, id)) && w.utilization >= 1)),
+      ),
+  })
 
 /**
  * What a reset the pool claimed did to an account's spend-evenly line
@@ -266,10 +296,42 @@ export const eligibleFor = (accounts: ReadonlyArray<AccountStatus>, now: number,
 const atHoldLine = (w: { readonly name: string; readonly utilization: number }) =>
   (w.name === "5h" && w.utilization >= SHORT_5H) || (w.name === "7d" && w.utilization >= TARGET)
 
+/** The account's REPORTED 5-hour and weekly windows at their hold lines; an ABSENT or UNKNOWN one holds nothing. */
+const atHoldLines = (account: AccountStatus, now: number): ReadonlyArray<Binding> =>
+  TRACKED_WINDOWS.flatMap((name) => Option.toArray(bindingOf(accountWindow(account, name), now, atHoldLine)))
+
 /** Until when an account's 5-hour or weekly window holds a start at its hold line; none when neither does. */
-const shortUntil = (account: AccountStatus, now: number): Option.Option<number> => {
-  const resets = windowsOf(account).flatMap((w) => Option.toArray(Option.filter(Option.fromUndefinedOr(w.resetAt), (at) => at > now && atHoldLine(w))))
-  return Option.liftPredicate(resets, (all) => all.length > 0).pipe(Option.map((all) => Math.max(...all)))
+const shortUntil = (account: AccountStatus, now: number): Option.Option<FutureRetryAt> =>
+  Arr.match(atHoldLines(account, now), {
+    onEmpty: () => Option.none(),
+    onNonEmpty: (bindings) => Option.some(Arr.max(bindings, byReset).resetAt),
+  })
+const byReset = Order.mapInput(Order.Number, (binding: Binding) => binding.resetAt)
+
+/** The hold lines the accounts are at, only those of windows they report: a weekly-only account is never told of a 5-hour window. */
+const holdLinesText = (accounts: ReadonlyArray<AccountStatus>, now: number): string => {
+  const names = new Set(accounts.flatMap((a) => atHoldLines(a, now).map((binding) => binding.name)))
+  const lines = [
+    ...Arr.filter([`its 5-hour window at ${used(SHORT_5H)} or more`], () => names.has("5h")),
+    ...Arr.filter([`its week at ${used(TARGET)} or more`], () => names.has("7d")),
+  ]
+  return lines.join(", or ")
+}
+
+/** The accounts with no week, as the pace names them: how many, and how many of those report no usage window at all. */
+const weeklessText = (weekless: ReadonlyArray<AccountStatus>, now: number): string => {
+  const none = weekless.filter((a) => freshlyAbsent(a, "5h", now)).length
+  const all = Match.value(none).pipe(
+    Match.when(0, () => ""),
+    Match.when(weekless.length, () => byCount(none, "; it reports no usage windows at all (limited by nothing the pool can read)", "; they report no usage windows at all (limited by nothing the pool can read)")),
+    Match.orElse(() => `; ${none} of them ${byCount(none, "reports", "report")} no usage windows at all`),
+  )
+  const unread = weekless.filter((a) => !freshlyAbsent(a, "7d", now)).length
+  const unreadNote = Match.value(unread).pipe(
+    Match.when(0, () => ""),
+    Match.orElse(() => `; ${unread} of them ${byCount(unread, "reports its week", "report their weeks")} in a shape the pool cannot read, and ${byCount(unread, "its", "their")} 5-hour window binds alone`),
+  )
+  return `${weekless.length} ${byCount(weekless.length, "account has", "accounts have")} no weekly window to pace (${weekless.map((a) => a.credentialID).join(", ")})${all}${unreadNote}`
 }
 
 /**
@@ -318,20 +380,32 @@ function budgetPace(
     return {
       ok: false,
       measured: true,
-      reason: `every pool account is at a hold line: its 5-hour window at ${used(SHORT_5H)} or more, or its week at ${used(TARGET)} or more; the first resets ${iso(retryAt)}`,
+      reason: `every pool account is at a hold line: ${holdLinesText(available, now)}; the first resets ${iso(retryAt)}`,
       retryAt,
       reasonCode: "quota-limit",
       admission: "held",
     }
   }
-  if (!known.length) return { ok: true, measured: false, reason: "weekly pace unmeasured" }
+  // An account whose usage endpoint says it has no week has nothing to pace against: the even line binds the others alone.
+  const weekless = available.filter((a) =>
+    Option.isNone(Option.flatMap(weekOf(a), (w) => validWeekReset(w, now))) && Option.isNone(evidenceGap(a, now)) && Option.isNone(shortUntil(a, now)))
+  const absentWeek = weekless.filter((a) => freshlyAbsent(a, "7d", now))
+  const takenWeekless = (chosen: ReadonlyArray<AccountStatus>, reason: string): Pace => ({
+    ok: true, measured: true, admission: "ordinary", eligible: chosen.map((a) => a.credentialID), reason: `${reason}${weeklessText(chosen, now)}`,
+  })
+  if (!known.length) return Arr.match(weekless, {
+    onEmpty: (): Pace => ({ ok: true, measured: false, reason: "weekly pace unmeasured" }),
+    onNonEmpty: () => takenWeekless(weekless, "no pool account has a weekly window to pace against: "),
+  })
   const read = known.reduce((n, a) => n + a.used, 0)
   const charged = inflight.starts.length * inflight.cost
   const spent = read + charged
   const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
+  const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, {}), 0)
+  if (spent > ordinary + 1e-9 && absentWeek.length > 0)
+    return takenWeekless(absentWeek, `the paced ${byCount(known.length, "account's week is", "accounts' weeks are")} past the spend-evenly line, so the start goes out only where no week is reported: `)
   if (spent <= allowance + 1e-9) {
     // Past the even line but within one a claimed, observed reset rebased: the room is that reset's.
-    const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, {}), 0)
     if (spent <= ordinary + 1e-9) return { ok: true, measured: true, reason: "the pool is within its weekly pace", admission: "ordinary" }
     return {
       ok: true,
@@ -442,16 +516,25 @@ export const evidenceGap = (
   const known = Option.fromUndefinedOr(account.reading)
   if (Option.isNone(known)) return Option.some(Unread.make({ why: "no reading", stale: true }))
   const gapOf = (name: string): Option.Option<Gap> =>
-    Option.match(windowOf(account, name), {
-      onNone: () => {
-        if (name === "5h" && Option.exists(Option.fromUndefinedOr(known.value.fiveHourAbsentAt), (at) =>
-          at <= now && now - at <= STALE_AFTER_MS)) return Option.none()
+    Match.value(windowReading(known.value, name)).pipe(Match.tagsExhaustive({
+      // ABSENT imposes nothing while the usage endpoint said so freshly; an old absence is read again, as an old window is.
+      Absent: () => Option.liftPredicate(
+        Unread.make({ why: `its usage last reported no ${name} window more than ${Math.round(STALE_AFTER_MS / 60_000)} min ago`, stale: true }),
+        () => !freshlyAbsent(account, name, now),
+      ),
+      Unknown: ({ unrecognised }) => {
         const model = Option.fromUndefinedOr(scopeOf(name))
         const usage = Option.fromUndefinedOr(known.value.usage)
+        // A tracked window a successful usage read in the last STALE_AFTER_MS left UNKNOWN (missing, or a shape that did
+        // not read) waits for that one read and no more: what the read reported binds, the unknown window stays unmeasured
+        // (named in the status), a window reported later binds at once, and a refusal holds as ever.
+        const answered = tracked(name) && Option.exists(usage, (sample) => sample.at <= now && now - sample.at <= STALE_AFTER_MS)
+        if (answered) return Option.none()
         const refreshAt = Option.getOrElse(Option.map(usage, (sample) => sample.at + UNREAD_RETRY_MS), () => now)
-        return Option.some(Unread.make({ why: `no ${name} window in its reading`, stale: Option.isNone(model) || refreshAt <= now }))
+        const gapNote = Arr.match(unrecognised, { onEmpty: () => "", onNonEmpty: (fields) => ` (its usage answer's ${fields.join(", ")} did not read)` })
+        return Option.some(Unread.make({ why: `no ${name} window in its reading${gapNote}`, stale: Option.isNone(model) || refreshAt <= now }))
       },
-      onSome: (w) => {
+      Reported: ({ window: w }) => {
         const seen = readAt(account, w)
         if (now - seen > STALE_AFTER_MS)
           return Option.some(Unread.make({ why: `its ${name} window was read more than ${Math.round(STALE_AFTER_MS / 60_000)} min ago`, stale: true }))
@@ -466,10 +549,10 @@ export const evidenceGap = (
         const at = Option.filter(reset, (time) => Option.isSome(DateTime.make(time)))
         const rolled = !Option.exists(at, (time) => time > Math.max(now, seen))
         if (!rolled && Option.exists(at, (time) => time <= now + duration + RESET_SLACK_MS)) return Option.none()
-        const named = Option.getOrElse(Option.map(at, iso), () => "unread")
+        const named = Option.getOrElse(Option.map(at, iso), () => "none given")
         return Option.some(Unread.make({ why: `its ${name} window's reset (${named}) is not within the next ${span}`, stale: rolled }))
       },
-    })
+    }))
   return Arr.findFirst(["7d", "5h", ...required], gapOf)
 }
 
@@ -568,7 +651,7 @@ export function dispatchPace(
   if (Option.isSome(refusal)) return refusal.value
   const { fresh, gaps, heldUnread } = splitEvidence(accounts, now, required)
   const scoped = Arr.match(required, { onEmpty: () => "", onNonEmpty: (names) => `, and ${names.join(", ")} read as freshly` })
-  const needs = `its weekly and any applicable 5-hour windows read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with valid resets${scoped}`
+  const needs = `its weekly and 5-hour windows each read in the last ${Math.round(STALE_AFTER_MS / 60_000)} min with a valid reset, or reported there as not on the account${scoped}`
   const lacking = [...new Set(gaps.map(gapText))].join("; ")
   const unavailable = gaps.length > 0 && gaps.every((gap) => gap._tag === "Unreported")
   const evidenceTime = gaps.map((gap) => Match.value(gap).pipe(Match.tagsExhaustive({
@@ -607,7 +690,9 @@ export function dispatchPace(
   const inflight = Option.getOrElse(Option.fromUndefinedOr(policy.inflight), () => NO_INFLIGHT)
   const answer = budgetPace(fresh, now, inflight, model, plans)
   const open = eligibleFor(fresh, now, model)
-  const eligible = open.map((a) => a.credentialID)
+  // The pace may name fewer accounts than are open: past the even line, only those with no week to pace.
+  const eligible = open.map((a) => a.credentialID).filter((id) =>
+    Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) }))
   // A push can lift the even line, not the minimum evidence or any hard limit.
   if (policy.liftEvenLine === true && eligible.length > 0 && ((!answer.ok && answer.soft === true) || answer.admission === "backed"))
     return { ok: true, measured: true, reason: answer.reason, admission: "ordinary", eligible }
@@ -617,7 +702,7 @@ export function dispatchPace(
       ...Option.toArray(Option.map(freshWeek(a, now), (week) => week.resetAt)),
       ...Option.toArray(Option.map(Option.fromUndefinedOr(a.hold), (hold) => hold.until)),
       ...spentOwn(a, now, model).map((w) => w.resetAt),
-      ...windowsOf(a).filter(atHoldLine).flatMap((w) => Option.toArray(Option.fromUndefinedOr(w.resetAt))),
+      ...atHoldLines(a, now).map((binding) => binding.resetAt),
     ])
     return nextRetryAt(now, [...times, ...windows, ...evidenceTime])
   }
@@ -626,9 +711,12 @@ export function dispatchPace(
     return `${reason}; ${gaps.length} ${byCount(gaps.length, "account", "accounts")} more ${byCount(gaps.length, "has", "have")} no reading it may go out on (${needs}): ${lacking}`
   }
   const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model).retryAt))
+  // A limit the read accounts REPORT is what a person is told: the unread accounts are named in its reason
+  // (`reasonWithGaps`) and their next read is in its retry (`evidenceTime`), so an unread login never hides a spent week.
+  // A hold of another kind keeps the remedy order, where a read comes first.
   if (!answer.ok) return selectHold(
     { ...answer, reason: reasonWithGaps(answer.reason), retryAt: retry([answer.retryAt, ...ordinaryCatchUp()]), eligible: [] },
-    alternatives,
+    Match.value(REPORTED_LIMITS.includes(answer.reasonCode)).pipe(Match.when(true, () => waitForLoginOrRepair), Match.orElse(() => alternatives)),
   )
   // An unmeasured pace is no evidence of room at a dispatch: held, and asked again by the next sweep.
   if (!answer.measured) return selectHold({

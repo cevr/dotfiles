@@ -58,7 +58,7 @@ import { periodBurn } from "./burn.ts"
 import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
-import { accountWide, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
+import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { iso, percent, used } from "./usage-text.ts"
 
@@ -271,6 +271,8 @@ export const spentUntil = (account: AccountStatus, now: number): number | undefi
 /** The account's weekly window, as read. */
 const weekly = (account: AccountStatus): QuotaWindow | undefined =>
   account.reading?.windows.find((window) => window.name === "7d" && accountWide(window))
+
+const weekAbsent = (account: AccountStatus): boolean => accountWindow(account, "7d")._tag === "Absent"
 
 /** The credits an account can claim now, soonest to expire first (one with no expiry last). */
 export const usableCredits = (account: AccountStatus, now: number): ReadonlyArray<ResetCredit> =>
@@ -944,7 +946,7 @@ const candidatesOf = (
 ): ReadonlyArray<Candidate> =>
   view.accounts.flatMap((read) => {
     const account = freshView(state, read, now)
-    if (account === undefined || claiming.has(account.credentialID) || settling(state, current, account, now)) return []
+    if (account === undefined || weekAbsent(account) || claiming.has(account.credentialID) || settling(state, current, account, now)) return []
     const credits = usableCredits(account, now)
     const week = weekly(account)
     const blocking = blockingOf(account, now, model)
@@ -1062,8 +1064,9 @@ export const sparesOf = (
   account: AccountStatus,
   now: number,
   ratios: Readonly<Record<string, Ratio>> = {},
-): ReadonlyArray<{ readonly credit: ResetCredit; readonly kind: ResetKind; readonly spare: number; readonly expiresAt?: number }> =>
-  (account.reading?.resets?.credits ?? [])
+): ReadonlyArray<{ readonly credit: ResetCredit; readonly kind: ResetKind; readonly spare: number; readonly expiresAt?: number }> => {
+  if (weekAbsent(account)) return []
+  return (account.reading?.resets?.credits ?? [])
     .filter((credit) => inHand(credit, now))
     .flatMap((credit) => {
       const spare = spareOf(provider, account, credit, ratios)
@@ -1071,6 +1074,7 @@ export const sparesOf = (
       return spare <= 0 ? [] : Array.from({ length: credit.count }, () => ({ credit, kind, spare, ...(credit.expiresAt === undefined ? {} : { expiresAt: credit.expiresAt }) }))
     })
     .toSorted((left, right) => (left.expiresAt ?? Number.POSITIVE_INFINITY) - (right.expiresAt ?? Number.POSITIVE_INFINITY))
+}
 
 /**
  * The spare an account's line is raised by this week: the best reset in hand,
@@ -1298,6 +1302,7 @@ export const pushOptions = (
   model?: string,
   held = true,
 ): ReadonlyArray<PushOption> => {
+  if (weekAbsent(account)) return []
   const blocking = blockingOf(account, now, model)
   if (held && blocking.length === 0) return []
   const fableOut = blocking.some((window) => scopeOf(window.name) !== undefined)
