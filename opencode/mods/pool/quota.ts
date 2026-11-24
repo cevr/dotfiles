@@ -3,6 +3,9 @@
 // it over the quota protocol (opencode/quota.ts) and checks it here field by field.
 import { Option, Schema } from "effect"
 
+/** Bound for a paced login's first usage read, shared by the model and quota adapter. */
+export const USAGE_TIMEOUT_MS = 10_000
+
 export const QuotaStatus = Schema.Literals(["allowed", "allowed_warning", "rejected"])
 export type QuotaStatus = typeof QuotaStatus.Type
 

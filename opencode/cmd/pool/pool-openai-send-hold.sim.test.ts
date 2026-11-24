@@ -42,7 +42,7 @@ seeded(`no ${transport} send before a new login's first measure completes or tim
       integrations: { openai: [{ id: "cred_sol", label: "Sol", ...account,
         expires: World.START + 86_400_000, methodID: "chatgpt-browser", metadata: { accountID: "fixture" } }] },
     })
-    const measured = { ...quota, handle: (request: Request) => Effect.suspend(() => {
+    const delayedQuota = { ...quota, handle: (request: Request) => Effect.suspend(() => {
       if (request.url !== ChatGPT.USAGE_URL) return quota.handle(request)
       requests.push(world.now())
       return Match.value(offline).pipe(
@@ -50,7 +50,7 @@ seeded(`no ${transport} send before a new login's first measure completes or tim
         Match.orElse(() => Effect.delay(quota.handle(request), delay)),
       )
     }) }
-    const network = Provider.make({ seed, accounts: {}, chatgpt: measured }, world.runtime)
+    const network = Provider.make({ seed, accounts: {}, chatgpt: delayedQuota }, world.runtime)
     const plugin = Plugins.pool(new Map(), Plugins.network(network))
     const second = `${DIRECTORY}-second`
     for (const directory of [DIRECTORY, second]) yield* world.load(plugin, {

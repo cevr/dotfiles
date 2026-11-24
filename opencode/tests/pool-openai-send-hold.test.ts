@@ -6,7 +6,7 @@ import { describe, expect, it } from "effect-bun-test"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ROOT } from "../scripts/agents.ts"
 import { readHeldSend } from "../mods/pool/refuse.ts"
-import { USAGE_TIMEOUT_MS } from "../mods/pool/chatgpt/usage.ts"
+import { USAGE_TIMEOUT_MS } from "../mods/pool/quota.ts"
 import { hangGuard } from "./hang-guard.ts"
 import { forkRuns } from "./scratch.ts"
 
