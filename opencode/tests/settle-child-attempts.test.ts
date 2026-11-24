@@ -275,7 +275,7 @@ const host = Effect.fn("LifecycleFixture.host")(function* (
   baseURL: string, base: string, fork: string, plugins: ReadonlyArray<Schema.JsonObject>,
 ) {
   const path = yield* Path.Path
-  const sdk = yield* promised("pinned SDK import failed", () => loadKernelSdk(fork, Sdk))
+  const sdk = yield* loadKernelSdk(fork, Sdk).pipe(Effect.mapError((cause) => fault(`pinned SDK import failed: ${String(cause)}`)))
   const provider = {
     name: "Sim", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL, apiKey: "fixture" },
     models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },

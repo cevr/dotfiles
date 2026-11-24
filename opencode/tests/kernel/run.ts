@@ -13,7 +13,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Effect, Path, Predicate, Schedule, Schema } from "effect"
+import { Effect, Path, Schedule, Schema } from "effect"
 import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
 
 export interface Spec {
@@ -57,18 +57,18 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const KernelSdk = Schema.declare((value): value is Sdk =>
-  Predicate.isObject(value) && Predicate.isObject(value.OpenCode) && Predicate.isFunction(value.OpenCode.create))
-
 // These modules resolve in their own projects; decode their exports at the import boundary.
-const loadNativeModule = <A>(file: string, contract: Schema.Codec<A>) => import(file).then(Schema.decodeUnknownSync(contract))
+const importNativeModule = (file: string): Promise<object> => import(file)
+const sdkFile = (fork: string) => join(fork, "packages/sdk/src/index.ts")
+const loadNativeModule = <A>(file: string, contract: Schema.Codec<A>) =>
+  Effect.tryPromise(() => importNativeModule(file)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(contract)))
 export const loadKernelSdk = <A>(fork: string, contract: Schema.Codec<A>) =>
-  loadNativeModule(join(fork, "packages/sdk/src/index.ts"), contract)
+  loadNativeModule(sdkFile(fork), contract)
 export const loadKernelRowFixture = <A>(contract: Schema.Codec<A>) =>
   Effect.gen(function* () {
     const path = yield* Path.Path
     const file = yield* path.fromFileUrl(new URL("../../mods/subagents/solid/native-row.fixture.ts", import.meta.url))
-    return yield* Effect.tryPromise(() => loadNativeModule(file, contract))
+    return yield* loadNativeModule(file, contract)
   })
 
 if (import.meta.main) {
@@ -108,7 +108,7 @@ if (import.meta.main) {
     ],
   }
 
-  const { OpenCode } = await loadKernelSdk(spec.fork, KernelSdk)
+  const { OpenCode } = (await importNativeModule(sdkFile(spec.fork))) as Sdk
   const opencode = await OpenCode.create({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
