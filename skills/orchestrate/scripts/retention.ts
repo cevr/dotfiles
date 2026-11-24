@@ -39,6 +39,10 @@ export const RETENTION: Readonly<Record<string, Fate>> = immutable<Readonly<Reco
     kind: 'reworded',
     now: "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names.",
   },
+  "Never wrap a check in a launcher of your own (`systemd-run`, `nohup`, `setsid`, a scope): yours escapes the host's niced, memory-capped one.": {
+    kind: 'reworded',
+    now: "Never invent a launcher that escapes a host cap; use any capped scope the run's spec requires.",
+  },
   'When something blocks you, write `<unit dir>/blocked.md` (what blocks you, what you tried, the options and your pick) and end with verdict `blocked` and that path.': {
     kind: 'replaced',
     by: "(F2) implementor/planner: `ready` only when every required item is done, else `blocked`, with blocked.md holding the stop event's evidence; verifier: any required check refused, unable to run, unclear or waiting is `stuck` (a verifier never writes blocked.md)",
