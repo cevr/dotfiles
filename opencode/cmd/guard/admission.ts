@@ -117,7 +117,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const host = yield* Supply.bootHost()
   const foreground = foregroundOf(host)
   const filename = path.join(config.directory, "admission-v1.sqlite")
-  const { ledger, holder, native } = yield* Journal.open(filename, host, host.kernel.now)
+  const { ledger, bind, holder, native } = yield* Journal.open(filename, host, host.kernel.now)
   const caller = yield* Scope.callerOf(host)
   yield* native.remember(caller.owner, caller.pid, caller.start)
   const target = yield* Supply.volumeIdentity(config.cwd).pipe(Effect.option)
@@ -177,12 +177,16 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     }
   })
 
-  const step = Effect.fn("HostAdmission.step")(function* (input: Input) {
+  const supplyForStep = Effect.fn("HostAdmission.supplyForStep")(function* () {
     yield* inspect(yield* cold())
     const observation = yield* measure()
     const verified = yield* attest(observation)
     const now = yield* Supply.clockOf(host)
-    return yield* ledger.transact(input, { ...verified, now }).pipe(Effect.map((result) => ({ ...result, observation: verified })))
+    return { ...verified, now }
+  })
+  const step = Effect.fn("HostAdmission.step")(function* (input: Input) {
+    const observation = yield* supplyForStep()
+    return yield* ledger.transact(input, observation).pipe(Effect.map((result) => ({ ...result, observation })))
   })
 
   const request = Effect.fn("HostAdmission.request")(function* (draft: Request, owner = caller.owner) {
@@ -286,8 +290,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       const attempt = yield* Effect.scoped(Effect.gen(function* () {
         const { fd, descriptor } = yield* Scope.armDescriptor(host, path.join(config.directory, `${location.ref}.lock`))
         const pin = { ...location, descriptor }
-        yield* native.pin(pin)
-        const { reply } = yield* step({ op: "claim", owner: row.owner, id: row.id, generation: row.generation, binding: pin.ref })
+        const { reply } = yield* bind(row, pin, yield* supplyForStep())
         return yield* runAfterClaim(reply, () => Effect.gen(function* () {
           yield* watcher.arm
           const code = yield* supervised(row, pin, fd, watcher.stop, args, environment)
