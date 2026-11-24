@@ -9,6 +9,8 @@ import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
 import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, type Subscriber } from "./host.ts"
+import { permissionAssert } from "./host-permission.ts"
+import { makeSkillCatalog } from "./host-skills.ts"
 import { type JsonObject, plain } from "./runtime.ts"
 
 /** A plugin as OpenCode loads it: its definition, where, and its options. */
@@ -57,6 +59,10 @@ export const OPERATIONS = [
   "session.create",
   "session.prompt",
   "session.stop",
+  "permission.assert",
+  "skill.list",
+  "skill.transform",
+  "skill.reload",
   "session.update",
   "session.move",
   "session.switchModel",
@@ -602,6 +608,8 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       return registered
     })
 
+  const skill = Option.getOrElse(Option.fromUndefinedOr(host.skills.get(loaded.directory)), () => makeSkillCatalog(loaded.directory))
+  host.skills.set(loaded.directory, skill)
   const modelled = {
     options: loaded.options,
     location: { directory: loaded.directory },
@@ -628,6 +636,8 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
     shell: { hook: domainHook("shell", new Set(["create.before"])) },
     rpc: Object.assign(client, { register }),
     session,
+    skill,
+    permission: { assert: permissionAssert(host, unmodelled) },
     model: {
       list: () => Effect.sync(() => ({ data: catalog() })),
       // The model a session with no selection runs on: the host's, as the catalog has it.

@@ -40,6 +40,7 @@
 //   which the report wakes (sim/subagents.ts).
 import { Tool } from "@opencode/schema/tool"
 import type { SimulationProtocol } from "@opencode/simulation/protocol"
+import type { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import { Agent } from "@opencode/schema/agent"
@@ -788,6 +789,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
 
   /** Each copy's agent transform, in load order: the agents are rebuilt from them for each read. */
   const agentTransforms: Array<{ readonly instance: number; readonly callback: (editor: AgentEditor) => void }> = []
+  const skills = new Map<string, Plugin.Context["skill"]>()
 
   /**
    * The agents of a location: build, then each of the location's copies' transforms in load order, then the config's
@@ -2036,6 +2038,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     publish,
     admit,
     sessionOr,
+    skills,
     compact,
     switchModel,
     failNextCompaction,
