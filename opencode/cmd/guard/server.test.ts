@@ -254,6 +254,21 @@ describe("the guard plugin", () => {
       }),
     ))
 
+  test("the checkout boundary relates sibling directories of one tree without merging two repositories", () =>
+    scenario(
+      Effect.gen(function* () {
+        const tree = "/nonexistent/loop-probe-tree"
+        const nested = `${tree}/nested`
+        const sibling = "/nonexistent/loop-probe-other"
+        const session = `${tree}/src`
+        const { call } = yield* start({ home: HOME }, { sessions: { ses_1: session }, repos: { repos: [tree, nested, sibling] } })
+        expect(yield* call("shell", { command: "git -C ../tools switch --detach fixture-old; npm test" })).toContain("after selecting another Git revision")
+        expect(yield* call("shell", { command: `git -C ${sibling} switch --detach fixture-old; npm test` })).toBeUndefined()
+        expect(yield* call("shell", { command: `git -C ${tree} switch --detach fixture-old; cd ${nested} && npm test` })).toBeUndefined()
+        expect(yield* call("shell", { command: `git clone --branch fixture-old ${sibling} ../new; cd ../new/subdir; npm test` })).toContain("after selecting another Git revision")
+      }),
+    ))
+
   test("wrappers, startup modules, and entry points share one evidence rule", () =>
     scenario(
       Effect.gen(function* () {

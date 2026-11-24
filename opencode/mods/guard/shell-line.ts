@@ -46,6 +46,7 @@ const indexOrEnd = (line: string, char: string, from: number) => {
 export interface ShellSegment {
   readonly words: ReadonlyArray<Word>
   readonly pipe: boolean
+  readonly boundary?: "enter" | "leave"
 }
 
 export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
@@ -59,7 +60,7 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
   }
   const endCommand = (pipe = false) => {
     endWord()
-    if (words.length > 0) commands.push({ words, pipe })
+    if (words.length > 0 || pipe) commands.push({ words, pipe })
     words = []
   }
   const add = (char: string, bare: boolean) => {
@@ -122,6 +123,9 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
     if (char === "\n" && heredocs.length > 0) return skipBodies(at)
     if (SEPARATORS.has(char)) {
       endCommand(char === "|" && line.charAt(at + 1) !== "|")
+      if (char === "(") commands.push({ words: [], pipe: false, boundary: "enter" })
+      if (char === ")") commands.push({ words: [], pipe: false, boundary: "leave" })
+      if (char === "|" && line.charAt(at + 1) === "|") return at + 2
       return at + 1
     }
     if (char === " " || char === "\t") {
@@ -137,7 +141,10 @@ export const shellSegments = (line: string): ReadonlyArray<ShellSegment> => {
   return commands
 }
 
-export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => shellSegments(line).map(({ words }) => words)
+export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => shellSegments(line).flatMap(({ words }) => {
+  if (words.length === 0) return []
+  return [words]
+})
 
 /** Words that run the command after them: skipped to find what runs. */
 const PREFIX_WORDS: ReadonlySet<string> = new Set(["sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "!", "{"])

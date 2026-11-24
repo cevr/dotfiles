@@ -22,13 +22,13 @@
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
 import { Context, Effect, Layer, Option } from "effect"
-import { keychainLaunch, KeychainPrompt, keychainReason } from "./chrome.ts"
+import { keychainLaunch, KeychainPrompt, keychainReason, type TreeRoot } from "./chrome.ts"
 import { isHeavy } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
 import { launcherName, launcherScript, type Limits } from "./launcher.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, type RepoRootUnknown, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 import { workGcReason, workGcs } from "./work-gc.ts"
@@ -140,7 +140,7 @@ export const layer = (config: Config) =>
         const kill = killVerdict(call.command, running, config.server)
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
         // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
-        const launch = yield* keychainLaunch(call.command, place, scripts.text)
+        const launch = yield* keychainLaunch(call.command, place, scripts.text, checkoutRoot(roots.isRoot))
         if (Option.isSome(launch)) return yield* new KeychainPrompt({ command: call.command, reason: keychainReason(launch.value) })
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
@@ -159,6 +159,19 @@ export interface PolicyConfig {
   readonly heavy: ReadonlyArray<string>
   readonly limits: Limits
 }
+
+/** Nearest real checkout, including a nested worktree, without running Git or checking anything out. */
+const checkoutRoot = (isRoot: (directory: string) => Effect.Effect<boolean, RepoRootUnknown>): TreeRoot =>
+  Effect.fn("Guard.checkoutRoot")(function* (directory) {
+    let at = directory
+    while (true) {
+      const known = yield* isRoot(at).pipe(Effect.option)
+      if (Option.isNone(known)) return Option.none()
+      if (known.value) return Option.some(at)
+      if (at === "/") return Option.none()
+      at = resolve(at, "..")
+    }
+  })
 
 export class ShellPolicy extends Context.Service<
   ShellPolicy,

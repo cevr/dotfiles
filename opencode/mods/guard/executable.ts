@@ -316,6 +316,7 @@ export interface ExecutionPlace {
   readonly cwd: string
   readonly home: string
   readonly env?: ReadonlyMap<string, string>
+  readonly unknownCwd?: true
 }
 
 export interface Execution {
@@ -323,6 +324,7 @@ export interface Execution {
   readonly args: ReadonlyArray<Word>
   readonly command: string
   readonly cwd: string
+  readonly unknownCwd?: true
   readonly env: ReadonlyMap<string, string>
   readonly code: ReadonlyArray<CodeInput>
   readonly inlineShell?: true
@@ -332,29 +334,56 @@ export const MAX_CODE_DEPTH = 6
 const variable = /\$(?:\{([A-Za-z_][A-Za-z_0-9]*)\}|([A-Za-z_][A-Za-z_0-9]*))/g
 
 const expanded = (entry: Word, place: ExecutionPlace, vars: ReadonlyMap<string, string>): string => {
-  const text = expandWord(entry, place.home, place.cwd)
+  const text = expandWord(entry, place.home, expansionCwd(place))
   if (entry.singleQuoted) return text
   return text.replace(variable, (use, braces: string, bare: string) => vars.get(braces || bare) || use)
+}
+
+const expansionCwd = (place: ExecutionPlace): string => {
+  if (place.unknownCwd) return "$PWD"
+  return place.cwd
 }
 
 const bindingList = (words: ReadonlyArray<Word>, vars: ReadonlyMap<string, string>, place: ExecutionPlace) =>
   words.reduce((known, entry) => assigned({ ...entry, text: expanded(entry, place, known) }, known), vars)
 
+export const literalPath = (text: string): boolean => !/[$`*?]/.test(text)
+
+interface Directory {
+  readonly cwd: string
+  readonly unknownCwd?: true
+}
+
+/** An absolute target recovers a known cwd even if its parent scope was dynamic. */
+const directoryAt = (at: Directory, target: string): Directory => {
+  if (!literalPath(target) || (at.unknownCwd && !target.startsWith("/"))) return { cwd: at.cwd, unknownCwd: true }
+  return { cwd: resolve(at.cwd, target) }
+}
+
 /** Commands and their ordered source inputs, including inline shell commands in their actual execution position. */
 export const executionPlan = (line: string, place: ExecutionPlace, depth = 0): ReadonlyArray<Execution> => {
   const result: Array<Execution> = []
-  let cwd = place.cwd
-  let env = place.env || new Map<string, string>()
-  let vars = env
+  const env = place.env || new Map<string, string>()
+  let state: ShellState = { place: { ...place, env }, vars: env, directories: [] }
+  const scopes: Array<ShellState> = []
   let piped: ReadonlyArray<Word> = []
-  for (const { words, pipe } of shellSegments(line)) {
-    const frame: ExecutionPlace = { cwd, home: place.home, env }
-    const run = executionStep(words, piped, frame, vars)
-    piped = []
-    if (pipe) piped = literalInput(words)
-    cwd = run.cwd
-    env = run.env
-    vars = run.vars
+  let inPipeline = false
+  for (const { words, pipe, boundary } of shellSegments(line)) {
+    if (boundary === "enter") {
+      scopes.push(state)
+      inPipeline = false
+      continue
+    }
+    if (boundary === "leave") {
+      state = scopes.pop() || state
+      inPipeline = false
+      piped = []
+      continue
+    }
+    const run = executionStep(words, piped, state)
+    if (!pipe && !inPipeline) state = run.state
+    inPipeline = pipe
+    piped = pipelineInput(pipe, words)
     for (const command of run.commands) {
       result.push(command)
       if (depth < MAX_CODE_DEPTH) result.push(...inlineCommands(command, place.home, depth + 1))
@@ -363,38 +392,75 @@ export const executionPlan = (line: string, place: ExecutionPlace, depth = 0): R
   return result
 }
 
-interface ExecutionStep {
-  readonly cwd: string
-  readonly env: ReadonlyMap<string, string>
+const pipelineInput = (pipe: boolean, words: ReadonlyArray<Word>): ReadonlyArray<Word> => {
+  if (pipe) return literalInput(words)
+  return []
+}
+
+interface ShellState {
+  readonly place: ExecutionPlace
   readonly vars: ReadonlyMap<string, string>
+  readonly directories: ReadonlyArray<Directory>
+  readonly previous?: Directory
+}
+
+interface ExecutionStep {
+  readonly state: ShellState
   readonly commands: ReadonlyArray<Execution>
 }
 
-const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, place: ExecutionPlace, vars: ReadonlyMap<string, string>): ExecutionStep => {
+const changeDirectory = (head: string, args: ReadonlyArray<Word>, state: ShellState): ShellState => {
+  const { place, vars, directories } = state
+  if (head === "popd") {
+    const [top, ...after] = directories
+    if (!top) return state
+    return { ...state, directories: after, previous: place, place: { home: place.home, env: place.env, ...top } }
+  }
+  const marker = args[0]?.text === "--" || args[0]?.text === "-L" || args[0]?.text === "-P"
+  const target = expanded(args[Number(marker)] || word(place.home), place, vars)
+  const moved = moveDirectory(place, state.previous, target)
+  const next = { ...state, previous: place, place: { home: place.home, env: place.env, ...moved } }
+  if (head === "pushd") return { ...next, directories: [place, ...directories] }
+  return next
+}
+
+const moveDirectory = (place: ExecutionPlace, previous: Directory | void, target: string): Directory => {
+  if (target !== "-") return directoryAt(place, target)
+  return previous || { cwd: place.cwd, unknownCwd: true }
+}
+
+const executionStep = (words: ReadonlyArray<Word>, piped: ReadonlyArray<Word>, state: ShellState): ExecutionStep => {
+  const { place, vars } = state
   const env = place.env || new Map<string, string>()
-  const state: ExecutionStep = { cwd: place.cwd, env, vars, commands: [] }
+  const idle: ExecutionStep = { state, commands: [] }
   const [first, ...rest] = words
-  if (words.every(({ text }) => assignment.test(text))) return { ...state, vars: bindingList(words, vars, place) }
+  if (words.every(({ text }) => assignment.test(text))) return { ...idle, state: { ...state, vars: bindingList(words, vars, place) } }
   if (first?.text === "export" && rest.every(({ text }) => assignment.test(text) || /^[A-Za-z_]\w*$/.test(text))) {
     const bound = bindingList(rest.filter(({ text }) => assignment.test(text)), vars, place)
     const exported = rest.map(({ text }) => text.split("=", 1)[0] || "")
-    return { ...state, vars: bound, env: new Map([...env, ...Array.from(bound).filter(([key]) => exported.includes(key))]) }
+    return { ...idle, state: { ...state, vars: bound, place: { ...place, env: new Map([...env, ...Array.from(bound).filter(([key]) => exported.includes(key))]) } } }
   }
   const invocation = executable(words, piped, env)
   const [entry, ...args] = invocation.words
-  if (!entry) return state
+  if (!entry) return idle
   const head = basename(entry.text)
-  if (head === "cd") return { ...state, cwd: resolve(place.cwd, expanded(args[0] || word(place.home), place, vars)) }
-  const cwd = Option.getOrElse(Option.map(invocation.directory, (directory) => resolve(place.cwd, directory)), () => place.cwd)
+  if (head === "cd" || head === "pushd" || head === "popd") return { ...idle, state: changeDirectory(head, args, state) }
+  const at = Option.getOrElse(Option.map(invocation.directory, (directory) => directoryAt(place, expanded(word(directory), place, vars))), () => place)
   const code = codeInputs(head, entry.text, args, invocation.env).map((input): CodeInput => {
     if (input.kind === "inline") return input
-    return { ...input, source: { ...input.source, text: expanded(input.source, { ...place, cwd }, vars) } }
+    return { ...input, source: { ...input.source, text: expanded(input.source, { ...place, ...at }, vars) } }
   })
-  return { ...state, commands: [{ head, args, command: invocation.words.map(({ text }) => text).join(" "), cwd, env: invocation.env, code }] }
+  const actual = args.map((arg) => expandArg(head, arg, { ...place, ...at }, vars))
+  return { state, commands: [{ head, args: actual, command: invocation.words.map(({ text }) => text).join(" "), cwd: at.cwd, unknownCwd: at.unknownCwd, env: invocation.env, code }] }
+}
+
+const expandArg = (head: string, arg: Word, place: ExecutionPlace, vars: ReadonlyMap<string, string>): Word => {
+  if (head === "git") return { ...arg, text: expanded(arg, place, vars) }
+  return arg
 }
 
 const inlineCommands = (command: Execution, home: string, depth: number): ReadonlyArray<Execution> =>
   command.code.flatMap((unit) => {
     if (unit.kind !== "inline" || unit.language !== "shell") return []
-    return executionPlan(unit.code, { cwd: command.cwd, home, env: command.env }, depth).map((entry): Execution => ({ ...entry, inlineShell: true }))
+    return executionPlan(unit.code, { cwd: command.cwd, unknownCwd: command.unknownCwd, home, env: command.env }, depth).map((entry): Execution => ({ ...entry, inlineShell: true }))
   })
