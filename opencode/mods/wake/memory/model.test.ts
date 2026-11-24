@@ -612,6 +612,23 @@ describe("a latch", () => {
   }
   const childOf = (w: World, sessionID: string) => w.sessions.children.get(sessionID)
 
+  test("a continuation whose child cannot be marked leaves no latch to reopen", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model, stop } = yield* server(w)
+        const refused = yield* model.latch({ ...ask, child: "ses_gone" }).pipe(Effect.flip)
+        expect(refused.reason).toContain("the existing subagent could not be marked")
+        expect((yield* model.pending(["ses_a"])).entries).toEqual([])
+        expect(w.jobs.jobs.size).toBe(0)
+        yield* stop
+        const restarted = yield* server(w)
+        yield* until(ask.opensAt)
+        expect((yield* restarted.model.pending(["ses_a"])).entries).toEqual([])
+        expect(w.opener.asked).toEqual([])
+      }),
+    ))
+
   test("a continuation latch keeps its existing child and prevents a second latch for that child", () =>
     run(
       Effect.gen(function* () {
