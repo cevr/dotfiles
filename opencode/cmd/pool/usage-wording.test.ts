@@ -69,7 +69,12 @@ const table: ReadonlyArray<readonly [string, string]> = [
   ],
   [
     poolPace([account([{ name: "5h", utilization: 0.95, resetAt: now + HOUR }, { name: "7d", utilization: 0.3, resetAt: now + 3.5 * DAY }])], now).reason,
-    "every pool account is at a hold line: its 5-hour window at 90% used of 100% or more, or its week at 99% used of 100% or more; the first resets 2026-11-15 13:00Z",
+    "every pool account is at a hold line: its 5-hour window at 90% used of 100% or more; the first resets 2026-11-15 13:00Z",
+  ],
+  [
+    // A weekly-only account at its limit is told of its week alone, never of a 5-hour window it does not have.
+    poolPace([{ ...account([{ name: "7d", utilization: 1, resetAt: now + 3.5 * DAY }]), reading: { at: now, windows: [{ name: "7d", utilization: 1, resetAt: now + 3.5 * DAY }], absent: [{ name: "5h", at: now }] } }], now).reason,
+    "every pool account is at a hold line: its week at 99% used of 100% or more; the first resets 2026-11-19 00:00Z",
   ],
   [
     poolPace([account([{ name: "5h", utilization: 0.1, resetAt: now + HOUR }, { name: "7d", utilization: 0.7, resetAt: now + 3.5 * DAY }])], now).reason,
@@ -111,11 +116,13 @@ const table: ReadonlyArray<readonly [string, string]> = [
           weeklyRoom: 0.6,
           weeklyUsed: 1.4,
           weeklyRead: 2,
+          weeklyAbsent: 0,
           weekResetAt: now + 3.5 * DAY,
           weeklyBurn: 0.0167,
           shortRoom: 1,
           shortUsed: 1,
           shortRead: 2,
+          shortAbsent: 0,
           shortResetAt: now + 2 * HOUR,
           shortBurn: 0.2,
         },

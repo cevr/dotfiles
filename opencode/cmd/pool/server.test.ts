@@ -1561,7 +1561,8 @@ describe("the RPC", () => {
             credentialID: "cred-b",
             label: "Anthropic 2",
             on: "placed",
-            reading: { at, windows: [{ name: "7d", utilization: 0.41, resetAt: at + HOUR }] },
+            // The 5-hour window the request's headers reported, which this reading leaves unsaid, is kept until its reset.
+            reading: { at, windows: [{ name: "7d", utilization: 0.41, resetAt: at + HOUR }, expect.objectContaining({ name: "5h", at: expect.any(Number) })] },
           },
         }
         expect(yield* plugin.session({ sessionID: "ses_1", providerID: "anthropic" })).toEqual(placed)
