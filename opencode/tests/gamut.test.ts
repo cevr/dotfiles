@@ -5,6 +5,7 @@
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { Option } from "effect"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { ORCHESTRATOR, orchestrator } from "../mods/orchestrate/role.ts"
@@ -504,9 +505,9 @@ test("the first prompt waits for the runtime default and does not accept a confi
   const build = { id: "build", mode: "primary" }
   const configured = { id: ORCHESTRATOR, mode: "primary" }
   const registered = { ...configured, description: orchestrator.description }
-  const isReady = (agents: Parameters<typeof composerReady>[0], hasModel: boolean) =>
-    composerReady(agents, hasModel, ORCHESTRATOR, orchestrator.description)
-  expect(isReady(undefined, true)).toBe(false)
+  const isReady = (agents: ReadonlyArray<{ readonly id: string; readonly mode: string; readonly description?: string }>, hasModel: boolean) =>
+    composerReady(Option.some(agents), hasModel, ORCHESTRATOR, orchestrator.description)
+  expect(composerReady(Option.none(), true, ORCHESTRATOR, orchestrator.description)).toBe(false)
   expect(isReady([build, registered], true)).toBe(false)
   expect(isReady([configured, build], true)).toBe(false)
   expect(isReady([registered, build], false)).toBe(false)

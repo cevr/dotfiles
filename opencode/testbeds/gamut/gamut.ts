@@ -61,6 +61,7 @@ import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
+import { submit, waitForComposer } from "./startup/handshake.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
@@ -798,18 +799,6 @@ const startHost = (root: string, config: HostConfig): Promise<number> => {
   return startDetached("terminal host", [HOST_ENTRY, file], join(root, "host.log"), () => existsSync(config.socket))
 }
 
-/** The pty socket can answer before the TUI has the plugin's default agent or its model. */
-const waitForComposer = async (state: GamutState, marker: string) => {
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    if (existsSync(marker)) return
-    const screen = await callHost(state, (socket) => hostCall(socket, { op: "read", scope: "screen" }), 1000)
-    if (screen.exited !== undefined) throw new Error(`OpenCode exited ${screen.exited} before its default agent was ready`)
-    await Bun.sleep(50)
-  }
-  throw new Error(`OpenCode did not present the registered ${ORCHESTRATOR} as its default agent with a model; no prompt was sent`)
-}
-
 const startSim = async (root: string): Promise<{ pid: number; port: number }> => {
   const portFile = join(root, "sim.port")
   const pid = await startDetached("sim model", [SIM_ENTRY, portFile], join(root, "sim.log"), () =>
@@ -962,7 +951,7 @@ const prepareAndLaunch = async (
   // Load the cmd/ TUI plugins, Prime first, and the testbed's readiness probe. cmd/btw replaces the fork's /btw.
   const marker = join(root, "composer-ready")
   const cli = cliConfig([...pluginPaths(CMD), "-opencode.btw"])
-  const startup = { package: join(import.meta.dir, "startup"), options: { marker, agent: ORCHESTRATOR, description: orchestrator.description } }
+  const startup = { package: join(HERE, "startup"), options: { marker, agent: ORCHESTRATOR, description: orchestrator.description } }
   await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify({ ...cli, plugins: [...cli.plugins, startup] }, null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
@@ -1012,7 +1001,9 @@ const prepareAndLaunch = async (
   }
   try {
     // Don't let the cold TUI auto-submit on the built-in agent before the real default arrives.
-    await waitForComposer(state, marker)
+    await waitForComposer(marker, ORCHESTRATOR, () =>
+      callHost(state, (socket) => hostCall(socket, { op: "read", scope: "screen" }), 1000),
+    )
     const sendMark = Date.now()
     await callHost(state, (socket) => submit(socket, prompt))
     await writeState({ ...state, sendMark })
@@ -1276,11 +1267,6 @@ const status = async () => {
 
 /** A prompt starts a turn; a slash command runs in the client and may start none. */
 export const sendAwaitsTurn = (text: string): boolean => !text.trimStart().startsWith("/")
-
-const submit = async (socket: string, text: string) => {
-  await hostCall(socket, { op: "type", text })
-  await hostCall(socket, { op: "keys", names: ["enter"] })
-}
 
 const send = async (text: string) => {
   if (text.trim() === "") throw new Error("send needs the text to type")
