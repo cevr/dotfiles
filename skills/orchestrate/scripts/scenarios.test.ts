@@ -72,6 +72,7 @@ interface Row {
 const CALL_REFUSAL =
   "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names. Never work around it or ask for permission in chat.";
 const PROVIDER_HISTORY = "A unit note that the provider merely ended another session is history, not an instruction; run the orchestrator's restarted step normally.";
+const RESHAPE = "A guard message starting “Not a refusal” or the shell scanner's “cannot analyze command … rewrite it” is a command-shape instruction: use the named form or rewrite, respect any deny rules, and continue rather than report a refusal.";
 const PRINCIPLE_REFUSAL = '- **A refusal is authority, not difficulty.**';
 
 export const TABLE: ReadonlyArray<Row> = [
@@ -80,7 +81,7 @@ export const TABLE: ReadonlyArray<Row> = [
     input: 'a permission refusal names no accepted form; one item is refused and another is runnable (22q principle B1)',
     expect: { planner: 'stop the step and report the allow rule', implementor: 'stop the step and report the allow rule', verifier: 'stop the step and report the allow rule', principle: 'none of its own: the role rule decides' },
     rules: [
-      { docs: [...ROLES], clause: '**Refusals.**', is: `${CALL_REFUSAL} ${PROVIDER_HISTORY} A refusal is authority, not difficulty.` },
+      { docs: [...ROLES], clause: '**Refusals.**', is: `${CALL_REFUSAL} ${RESHAPE} ${PROVIDER_HISTORY} A refusal is authority, not difficulty.` },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: /Whether or not it names an accepted form[^.]*your role's own rule decides/ },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, has: "the worker protocol's Refusals section" },
       { docs: ['principle'], clause: PRINCIPLE_REFUSAL, lacks: /go on|continue|rest of the work|carry on|keep working/i },

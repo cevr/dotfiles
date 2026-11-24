@@ -134,6 +134,22 @@ describe("keychain trigger words used as data", () => {
 })
 
 describe("old checkouts in an executable position", () => {
+  test("stated limit: deliberately reshaped literal revisions may look like ordinary branch input", () => {
+    const literal = "HEAD~1"
+    const select = 'git checkout "$R"; npm test'
+    const prefixes = [
+      `X=${literal}/; R=\${X%/}`,
+      `Y=${literal}; R=\${X:-$Y}`,
+      `f() { local R=${literal}; ${select}; }; f`,
+      `declare R=${literal}`,
+      `printf -v R '%s' ${literal}`,
+      `R=$(printf '%s' ${literal})`,
+      `X=${literal}; printf '%s\\n' "$X" | { read R; ${select}; }`,
+    ]
+    for (const prefix of prefixes) expect([prefix, bareLaunches(`${prefix}; ${select}`, place)]).toEqual([prefix, []])
+    expect(bareLaunches(`R=${literal}; ${select}`, place).map(({ remedy }) => remedy)).toEqual(["shim"])
+  })
+
   test("joins carry bindings, working directories and selections on the same reaching path", () => {
     const directory = { ...place, cwd: "/guard/probe/tree" }
     const decision = (line: string) => bareLaunches(line, directory).map(({ remedy }) => remedy)

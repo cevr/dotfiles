@@ -27,9 +27,13 @@
 //   CHROME shim reaches it. Git subcommands must be in executable positions.
 //   Reads of Git or shell words as arguments, file names, or text aren't runs.
 // The hook follows statically named child code with the same plan and a bounded loader.
+// Stated limit: a literal old ref can be missed when carried through `${R%…}`,
+// `${X:-$Y}`, `local`, `declare`, `printf -v`, or `$(printf …)` / a pipe into `read`
+// before checkout. This is not a general shell interpreter.
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import { type CodeInput, distinctEntries, type Execution, executionPaths, executionPlan, inlineShellPaths, type Language, literalPath, MAX_CODE_DEPTH, MAX_PATH_STATES, type PathPlan, READERS, word } from "./executable.ts"
 import { basename, dirname, resolve, within } from "./path.ts"
+import { renderRefusal } from "./message.ts"
 import { gitAction, type GitAction } from "./revision.ts"
 import { type Word } from "./shell-line.ts"
 import { type Place } from "./verdict.ts"
@@ -770,7 +774,29 @@ export const keychainReason = (launch: BareLaunch): string => {
 export class KeychainPrompt extends Schema.TaggedError<KeychainPrompt>()("KeychainPrompt", {
   command: Schema.String,
   reason: Schema.String,
+  candidate: Schema.optionalKey(Schema.Struct({ form: Schema.String, reason: Schema.String })),
 }) {}
 
+/** Preserve the original line, including quotes and wrappers; scope compound lines with an export. */
+const shimForm = (command: string): string => {
+  const assignment = `CHROME="${SHIM}"`
+  if (/^[ \t]*git[ \t]+bisect[ \t]+run[ \t]+[^;&|\n\r()]+$/.test(command)) return `${assignment} ${command}`
+  return `export ${assignment}; ${command}`
+}
+
+export const keychainBlock = (command: string, launch: BareLaunch): KeychainPrompt => {
+  const reason = keychainReason(launch)
+  if (launch.remedy === "flags" || launch.pathLimit) return new KeychainPrompt({ command, reason })
+  return new KeychainPrompt({ command, reason, candidate: { form: shimForm(command), reason: formReason(launch) } })
+}
+
+const formReason = (launch: BareLaunch): string => {
+  const source = Option.getOrElse(Option.map(launch.script, (path) => `The command runs ${path}. `), () => "")
+  if (launch.opaqueContinuation) return `${source}Cannot tell what the program runs next in the affected working tree.`
+  if (launch.remedy === "unknown") return `${source}Cannot tell whether the Git operation selects another revision or which tree the launcher runs in.`
+  if (launch.oldCheckout) return `${source}The command runs a launcher after selecting another Git revision; its browser flags may be out of date.`
+  return `${source}Historical Git revisions may have browser launchers without keychain-safe flags.`
+}
+
 /** What the model reads of the refusal. */
-export const keychainMessage = (reason: string): string => `guard-keychain: ${reason}.`
+export const keychainMessage = (reason: string): string => renderRefusal("guard-keychain", reason)
