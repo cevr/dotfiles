@@ -2923,8 +2923,8 @@ $i_pid
 # One walk over the process folders by find, read only, its answer classified
 # per process, never by find's status alone. As this user ($1 = user) it walks
 # every process's fd links, working folder, root and executable, each of its
-# threads' working folder and root (a thread that unshared its file system
-# info has its own), and its memory map (a file mapped and its fd closed: grep
+# threads' fd links, working folder and root (a thread that unshared its file
+# table or its file system info has its own), and its memory map (a file mapped and its fd closed: grep
 # for the folder in the path column, batched by find); with privilege ($1 =
 # sudo) the same of exactly the entries given after the folder $2. find
 # runs with LC_ALL=C, so each of its messages ends in the C library's
@@ -2935,7 +2935,8 @@ $i_pid
 # Lines out: `rc <status>`; `L <path>` a link into the folder; `U <pid>` an
 # entry of that process refused (permission: it is unread); `E <pid> <rest>`
 # an entry gone (<rest>: what follows the pid, /fd/7, /cwd, /task/<tid>/cwd,
-# or nothing for the process's own folder); `F <line>` any other message of
+# or nothing for the process's own folder; refused is EACCES, or EPERM where
+# /proc is mounted hidepid=1); `F <line>` any other message of
 # find or grep (the walk failed); `S <line>` a line that is neither's (sudo's
 # own refusal). A map that names the folder prints `L <pid folder>/maps`.
 sv_walk() {
@@ -2948,15 +2949,15 @@ sv_walk() {
   w_out=$({
     w_rc=0
     if [ "$w_as" = user ]; then
-      w_found=$(LC_ALL=C find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 4 \
+      w_found=$(LC_ALL=C find "$proc_root" -ignore_readdir_race -mindepth 1 -maxdepth 5 \
         \( ! -path "$proc_root/[0-9]*" -prune \) -o \
-        \( -path "$proc_root/[0-9]*/task/[0-9]*/*" ! -name cwd ! -name root -prune \) -o \
+        \( -path "$proc_root/[0-9]*/task/[0-9]*/*" ! -name cwd ! -name root ! -path "$proc_root/[0-9]*/task/[0-9]*/fd" ! -path "$proc_root/[0-9]*/task/[0-9]*/fd/*" -prune \) -o \
         \( -path "$proc_root/[0-9]*/maps" -exec sh -c "$w_grep" sv-maps " $w_dir/" {} + \) -o \
         \( -path "$proc_root/[0-9]*/*" ! -path "$proc_root/[0-9]*/fd" ! -path "$proc_root/[0-9]*/fd/*" ! -path "$proc_root/[0-9]*/cwd" ! -path "$proc_root/[0-9]*/root" ! -path "$proc_root/[0-9]*/exe" ! -path "$proc_root/[0-9]*/task" ! -path "$proc_root/[0-9]*/task/[0-9]*" -prune \) -o \
         \( \( -lname "$w_dir" -o -lname "$w_dir/*" \) -print \) 2>&3) || w_rc=$?
     else
-      w_found=$(LC_ALL=C sudo -n find "$@" -ignore_readdir_race -maxdepth 2 \
-        \( -path "*/task/*/*" ! -name cwd ! -name root -prune \) -o \
+      w_found=$(LC_ALL=C sudo -n find "$@" -ignore_readdir_race -maxdepth 3 \
+        \( -path "*/task/*/*" ! -name cwd ! -name root ! -path "*/task/*/fd" ! -path "*/task/*/fd/*" -prune \) -o \
         \( -name maps -exec sh -c "$w_grep" sv-maps " $w_dir/" {} + \) -o \
         \( \( -lname "$w_dir" -o -lname "$w_dir/*" \) -print \) 2>&3) || w_rc=$?
     fi
@@ -2987,7 +2988,8 @@ sv_walk() {
           continue
         fi
         case "$w_msg" in
-          'Permission denied') printf 'U %s\n' "$w_pid" ;;
+          # EPERM: what hidepid=1 answers for another user's process.
+          'Permission denied' | 'Operation not permitted') printf 'U %s\n' "$w_pid" ;;
           'No such file or directory') printf 'E %s %s\n' "$w_pid" "${w_path#"$proc_root/$w_pid"}" ;;
           *) printf 'F %s\n' "$w_line" ;;
         esac
@@ -3066,7 +3068,9 @@ sv_users() {
           case "$u_gone" in *" $u_pid "*) ;; *) u_gone="$u_gone$u_pid " ;; esac
         else
           case "$u_rest" in
-            /fd/*) ;;
+            # A file closed (the process's or a thread's), or no executable
+            # (a kernel thread, or one whose memory is already gone).
+            /fd/* | /task/*/fd/* | /exe) ;;
             /task/*/*)
               # A thread that ended: only if its folder is gone.
               u_tid=${u_rest#/task/}
@@ -3266,16 +3270,21 @@ EOF
           continue
         fi
         set -- "$@" "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd"
-        for k_a in root exe; do
-          [ ! -L "$proc_root/$k_pid/$k_a" ] || set -- "$@" "$proc_root/$k_pid/$k_a"
+        # Where its stat does not read as this user (hidepid=1 refuses every
+        # entry of another user's process), its entries cannot be tested
+        # either: all of them go to the privileged read.
+        k_a=
+        sv_stat_after_name "$k_pid" >/dev/null || k_a=all
+        for k_e in root exe; do
+          [ -z "$k_a" ] && [ ! -L "$proc_root/$k_pid/$k_e" ] || set -- "$@" "$proc_root/$k_pid/$k_e"
         done
-        [ ! -f "$proc_root/$k_pid/maps" ] || set -- "$@" "$proc_root/$k_pid/maps"
-        [ ! -d "$proc_root/$k_pid/task" ] || set -- "$@" "$proc_root/$k_pid/task"
+        [ -z "$k_a" ] && [ ! -f "$proc_root/$k_pid/maps" ] || set -- "$@" "$proc_root/$k_pid/maps"
+        [ -z "$k_a" ] && [ ! -d "$proc_root/$k_pid/task" ] || set -- "$@" "$proc_root/$k_pid/task"
         k_left="$k_left $k_pid"
       done
       # Every one gone meanwhile: none holds anything.
       [ -n "$k_left" ] || break
-      k_cmd="sudo -n find $* -ignore_readdir_race -maxdepth 2 ( -path */task/*/* ! -name cwd ! -name root -prune ) -o ( -name maps -exec sh -c <grep -F -l of each map> sv-maps ' $k_dir/' {} + ) -o ( ( -lname $k_dir -o -lname $k_dir/* ) -print )"
+      k_cmd="sudo -n find $* -ignore_readdir_race -maxdepth 3 ( -path */task/*/* ! -name cwd ! -name root ! -path */task/*/fd ! -path */task/*/fd/* -prune ) -o ( -name maps -exec sh -c <grep -F -l of each map> sv-maps ' $k_dir/' {} + ) -o ( ( -lname $k_dir -o -lname $k_dir/* ) -print )"
       if [ "$k_cmd" != "${sv_sudo_said:-}" ]; then
         sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only, in one call:"
         sv_log "  $k_cmd"
@@ -3302,7 +3311,7 @@ EOF
             # it lives was closed; any other entry gone is read again.
             if [ -e "$proc_root/$k_pid" ]; then
               case "$k_rest" in
-                /fd/*) ;;
+                /fd/* | /task/*/fd/* | /exe) ;;
                 /task/*/*)
                   k_a=${k_rest#/task/}
                   [ ! -e "$proc_root/$k_pid/task/${k_a%%/*}" ] || k_again=yes

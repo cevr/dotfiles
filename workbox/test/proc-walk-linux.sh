@@ -17,6 +17,12 @@
 # (e) A thread with its own working folder in the folder: unshare(CLONE_FS) in that thread, then chdir (its
 #     process's working folder stays /). /proc/<pid>/cwd is the main thread's; /proc/<pid>/task/<tid>/cwd its own.
 # (f) A proc mounted with hidepid=invisible (a mount of its own, beside /proc): other users' processes are not listed.
+# (g) A thread with its own file table: unshare(CLONE_FILES) in that thread (the real call that gives a running
+#     thread a table of its own; clone without CLONE_FILES makes a process, not a thread of this one), then open a
+#     file in the folder: only /proc/<pid>/task/<tid>/fd holds it, not /proc/<pid>/fd; working folders /.
+# (h) A proc mounted with hidepid=1: other users' processes are listed, but every entry of theirs answers EPERM
+#     ("Operation not permitted"): each is unread, read again with sudo -n (a root process in the folder named), or
+#     refused without it, or beside them with --beside-unreadable.
 set -u
 W=${1:?usage: proc-walk-linux.sh <workrift>}
 fails=0
@@ -32,6 +38,7 @@ pids=
 end() {
   for p in $pids; do sudo -n kill "$p" 2>/dev/null; done
   ! mountpoint -q "$S/proc" 2>/dev/null || sudo -n umount "$S/proc"
+  ! mountpoint -q "$S/proc1" 2>/dev/null || sudo -n umount "$S/proc1"
   rm -rf "$S"
 }
 trap end EXIT
@@ -184,6 +191,83 @@ $threaded python3"*) pass "(e) a thread in the folder: the process is named ($rc
 esac
 kill "$threaded"
 wait "$threaded" 2>/dev/null
+
+# (g) The thread with its own file table.
+(cd / && exec python3 -c '
+import ctypes, os, sys, threading, time
+libc = ctypes.CDLL(None, use_errno=True)
+def own():
+    if libc.unshare(0x00000400) != 0:
+        raise SystemExit("unshare(CLONE_FILES) failed")
+    os.open(sys.argv[1], os.O_RDONLY)
+    open(sys.argv[2], "w").close()
+    time.sleep(300)
+threading.Thread(target=own, daemon=True).start()
+time.sleep(300)
+' "$S/in/blob" "$S/files.ready" </dev/null >/dev/null 2>&1) &
+filed=$!
+pids="$pids $filed"
+i=0
+while [ ! -e "$S/files.ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+pfd=$(for f in /proc/"$filed"/fd/*; do readlink "$f"; done | grep -c "^$S/in")
+tfd=$(for f in /proc/"$filed"/task/*/fd/*; do readlink "$f"; done | grep -c "^$S/in")
+if [ "$pfd" = 0 ] && [ "$tfd" = 1 ] && [ "$(readlink "/proc/$filed/cwd")" = / ]; then
+  pass "(g) the process $filed has no fd in $S/in, one of its threads has one in its own table, its working folder /"
+else
+  fail "(g) not reproduced: process fds $pfd, thread fds $tfd, cwd $(readlink "/proc/$filed/cwd")"
+fi
+out=$(sh "$W" processes "$S/in" 2>&1)
+rc=$?
+case "$rc:$out" in
+  3:*"
+$filed python3"*) pass "(g) a thread's own fd in the folder: the process is named ($rc)" ;;
+  *) fail "(g) a thread's own fd in the folder: exit $rc: $out" ;;
+esac
+kill "$filed"
+wait "$filed" 2>/dev/null
+
+# (h) hidepid=1: a root process in the folder.
+rmark="298.$$"
+(cd "$S/in" && exec sudo -n sleep "$rmark") &
+pids="$pids $!"
+rheld=
+i=0
+while [ -z "$rheld" ] && [ "$i" -lt 100 ]; do
+  rheld=$(pgrep -u 0 -x -f "sleep $rmark")
+  [ -n "$rheld" ] || sleep 0.05
+  i=$((i + 1))
+done
+pids="$pids $rheld"
+mkdir "$S/proc1"
+if [ -n "$rheld" ] && sudo -n mount -t proc -o hidepid=1 proc "$S/proc1"; then
+  if cat "$S/proc1/$rheld/stat" >/dev/null 2>"$S/eperm.err" || ! grep -q 'Operation not permitted' "$S/eperm.err"; then
+    fail "(h) not reproduced: the root process's stat under hidepid=1 did not answer EPERM: $(cat "$S/eperm.err")"
+  else
+    pass "(h) under hidepid=1 the root process $rheld is listed and its entries answer EPERM"
+  fi
+  out=$(WORKRIFT_PROC="$S/proc1" sh "$W" processes "$S/in" 2>&1)
+  rc=$?
+  case "$rc:$out" in
+    3:*"
+$rheld "*"read with sudo"*) pass "(h) hidepid=1 with sudo -n: unread, read again, the root process named ($rc)" ;;
+    *) fail "(h) hidepid=1 with sudo -n: exit $rc: $out" ;;
+  esac
+  out=$(WORKRIFT_PROC="$S/proc1" nosudo sh "$W" processes "$S/in" 2>&1)
+  rc=$?
+  case "$rc:$out" in
+    2:*"could not be looked into"*) pass "(h) hidepid=1 without sudo -n: unread, refused ($rc)" ;;
+    *) fail "(h) hidepid=1 without sudo -n: exit $rc: $out" ;;
+  esac
+  out=$(WORKRIFT_PROC="$S/proc1" nosudo sh "$W" processes "$S/in" --beside-unreadable 2>&1)
+  rc=$?
+  case "$rc:$out" in
+    0:*) pass "(h) hidepid=1 without sudo -n, --beside-unreadable: beside them ($rc)" ;;
+    *) fail "(h) hidepid=1 without sudo -n, --beside-unreadable: exit $rc: $out" ;;
+  esac
+  sudo -n umount "$S/proc1"
+else
+  fail "(h) no root process ($rheld) or the proc mount with hidepid=1 did not mount"
+fi
 
 # (f) hidepid.
 mkdir "$S/proc"

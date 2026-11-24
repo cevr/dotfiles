@@ -1413,7 +1413,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
   const nextLine = (ran: Ran) => ran.err.split("\n").find((line) => line.startsWith("workrift subvolume: next: ")) ?? ""
   /** The privileged read as sudo is given it: the entries, its threads' working folders and roots, its maps. */
   const sudoRead = (base: string, entries: string) =>
-    `-n find ${entries} -ignore_readdir_race -maxdepth 2 ( -path */task/*/* ! -name cwd ! -name root -prune ) -o ( -name maps -exec sh -c p=$1; shift; grep -F -l -e "$p" -- "$@"; [ $? -le 1 ] sv-maps  ${base}/ {} + ) -o ( ( -lname ${base} -o -lname ${base}/* ) -print )`
+    `-n find ${entries} -ignore_readdir_race -maxdepth 3 ( -path */task/*/* ! -name cwd ! -name root ! -path */task/*/fd ! -path */task/*/fd/* -prune ) -o ( -name maps -exec sh -c p=$1; shift; grep -F -l -e "$p" -- "$@"; [ $? -le 1 ] sv-maps  ${base}/ {} + ) -o ( ( -lname ${base} -o -lname ${base}/* ) -print )`
 
   test("with no sudo and no flag: refused, naming the count, the uid and both ways on; nothing changed", () => {
     const b = bench("unknown-refused")
@@ -1444,7 +1444,7 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     expect(said(ran)).not.toContain("93003")
     expect(sudoCalls(b)).toEqual(["-n true", sudoRead(b.base, `${at}/fd ${at}/cwd`)])
     // Refused at the preflight, before the hold: the command line is said on stderr (the step log is the switch's, written under the hold).
-    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 2`)
+    expect(ran.err).toContain(`workrift subvolume:   sudo -n find ${at}/fd ${at}/cwd -ignore_readdir_race -maxdepth 3`)
     expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" })
   }, hangGuard("process-fixture"))
 
@@ -2001,6 +2001,22 @@ describe("a process the walk cannot look into (another user's: root's, on the wo
     const ran = b.wr(["subvolume", "--check"])
     expect(ran.code, said(ran)).toBe(1)
     expect(said(ran)).toContain("93083 node")
+  }, hangGuard("process-fixture"))
+
+  test("B: a thread with its own file table (an fd in the base that its process's fd folder lacks, working folders elsewhere) is in it: named", () => {
+    const b = bench("thread-fd")
+    const at = b.processAt(93085, b.dir, ["bun"])
+    const task = join(at, "task", "93086")
+    mkdirSync(join(task, "fd"), { recursive: true })
+    symlinkSync(b.dir, join(task, "cwd"))
+    symlinkSync(b.dir, join(task, "root"))
+    symlinkSync(b.dir, join(task, "fd", "3"))
+    const none = b.wr(["subvolume", "--check"])
+    expect(none.code, said(none)).toBe(0)
+    symlinkSync(join(b.base, "src"), join(task, "fd", "4"))
+    const ran = b.wr(["subvolume", "--check"])
+    expect(ran.code, said(ran)).toBe(1)
+    expect(said(ran)).toContain("93085 bun")
   }, hangGuard("process-fixture"))
 
   test("N5: /proc mounted with hidepid=invisible lists no other user's process: unread for the whole walk, refused, or beside them with the flag, said", () => {
@@ -3161,9 +3177,9 @@ const VERDICTS: Record<string, string> = {
   "tickets_at_exit:rm: [ -z \"$t_mine\" ] || rm -f \"$t_mine\" \"$t_mine.in\"": "cleanup: in the exit trap, the script ends either way; a ticket it cannot remove is dead (its lock goes with the process) and swept",
   "sv_preflight:df: sv_read p_df df -Pk \"$sv_base\" 2>/dev/null || p_df=": "closed: sv_read's status: a df that does not read is a NO",
   "(top):python3: if python3 -c 'import ctypes' >/dev/null 2>&1; then": "closed: no python3 with ctypes is a NO: nothing can make the exchange",
-  "sv_walk:find: w_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 4 \\": "closed: its status is the capture's rc line, and each message (find's, or grep's on a map it reads through -exec) is classified per process by its C-locale errno text: permission names the process unread, gone ends it only when its folder is gone (an fd gone is a file closed, a thread gone with its task folder is nothing), anything else fails the walk with its line (sv_users returns 1); non-zero with no message fails it too; never none",
+  "sv_walk:find: w_found=$(LC_ALL=C find \"$proc_root\" -ignore_readdir_race -mindepth 1 -maxdepth 5 \\": "closed: its status is the capture's rc line, and each message (find's, or grep's on a map it reads through -exec) is classified per process by its C-locale errno text: permission (EACCES, or EPERM under hidepid=1) names the process unread, gone ends it only when its folder is gone (an fd gone, the process's or a thread's, is a file closed, an exe gone is no executable, a thread gone with its task folder is nothing), anything else fails the walk with its line (sv_users returns 1); non-zero with no message fails it too; never none",
   "sv_users_known:sudo: if sudo -n true 2>/dev/null; then sv_sudo=yes; else sv_sudo=no; fi": "branch: no sudo -n (or a sudo that fails) is the side that refuses: unknown processes stay unknown, refused unless --beside-unreadable, never taken for none; asked once a run",
-  "sv_walk:sudo: w_found=$(LC_ALL=C sudo -n find \"$@\" -ignore_readdir_race -maxdepth 2 \\": "closed: one read of every unknown process (its links, its threads' working folders and roots, its map); a line that is neither find's nor grep's is sudo's refusal (said, with --beside-unreadable the only way on); a process whose folder is gone ended; one whose pid was reused is judged as itself; an entry other than an fd or an ended thread gone while it lives is read again (three tries); any other message fails the walk; never taken for none",
+  "sv_walk:sudo: w_found=$(LC_ALL=C sudo -n find \"$@\" -ignore_readdir_race -maxdepth 3 \\": "closed: one read of every unknown process (its links, its threads' fd links, working folders and roots, its map); a line that is neither find's nor grep's is sudo's refusal (said, with --beside-unreadable the only way on); a process whose folder is gone ended; one whose pid was reused is judged as itself; an entry other than an fd or an ended thread gone while it lives is read again (three tries); any other message fails the walk; never taken for none",
   "sv_users_known:cat: k_users=\"$k_users$k_pid $(cat \"$proc_root/$k_pid/comm\" 2>/dev/null || printf '?') (uid $(sv_uid_of \"$k_pid\"), read with sudo$k_a)": "message: the command name of a process the privileged read found in the tree (`?` when it does not read); it is counted either way",
   "sv_log:date: l_at=$(date -u +%FT%TZ) || l_at='(no clock)'": "message: the time of a step-log line, `(no clock)` when date fails; the log decides nothing",
   "sv_ref_store:git: if s_format=$(base_git \"$1\" config --get extensions.refStorage); then": "closed: status 1 (unset) is the files storage; any other failure, or a storage other than files, fails the store's read: sv_refs fails, nothing carried or the copy is not true",
