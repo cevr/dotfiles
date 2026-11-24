@@ -647,5 +647,161 @@
     "file": "opencode/tests/scratch-cases.ts",
     "count": 5,
     "why": "Existing Bun interruption and late-release safety probes"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/cache/tui/ledger.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/herdr/opencode/asked.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/prime/tui/clock.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/subagents/solid/reader.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/mods/update/filestore/stage.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/scripts/old-scheme-gone.test.ts",
+    "count": 2,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/sim-tui/law-server.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/testbeds/busy-agents.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/auto-title/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/cli-tree/run.ts",
+    "count": 3,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/compaction-prefix/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/dock-reconnect.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/guard/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/host-laws/real.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/idle-compact/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/kernel/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/mail-peer.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/memory/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/orchestrate/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/pool-fleet.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/pool-idle-release.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/questions/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/reconnect/fixture.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/update-badge.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/update-move.test.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
+  },
+  {
+    "group": "dynamic",
+    "file": "opencode/tests/work/run.ts",
+    "count": 1,
+    "why": "Existing dynamic fixture module loads; exact R4 source sites inventoried in round-5-request.md"
   }
 ]

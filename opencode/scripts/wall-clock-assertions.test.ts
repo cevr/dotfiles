@@ -5,13 +5,13 @@ import { Console, Effect, FileSystem, Option, Path, Schema, Stream } from "effec
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { expect, it } from "effect-bun-test"
 import { BUDGET_MS } from "../sim/seed.ts"
-import { inspectTiming, legacyOwners, runnerBridges, sourceFile, testFile, timingModule } from "./test-timing.ts"
+import { inspectTiming, inspectTimingProject, legacyOwners, relativeTimingTarget, runnerBridges, sourceFile, timingModule } from "./test-timing.ts"
 import { measurementKey, unapprovedMeasurements } from "./timing-policy.ts"
 
 const ALLOW = "opencode/scripts/wall-clock-assertions.allow.json"
 // Migration-only: once the landing base has the positive policy, it is the
 // sole ceiling. Before that first landing, use the reviewed policy blob.
-const BOOTSTRAP = "e888819713928b5a3e2cc77f1aa881c7886b7839"
+const BOOTSTRAP = "5c3a188dad511e31a749261db27b2aca77569428"
 
 const BOOTSTRAP_WORKRIFT = "fdc3afd6a5a8630594e4da72871b69b74524ad85"
 const infrastructure = {
@@ -29,7 +29,7 @@ const ownerFields = {
 }
 const Counted = Schema.Struct({
   ...ownerFields,
-  group: Schema.Literals(["probe", "clock", "bridge", "legacy"]),
+  group: Schema.Literals(["probe", "clock", "bridge", "legacy", "dynamic"]),
   count: Schema.Int.check(Schema.isGreaterThan(0)),
 })
 const Measured = Schema.Struct({ ...ownerFields, group: Schema.Literal("measured"), target: Schema.NonEmptyString, budget: Schema.NonEmptyString })
@@ -61,12 +61,12 @@ const increment = (counts: Map<string, number>, group: Counted["group"], file: s
   counts.set(name, (counts.get(name) ?? 0) + n)
 }
 
-const survey = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string) => {
+const survey = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string, dynamic: ReadonlySet<string>) => {
   const counts = new Map<string, number>()
   const rejected = new Array<string>()
   const measurements = new Array<{ readonly file: string; readonly target: string; readonly budget: string }>()
-  for (const [file, text] of texts) {
-    const result = inspectTiming(file, text, (specifier) => resolve(file, specifier))
+  for (const [file, result] of inspectTimingProject(texts, resolve, dynamic)) {
+    const text = Option.getOrElse(Option.fromUndefinedOr(texts.get(file)), () => "")
     for (const usage of result.uses) {
       if (usage.kind === "measured") measurements.push({ file, target: usage.target, budget: usage.budget })
       else increment(counts, usage.kind, file)
@@ -98,9 +98,9 @@ const ceiling = Effect.gen(function* () {
 
 // On a stricter rule, recompute from the old blob, not the new file. A site
 // in a new hunk is new code. The pinned Workrift blob includes its authorized R2 witness.
-const legacySites = (file: string, text: string, resolve: (specifier: string) => string) => {
+const legacySites = (file: string, text: string, resolve: (specifier: string) => string, dynamic: boolean) => {
   const lines = text.split("\n")
-  return inspectTiming(file, text, resolve).errors.map(({ rule, at }) => {
+  return inspectTiming(file, text, resolve, dynamic).errors.map(({ rule, at }) => {
     const line = text.slice(0, at.start).split("\n").length - 1
     return `${rule}: ${text.slice(at.start, at.end)} in ${Option.getOrElse(Option.fromUndefinedOr(lines[line]), () => "").trim()}`
   })
@@ -116,6 +116,18 @@ const newSites = (before: ReadonlyArray<string>, after: ReadonlyArray<string>) =
   })
 }
 
+const resolvePackage = Option.liftThrowable((specifier: string, directory: string) => Bun.resolveSync(specifier, directory))
+
+const readSources = (root: string, files: ReadonlyArray<string>) => Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const rows = yield* Effect.forEach(files, (file) => {
+    const absolute = path.join(root, file)
+    return Effect.map(Effect.when(fs.readFileString(absolute), fs.exists(absolute)), Option.map((text) => [file, text] as const))
+  })
+  return new Map(rows.flatMap(Option.toArray))
+})
+
 it.scopedLive("test timings use named runner caps, explicit measurement contracts, and no raw wall clock", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -126,14 +138,16 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     const baseRows = old.rows
     const base = entries(baseRows)
     const declared = entries(candidate)
-    const files = (yield* git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "opencode", "workbox/test")).split("\0").filter(sourceFile).filter(testFile)
-    const texts = new Map(yield* Effect.forEach(files, (file) => Effect.map(fs.readFileString(path.join(root, file)), (text) => [file, text] as const)))
+    const files = (yield* git("ls-files", "-z", "--cached", "--others", "--exclude-standard")).split("\0").filter(sourceFile)
+    const texts = yield* readSources(root, files)
     const resolve = (file: string, specifier: string) => {
-      if (!specifier.startsWith(".")) return specifier
-      const normalized = path.normalize(path.join(path.dirname(file), specifier))
-      return [normalized, `${normalized}.ts`, normalized.replace(/\.[cm]?js$/, ".ts")].find((candidate) => candidate === timingModule || texts.has(candidate)) ?? normalized
+      if (specifier.startsWith(".")) return relativeTimingTarget(file, specifier, (target) => target === timingModule || texts.has(target))
+      if (specifier.startsWith("node:") || specifier === "bun" || specifier === "bun:test") return specifier
+      const local = Option.map(resolvePackage(specifier, path.dirname(path.join(root, file))), (target) => path.relative(root, target))
+      return Option.getOrElse(Option.filter(local, (target) => texts.has(target)), () => specifier)
     }
-    const { counts, rejected, measurements } = survey(texts, resolve)
+    const dynamic = new Set(candidate.filter((row) => row.group === "dynamic").map(({ file }) => file))
+    const { counts, rejected, measurements } = survey(texts, resolve, dynamic)
     for (const row of candidate) {
       if (row.group === "legacy") {
         const owner = Option.fromNullishOr(legacyOwners.get(row.file))
@@ -159,7 +173,7 @@ it.scopedLive("test timings use named runner caps, explicit measurement contract
     for (const { file } of candidate.filter((row) => row.group === "legacy")) {
       const before = yield* old.source(file)
       const after = Option.getOrElse(Option.fromUndefinedOr(texts.get(file)), () => "")
-      const sites = (text: string) => legacySites(file, text, (specifier) => resolve(file, specifier))
+      const sites = (text: string) => legacySites(file, text, (specifier) => resolve(file, specifier), dynamic.has(file))
       expect(newSites(sites(before), sites(after)), `${file} contains new legacy timing sites`).toEqual([])
     }
   }).pipe(Effect.provide(BunServices.layer)),

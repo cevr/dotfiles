@@ -1,18 +1,20 @@
 import { Option, Schema } from "effect"
 // This stops accidental test-time dependence, not concealment via names assembled at runtime, eval, or new Function (the latter two are forbidden anyway).
-// Judge the repository at introduction: scan tests and test-side helpers (test roots and the file forms in testFile), not their consumers alone.
+// Judge by static import closure. Reached product files get producer rules only: no acquisition of a runner/timing helper or re-export of a guarded binding; product clock reads and ordinary loads stay legal.
 import { type CallExpression, type Expression, parseSync, Visitor } from "oxc-parser"
 import { HANG_GUARDS, isProductBudget } from "../tests/hang-guard.ts"
 import { WAIT_MS } from "../tests/wait.ts"
+import { dateArguments, moduleText, type Program, type Statement, timingSources } from "./timing-syntax.ts"
+
+export { relativeTimingTarget, sourceFile, testFile } from "./timing-syntax.ts"
 
 export interface Span {
   readonly start: number
   readonly end: number
 }
 
-type Program = ReturnType<typeof parseSync>["program"]
 export type Rule = "R1" | "R2" | "R3"
-export type AllowKind = "probe" | "clock" | "measured"
+export type AllowKind = "probe" | "clock" | "measured" | "dynamic"
 export interface Site {
   readonly rule: Rule
   readonly at: Span
@@ -25,12 +27,6 @@ export interface Inspection {
   readonly errors: ReadonlyArray<Site>
   readonly uses: ReadonlyArray<Use>
 }
-
-export const sourceFile = (file: string) => /\.[cm]?[jt]sx?$/.test(file)
-export const testFile = (file: string) =>
-  /\.(?:test|spec|fixture)\.[cm]?[jt]sx?$/.test(file) ||
-  /^(?:opencode\/(?:tests|scenarios|testbeds|sim|sim-tui)\/|workbox\/test\/)/.test(file) ||
-  /\/(?:fake-[^/]+|(?:[^/]+\.)?laws|fixture|test-(?:support|helper|util)s?)\.[cm]?[jt]sx?$/.test(file)
 
 export const timingModule = "opencode/tests/hang-guard.ts"
 const symbolModule = "opencode/tests/global-slot.ts"
@@ -286,18 +282,29 @@ const budgetModules = new Map([
   ["simulationBudget", simulationBudgetModule], ["simulationRunnerCapOf", simulationBudgetModule],
   ["bridgeBudget", timingModule], ["runnerCapOf", timingModule],
 ])
-type Statement = Program["body"][number]
 type ImportStatement = Extract<Statement, { type: "ImportDeclaration" }>
 type ExportStatement = Extract<Statement, { type: "ExportNamedDeclaration" | "ExportAllDeclaration" }>
 const hostRoots = ["process", "Bun", "globalThis", "global"]
 const globalRoots = new Set(["globalThis", "global"])
+const globalHostModules = new Map([["process", "process"], ["Bun", "bun"]])
 const rawNames = new Set(["Date", "performance", "eval", "Function"])
 const hostModule = (mod: string) => processModule.test(mod) || mod === "bun"
 const clockModule = (mod: string) => hostModule(mod) || perfModule.test(mod)
 const moduleRule = (mod: string): Option.Option<Rule> => {
   if (runnerModules.has(mod) || mod === simulationBudgetModule) return Option.some("R1")
   if (mod === timingModule) return Option.some("R3")
-  if (perfModule.test(mod)) return Option.some("R2")
+  if (clockModule(mod)) return Option.some("R2")
+  if (mod === symbolModule) return Option.some("R2")
+  return Option.none()
+}
+
+interface Binding { readonly module: string; readonly exported: string }
+const hostBinding = ({ module, exported }: Binding) => hostModule(module) && (exported === "default" || exported === "*")
+const bindingRule = ({ module, exported }: Binding): Option.Option<Rule> => {
+  if (exported === "default" || exported === "*") return moduleRule(module)
+  if (runnerModules.get(module)?.has(exported) || budgetModules.get(exported) === module) return Option.some("R1")
+  if (module === timingModule) return Option.fromUndefinedOr(timingNames.get(exported))
+  if (clockModule(module) && clockName(exported)) return Option.some("R2")
   return Option.none()
 }
 
@@ -305,6 +312,7 @@ const closedNames = (file: string) => {
   const runners = new Map<string, string>()
   const helpers = new Set<string>()
   const clocks = new Set(hostRoots)
+  const hostImports = new Map(globalHostModules)
   const approved = new Set<number>()
   const errors: Array<Site> = []
   const uses: Array<Use> = []
@@ -318,7 +326,7 @@ const closedNames = (file: string) => {
   }
   const declarations = runnerModules.get(file)
   if (declarations) for (const name of declarations) runners.set(name, file)
-  return { runners, helpers, clocks, approved, errors, uses, mark, reject, clock, rule, declarations }
+  return { runners, helpers, clocks, hostImports, approved, errors, uses, mark, reject, clock, rule, declarations }
 }
 type ClosedNames = ReturnType<typeof closedNames>
 
@@ -328,34 +336,34 @@ const allowedImport = (file: string, mod: string, name: string) => {
   return budgetModules.get(name) === mod
 }
 
-const guardedSourceName = (names: ClosedNames, mod: string, name: string, local: string) =>
-  Option.orElse(Option.filter(Option.fromUndefinedOr(timingNames.get(name)), () => mod === timingModule),
-    () => Option.orElse(names.rule(name), () => names.rule(local)))
+type ImportSpecifier = ImportStatement["specifiers"][number]
+const exportName = (spec: ImportSpecifier): string => {
+  if (spec.type === "ImportSpecifier") return word(spec.imported)
+  if (spec.type === "ImportDefaultSpecifier") return "default"
+  return "*"
+}
 
-type NamedImport = Extract<ImportStatement["specifiers"][number], { type: "ImportSpecifier" }>
-const declareName = (file: string, names: ClosedNames, spec: NamedImport, mod: string, typeOnly: boolean) => {
-  names.mark(spec.imported)
-  const name = word(spec.imported)
-  if (clockModule(mod) && clockName(name)) names.clock(spec, name)
-  if (hostModule(mod) && name === "default") names.clocks.add(spec.local.name)
-  const rule = guardedSourceName(names, mod, name, spec.local.name)
+const declareBinding = (file: string, names: ClosedNames, binding: Binding, spec: ImportSpecifier, typeOnly: boolean) => {
+  if (hostBinding(binding)) {
+    names.clocks.add(spec.local.name)
+    names.hostImports.set(spec.local.name, binding.module)
+    return
+  }
+  const { module, exported } = binding
+  const rule = Option.orElse(bindingRule(binding), () => Option.orElse(names.rule(exported), () => names.rule(spec.local.name)))
   if (Option.isNone(rule)) return
-  if (typeOnly || spec.importKind === "type" || spec.local.name !== name || !allowedImport(file, mod, name))
+  if (typeOnly || spec.local.name !== exported || !allowedImport(file, module, exported))
     names.reject(rule.value, spec, "use the guarded name in a direct value import from its canonical module without a rename")
-  else if (runnerArguments.has(name)) names.runners.set(name, mod)
-  else names.helpers.add(name)
+  else if (runnerArguments.has(exported)) names.runners.set(exported, module)
+  else names.helpers.add(exported)
 }
 
 const declareImport = (file: string, names: ClosedNames, decl: ImportStatement, mod: string) => {
   for (const spec of decl.specifiers) {
     names.mark(spec.local)
-    if (spec.type === "ImportSpecifier") {
-      declareName(file, names, spec, mod, decl.importKind === "type")
-      continue
-    }
-    const rule = moduleRule(mod)
-    if (Option.isSome(rule)) names.reject(rule.value, spec, "use a direct named import from the canonical module, never a namespace or default")
-    if (hostModule(mod)) names.clocks.add(spec.local.name)
+    if (spec.type === "ImportSpecifier") names.mark(spec.imported)
+    const typeOnly = decl.importKind === "type" || spec.type === "ImportSpecifier" && spec.importKind === "type"
+    declareBinding(file, names, { module: mod, exported: exportName(spec) }, spec, typeOnly)
   }
 }
 
@@ -363,17 +371,15 @@ const declareExport = (names: ClosedNames, decl: ExportStatement, mod: string) =
   const from = moduleRule(mod)
   if (decl.type === "ExportAllDeclaration") {
     if (Option.isSome(from)) names.reject(from.value, decl, "do not re-export a guarded module")
-    else if (hostModule(mod)) names.clock(decl, mod)
     return
   }
   for (const spec of decl.specifiers) {
     names.mark(spec.local)
     names.mark(spec.exported)
     const name = word(spec.local)
-    const rule = Option.orElse(guardedSourceName(names, mod, name, word(spec.exported)), () => from)
+    const rule = Option.orElse(bindingRule({ module: mod, exported: name }), () => Option.orElse(names.rule(name), () => names.rule(word(spec.exported))))
     if (Option.isSome(rule)) names.reject(rule.value, spec, "do not re-export a guarded binding")
-    else if (clockModule(mod) && clockName(name) || hostModule(mod) && name === "default" ||
-      names.clocks.has(name) || rawNames.has(name)) names.clock(spec, name)
+    else if (names.clocks.has(name) || rawNames.has(name)) names.clock(spec, name)
   }
 }
 
@@ -403,11 +409,16 @@ const readHostMember = (names: ClosedNames, node: Extract<Expression, { type: "M
   if (node.object.type !== "Identifier" || !names.clocks.has(node.object.name)) return
   names.mark(node.object)
   const member = word(node.property)
+  const host = node.object.name
   const guarded = names.rule(member)
   if (Option.isSome(guarded)) names.reject(guarded.value, node, "use a direct named import and call, not a property on the host")
-  else if (node.computed || clockName(member) || globalRoots.has(node.object.name) && (rawNames.has(member) || names.clocks.has(member)))
-    names.clock(node, node.object.name)
+  else if (node.computed || hostClockMember(names, host, member) || globalRoots.has(host) && (rawNames.has(member) || names.clocks.has(member)))
+    names.clock(node, host)
 }
+
+const hostClockMember = (names: ClosedNames, host: string, member: string) =>
+  Option.exists(Option.fromUndefinedOr(names.hostImports.get(host)), (module) =>
+    Option.contains(bindingRule({ module, exported: member }), "R2"))
 
 const readReference = (names: ClosedNames, node: Span & { readonly name: string }, types: ReadonlyArray<Span>, effectFunction: boolean) => {
   if (names.approved.has(node.start) || types.some((type) => partOf(node, type))) return
@@ -418,12 +429,15 @@ const readReference = (names: ClosedNames, node: Span & { readonly name: string 
   else if (names.clocks.has(name) || rawNames.has(name) && !(effectFunction && name === "Function")) names.clock(node, name)
 }
 
-const dynamicSource = (names: ClosedNames, resolve: (specifier: string) => string, site: Span, argument?: Argument) => {
-  if (argument?.type !== "Literal" || !Schema.is(Schema.String)(argument.value)) return
-  const mod = resolve(argument.value)
-  const rule = moduleRule(mod)
-  if (Option.isSome(rule)) names.reject(rule.value, site, "guarded modules require static direct named imports")
-  else if (hostModule(mod)) names.clock(site, mod)
+const dynamicSource = (names: ClosedNames, resolve: (specifier: string) => string, approved: boolean, site: Span, argument?: Argument) => {
+  const target = moduleText(argument)
+  if (Option.isNone(target)) {
+    if (approved) names.uses.push({ kind: "dynamic", at: site })
+    else names.reject("R1", site, "non-static module loads require an approved fixture loader entry")
+    return
+  }
+  const rule = moduleRule(resolve(target.value))
+  if (Option.isSome(rule)) names.reject(rule.value, site, "guarded modules require a static import declaration")
 }
 
 const isRequire = (node: Expression) => {
@@ -449,7 +463,7 @@ const inspectDeclarator = (file: string, names: ClosedNames, { id, init }: Decla
 
 const markHostDestructuring = (names: ClosedNames, id: Declarator["id"], init: Declarator["init"]) => {
   if (id.type !== "ObjectPattern" || init?.type !== "Identifier" || !names.clocks.has(init.name) || globalRoots.has(init.name)) return
-  if (id.properties.every((field) => field.type === "Property" && !field.computed && !clockName(word(field.key)))) names.mark(init)
+  if (id.properties.every((field) => field.type === "Property" && !field.computed && !hostClockMember(names, init.name, word(field.key)))) names.mark(init)
 }
 
 const inspectDeclarations = (file: string, names: ClosedNames, program: Program, resolve: (specifier: string) => string) => {
@@ -459,9 +473,7 @@ const inspectDeclarations = (file: string, names: ClosedNames, program: Program,
     declareExport(names, decl, Option.match(Option.fromNullishOr(decl.source), { onNone: () => "", onSome: ({ value }) => resolve(value) }))
 }
 
-export const inspectTiming = (file: string, source: string, resolve: (specifier: string) => string): Inspection => {
-  if (file === timingModule) return { errors: [], uses: [] }
-  const program = parseSync(file, source).program
+const inspectFull = (file: string, program: Program, resolve: (specifier: string) => string, dynamic: boolean): Inspection => {
   const names = closedNames(file)
   const calls: Array<CallExpression> = []
   const types: Array<Span> = []
@@ -471,18 +483,19 @@ export const inspectTiming = (file: string, source: string, resolve: (specifier:
     for (const parameter of node.params) inspectBridgeBinding(file, names, parameter)
   }
   const key = (node: Span, computed: boolean) => { if (!computed) names.mark(node) }
+  const hasArgument = dateArguments(program)
   inspectDeclarations(file, names, program, resolve)
   new Visitor({
     CallExpression(node) {
       calls.push(node)
-      if (isRequire(node.callee)) dynamicSource(names, resolve, node, node.arguments[0])
+      if (isRequire(node.callee)) dynamicSource(names, resolve, dynamic, node, node.arguments[0])
       for (const { object } of Option.toArray(permittedDateCall(node))) names.mark(object)
       for (const { root } of Option.toArray(runner(node, names.runners))) names.mark(root)
       recordTimingCall(names, node)
       names.errors.push(...Option.toArray(capProblem(node, names, file)))
     },
-    ImportExpression(node) { dynamicSource(names, resolve, node, node.source) },
-    TSExternalModuleReference(node) { dynamicSource(names, resolve, node, node.expression) },
+    ImportExpression(node) { dynamicSource(names, resolve, dynamic, node, node.source) },
+    TSExternalModuleReference(node) { dynamicSource(names, resolve, dynamic, node, node.expression) },
     MemberExpression(node) { readHostMember(names, node) },
     NewExpression(node) {
       if (node.callee.type !== "Identifier") return
@@ -490,7 +503,7 @@ export const inspectTiming = (file: string, source: string, resolve: (specifier:
         names.mark(node.callee)
         names.reject("R2", node.callee, "dynamic code generation cannot introduce a guarded acquisition")
       }
-      if (node.callee.name === "Date" && node.arguments.some((arg) => arg.type !== "SpreadElement")) names.mark(node.callee)
+      if (node.callee.name === "Date" && node.arguments.some(hasArgument)) names.mark(node.callee)
     },
     TSTypeReference(node) { types.push(node.typeName) },
     TSTypeQuery(node) { types.push(node.exprName) },
@@ -505,4 +518,70 @@ export const inspectTiming = (file: string, source: string, resolve: (specifier:
     Identifier(node) { readReference(names, node, types, effectFunction) },
   }).visit(program)
   return { errors: [...names.errors, ...namedWaits(program, calls, names)], uses: names.uses }
+}
+
+export const inspectTiming = (file: string, source: string, resolve: (specifier: string) => string, dynamic = false): Inspection => {
+  if (file === timingModule) return { errors: [], uses: [] }
+  return inspectFull(file, parseSync(file, source).program, resolve, dynamic)
+}
+
+// Reached product sources may read the clock, including through a legitimate
+// local adapter. They cannot launder a real test runner or timing helper, or
+// directly re-export a guarded binding from a canonical source.
+const producerImports = (decl: ImportStatement, mod: string, names: ClosedNames, local: Map<string, Binding>) => {
+  for (const spec of decl.specifiers) {
+    const binding = { module: mod, exported: exportName(spec) }
+    const rule = bindingRule(binding)
+    if (Option.isNone(rule)) continue
+    if (clockModule(mod)) local.set(spec.local.name, binding)
+    else names.reject(rule.value, spec, "a reached product file must not acquire a guarded test runner or timing helper")
+  }
+}
+
+const producerExports = (decl: ExportStatement, mod: string, names: ClosedNames, local: ReadonlyMap<string, Binding>) => {
+  if (decl.type === "ExportAllDeclaration") {
+    const rule = moduleRule(mod)
+    if (Option.isSome(rule)) names.reject(rule.value, decl, "a reached product file must not re-export a guarded module")
+    return
+  }
+  for (const spec of decl.specifiers) {
+    const exported = word(spec.local)
+    const binding = Option.getOrElse(Option.filter(Option.fromUndefinedOr(local.get(exported)), () => mod === ""), () => ({ module: mod, exported }))
+    const rule = bindingRule(binding)
+    if (Option.isSome(rule)) names.reject(rule.value, spec, "a reached product file must not re-export a guarded binding")
+  }
+}
+
+const inspectProducer = (file: string, program: Program, resolve: (specifier: string) => string): Inspection => {
+  const names = closedNames(file)
+  const local = new Map<string, Binding>()
+  for (const decl of program.body) if (decl.type === "ImportDeclaration") producerImports(decl, resolve(decl.source.value), names, local)
+  for (const decl of program.body) {
+    if (decl.type === "ExportNamedDeclaration" || decl.type === "ExportAllDeclaration")
+      producerExports(decl, Option.match(Option.fromNullishOr(decl.source), { onSome: ({ value }) => resolve(value), onNone: () => "" }), names, local)
+    if (decl.type === "ExportDefaultDeclaration" && decl.declaration.type === "Identifier" && local.has(decl.declaration.name))
+      names.reject("R2", decl.declaration, "a reached product file must not re-export a guarded binding")
+  }
+  const load = (at: Span, arg?: Argument) => {
+    const target = Option.map(moduleText(arg), resolve)
+    if (Option.isSome(target) && !clockModule(target.value)) dynamicSource(names, resolve, false, at, arg)
+  }
+  new Visitor({
+    CallExpression(node) { if (isRequire(node.callee)) load(node, node.arguments[0]) },
+    ImportExpression(node) { load(node, node.source) },
+    TSExternalModuleReference(node) { load(node, node.expression) },
+  }).visit(program)
+  return { errors: names.errors, uses: [] }
+}
+
+export const inspectTimingProject = (texts: ReadonlyMap<string, string>, resolve: (file: string, specifier: string) => string,
+  dynamic: ReadonlySet<string> = new Set()) => {
+  const results = new Map<string, Inspection>()
+  for (const [file, { program, producerOnly }] of timingSources(texts, resolve)) {
+    if (file === timingModule) continue
+    const from = (specifier: string) => resolve(file, specifier)
+    if (producerOnly) results.set(file, inspectProducer(file, program, from))
+    else results.set(file, inspectFull(file, program, from, dynamic.has(file)))
+  }
+  return results
 }
