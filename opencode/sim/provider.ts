@@ -451,6 +451,12 @@ export const make = (options: Options, world: Pick<Runtime, "now" | "fork">) => 
 
   return {
     handle,
+    loginFor: (request: Request): string => {
+      const account = accountOf(request)
+      const former = Option.fromNullishOr(retired.get(header(request, "authorization").replace(/^Bearer /, "")))
+      if (account !== "") return account
+      return Option.getOrElse(Option.map(former, (key) => key.slice(0, key.lastIndexOf("#"))), () => "")
+    },
     /**
      * `fetch` onto the provider, as a plugin's fetch option takes it: the exchange runs as a fiber of the world, on its
      * clock; a request elsewhere rejects, as an unreachable host does.

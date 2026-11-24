@@ -15,7 +15,9 @@
 // answer, steer, store write and log line, each at its virtual time. It holds
 // no wall-clock value, so two runs on one seed give byte-equal traces.
 import type { Plugin } from "@opencode/plugin/effect"
-import { Effect, Exit, Match, Option, Predicate, Scope, type Schema } from "effect"
+import { Effect, Exit, Match, Option, Predicate, Scope, Schema } from "effect"
+import { Hold } from "@dotfiles/opencode-pool/status"
+import { sentPlacements } from "@dotfiles/opencode-pool/handoff"
 import { contextFor, isContext, type Loaded } from "./context.ts"
 import * as Forms from "./forms.ts"
 import { type Asked, type Message, makeHost, type ModelRef, type RpcFault, type Session, type Options, type Process, type Spawned, START } from "./host.ts"
@@ -53,6 +55,9 @@ export { SimError } from "./runtime.ts"
 export const ANTHROPIC_MODEL = { providerID: "anthropic", id: "claude-haiku-4-5" }
 /** Where the host sends Anthropic's requests before a hook moves them, as the fork's catalog names it. */
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+/** Virtual time allowed for the host to materialize the already-prepared body. */
+export const HANDOFF_WINDOW_MS = 1
+const decodeHold = Schema.decodeUnknownOption(Hold)
 
 interface Instance {
   readonly loaded: Loaded
@@ -63,6 +68,8 @@ interface Instance {
 export interface WorldOptions extends Options {
   /** Anthropic as part of the world (sim/provider.ts): sessions run on `anthropic/claude-haiku-4-5` and their requests go to it over HTTP. */
   readonly anthropic?: Omit<Provider.Options, "seed">
+  /** Whether replacement-body materialization occupies its full virtual-time allowance. */
+  readonly bodyMaterialization?: boolean
   /** Another host on this world's clock, scheduler and seed: a second OpenCode server beside `beside` (sim/hosts.ts). */
   readonly beside?: { readonly start: number; readonly runtime: Runtime; readonly members: Members }
 }
@@ -113,6 +120,22 @@ export const make = (worldOptions: WorldOptions) => {
     },
   })
   const provider = Option.map(Option.fromNullishOr(worldOptions.anthropic), (anthropic) => Provider.make({ ...anthropic, seed: worldOptions.seed }, runtime))
+  const inFlightAtRefusal = { count: 0 }
+  const holdAt = (login: string, request: Request, at: number) => {
+    const ledger = Option.fromNullishOr(host.storage.get("dotfiles-opencode.pool"))
+    const integration = worldOptions.integrations?.anthropic?.find((id) => id.access === worldOptions.anthropic?.accounts[login]?.access)
+    const credential = Option.orElse(
+      Option.fromUndefinedOr(sentPlacements.get(request)?.credentialID),
+      () => Option.fromUndefinedOr(integration?.id),
+    )
+    return ledger.pipe(
+      Option.flatMap((entries) => Option.orElse(
+        Option.flatMap(credential, (id) => decodeHold(entries.get(`anthropic/hold/${id}`))),
+        () => decodeHold(entries.get(`anthropic/hold/store:${login}`) ?? entries.get(`anthropic/hold/${login}`)),
+      )),
+      Option.filter((hold) => hold.until > at || hold.kind === "signin"),
+    )
+  }
   const options: Options = Option.match(provider, {
     onNone: () => worldOptions,
     onSome: (served) => {
@@ -122,7 +145,26 @@ export const make = (worldOptions: WorldOptions) => {
         onNone: () => ANTHROPIC_BASE_URL,
         onSome: (origin) => origin,
       })
-      return { ...worldOptions, model, provider: { id: model.providerID, baseURL, handle: served.handle } }
+      return {
+        ...worldOptions, model, provider: { id: model.providerID, baseURL, handle: served.handle },
+        admitHttp: (request: Request) => {
+          const login = served.loginFor(request)
+          if (login === "" || request.method !== "POST" || new URL(request.url).pathname !== "/v1/messages") return Option.none()
+          const at = runtime.now()
+          const hold = holdAt(login, request, at)
+          if (Option.isSome(hold)) {
+            host.unmodelled.push(`held login ${login} passed final hook at ${at}; hold ends ${hold.value.until}`)
+          }
+          const materialized = Option.match(Option.filter(Option.some(HANDOFF_WINDOW_MS), () => worldOptions.bodyMaterialization === true), {
+            onNone: () => Effect.void, onSome: Effect.sleep,
+          })
+          return Option.some(() => materialized.pipe(Effect.andThen(Effect.sync(() => {
+            const began = runtime.now()
+            if (began - at > HANDOFF_WINDOW_MS) host.unmodelled.push(`unbounded handoff for ${login}: ${began - at} ms`)
+            if (Option.isNone(hold) && Option.isSome(holdAt(login, request, began))) inFlightAtRefusal.count += 1
+          }))))
+        },
+      }
     },
   })
   const host = makeHost(options, runtime, start)
@@ -181,6 +223,7 @@ export const make = (worldOptions: WorldOptions) => {
     })
 
   return {
+    inFlightAtRefusal: () => inFlightAtRefusal.count,
     start,
     runtime,
     /** The hosts on this world's runtime (`beside`). */

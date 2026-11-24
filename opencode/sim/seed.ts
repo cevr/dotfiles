@@ -295,6 +295,20 @@ export const budgetOf = (spent: Spent, budgetMs: number) =>
  */
 export const swarmed = <E>(file: string, spent: Spent, name: string, first: number, shareMs: number, body: (run: Seeded) => Effect.Effect<void, E>) =>
   Effect.gen(function* () {
+    const count = yield* Config.option(Config.Int("SIM_SWARM_COUNT"))
+    if (Option.isSome(count)) {
+      let failures = 0
+      for (let seed = first; seed < first + count.value; seed += 1) {
+        const result = yield* Effect.exit(once(file, spent, name, seed, body, Number.POSITIVE_INFINITY))
+        if (Exit.isFailure(result)) {
+          failures += 1
+          yield* Console.log(`sim-sweep-red ${seed} ${name}\n${Cause.pretty(result.cause)}`)
+        }
+      }
+      yield* Console.log(`sim-sweep-count ${file} ${first}..${first + count.value - 1}: ${count.value} seeds, ${failures} red: ${name}`)
+      if (failures > 0) return yield* Effect.fail(new SeedFailed({ message: `sim-sweep: ${failures} failing seeds: ${name}` }))
+      return
+    }
     const box = { over: false }
     const timer = yield* Effect.forkChild(Effect.andThen(wallTime(shareMs), Effect.sync(() => (box.over = true))))
     const seeds = Effect.gen(function* () {
