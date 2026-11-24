@@ -179,7 +179,9 @@ const externalScriptImports = (workspace: Workspace, test: string): ReadonlyArra
   const known = workspacePaths.get(workspace) ?? new Set(workspace.files)
   workspacePaths.set(workspace, known)
   return importsOf(test, sourceText(test)).flatMap((specifier) =>
-    specifier.startsWith("../") ? resolveLocal(known, test, specifier) ?? [] : [],
+    specifier.startsWith("../")
+      ? [resolveLocal(known, test, specifier) ?? path.posix.join(path.posix.dirname(test), specifier)]
+      : [],
   )
 }
 
