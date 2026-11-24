@@ -81,6 +81,7 @@ export const LAW = {
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
   prompt:
     "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, the answer the assistant message's text content; a second admission of its id is not taken again",
+  stop: "session.stop answers interrupted only for a live turn, drops the queued input and leaves a stopped session ready for a fresh prompt",
   steer:
     "a synthetic message with resume, steered, wakes an idle session into an execution that reads it, the message keeping its metadata, and a second admission of its id is not taken again",
   notice: "a synthetic message without resume starts no execution, and the next prompt's execution reads it",
