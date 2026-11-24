@@ -43,8 +43,17 @@ const indexOrEnd = (line: string, char: string, from: number) => {
  * `&`, `|`, `(`, `)` and newlines outside quotes, and leaves a heredoc's body
  * out: the body is data, not a command.
  */
-export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => {
-  const commands: Array<Array<Word>> = []
+export interface ShellSegment {
+  readonly words: ReadonlyArray<Word>
+  readonly pipe: boolean
+  readonly boundary?: "enter" | "leave"
+  readonly joined?: true
+  readonly caseEnd?: true
+  readonly logical?: "&&" | "||"
+}
+
+export const shellSegments = (line: string, bindingSyntax = false): ReadonlyArray<ShellSegment> => {
+  const commands: Array<ShellSegment> = []
   let words: Array<Word> = []
   let draft = newDraft()
   const heredocs: Array<string> = []
@@ -52,9 +61,9 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
     if (draft.started) words.push({ text: draft.text, bareStart: draft.bareStart, singleQuoted: draft.singleQuoted })
     draft = newDraft()
   }
-  const endCommand = () => {
+  const endCommand = (pipe = false, joined?: true) => {
     endWord()
-    if (words.length > 0) commands.push(words)
+    if (words.length > 0 || pipe) commands.push({ words, pipe, joined })
     words = []
   }
   const add = (char: string, bare: boolean) => {
@@ -76,8 +85,9 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
     let at = from
     while (at < line.length && line.charAt(at) !== '"') {
       if (line.charAt(at) === "\\" && at + 1 < line.length) at += 1
-      add(line.charAt(at), false)
-      at += 1
+      const next = nextCharacter(at)
+      add(line.slice(at, next), false)
+      at = next
     }
     return at + 1
   }
@@ -112,12 +122,15 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
       add(line.charAt(at + 1), false)
       return at + 2
     }
-    if (line.startsWith("<<", at) && !line.startsWith("<<<", at)) return readHeredoc(at)
-    if (char === "\n" && heredocs.length > 0) return skipBodies(at)
-    if (SEPARATORS.has(char)) {
-      endCommand()
-      return at + 1
+    if (char === "#" && !draft.started) return indexOrEnd(line, "\n", at)
+    const end = nextCharacter(at)
+    if (end > at + 1) {
+      add(line.slice(at, end), true)
+      return end
     }
+    if (hasInputRedirection(at)) return inputRedirection(at)
+    if (char === "\n" && heredocs.length > 0) return skipBodies(at)
+    if (SEPARATORS.has(char)) return separator(at, char)
     if (char === " " || char === "\t") {
       endWord()
       return at + 1
@@ -125,11 +138,92 @@ export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>>
     add(char, true)
     return at + 1
   }
+  const separator = (at: number, char: string): number => {
+    const or = char === "|" && line.charAt(at + 1) === "|"
+    if (bindingSyntax && char === "&" && line.charAt(at - 1) === ">") {
+      add(char, true)
+      return at + 1
+    }
+    const and = char === "&" && line.charAt(at + 1) === "&"
+    if (bindingSyntax && (and || or)) {
+      endCommand(false, true)
+      commands.push({ words: [], pipe: false, logical: logicalOperator(and) })
+      return at + 2
+    }
+    if (bindingSyntax && (char === "(" || char === ")")) {
+      endCommand(false, true)
+      commands.push({ words: [], pipe: false, boundary: groupBoundary(char) })
+      return at + 1
+    }
+    if (bindingSyntax && char === ";" && /^[;&]/.test(line.charAt(at + 1))) {
+      endCommand()
+      commands.push({ words: [], pipe: false, caseEnd: true })
+      return at + 2 + Number(line.startsWith(";;&", at))
+    }
+    endCommand(char === "|" && !or)
+    if (char === "(") commands.push({ words: [], pipe: false, boundary: "enter" })
+    if (char === ")") commands.push({ words: [], pipe: false, boundary: "leave" })
+    return at + 1 + Number(or)
+  }
+  const hasInputRedirection = (at: number): boolean =>
+    line.startsWith("<<", at) && (bindingSyntax || !line.startsWith("<<<", at))
+  const nextCharacter = (at: number): number => {
+    if (!bindingSyntax) return at + 1
+    if (line.startsWith("$(", at)) return substitutionEnd(line, at + 2)
+    if (line.charAt(at) === "`") return backquoteEnd(line, at + 1)
+    return at + 1
+  }
+  const inputRedirection = (at: number): number => {
+    if (!line.startsWith("<<<", at)) return readHeredoc(at)
+    endWord()
+    add("<<<", true)
+    endWord()
+    return at + 3
+  }
   let at = 0
   while (at < line.length) at = step(at)
   endCommand()
   return commands
 }
+
+const logicalOperator = (and: boolean): "&&" | "||" => {
+  if (and) return "&&"
+  return "||"
+}
+
+const groupBoundary = (char: string): "enter" | "leave" => {
+  if (char === "(") return "enter"
+  return "leave"
+}
+
+/** Keep an unwalked substitution in its operand rather than treating its body as sibling commands. */
+export const substitutionEnd = (line: string, start: number): number => {
+  let nesting = 1
+  let quote = ""
+  for (let at = start; at < line.length; at += 1) {
+    const char = line.charAt(at)
+    if (char === "\\") at += 1
+    else if (quote !== "") {
+      if (char === quote) quote = ""
+    } else if (char === "'" || char === '"') quote = char
+    else if (char === "(") nesting += 1
+    else if (char === ")" && --nesting === 0) return at + 1
+  }
+  return line.length
+}
+
+export const backquoteEnd = (line: string, start: number): number => {
+  for (let at = start; at < line.length; at += 1) {
+    if (line.charAt(at) === "\\") at += 1
+    else if (line.charAt(at) === "`") return at + 1
+  }
+  return line.length
+}
+
+export const simpleCommands = (line: string): ReadonlyArray<ReadonlyArray<Word>> => shellSegments(line).flatMap(({ words }) => {
+  if (words.length === 0) return []
+  return [words]
+})
 
 /** Words that run the command after them: skipped to find what runs. */
 const PREFIX_WORDS: ReadonlySet<string> = new Set(["sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time", "nice", "!", "{"])
@@ -139,12 +233,29 @@ const PREFIX_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-u", "-g", "-n", "-C
 
 const isAssignment = (text: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(text)
 
+/** Reserved words that introduce a command within a shell compound command. */
+export const COMMAND_STARTS: ReadonlySet<string> = new Set(["do", "then", "elif", "else", "if", "while", "until"])
+
+/** `command -v` and `command -V` describe an executable without invoking it. */
+const describesCommand = (words: ReadonlyArray<Word>): boolean => {
+  for (const { text } of words) {
+    if (!/^-[^-]/.test(text)) return false
+    if (/[vV]/.test(text)) return true
+  }
+  return false
+}
+
 /** The words of the command that runs: prefixes, their options and assignments skipped. */
 export const runningWords = (words: ReadonlyArray<Word>): ReadonlyArray<Word> => {
   let index = 0
+  for (const word of words) {
+    if (!word.bareStart || !COMMAND_STARTS.has(word.text)) break
+    index += 1
+  }
   let inPrefix = false
   while (index < words.length) {
     const text = words[index]?.text ?? ""
+    if (text === "command" && describesCommand(words.slice(index + 1))) break
     if (isAssignment(text) || PREFIX_WORDS.has(text)) {
       inPrefix = inPrefix || PREFIX_WORDS.has(text)
       index += 1
@@ -163,18 +274,72 @@ export const runningWords = (words: ReadonlyArray<Word>): ReadonlyArray<Word> =>
 /** Shells whose `-c` script is a command line of its own. */
 export const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh"])
 
-/** The script a shell runs with `-c`: the first word after its options, when one of them holds `c`. */
-export const shellScript = (args: ReadonlyArray<Word>): string | undefined => {
-  let command = false
-  for (const word of args) {
-    if (word.text === "--") continue
-    if (/^-[^-]/.test(word.text) || /^\+[^+]/.test(word.text)) {
-      if (word.text.startsWith("-") && word.text.includes("c")) command = true
+interface ShellSwitches {
+  readonly command: boolean
+  readonly stdin: boolean
+  readonly noexec: boolean
+  readonly interactive: boolean
+}
+
+export interface ShellInput {
+  readonly command: boolean
+  readonly stdin: boolean
+  readonly noexec: boolean
+  readonly operands: ReadonlyArray<Word>
+}
+
+/** A short flag cluster, with a trailing `o`/`O` taking a shell option name. */
+const shellSwitches = (text: string, after: ReadonlyArray<Word>, state: ShellSwitches) => {
+  const enabled = text.startsWith("-")
+  const tail = text.slice(1)
+  const letters = tail.split(/[oO]/, 1)[0] ?? ""
+  const operator = tail.charAt(letters.length)
+  const inline = tail.slice(letters.length + 1)
+  const name = inline || (after[0]?.text ?? "")
+  const named = operator !== "" && /^[^+-]/.test(name)
+  const consumed = Number(named && inline === "")
+  return {
+    state: {
+      command: updatedSwitch(letters.includes("c"), enabled, state.command),
+      stdin: updatedSwitch(letters.includes("s"), enabled, state.stdin),
+      noexec: updatedSwitch(letters.includes("n") || (operator === "o" && name === "noexec"), enabled, state.noexec),
+      interactive: updatedSwitch(letters.includes("i"), enabled, state.interactive),
+    },
+    consumed,
+  }
+}
+
+const updatedSwitch = (mentioned: boolean, enabled: boolean, before: boolean): boolean => (mentioned && enabled) || (!mentioned && before)
+
+/** The shell's options stop at the script or `--`; the script's own arguments do not change its invocation. */
+export const shellInput = (args: ReadonlyArray<Word>): ShellInput => {
+  let state = { command: false, stdin: false, noexec: false, interactive: false }
+  let index = 0
+  for (const [position, word] of args.entries()) {
+    if (position < index) continue
+    const text = word.text
+    index += 1
+    if (text === "--" || text === "-") break
+    if (/^[-+][^-]/.test(text)) {
+      const parsed = shellSwitches(text, args.slice(index), state)
+      state = parsed.state
+      index += parsed.consumed
       continue
     }
-    if (word.text.startsWith("--")) continue
-    return command ? word.text : undefined
+    if (text.startsWith("--")) {
+      if (text === "--rcfile" || text === "--init-file") index += 1
+      continue
+    }
+    index -= 1
+    break
   }
+  return { command: state.command, stdin: state.stdin, noexec: state.noexec && !state.interactive, operands: args.slice(index) }
+}
+
+/** The script a shell executes with `-c`, but not code it only syntax-checks with `-n`. */
+export const shellScript = (args: ReadonlyArray<Word>): string | undefined => {
+  const input = shellInput(args)
+  if (input.command && !input.noexec) return input.operands[0]?.text
   return undefined
 }
 
