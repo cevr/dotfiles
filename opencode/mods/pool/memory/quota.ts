@@ -3,7 +3,7 @@
 // readings it publishes, per pool, and what a claim answers (the test's
 // `claim`, which may change the readings as a provider's reset would). The
 // plugin's seam tests run on it.
-import { Effect, Layer, Queue, Stream } from "effect"
+import { Effect, Layer, Option, Queue, Stream } from "effect"
 import type { PoolId } from "../account-pool.ts"
 import type { ClaimAnswer, QuotaReading } from "../quota.ts"
 import { Quota, type PublishedReading } from "../service.ts"
@@ -15,11 +15,14 @@ export const layer = (
   readings: ReadonlyMap<PoolId, ReadonlyMap<string, QuotaReading>>,
   published: ReadonlyMap<PoolId, Queue.Dequeue<PublishedReading>> = new Map(),
   claim: MemoryClaim = () => ({ outcome: "failed", message: "no claim in memory" }),
+  usage?: Quota["Service"]["usage"],
 ) => {
-  const read = (pool: PoolId, credentialID: string) => Effect.sync(() => readings.get(pool)?.get(credentialID))
+  const read = (pool: PoolId, credentialID: string) => Effect.sync(() =>
+    Option.getOrUndefined(Option.map(Option.fromUndefinedOr(readings.get(pool)), (known) => known.get(credentialID))),
+  )
   return Layer.succeed(Quota, {
     reading: read,
-    usage: read,
+    usage: Option.getOrElse(Option.fromUndefinedOr(usage), () => read),
     readings: (pool: PoolId) => {
       const queue = published.get(pool)
       return queue === undefined ? Stream.empty : Stream.fromQueue(queue)

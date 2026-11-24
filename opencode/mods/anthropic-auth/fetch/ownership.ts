@@ -12,7 +12,7 @@
 // Leases and connections expire a while after their last use. They expire
 // lazily, on the next look, by the time the setup's clock says.
 import { createHmac, type Hmac } from "node:crypto"
-import { Effect, Result, Schema } from "effect"
+import { Effect, Option, Result, Schema } from "effect"
 import { contentLength } from "../content-headers.ts"
 import { AMBIGUOUS_CONNECTION, UNKNOWN_CONNECTION } from "../rate-limit.ts"
 import { tokenKey } from "../refresh.ts"
@@ -127,6 +127,7 @@ export interface AliasLeases {
   readonly resolve: (request: Request, now: number) => Effect.Effect<AliasLease | undefined, BodyError>
   /** A response is done with its lease. */
   readonly release: (request: Request, lease: AliasLease, now: number) => void
+  readonly discard: (request: Request) => void
   /** The setup is going: no lease takes a new response, and each lapses once its responses end. */
   readonly retireAll: () => void
 }
@@ -264,6 +265,13 @@ export const makeAliasLeases = (ownershipKey: Uint8Array): AliasLeases => {
     register,
     resolve,
     release,
+    discard: (request) => {
+      const lease = Option.fromNullishOr(byRequest.get(request))
+      byRequest.delete(request)
+      if (Option.isNone(lease)) return
+      lease.value.references -= 1
+      if (lease.value.references <= 0 && reconstructedLookups === 0) expire(lease.value)
+    },
     retireAll: () => {
       for (const lease of byFingerprint.values()) retire(lease)
       byFingerprint.clear()

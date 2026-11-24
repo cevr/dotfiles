@@ -61,7 +61,11 @@ export type PingAnswer = Answer
 export class PingAdmission extends Context.Service<
   PingAdmission,
   {
-    readonly admits: (ping: { readonly model: string; readonly login: Option.Option<string> }) => Effect.Effect<boolean>
+    readonly admits: (ping: {
+      readonly model: string
+      readonly login: Option.Option<string>
+      readonly managed: Option.Option<import("@dotfiles/opencode-pool/handoff").HandoffInput>
+    }) => Effect.Effect<boolean>
   }
 >()("dotfiles-opencode/cache/PingAdmission") {}
 

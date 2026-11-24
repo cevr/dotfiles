@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Effect, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, Exit, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -28,6 +28,9 @@ import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
 import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
+import { Handoff } from "@dotfiles/opencode-pool/handoff"
+import { DEFAULT_HOLD_MS, MAX_REFUSAL } from "@dotfiles/opencode-pool/hold"
+import { below, generator } from "../../sim/runtime.ts"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
@@ -97,6 +100,7 @@ interface World {
   readonly integration: LoginsTest.Integration
   /** The plugin's storage, by key. */
   readonly storage: Map<string, Schema.Json>
+  readonly holdAccess: { scans: number; usage: number; unavailable: boolean }
   /** Each agent's own prompt-cache lifetime (`request.settings.cacheTTL`), by agent id; an agent absent here is unknown to the host. */
   readonly agents: Map<string, string | undefined>
   /** Each fork's source, by fork id; a session absent here is no fork. */
@@ -117,6 +121,7 @@ const world = (): World => ({
   readings: new Map(),
   integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
   storage: new Map(),
+  holdAccess: { scans: 0, usage: 0, unavailable: false },
   agents: new Map([["build", undefined]]),
   forks: new Map(),
   peers: new Map(),
@@ -197,7 +202,10 @@ const start = (
       Effect.sync(() => ({ reading: state.readings.get(credentialID) ?? null }))
     // A usage read of a login the test gave no reading: a fresh, quiet week (`quiet`).
     const usage = ({ credentialID }: { readonly credentialID: string }) =>
-      Effect.map(Clock.currentTimeMillis, (now) => ({ reading: state.readings.get(credentialID) ?? quiet(now) }))
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        state.holdAccess.usage += 1
+        return { reading: state.readings.get(credentialID) ?? quiet(now) }
+      })
     // The auth plugin's claim: recorded, never sent anywhere; a reset empties the account's 5-hour window.
     const claims: Array<{ readonly credentialID: string; readonly creditID: string; readonly requestID: string }> = []
     const claimOf = (input: { readonly credentialID: string; readonly creditID: string; readonly requestID: string }) =>
@@ -241,6 +249,7 @@ const start = (
       events: { subscribe: () => Stream.fromQueue(state.owner.beats) },
     }
     const hostOptions = { limitsFile: scratchLimits(root), ...options }
+    const storage = LedgerTest.storage(state.storage)
     const host = {
       options: hostOptions,
       session: {
@@ -317,7 +326,16 @@ const start = (
             }),
         },
       ),
-      storage: LedgerTest.storage(state.storage),
+      storage: {
+        ...storage,
+        scan: (input: Parameters<typeof storage.scan>[0]) => Effect.suspend(() => {
+          if (input.prefix === "anthropic/hold/") {
+            state.holdAccess.scans += 1
+            if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
+          }
+          return storage.scan(input)
+        }),
+      },
     } as unknown as Host
     yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
     // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
@@ -350,6 +368,9 @@ const start = (
     /** The session's execution succeeded: it goes idle. */
     const idle = (sessionID: string) => emit({ type: "session.execution.succeeded", data: { sessionID } })
     const method = (name: string) => Effect.flatMap(registered(rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, name))
+    const handoff = Effect.fn("PoolServerTest.handoff")(function* (candidate: string, sessionID = "ses_1") {
+      return yield* (yield* method("handoff"))({ candidate, sessionID, providerID: "anthropic", kind: "primary", model: model.id, agent: "build" })
+    })
     const pace = Effect.fn("PoolServerTest.pace")(function* (providerID: string, sessionID?: string) {
       return (yield* (yield* method("pace"))({ providerID, ...(sessionID === undefined ? {} : { sessionID }) })) as Pace
     })
@@ -403,6 +424,7 @@ const start = (
       limitsFile: String(hostOptions.limitsFile),
       send,
       request,
+      handoff,
       respond,
       retry,
       idle,
@@ -450,6 +472,295 @@ const onTestClock = <A, E>(body: Scoped<A, E>) =>
       return yield* body
     }).pipe(Effect.provide(TestClock.layer())),
   )
+
+test("the final handoff re-places a pending login that another copy has since held, with and without a reload", () =>
+  onTestClock(Effect.gen(function* () {
+    for (const reload of [false, true]) {
+      const state = world()
+      const options = { sweepMinutes: 0 }
+      const first = yield* start(options, state)
+      const writer = yield* start(options, state)
+      expect(yield* first.request()).toBe("cred-a")
+      expect(yield* writer.request("ses_writer")).toBe("cred-a")
+      expect(yield* first.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+      yield* writer.respond(429, "ses_writer")
+      const current = yield* Option.match(Option.filter(Option.some(options), () => reload), {
+        onNone: () => Effect.succeed(first), onSome: (config) => start(config, state),
+      })
+      expect(yield* current.handoff("cred-a")).toEqual(Handoff.cases.Prepare.make({ credentialID: "cred-b" }))
+      expect(yield* current.handoff("cred-b")).toEqual(Handoff.cases.Send.make({}))
+    }
+  })))
+
+test("the final handoff reads the hold store once, adds no usage read, and keeps its own storage retry", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.request()).toBe("cred-a")
+    const { scans, usage } = state.holdAccess
+    expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+    expect(state.holdAccess.scans - scans).toBe(1)
+    expect(state.holdAccess.usage - usage).toBe(0)
+    state.holdAccess.unavailable = true
+    expect(yield* plugin.handoff("cred-a")).toMatchObject({
+      message: "dotfiles-opencode.pool: the request is held: the pool could not confirm its current holds; retry the hold store read; it may go again at 1970-01-01T00:00:01.000Z",
+    })
+    state.holdAccess.unavailable = false
+    expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+  })))
+
+const refusalOf = <A, E>(request: Effect.Effect<A, E>) => Effect.map(Effect.exit(request), (exit) => {
+  if (Exit.isSuccess(exit)) return ""
+  return Cause.pretty(exit.cause)
+})
+
+test("R9 known rate limit with an unreadable end keeps its usual hold and the newer record", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const now = 60_000
+    const end = now + DEFAULT_HOLD_MS
+    yield* TestClock.setTime(now)
+    const raw = { kind: "rate-limit", at: now, untilMs: now + 2 * HOUR, until: "future-format" }
+    state.storage.set("anthropic/hold/cred-a", raw)
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, reasonCode: "record-unreadable", retryAt: end })
+    yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS)
+    expect(yield* refusalOf(plugin.request("ses_too_early"))).toContain("hold record is unreadable")
+    expect(state.storage.get("anthropic/hold/cred-a")).toMatchObject({ raw })
+    expect((yield* plugin.status).anthropic?.accounts[0]?.hold).not.toHaveProperty("raw")
+    yield* TestClock.adjust(DEFAULT_HOLD_MS - LedgerLive.UNREADABLE_HOLD_MS - 1)
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, reasonCode: "record-unreadable", retryAt: end })
+    yield* TestClock.adjust(1)
+    state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
+    expect(yield* plugin.request()).toBe("cred-a")
+    expect(state.storage.has("anthropic/hold/cred-a")).toBe(false)
+  })))
+
+test("R9-C every malformed or absurd end has one bounded, honest recheck", () =>
+  onTestClock(Effect.gen(function* () {
+    for (const [until, delay] of [[9e15, MAX_REFUSAL], [-1, LedgerLive.UNREADABLE_HOLD_MS],
+      [Number.NaN, LedgerLive.UNREADABLE_HOLD_MS], ["Infinity", LedgerLive.UNREADABLE_HOLD_MS]] as const) {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      const now = 60_000
+      const end = now + delay
+      yield* TestClock.setTime(now)
+      state.storage.set("anthropic/hold/cred-a", { kind: "future-kind", at: now, until })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, reasonCode: "record-unreadable", retryAt: end })
+      const reads = state.holdAccess.usage
+      yield* TestClock.adjust(delay - 1)
+      expect(yield* refusalOf(plugin.request("ses_before"))).toContain("hold record is unreadable")
+      expect(state.holdAccess.usage).toBe(reads)
+      yield* TestClock.adjust(1)
+      state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
+      expect(yield* plugin.request("ses_at")).toBe("cred-a")
+      expect(state.holdAccess.usage).toBe(reads + 1)
+      yield* TestClock.setTime(now + 30 * 24 * HOUR)
+      expect(state.storage.has("anthropic/hold/cred-a")).toBe(false)
+    }
+  })))
+
+test("R9-A a future kind without a readable end permits one 429, not a second refused send", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const raw = { kind: "overloaded", at: 0, untilMs: 2 * HOUR }
+    state.storage.set("anthropic/hold/cred-a", raw)
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* refusalOf(plugin.request())).toContain("hold record is unreadable")
+    expect(state.storage.get("anthropic/hold/cred-a")).toMatchObject({ raw })
+    yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS)
+    const at = LedgerLive.UNREADABLE_HOLD_MS
+    state.readings.set("cred-a", { ...quiet(at), usage: { at, samples: 1 } })
+    expect(yield* plugin.request()).toBe("cred-a")
+    expect(yield* plugin.handoff("cred-a")).toEqual(Handoff.cases.Send.make({}))
+    yield* plugin.respond(429)
+    expect(yield* refusalOf(plugin.request("ses_retry"))).toContain("all pool accounts are held")
+    expect(state.storage.get("anthropic/hold/cred-a")).toMatchObject({ kind: "rate-limit", until: at + DEFAULT_HOLD_MS })
+  })))
+
+test("R9-A3 fresh usage replaces a damaged usage-limit with the actual spent window", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const resetAt = 2 * HOUR
+    state.storage.set("anthropic/hold/cred-a", { kind: "usage-limit", at: 0, untilMs: resetAt })
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    state.readings.set("cred-a", { ...quiet(0), usage: { at: 0, samples: 1 }, windows: [
+      { name: "5h", utilization: 1, resetAt },
+      { name: "7d", utilization: 0.5, resetAt: 72 * HOUR },
+    ] })
+    expect(yield* refusalOf(plugin.request())).toContain("all pool accounts are held")
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, retryAt: resetAt })
+    expect(state.storage.get("anthropic/hold/cred-a")).toMatchObject({ kind: "usage-limit", until: resetAt })
+  })))
+
+test("an unreadable sign-in stays held until an authenticated usage sample", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const key = "anthropic/hold/cred-a"
+    const raw = { kind: "signin", at: 0, until: "future-format" }
+    state.storage.set(key, raw)
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    yield* TestClock.adjust(30 * 24 * HOUR)
+    expect(yield* refusalOf(plugin.request("ses_unauthenticated"))).toContain("hold record is unreadable")
+    expect(state.storage.get(key)).toMatchObject({ raw })
+    yield* TestClock.adjust(LedgerLive.UNREADABLE_HOLD_MS)
+    const at = 30 * 24 * HOUR + LedgerLive.UNREADABLE_HOLD_MS
+    state.readings.set("cred-a", { ...quiet(at), usage: { at, samples: 1 } })
+    expect(yield* plugin.request("ses_authenticated")).toBe("cred-a")
+    expect(state.storage.has(key)).toBe(false)
+  })))
+
+test("R10-6 two copies reserve just one usage read, then keep the later refusal and the raw record", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const raw = { kind: "overloaded", at: 0, untilMs: 2 * HOUR }
+    const key = "anthropic/hold/cred-a"
+    state.storage.set(key, raw)
+    const one = yield* start({ sweepMinutes: 0 }, state, live())
+    const two = yield* start({ sweepMinutes: 0 }, state, live())
+    const due = LedgerLive.UNREADABLE_HOLD_MS
+    const end = due + 10 * MINUTE
+    yield* TestClock.setTime(due)
+    state.readings.set("cred-a", { ...quiet(due), usage: { at: due, samples: 1 }, refusal: { kind: "rate-limit", until: end } })
+    const reads = state.holdAccess.usage
+    const replies = yield* Effect.forEach([one, two, one, two, one], (copy, index) =>
+      refusalOf(copy.request(`ses_wait_${index}`)), { concurrency: "unbounded" })
+    expect(replies.every((reply) => reply.includes("hold record is unreadable"))).toBe(true)
+    expect(state.holdAccess.usage - reads).toBe(1)
+    expect(state.storage.get(key)).toMatchObject({ kind: "record-unreadable", until: end, raw })
+    expect(yield* two.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
+    expect(Schema.is(Handoff.cases.Held)(yield* two.handoff("cred-a"))).toBe(true)
+    yield* TestClock.setTime(end - 1)
+    expect(yield* one.pace("anthropic")).toMatchObject({ ok: false, retryAt: end })
+    expect(state.holdAccess.usage - reads).toBe(1)
+    yield* TestClock.setTime(end)
+    state.readings.set("cred-a", { ...quiet(end), usage: { at: end, samples: 1 } })
+    expect(yield* two.request("ses_reopened")).toBe("cred-a")
+    expect(state.holdAccess.usage - reads).toBe(2)
+    expect(state.storage.has(key)).toBe(false)
+  })))
+
+test("R9-B a malformed row stays local and keeps its first recheck across a restart", () =>
+  onTestClock(Effect.gen(function* () {
+    const decodeRow = Schema.decodeSync(Schema.fromJsonString(Schema.Json))
+    for (const raw of ["null", '"{\\"kind\\":\\"usage-li"', '{"kind":"usage-limit"}'].map((value) => decodeRow(value))) {
+      const state = world()
+      const key = "anthropic/hold/cred-a"
+      const now = 60_000
+      yield* TestClock.setTime(now)
+      state.storage.set(key, raw)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* plugin.request("ses_load")).toBe("cred-b")
+      const first = state.storage.get(key)
+      expect(first).toMatchObject({ raw })
+      yield* TestClock.adjust(30_000)
+      const next = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* next.pace("anthropic")
+      expect(state.storage.get(key)).toEqual(first)
+      const at = now + LedgerLive.UNREADABLE_HOLD_MS
+      yield* TestClock.setTime(at)
+      state.readings.set("cred-a", { ...quiet(at), usage: { at, samples: 1 } })
+      yield* next.request("ses_repaired")
+      expect(state.storage.has(key)).toBe(false)
+    }
+  })))
+
+test("R9-A2/D a usable end survives an unknown kind or a damaged observation time", () =>
+  onTestClock(Effect.gen(function* () {
+    for (const [kind, at] of [["future-kind", 0], ["usage-limit", "damaged"]] as const) {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      const until = 2 * HOUR
+      yield* TestClock.setTime(0)
+      state.storage.set("anthropic/hold/cred-a", { kind, at, until })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* TestClock.adjust(until - 1)
+      expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, retryAt: until })
+      expect(yield* refusalOf(plugin.request("ses_before"))).toContain("hold record is unreadable")
+      yield* TestClock.adjust(1)
+      state.readings.set("cred-a", { ...quiet(until), usage: { at: until, samples: 1 } })
+      expect(yield* plugin.request("ses_at")).toBe("cred-a")
+    }
+  })))
+
+test("a decoder that understands the original uses its refusal rather than the recovery deadline", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    const until = 2 * HOUR
+    const raw = { kind: "rate-limit", at: 0, until }
+    const stored = { kind: "record-unreadable", rawKind: raw.kind, at: 0, until: MINUTE, raw }
+    const key = "anthropic/hold/cred-a"
+    state.storage.set(key, stored)
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    yield* TestClock.adjust(MINUTE)
+    expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: false, retryAt: until })
+    expect(state.storage.get(key)).toEqual(stored)
+  })))
+
+test("R9-N a login that returns after a listing gap has not lost its unexpired hold", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    const key = "anthropic/hold/cred-a"
+    const hold = { kind: "rate-limit", at: 0, until: HOUR }
+    state.storage.set(key, hold)
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.request("ses_before")).toBe("cred-b")
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[1]])
+    yield* TestClock.adjust(MINUTE)
+    expect(yield* plugin.request("ses_gap")).toBe("cred-b")
+    expect(state.storage.get(key)).toEqual(hold)
+    state.integration.connections.set(ANTHROPIC, CONNECTIONS)
+    yield* TestClock.adjust(MINUTE)
+    expect(yield* plugin.request("ses_after")).toBe("cred-b")
+    expect(state.storage.get(key)).toEqual(hold)
+  })))
+
+test("an unknown hold kind only fences its own login until a fresh authenticated usage read repairs it", () =>
+  onTestClock(Effect.gen(function* () {
+    const state = world()
+    yield* TestClock.setTime(60_000)
+    state.storage.set("anthropic/hold/cred-a", { kind: "future-kind", at: 59_000, until: 61_000 })
+    const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+    expect(yield* plugin.request()).toBe("cred-b")
+    expect((yield* plugin.status).anthropic).toMatchObject({ accounts: [
+      { credentialID: "cred-a", hold: { kind: "record-unreadable", rawKind: "future-kind", until: 61_000 } },
+      { credentialID: "cred-b" },
+    ] })
+    expect(yield* plugin.handoff("cred-b")).toEqual(Handoff.cases.Send.make({}))
+    yield* TestClock.adjust(999)
+    expect(yield* plugin.request("ses_early")).toBe("cred-b")
+    yield* TestClock.adjust(1)
+    state.readings.set("cred-a", { ...quiet(61_000), usage: { at: 61_000, samples: 1 } })
+    yield* plugin.request("ses_repair")
+    expect(state.storage.has("anthropic/hold/cred-a")).toBe(false)
+  })))
+
+test("several pages of retired sign-ins are pruned against the current logins across generated session histories", () =>
+  onTestClock(Effect.gen(function* () {
+    const random = generator("retired-sign-in-histories")
+    yield* TestClock.setTime(10)
+    for (let turn = 0; turn < 3; turn++) {
+      const state = world()
+      const history = LedgerLive.PAGE + 1 + below(random, 200)
+      for (let index = 0; index < history; index++) {
+        const credentialID = `retired-${index}`
+        state.storage.set(`anthropic/hold/${credentialID}`, { kind: "signin", until: 10, at: 0 })
+        state.storage.set(`anthropic/cache/ses_past_${index}`, { credentialID, at: 0 })
+      }
+      state.storage.set("anthropic/hold/cred-a", { kind: "signin", until: 10, at: 0 })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* plugin.request(`ses_current_${turn}`)).toBe("cred-b")
+      const holds = [...state.storage.keys()].filter((key) => key.startsWith("anthropic/hold/"))
+      expect(holds).toEqual(["anthropic/hold/cred-a"])
+    }
+  })))
 
 describe("the options", () => {
   test("take their defaults when absent or undefined", () =>
@@ -965,6 +1276,21 @@ describe("the ledger", () => {
 })
 
 describe("the sweep", () => {
+  test("a steady sweep prunes the ledger and retires absent logins in the same hold scan", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const state = world()
+        yield* start({ sweepMinutes: 1 }, state, live())
+        yield* TestClock.adjust("1 second")
+        const before = { ...state.holdAccess }
+        state.storage.set("anthropic/hold/retired", { kind: "signin", at: 0, until: MINUTE })
+        yield* TestClock.adjust("1 minute")
+        expect(state.holdAccess.usage - before.usage).toBe(2)
+        expect(state.holdAccess.scans - before.scans).toBe(3) // two readings and one prune
+        expect(state.storage.has("anthropic/hold/retired")).toBe(false)
+      }),
+    ))
+
   test("reads every login's usage a moment after start, then every few minutes", () =>
     onTestClock(
       Effect.gen(function* () {
@@ -1186,16 +1512,16 @@ describe("on the live adapters", () => {
   test("a hold an older pool kept under a store login's legacy id still holds that login, under its id now", () => {
     const dir = mkdtempSync(join(tmpdir(), "pool-store-"))
     mkdirSync(join(dir, ".slots/anthropic"), { recursive: true })
-    // A store sign-in good until 2100, held until then too.
+    // A store sign-in good until 2100, with a current hold.
     writeFileSync(
       join(dir, ".slots/anthropic/work"),
       '{"_tag":"Oauth","type":"oauth","access":"fake-access-legacy","refresh":"fake-refresh-legacy","expires":4102444800000,"accountId":null,"metadata":{"owner":"store"}}',
       { mode: 0o600 },
     )
     const state = world()
-    const hold = { kind: "usage-limit" as const, until: 4102444800000, at: 1 }
+    const hold = { kind: "usage-limit" as const, until: HOUR, at: 0 }
     state.storage.set(`anthropic/hold/${LEGACY_PREFIX}work`, hold)
-    return scenario(
+    return onTestClock(
       Effect.gen(function* () {
         const plugin = yield* start({ sweepMinutes: 0, sources: [{ kind: "store", dir }] }, state, live())
         // The held login is passed over.

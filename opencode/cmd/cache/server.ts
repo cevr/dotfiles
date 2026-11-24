@@ -130,7 +130,10 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
         Layer.mergeAll(Model.layer(options.host), Model.keepaliveLayer(options.host)).pipe(
           Layer.provide(externals(options)),
           // Each ping asks the pool's pace, as a request's dispatch, whether its login may take its model now.
-          Layer.provide(PoolAdmission.layer((input) => ctx.rpc(PoolAdmission.POOL).pace(input))),
+          Layer.provide(PoolAdmission.layer(
+            (input) => ctx.rpc(PoolAdmission.POOL).pace(input),
+            (input) => ctx.rpc(PoolAdmission.POOL).handoff(input),
+          )),
         ),
       )
       const recorder = Context.get(services, Model.Recorder)
@@ -139,7 +142,7 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
       // A title's or a generate call's request runs on its own prompt, outside the conversation's cache.
       const conversational = (kind: string) => kind === "primary" || kind === "compaction"
       // The pool names a request's login and lifetime in `model.request`, which runs for every plugin before any
-      // `http.request`; the auth plugin's `http.request`, set up before this one, strips both headers. So they are
+      // `http.response`; the auth plugin's `http.request` strips both headers. So they are
       // read here, after the pool's (set up before this one too), and joined to the session's next request.
       const placed = new Map<string, { readonly login?: string; readonly ttl?: string }>()
       const nonEmpty = (value: string | undefined) => (value === undefined || value.trim() === "" ? undefined : value.trim())
@@ -158,12 +161,17 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
           Effect.map((session) => Option.exists(Option.fromNullishOr(session.parentID), (parent) => parent !== "")),
           Effect.orElseSucceed(() => false),
         )
-      // The keepalive's hook, set up before the ledger's (which takes the pool's placement): the request as the auth
-      // plugin signed it, the one the session's next wait pings. A compaction's summary request is the host's own.
-      yield* ctx.session.hook("http.request", (event) => {
+      // Observe the request after it entered transport; cache tracking must not
+      // introduce a body read between the pool's final hook and that handoff.
+      yield* ctx.session.hook("http.response", (event) => {
         if (event.kind !== "primary") return Effect.void
         const request = event.request
-        const pool = Option.fromUndefinedOr(placed.get(event.sessionID))
+        const actual = PoolAdmission.sentPlacementOf(request)
+        const prior = placed.get(event.sessionID)
+        const pool = Option.orElse(
+          Option.map(actual, (sent) => ({ login: sent.credentialID, ttl: sent.cacheTTL })),
+          () => Option.map(Option.fromUndefinedOr(prior), (sent) => ({ login: sent.login, ttl: sent.ttl })),
+        )
         const headers = [...request.headers.entries()]
         return textOf(request).pipe(
           Effect.flatMap((text) => {
@@ -189,6 +197,13 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
                       agent: Option.some(event.agent),
                       model: `${event.model.providerID}/${event.model.id}`,
                       login,
+                      ...Option.match(actual, {
+                        onNone: () => ({}),
+                        onSome: ({ credentialID }) => ({ managed: {
+                          providerID: event.model.providerID, model: event.model.id, sessionID: event.sessionID,
+                          agent: event.agent, kind: "primary" as const, candidate: credentialID, keepalive: true,
+                        } }),
+                      }),
                     })),
                     () => armed === "armed",
                   ),
@@ -199,8 +214,9 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
         )
       })
 
-      yield* ctx.session.hook("http.request", (event) => {
+      yield* ctx.session.hook("http.response", (event) => {
         if (!conversational(event.kind)) return Effect.void
+        const actual = Option.getOrUndefined(PoolAdmission.sentPlacementOf(event.request))
         const pool = placed.get(event.sessionID)
         placed.delete(event.sessionID)
         return bodyOf(event.request).pipe(
@@ -208,8 +224,8 @@ export const make = (externals: (options: Options) => Layer.Layer<Externals>) =>
             const found = segments(body)
             if (found.length === 0) return Effect.void
             // Headers still on the request: this hook ran before the auth plugin's, or no auth plugin strips them.
-            const login = nonEmpty(event.request.headers.get(CREDENTIAL_HEADER) ?? undefined) ?? pool?.login
-            const ttl = nonEmpty(event.request.headers.get(CACHE_TTL_HEADER) ?? undefined) ?? pool?.ttl
+            const login = nonEmpty(event.request.headers.get(CREDENTIAL_HEADER) ?? undefined) ?? actual?.credentialID ?? pool?.login
+            const ttl = nonEmpty(event.request.headers.get(CACHE_TTL_HEADER) ?? undefined) ?? actual?.cacheTTL ?? pool?.ttl
             return recorder.sent(event.sessionID, {
               kind: event.kind === "compaction" ? "compaction" : "primary",
               agent: event.agent,

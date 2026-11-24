@@ -11,7 +11,13 @@ import type { ClaimAnswer, QuotaReading } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
-import type { Report, SourceStatus } from "./status.ts"
+import type { Hold, Report, SourceStatus } from "./status.ts"
+
+export class HoldStoreUnavailable extends Schema.TaggedError<HoldStoreUnavailable>()("HoldStoreUnavailable", {
+  retryAt: Schema.Finite,
+}) {}
+
+export type Holds = Readonly<Record<string, Hold>>
 
 /**
  * Where a pool keeps what the next process needs: its holds, readings,
@@ -22,8 +28,12 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly restore: (pool: PoolId) => Effect.Effect<LedgerState>
+    /** Only the current hold records, never the historical ledger or an empty fallback on failure. */
+    readonly holds: (pool: PoolId) => Effect.Effect<Holds, HoldStoreUnavailable>
+    /** Serialize this host's hold publication and observation across activations. */
+    readonly withHolds: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
     /** Write what `events` change in the ledger. */
-    readonly record: (pool: PoolId, events: ReadonlyArray<Event>) => Effect.Effect<void>
+    readonly record: (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/Ledger") {}
 
