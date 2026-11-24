@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess argv at tests/settle-child-attempts.test.ts: const code = yield* spawner.exitCode(ChildProcess.make(file, args, { forceKillAfter: "3 seconds
 /** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/fixtures/lifecycle-envelopes/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"

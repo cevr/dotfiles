@@ -1,5 +1,5 @@
 // @reads all
-// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
+// @reads-reason computed read at mods/kernel/filestore/files.ts: const info = yield* Effect.tryPromise({ try: () => stat(path), catch: unreadable })
 // A latched subagent on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/prime-latch.test.ts's server claims under the same names, moved
 // off real OpenCode (scenarios/prime-latch.ts waited out a twelve-second hold

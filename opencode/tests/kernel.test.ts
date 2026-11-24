@@ -1,4 +1,5 @@
-// @reads cmd/kernel cmd/memory cmd/orchestrate
+// @reads all
+// @reads-reason dynamically loaded module at tests/kernel/run.ts: const importNativeModule = (file: string): Promise<object> => import(file)
 // accept: deep (33.8 s alone on a quiet host: 1-minute load 7.1–9.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
