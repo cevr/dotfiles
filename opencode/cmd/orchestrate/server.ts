@@ -585,6 +585,7 @@ const launchStatus = (observation: Observation): LaunchStatus => {
     case "Recovering":
     case "Continuing": return "running"
   }
+  return observation.phase satisfies never
 }
 const launchResult = (sessionID: string, answer: Option.Option<OwnerAnswer>, model?: string) => {
   const observation = Option.map(answer, ({ observation }) => observation)
