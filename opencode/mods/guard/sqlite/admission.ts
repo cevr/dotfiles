@@ -211,7 +211,7 @@ const store = (db: Database, identity: Identity, readClock?: BootClock) => {
       const wall = yield* Clock.currentTimeMillis
       const result = yield* sql(() => write(() => {
         const before = current()
-        if (Option.isNone(before)) return Result.fail("incompatible" as const)
+        if (Option.isNone(before)) return Result.fail("stale" as const)
         const now = bootTime(observation.now, readClock)
         if (Option.isNone(now)) return Result.fail("unavailable" as const)
         const next = transition(before.value, input, { ...observation, now: now.value })
@@ -240,7 +240,7 @@ const store = (db: Database, identity: Identity, readClock?: BootClock) => {
     }),
     inspect: Effect.fn("LeaseLedger.inspect")(function* () {
       const result = yield* sql(current)
-      if (Option.isNone(result)) return yield* reject("incompatible")
+      if (Option.isNone(result)) return yield* reject("stale")
       return result.value
     }),
   })

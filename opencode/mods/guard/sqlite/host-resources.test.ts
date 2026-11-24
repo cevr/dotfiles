@@ -93,7 +93,9 @@ it.scoped("pin, bound owner and lease commit together before a launcher may exec
       cgroup: pin.cgroup, descriptor: pin.descriptor,
     }))
     const after = yield* readHolderSnapshot(a.holder)
-    expect(after.records[0]).toMatchObject({ state: "live", placement: { confinementRef: "binding-a" } })
+    expect(after.records[0]).toMatchObject({
+      state: "live", owner: { ...EMPTY_OWNER, authorityId: owner("one") }, placement: { confinementRef: "binding-a" },
+    })
     expect(after.records.map(canonicalHolder).join()).not.toContain(pin.descriptor.file)
     expect((yield* a.bind(address, pin, sample)).reply.reason).toBe("stale")
     expect(yield* readHolderSnapshot(b.holder)).toEqual(after)
@@ -371,12 +373,12 @@ it.scoped("the actual old adapter is refused before and after reopen, with no wr
       if (i % 2 === 0) yield* peer.intent(currentRecord, 2000)
       const after = yield* current.ledger.inspect()
       const attempts = [
-        old.ledger.transact({ op: "request", owner: owner(`old-${i}`), request: request(`old-${i}`) }, sample),
-        old.holder.putObservations("scanner-a", [{ ...disk, producerSeq: i + 1 }], 2000),
+        Effect.asVoid(old.ledger.transact({ op: "request", owner: owner(`old-${i}`), request: request(`old-${i}`) }, sample)),
+        Effect.asVoid(old.holder.putObservations("scanner-a", [{ ...disk, producerSeq: i + 1 }], 2000)),
         old.native.remember(`legacy-${i}`, 889, 500),
       ]
       const attempt = Option.getOrThrow(Option.fromNullishOr(attempts[i % attempts.length]))
-      expect(yield* why(Effect.asVoid(attempt))).toBe("unavailable")
+      expect(yield* why(attempt)).toBe("unavailable")
       expect(wire.qualifiedForm("unavailable")).toBe("Retry submission when host status --json can attest the managed pool and volume.")
       expect(yield* current.ledger.inspect()).toEqual(after)
       expect(yield* current.native.peer(`legacy-${i}`)).toBeNull()
@@ -436,4 +438,19 @@ it.scoped("a consumer pins all pages even if a second writer changes an early ho
     expect(resourceHolders(pinned, reference).pipe(Option.isSome)).toBe(true)
     expect(resourceHolders(yield* readHolderSnapshot(b.holder), reference)).toEqual(Option.none())
   }).pipe(Effect.provide(BunServices.layer)),
+)
+
+it.effect("a reader that cannot finish a bounded snapshot does not get a complete frontier", () =>
+  Effect.gen(function* () {
+    const pages: number[] = []
+    const result = yield* why(readHolderSnapshot({
+      putObservations: () => Effect.succeed([]),
+      list: (after) => Effect.sync(() => {
+        pages.push(after)
+        return { ...HOST, version: 1, revision: 16_400, complete: false, next: after + 1, records: [] }
+      }),
+    }))
+    expect(result).toBe("unavailable")
+    expect(pages).toHaveLength(128)
+  }),
 )
