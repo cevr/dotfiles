@@ -292,11 +292,12 @@ const attempt = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catc
  * exclusively with mode 0600, synced, then renamed over the file a link at
  * `path` points to. A failed write removes its staging file.
  */
-export const writeSlotAtomic = (path: string, content: string): Effect.Effect<void, unknown> =>
+type OpenStaging = (path: string) => ReturnType<typeof open>
+const writeSlotAtomicFrom = (path: string, content: string, canonical: (path: string) => string, openStaging: OpenStaging): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
-    const target = yield* Effect.try({ try: () => realpathSync(path), catch: () => path }).pipe(Effect.orElseSucceed(() => path))
+    const target = yield* Effect.try({ try: () => canonical(path), catch: () => path }).pipe(Effect.orElseSucceed(() => path))
     const staging = join(dirname(target), `.${basename(target)}${STAGING_TAG}${randomBytes(4).toString("hex")}`)
-    const handle = yield* attempt(() => open(staging, "wx", 0o600))
+    const handle = yield* attempt(() => openStaging(staging))
     yield* Effect.gen(function* () {
       const written = yield* Effect.exit(
         attempt(() => handle.chmod(0o600)).pipe(
@@ -309,6 +310,9 @@ export const writeSlotAtomic = (path: string, content: string): Effect.Effect<vo
       yield* attempt(() => rename(staging, target))
     }).pipe(Effect.tapError(() => attempt(() => rm(staging, { force: true })).pipe(Effect.ignore)))
   })
+
+const openStaging: OpenStaging = (file) => open(file, "wx", 0o600)
+export const writeSlotAtomic = (path: string, content: string) => writeSlotAtomicFrom(path, content, realpathSync, openStaging)
 
 /**
  * A store's files and its lock, as a `StoreSource` reaches them: the disk and
@@ -389,19 +393,37 @@ const takeStoreLock = (dir: string, polls: number, files: SlotFiles): Effect.Eff
 }
 
 /** The store on disk, as OpenCode keeps it: slot files written atomically, the lock an exclusive SQLite transaction. */
-export const NODE_FILES: SlotFiles = {
-  names: (path) => Effect.try({ try: () => readdirSync(path), catch: (cause) => cause }),
-  read: (path) => Effect.try({ try: () => readFileSync(path, "utf8"), catch: (cause) => cause }),
-  write: writeSlotAtomic,
+interface SlotDisk {
+  readonly names: (path: string) => ReadonlyArray<string>
+  readonly read: (path: string) => string
+  readonly canonical: (path: string) => string
+  readonly openStaging: OpenStaging
+  readonly lockPath: (path: string) => string
+}
+export const slotFiles = (disk: SlotDisk): SlotFiles => ({
+  names: (path) => Effect.try({ try: () => disk.names(path), catch: (cause) => cause }),
+  read: (path) => Effect.try({ try: () => disk.read(path), catch: (cause) => cause }),
+  write: (path, content) => writeSlotAtomicFrom(path, content, disk.canonical, disk.openStaging),
   tryLock: (dir) => {
     const locks = join(dir, ".locks")
-    const file = join(locks, `${encodeURIComponent(PROVIDER)}.lock.db`)
+    const file = disk.lockPath(join(locks, `${encodeURIComponent(PROVIDER)}.lock.db`))
     return Effect.try({ try: () => mkdirSync(locks, { recursive: true }), catch: (cause) => cause }).pipe(
       Effect.orDie,
       Effect.andThen(begin(file)),
       Effect.map((db) => Option.map(Option.liftPredicate(db, (taken): taken is Database => taken !== BUSY), (taken) => Effect.sync(() => taken.close()))),
     )
   },
+})
+
+const nativeSlotFiles = () => slotFiles({
+  names: readdirSync, read: (path) => readFileSync(path, "utf8"),
+  canonical: realpathSync, openStaging, lockPath: (file) => file,
+})
+export const NODE_FILES: SlotFiles = {
+  names: (file) => nativeSlotFiles().names(file),
+  read: (file) => nativeSlotFiles().read(file),
+  write: (file, content) => nativeSlotFiles().write(file, content),
+  tryLock: (dir) => nativeSlotFiles().tryLock(dir),
 }
 
 /**
@@ -574,7 +596,7 @@ const serialized = <A, E>(state: StoreState, run: Effect.Effect<A, E>): Effect.E
 type Stored = StoredOAuth | undefined | null
 
 /** A login store's Anthropic accounts, read and refreshed in place. */
-export class StoreSource {
+export class SlotStoreSource {
   readonly dir: string
   private readonly slots: string
   private readonly tokenURL: string
@@ -587,7 +609,7 @@ export class StoreSource {
   private readonly state: StoreState
   private readonly files: SlotFiles
 
-  constructor(options: StoreSourceOptions) {
+  constructor(options: StoreSourceOptions & { readonly files: SlotFiles }) {
     this.dir = resolve(expandHome(options.dir))
     this.slots = join(this.dir, ".slots", encodeURIComponent(PROVIDER))
     this.tokenURL = options.tokenURL ?? CLAUDE_TOKEN_URL
@@ -600,7 +622,7 @@ export class StoreSource {
     const sleep = options.sleep
     this.sleep = sleep === undefined ? (ms) => Effect.sleep(ms) : (ms) => Effect.promise(() => sleep(ms))
     this.gapMs = options.refreshGapMs ?? REFRESH_GAP_MS
-    this.files = options.files ?? NODE_FILES
+    this.files = options.files
     this.state = stateOf(this.dir, options.process)
   }
 
@@ -633,7 +655,7 @@ export class StoreSource {
         if (stored === null) continue
         if (stored === undefined) skipped.push({ label, reason: "does not decode as an OAuth sign-in" })
         else if (!isStoreOwned(stored)) skipped.push({ label, reason: "a linked Claude Code login, which Claude Code refreshes itself" })
-        else accounts.push(StoreSource.id(label))
+        else accounts.push(SlotStoreSource.id(label))
       }
       return { accounts, skipped }
     }),
@@ -751,7 +773,7 @@ export class StoreSource {
           this.state.refused.delete(label)
           continue
         }
-        lost.push({ credentialID: StoreSource.id(label), label, since: refused.since, slot: slotPath(this.dir, label) })
+        lost.push({ credentialID: SlotStoreSource.id(label), label, since: refused.since, slot: slotPath(this.dir, label) })
       }
       return lost
     }),
@@ -1088,6 +1110,13 @@ export class StoreSource {
         expires: this.now() + expiresIn * 1000,
       }
     })
+  }
+}
+
+/** Live convenience constructor; injected authorities use the same source. */
+export class StoreSource extends SlotStoreSource {
+  constructor(options: StoreSourceOptions) {
+    super({ ...options, files: options.files ?? NODE_FILES })
   }
 }
 

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/memory-eval/memory.ts: if (!existsSync(path)) return { units: [], documents: [] }
 // The kernel arm with no API call: its description is the real one over the
 // real catalog, and a cell reaches the fake world and our memory through
 // `tools`, with bindings that persist from cell to cell.

@@ -1,3 +1,4 @@
+// @reads cmd/idle-compact cmd/memory cmd/prime
 // accept: deep (16.5 s alone on a quiet host: 1-minute load 5.8–14.1 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // A compaction's summary request keeps the cached prefix, in real OpenCode (the
 // fork, through its SDK) on the scripted model, with the plugins that write the
@@ -9,11 +10,12 @@
 // a prompt cache then reads the whole conversation instead of the tools and
 // the first system blocks. The plugins' own hooks are tested beside their code.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { Mode, Result, Spec } from "./compaction-prefix/run.ts"
 import { NOTE, type Seen } from "./compaction-prefix/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { scratch as scratchDir } from "./scratch.ts"
 import { hangGuard } from "./hang-guard.ts"
 
@@ -32,19 +34,18 @@ const run = async (mode: Mode): Promise<Result> => {
   const file = join(base, "spec.json")
   const spec: Spec = { base, fork: resolve(fork ?? ""), mode, prime: join(ROOT, "cmd/prime"), memory: join(ROOT, "cmd/memory"), idleCompact: join(ROOT, "cmd/idle-compact") }
   writeFileSync(file, JSON.stringify(spec))
-  const child = owned([process.execPath, join(import.meta.dir, "compaction-prefix/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = ownedCheckoutBun("tests/compaction-prefix/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 90_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])

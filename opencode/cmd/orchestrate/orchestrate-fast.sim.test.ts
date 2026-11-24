@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Fast, asked per start, on the simulated host (sim/world.ts), each test at
 // 20 seeds. The owner's call (2026-11-24): "it's per worker … they can spawn a
 // worker that's fast or not based on the owner's discretion". A start asks it

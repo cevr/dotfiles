@@ -73,35 +73,26 @@ export const parseArgs = (argv: ReadonlyArray<string>, now: number): Args => {
 
 const read = (path: string): string | undefined => (existsSync(path) ? readFileSync(path, "utf8") : undefined)
 
+interface ProbeFiles {
+  readonly exists: (file: string) => boolean
+  readonly entries: (dir: string) => ReadonlyArray<string>
+  readonly text: typeof read
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
 
-/**
- * The facts the rules read, from the dotfiles' `opencode/` at `root`, the
- * fork at `fork` and the config at `config`. Only the config's model names
- * and MCP server names are read; nothing else of it is kept or printed.
- */
-export const probe = (root: string, fork: string, config: string): Facts => {
-  const builtins = read(join(fork, "packages/core/src/instructions/builtins.ts"))
-  const state = read(join(fork, "packages/core/src/session/instruction-state.ts"))
-  const skills = read(join(fork, "packages/core/src/skill/instructions.ts"))
-  const servers = existsSync(join(root, "cmd"))
-    ? readdirSync(join(root, "cmd")).flatMap((name) => {
-        const text = read(join(root, "cmd", name, "server.ts"))
+const serverSources = (files: ProbeFiles, root: string) =>
+  files.exists(join(root, "cmd"))
+    ? files.entries(join(root, "cmd")).flatMap((name) => {
+        const text = files.text(join(root, "cmd", name, "server.ts"))
         return text === undefined ? [] : [{ name, file: `cmd/${name}/server.ts`, text }]
       })
     : []
-  const modText = (name: string) => {
-    const dir = join(root, "mods", name)
-    return existsSync(dir) ? readdirSync(dir).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts")).map((file) => read(join(dir, file)) ?? "").join("\n") : ""
-  }
-  const billing = read(join(root, "mods/anthropic-auth/request-body.ts"))
-  const kernel = read(join(root, "cmd/kernel/server.ts"))
-  const digest = read(join(root, "mods/memory/digest.ts"))
-  const orchestrate = read(join(root, "cmd/orchestrate/server.ts"))
-  const role = read(join(root, "mods/orchestrate/role.ts"))
+
+const settingsFacts = (readConfig: () => ReturnType<typeof read>) => {
   let parsed: unknown
   try {
-    parsed = JSON.parse(read(config) ?? "null")
+    parsed = JSON.parse(readConfig() ?? "null")
   } catch {
     parsed = undefined
   }
@@ -111,8 +102,29 @@ export const probe = (root: string, fork: string, config: string): Facts => {
   const agents = isRecord(settings["agents"]) ? settings["agents"] : isRecord(settings["agent"]) ? settings["agent"] : {}
   const compaction = isRecord(agents["compaction"]) ? agents["compaction"]["model"] : undefined
   const model = (value: unknown) => (typeof value === "string" ? value.replace(/#.*$/, "") : undefined)
-  const compactionModel = model(compaction)
-  const mainModel = model(settings["model"])
+  return { mcpServers, mainModel: model(settings["model"]), compactionModel: model(compaction) }
+}
+
+/**
+ * The facts the rules read, from the dotfiles' `opencode/` at `root`, the
+ * fork at `fork` and the config at `config`. Only the config's model names
+ * and MCP server names are read; nothing else of it is kept or printed.
+ */
+export const probeWith = (files: ProbeFiles, root: string, fork: string, config: string): Facts => {
+  const builtins = files.text(join(fork, "packages/core/src/instructions/builtins.ts"))
+  const state = files.text(join(fork, "packages/core/src/session/instruction-state.ts"))
+  const skills = files.text(join(fork, "packages/core/src/skill/instructions.ts"))
+  const servers = serverSources(files, root)
+  const modText = (name: string) => {
+    const dir = join(root, "mods", name)
+    return files.exists(dir) ? files.entries(dir).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts")).map((file) => files.text(join(dir, file)) ?? "").join("\n") : ""
+  }
+  const billing = files.text(join(root, "mods/anthropic-auth/request-body.ts"))
+  const kernel = files.text(join(root, "cmd/kernel/server.ts"))
+  const digest = files.text(join(root, "mods/memory/digest.ts"))
+  const orchestrate = files.text(join(root, "cmd/orchestrate/server.ts"))
+  const role = files.text(join(root, "mods/orchestrate/role.ts"))
+  const { mcpServers, mainModel, compactionModel } = settingsFacts(() => files.text(config))
   const chars = digest === undefined ? undefined : /chars:\s*([\d_]+)/.exec(digest)?.[1]
   const ttl = role === undefined ? undefined : /ROLE_CACHE_TTL\s*=\s*"([^"]+)"/.exec(role)?.[1]
   return {
@@ -135,6 +147,9 @@ export const probe = (root: string, fork: string, config: string): Facts => {
     ...(ttl === undefined ? {} : { roleCacheTtl: ttl }),
   }
 }
+
+export const probe = (root: string, fork: string, config: string): Facts =>
+  probeWith({ exists: existsSync, entries: readdirSync, text: read }, root, fork, config)
 
 if (import.meta.main) {
   try {

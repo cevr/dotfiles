@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The subagent rows under the composer scroll in place under the wheel, in
 // the Prime look, on the simulated TUI (sim-tui/): the fork's real TUI with
 // Prime loaded by path, in front of the server double. The parent starts 39

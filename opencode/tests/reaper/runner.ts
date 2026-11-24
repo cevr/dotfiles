@@ -5,27 +5,26 @@
 // leaves nothing for longer.
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Console, Effect, Scope, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Config, Console, Effect, Scope, Stream } from "effect"
+import { ChildProcessSpawner } from "effect/process"
 import "../../testbeds/reaper/start.ts"
-
-/** What the runner's children may print or read: nothing. */
-const QUIET = { stdin: "ignore", stderr: "ignore", forceKillAfter: "1 second" } as const
+import { reaperChild } from "../scratch-child.ts"
 
 const program = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const seen = yield* Config.String("REAPER_SEEN")
   // Never closed: a closed scope would stop each spawn's process group, and these outlive the runner.
   const scope = yield* Scope.make()
   // `sh` starts the sleep in the background, waits a second and exits: the sleep is handed to pid 1, as the
   // service is once `service start` (the fork's client, waiting for it to serve, ~1.6 s) ends.
-  const sh = yield* spawner.spawn(ChildProcess.make("sh", ["-c", "sleep 120 >/dev/null 2>&1 & echo $!; sleep 1"], QUIET)).pipe(Scope.provide(scope))
+  const sh = yield* spawner.spawn(reaperChild("daemon", seen)).pipe(Scope.provide(scope))
   const daemon = yield* sh.stdout.pipe(Stream.decodeText(), Stream.mkString)
   yield* Console.log(`daemon ${daemon.trim()}`)
-  const child = yield* spawner.spawn(ChildProcess.make("sleep", ["121"], { ...QUIET, detached: true, stdout: "ignore" })).pipe(Scope.provide(scope))
+  const child = yield* spawner.spawn(reaperChild("child", seen)).pipe(Scope.provide(scope))
   // One that starts another when it is told to stop, as a TUI starts a service when its own ends: never asked, never started.
   // It writes that one's pid beside the reaper's `REAPER_SEEN` file, so the test can stop it after a failed run.
   const respawner = yield* spawner
-    .spawn(ChildProcess.make("sh", ["-c", `trap 'sleep 122 & echo $! >"$REAPER_SEEN.respawned"; exit' TERM; while :; do sleep 1; done`], { ...QUIET, detached: true, stdout: "ignore" }))
+    .spawn(reaperChild("respawner", seen))
     .pipe(Scope.provide(scope))
   yield* Console.log(`respawner ${respawner.pid}`)
   yield* Console.log(`child ${child.pid}`)

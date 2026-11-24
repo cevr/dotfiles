@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The pool's failover on the simulated host, each test at 20 seeds:
 // tests/pool-failover.test.ts's names and claims, moved off real OpenCode. Two
 // Anthropic logins OpenCode holds, the Anthropic auth plugin and the pool, as

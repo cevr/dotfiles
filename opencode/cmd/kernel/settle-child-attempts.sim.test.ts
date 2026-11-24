@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/kernel/settle-child-attempts.sim.test.ts: const { states } = yield* Schema.decodeUnknownEffect(QuintTrace)(yield* fs.readFileString(path)
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Config, DateTime, Effect, FileSystem, Option, Queue, Schema, Stream } from "effect"

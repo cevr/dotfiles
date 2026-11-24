@@ -234,13 +234,15 @@ export const parseArgs = (argv: ReadonlyArray<string>, env: Readonly<Record<stri
   return { apply, db, prompts, ...(rows === undefined ? {} : { rows }) }
 }
 
+export const decodeRows = (text: string): ReadonlyArray<Row> => JSON.parse(text) as ReadonlyArray<Row>
+
 /** The active schedules: from the rows file, else the database, read only. */
 export const readRows = (args: Args): ReadonlyArray<Row> => {
-  if (args.rows !== undefined) return JSON.parse(readFileSync(args.rows, "utf8")) as ReadonlyArray<Row>
+  if (args.rows !== undefined) return decodeRows(readFileSync(args.rows, "utf8"))
   const ran = Bun.spawnSync(["sqlite3", "-readonly", "-json", args.db, QUERY], { stdout: "pipe", stderr: "pipe" })
   if (ran.exitCode !== 0) throw new Error(`sqlite3 ${args.db}: ${ran.stderr.toString().trim()}`)
   const text = ran.stdout.toString().trim()
-  return text === "" ? [] : (JSON.parse(text) as ReadonlyArray<Row>)
+  return text === "" ? [] : decodeRows(text)
 }
 
 /** Set each planned entry and pause its schedule, through the service; one line per schedule. */
@@ -274,12 +276,21 @@ const applyPlans = async (plans: ReadonlyArray<Plan>, env: Readonly<Record<strin
   return said
 }
 
+/** Print the plan and call the write side only when the parsed command asks to apply it. */
+export const runMigration = <Applied>(
+  args: Args, now: number, rows: ReadonlyArray<Row>,
+  io: { readonly out: (line: string) => void; readonly apply: (plans: ReadonlyArray<Plan>) => Applied },
+) => {
+  const plans = plan(rows, now, args.prompts)
+  io.out(render(plans, args.apply))
+  if (args.apply) return io.apply(plans)
+}
+
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2), process.env)
-    const plans = plan(readRows(args), Date.now(), args.prompts)
-    console.log(render(plans, args.apply))
-    if (args.apply) console.log(["", ...(await applyPlans(plans, process.env))].join("\n"))
+    const applied = runMigration(args, Date.now(), readRows(args), { out: console.log, apply: (plans) => applyPlans(plans, process.env) })
+    if (applied) console.log(["", ...(await applied)].join("\n"))
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(2)

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Wakes on the simulated host (sim/world.ts), each test at 20 seeds:
 // tests/wake.test.ts's names and the claims it reads off the model's requests,
 // the transcripts, the tray and the plugin's starts, moved off real OpenCode

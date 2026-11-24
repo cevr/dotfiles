@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim/seed.test.ts: const missing = yield* Effect.filter(listed, ([file]) => Effect.map(fs.exists(file), (exists) =
 // The seed runner's budget: a file whose seeds spend more CPU than its budget
 // fails, saying its CPU and wall time; one whose wall time runs long while it
 // spends little CPU (a loaded host's time, not the file's work) passes. A

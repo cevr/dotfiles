@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/recover/filesystem/directories.ts: exists: (directory) => Effect.sync(() => statSync(directory, { throwIfNoEntry: false })?.isDire
 import { afterAll } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

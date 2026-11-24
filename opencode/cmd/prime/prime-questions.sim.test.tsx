@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The background-question tools in the transcript, on the simulated TUI
 // (sim-tui/) with Prime loaded by path, each at its first SEEDS seeds: a
 // session asks the owner (`ask_user_async`), asks its orchestrator

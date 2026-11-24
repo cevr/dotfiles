@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/orchestrate/server.test.ts: existsSync(join(dir, "log.md"))
 // The plugin seam: the composition root on a stand-in host, with every
 // outside system a test layer. It checks what OpenCode sees: the rewritten
 // subagent input, the refusals' words, a latched call's answer and its

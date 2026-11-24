@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/filestore/spool.test.ts: const files = yield* Effect.sync(() => readdirSync(join(root, FileSpool.folderOf(SESSION))).toS
 // The spool in files, in a scratch folder: a session with no spool reads as
 // nothing shown, a write reads back, and keeping a new copy of the shown
 // file drops the older one.

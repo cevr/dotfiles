@@ -1,3 +1,4 @@
+// @reads decider/*.ts decider/tool-input.ts mods/*/*.ts mods/anthropic-auth/json.ts mods/anthropic-auth/tool-alias.ts mods/guard/kill.ts mods/kernel/tools.ts mods/kernel/wire.ts mods/wake/wake.ts
 /**
  * The production domain's syntax policy at the real lint CLI. The production domain is every
  * `decider/*.ts` and `mods/<mod>/<file>.ts`, except `*.test.*`, `*.spec.*`, `*.bench.*` and
@@ -14,13 +15,15 @@
  * `effect/noTryCatch` in the domain are the exact files the hard config leaves to the ratchet.
  * One more try in any of them passes the hard lint and fails the per-file debt comparison.
  */
-// @reads .oxlintrc.json .oxlintrc.effect-debt.json effect-debt.json lint/** mods/*/package.json
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { Glob } from "bun"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { matchingInput } from "../tests/read-path.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Order, Schema, type Scope } from "effect"
-import { compare, DEBT_CONFIG, HARD_CONFIG, knownRules, POLICY, Policy, ruleOf, scan, spawn } from "./effect-debt.ts"
+import { compare, DEBT_CONFIG, HARD_CONFIG, knownRules, POLICY, Policy, ruleOf, scanWith } from "./effect-debt.ts"
 import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
@@ -249,7 +252,7 @@ const baseOf = (random: Random) =>
   random.pick([nameOf(random), `${nameOf(random)}.${nameOf(random)}`, random.pick(["model", "decision", "store", "laws-like", "testing", "spec-sheet"])])
 
 /** The real mod names, so every existing mod is covered as well as the generated ones. */
-const realMods = () => Arr.filter(readdirSync(path.join(REAL, "mods")), (name) => statSync(path.join(REAL, "mods", name)).isDirectory())
+const realMods = () => [...new Glob("mods/*/package.json").scanSync({ cwd: REAL })].map((file) => path.basename(path.dirname(file))).sort()
 
 /** Domain paths: a root file of decider/, of every real mod and of generated mods nobody wrote. */
 const domainPaths = (random: Random) =>
@@ -298,7 +301,7 @@ const OxlintReport = Schema.fromJsonString(
 
 /** Lints `files` in `root` with `config`: every diagnostic, with its rule id, line and severity. */
 const lint = Effect.fn("EffectDomainPolicyTest.lint")(function* (root: string, config: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", config, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, config, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   return Arr.map(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) => ({
     file: each.filename,
@@ -329,8 +332,20 @@ const wantAt = (file: string, rules: ReadonlyArray<Rule>, baseline: ReadonlyArra
   return baseline
 }
 
-const lintSeed = Effect.fn("EffectDomainPolicyTest.lintSeed")(function* (seed: number) {
-  const root = yield* scratch
+/**
+ * A scratch root reached through a symlink, as macOS's default TMPDIR (`/var` → `/private/var`)
+ * and `/tmp` are. The fixture must lint the same through it, whatever TMPDIR the caller gives.
+ */
+const linkedScratch = Effect.gen(function* () {
+  const real = yield* scratch
+  const holder = yield* scratch
+  const link = path.join(holder, "linked-root")
+  symlinkSync(real, link)
+  return link
+})
+
+const lintSeed = Effect.fn("EffectDomainPolicyTest.lintSeed")(function* (seed: number, rootOf: Effect.Effect<string, never, Scope.Scope> = scratch) {
+  const root = yield* rootOf
   put(root, HARD_CONFIG, rooted(hardText()))
   put(root, BASELINE, rooted(baselineText()))
   const random = generator(seed)
@@ -460,6 +475,19 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
     hangGuard("generated-schedule"),
   )
 
+  test.concurrent(
+    "a fixture root reached through a symlink lints the same: the domain rules still refuse, whatever TMPDIR the caller runs under",
+    () =>
+      runScoped(
+        Effect.gen(function* () {
+          const found = yield* lintSeed(7, linkedScratch)
+          expect(found.wrong).toEqual([])
+          expect(found.refusals).toBeGreaterThan(found.domain.length * 15)
+        }),
+      ),
+    hangGuard("generated-schedule"),
+  )
+
   test("the domain overrides name the domain by glob, leave out only tests, specs, benchmarks, mod laws and the exact legacy try files, and only ever raise their rules to errors", () => {
     const all = overrides()
     const domain = Arr.filter(all, isDomainOverride)
@@ -494,7 +522,8 @@ describe(`${HARD_CONFIG}: the production domain's syntax rules over generated pa
         exact: Arr.filter(legacy, () => Object.keys(override.rules ?? {}).includes("effect/noTryCatch")),
       })),
     )
-    expect(Arr.filter(legacy, (file) => !existsSync(path.join(REAL, file)))).toEqual([])
+    const exists = (file: string) => existsSync(matchingInput("{decider/*.ts,mods/*/*.ts}", file))
+    expect(Arr.filter(legacy, (file) => !exists(file))).toEqual([])
     expect(unpinned(legacyBudgets())).toEqual([])
     expect(Arr.filter(legacy, (file) => !inDomain(file))).toEqual([])
   })
@@ -559,9 +588,10 @@ describe(`${POLICY}: the legacy try statements of the domain`, () => {
             put(root, HARD_CONFIG, rooted(hardText()))
             for (const file of files) {
               const tail = Arr.filter([`${random.pick(TRY_FORMS).replaceAll("$", String(random.int(1000)))}\n`], () => added)
-              put(root, file, `${readFileSync(path.join(REAL, file), "utf8")}\n${tail.join("")}`)
+              const input = matchingInput("{decider/tool-input.ts,mods/anthropic-auth/json.ts,mods/anthropic-auth/tool-alias.ts,mods/guard/kill.ts,mods/kernel/tools.ts,mods/kernel/wire.ts,mods/wake/wake.ts}", file)
+              put(root, file, `${readFileSync(input, "utf8")}\n${tail.join("")}`)
             }
-            const report = yield* scan({ root, oxlint: path.join(REAL, "node_modules/.bin/oxlint"), config: path.join(root, DEBT_CONFIG), files, rules: policy().rules.length, timeoutMs: CLI_TIMEOUT })
+            const report = yield* scanWith({ root, files, rules: policy().rules.length }, () => lintFixture(root, DEBT_CONFIG, files, CLI_TIMEOUT))
             const counts = new Map(
               Arr.map(files, (file) => [file, new Map([["effect/noTryCatch", Arr.filter(report.diagnostics, (each) => each.filename === file && ruleOf(each.code ?? "") === "effect/noTryCatch").length]])] as const),
             )

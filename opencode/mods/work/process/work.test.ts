@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
 // The process Rifts' parts that need no `work` binary: how a failed `work` call reads, which base a path tries first,
 // and the priority workrift runs at (stubs on PATH). The process Rifts over the real `work` binary are
 // tests/work-process.test.ts, an acceptance file: it needs that binary and runs past the unit leg's minute.

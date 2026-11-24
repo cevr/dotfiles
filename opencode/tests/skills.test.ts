@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
+import { externalInput, readScratchFileSync } from "./read-path.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard } from "./hang-guard.ts"
 
@@ -17,7 +18,7 @@ const count = (haystack: string, needle: string) => haystack.split(needle).lengt
 
 // The popup needs the fork's plugin autocomplete (`ui.autocomplete`); a fork without it draws none.
 const fork = process.env.OPENCODE_DEV
-const hooked = fork !== undefined && readFileSync(join(fork, "packages/plugin/src/tui/context.ts"), "utf8").includes("readonly autocomplete: (source: AutocompleteSource)")
+const hooked = fork !== undefined && readFileSync(externalInput(join(fork, "packages/plugin/src/tui/context.ts")), "utf8").includes("readonly autocomplete: (source: AutocompleteSource)")
 if (!fork) console.warn("tests/skills.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 else if (!hooked) console.warn(`tests/skills.test.ts: skipped. ${fork} has no plugin autocomplete (ui.autocomplete).`)
 describe.skipIf(!hooked)("$ skills", () => {
@@ -32,7 +33,7 @@ describe.skipIf(!hooked)("$ skills", () => {
       stderr: "pipe",
     })
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-    const read = (name: string) => readFileSync(join(out, `skills-${name}`), "utf8")
+    const read = (name: string) => readScratchFileSync(join(out, `skills-${name}`), "utf8")
     const timeout = join(out, "skills-timeout.txt")
     expect({ code, tail: code === 0 ? "" : `${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}` }).toEqual({ code: 0, tail: "" })
     expect(stdout).toMatch(/screenshot: .*skills-popup\.png/)

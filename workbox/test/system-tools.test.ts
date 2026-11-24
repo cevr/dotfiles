@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at ../workbox/test/system-tools.test.ts: expect(readlinkSync(join(h.local, "go"))).toBe(`go-${goVersion}`)
 // workbox/system-tools.sh, which bootstrap.sh (exe.dev workbox) and provision.sh's tools and reserve
 // phases (Hetzner box) run as root: the pinned Go, PowerShell from Microsoft's repository, the shells,
 // qemu-user-static with its binfmt entry, and the OpenCode service's memory floor. It runs here against

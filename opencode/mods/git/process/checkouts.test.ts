@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/git/process/checkouts.test.ts: Effect.sync(() => Bun.spawnSync(["git", ...args], { cwd, env, stdout: "ignore", stderr: "pipe"
 // Real git checkouts in a scratch directory, read through git: a branch one
 // commit ahead of its upstream and one behind with every kind of change, an
 // unborn branch, a directory in no checkout and one that is gone. git runs

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // A wait on real I/O (`within`) is a deadline in wall time, not a count of passes. The boot waited 10 000 passes for
 // the route plugin, and on a loaded host the plugin's real import outlasted them: escape-subagent failed "the route
 // plugin (sim-tui/route) never loaded" inside accept-parity's child. A loader that takes real time loads within the

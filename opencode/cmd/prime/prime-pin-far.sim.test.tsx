@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The pinned ask for a prompt outside the loaded transcript, on the simulated TUI (sim-tui/) with Prime loaded and
 // the double paging session.messages as the real server does. A session played before the TUI opened it: two short
 // turns, then a third of sixty steps. The TUI opens it on its newest twenty messages, all steps of the third turn, so

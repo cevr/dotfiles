@@ -8,7 +8,7 @@
 // queued Up still walks the history. Needs OPENCODE_DEV, a fork with the
 // experimental.queue.deliver hook and ui.composer.takeBack (its queue-merge branch).
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { owned } from "./owned.ts"
@@ -44,7 +44,7 @@ const scenario = async (which: string, dir: string) => {
   const errors = await new Response(run.stderr).text()
   const code = await run.exited
   const requests = join(dir, `${which}-requests.json`)
-  expect({ code, ran: existsSync(requests) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
+  expect({ code, ran: scratchExistsSync(requests) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
   return {
     before: readFileSync(join(dir, `${which}-before.txt`), "utf8"),
     after: readFileSync(join(dir, `${which}-after.txt`), "utf8"),

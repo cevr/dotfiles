@@ -15,17 +15,17 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { formOf } from "../../mods/questions/form.ts"
 import type { Question } from "../../mods/questions/question.ts"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { ASK_TASK, IDLE_TASK, LETTER, type Message, messagesOf, QUESTION, serve } from "./sim.ts"
 import { watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly base: string
   readonly fork: string
-  readonly plugin: string
 }
 
 export interface Warning {
@@ -42,10 +42,11 @@ export interface Result {
   readonly warnings: ReadonlyArray<Warning>
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const asking = join(spec.base, "asking")
-const other = join(spec.base, "other")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const asking = join(base, "asking")
+const other = join(base, "other")
+const config = join(base, "config")
 for (const dir of [asking, other, config]) mkdirSync(dir, { recursive: true })
 
 const sim = serve()
@@ -65,7 +66,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin }],
+  plugins: [{ package: matchingInput("cmd/questions") }],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -85,7 +86,7 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 
 const warnings: Array<Warning> = []
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -95,7 +96,7 @@ try {
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
-    database: { path: join(spec.base, "opencode.db") },
+    database: { path: join(base, "opencode.db") },
     config: { directory: config, project: false, content: JSON.stringify(content) },
     log: {
       level: "warn",
@@ -142,7 +143,7 @@ try {
       other: await opencode.sessions.context({ sessionID: idle.id }),
       warnings,
     }
-    writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+    writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
   } finally {
     await opencode.close()
   }

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/status/filestore/call-log.ts: events: Effect.tryPromise({ try: () => readFile(file, "utf8"), catch: (cause) => cause }).pipe(
 // The call log as a JSONL file in a scratch directory, written as
 // orchestrate writes it: the laws, then the lines it skips.
 import { expect, test } from "bun:test"

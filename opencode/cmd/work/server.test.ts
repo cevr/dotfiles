@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/work/process/command.ts: try: () => Bun.spawn([...argv], { cwd, env: { ...base, ...extra }, stdin: "ignore", stdout: "pi
 // The work plugin's seam: the composition root on a stand-in host whose tool registry holds OpenCode's
 // worktree tools and applies the transform the plugin registers, over workspaces and sessions in memory.
 // It runs the tool's create, list, remove and land on the `work` tool, checks the alias `rift` is the

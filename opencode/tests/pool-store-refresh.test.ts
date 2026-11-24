@@ -6,13 +6,14 @@
 // pool places the retry on the second account, where the turn completes with
 // no error in the transcript.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAnswer, type FakeRequestInfo, type FakeTokenAnswer } from "./fake-anthropic.ts"
 import { openSlotStore } from "./store/store.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { hangGuard, stamp } from "./hang-guard.ts"
 
@@ -102,9 +103,9 @@ describe.skipIf(!ready)("a store account whose refresh is rate-limited does not 
           ANTHROPIC_BASE_URL: fake.url,
           ...launch.env,
         }
-        const run = owned(
-          [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
-          { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
+        const run = ownedForkFixture(
+          [fork ?? "", join(base, "work"), ["run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"], env],
+          { stdout: "pipe", stderr: "pipe" },
         )
         const timer = setTimeout(() => run.kill(), RUN_TIMEOUT_MS)
         const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text()])

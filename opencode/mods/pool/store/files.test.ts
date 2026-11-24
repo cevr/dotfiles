@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: readdirSync, read: (path) => readFileSync(path, "utf8"),
 // The store on disk (NODE_FILES) keeps the login store files laws, each in a fresh scratch directory.
 import { Effect } from "effect"
 import { scratch } from "../../../tests/scratch.ts"

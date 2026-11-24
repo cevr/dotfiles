@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/opencode/limits.test.ts: const before = rowsOf(readFileSync(path, "utf8")).state.rows
 // The limit tally's store survives a restart: the requests in the plugin's
 // storage, the rows and the tally in the file, which the CLI reads as written.
 import { describe, expect, test } from "bun:test"

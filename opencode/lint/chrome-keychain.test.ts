@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at lint/chrome-keychain.test.ts: const command = ChildProcess.make(path.join(root, "node_modules/.bin/oxlint"), ["-c", config, "
 // dotfiles/chrome-mock-keychain (lint/chrome-keychain.ts), through the oxlint
 // binary the gate runs, with the repository's own setting (.oxlintrc.json): an
 // argument list that starts a Chrome headless or with its DevTools protocol

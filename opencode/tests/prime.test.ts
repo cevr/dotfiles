@@ -2,7 +2,7 @@
 // and asserts on the frames it saves: the text of each row, and the colour of a
 // few key cells. It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"

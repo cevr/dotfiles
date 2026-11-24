@@ -1,4 +1,5 @@
-/** @reads cmd/kernel/fixtures/settle-child-pace/** cmd/kernel/fixtures/lifecycle-envelopes/** cmd/kernel/server.ts cmd/orchestrate/server.ts cmd/wake/server.ts mods/subagents/solid/native-row.fixture.ts */
+// @reads all
+// @reads-reason nonliteral subprocess argv at tests/settle-child-attempts.test.ts: const code = yield* spawner.exitCode(ChildProcess.make(file, args, { forceKillAfter: "3 seconds
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
@@ -16,7 +17,8 @@ import { envelopeFields, lifecycleEnvelope, routedDelete } from "../cmd/kernel/l
 import { readMark, type MarkRead } from "../mods/wake/latch.ts"
 import { beforeRunnerCap, bridgeBudget, hangGuard } from "./hang-guard.ts"
 import { loadKernelRowFixture, loadKernelSdk } from "./kernel/run.ts"
-import { owned, released } from "./owned.ts"
+import { ownedCheckoutBun, released } from "./owned.ts"
+import { matchingInput, scratchInput } from "./read-path.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
 
 interface HostEvent {
@@ -276,11 +278,11 @@ const observeUntil = Effect.fn("LifecycleFixture.observeUntil")(function* (event
   }
 })
 
-const pluginConfig = (cmd: string, base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
-  { package: join(cmd, "kernel", "fixtures", "lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
-  { package: join(cmd, "wake"), options: { backstop: "off" } },
-  { package: join(cmd, "orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
-  { package: join(cmd, "kernel", "fixtures", "settle-child-pace"), options: { opensAt } },
+const pluginConfig = (base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
+  { package: matchingInput("cmd/kernel/fixtures/lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
+  { package: matchingInput("cmd/wake"), options: { backstop: "off" } },
+  { package: matchingInput("cmd/orchestrate"), options: { codex: false, log: join(base, "calls.jsonl") } },
+  { package: matchingInput("cmd/kernel/fixtures/settle-child-pace"), options: { opensAt } },
 ]
 
 const host = Effect.fn("LifecycleFixture.host")(function* (
@@ -671,16 +673,15 @@ const driveEnvelopeKinds = Effect.fn("LifecycleFixture.driveEnvelopeKinds")(func
 })
 
 const fixture = Effect.gen(function* () {
-  const base = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_HOME")
+  const base = scratchInput(yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_HOME"))
   const fork = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_FORK")
-  const cmd = yield* Config.schema(Schema.String, "LIFECYCLE_FIXTURE_PLUGIN")
   const path = yield* Path.Path
   const gate = path.join(base, "release")
   yield* command("mkfifo", [gate])
   const model = yield* modelFor(gate)
   const now = yield* Clock.currentTimeMillis
   const opensAt = now + 3_600_000
-  const plugins = pluginConfig(cmd, base, path.join, opensAt)
+  const plugins = pluginConfig(base, path.join, opensAt)
   const acquire = host(model.baseURL, base, fork, plugins)
   const first = yield* Effect.scoped(Effect.flatMap(acquire, (opened) => Effect.gen(function* () {
     const observed = yield* firstPeriod(opened, base, gate, model.read)
@@ -695,7 +696,7 @@ const fixture = Effect.gen(function* () {
   // Commit a later busy period while the production observer is absent. A
   // same-outcome snapshot after reopen must not authenticate the saved end.
   // Keep the agents supplied by Orchestrate; only Kernel's observer is absent.
-  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== path.join(cmd, "kernel", "fixtures", "lifecycle-envelopes")))
+  const unobserved = host(model.baseURL, base, fork, plugins.filter(({ package: name }) => name !== matchingInput("cmd/kernel/fixtures/lifecycle-envelopes")))
   yield* Effect.scoped(Effect.flatMap(unobserved, (opened) => Effect.gen(function* () {
     const events = yield* eventStream(opened)
     yield* ask(opened, first.child, "Finish one new fixture period during the observation gap.")
@@ -931,14 +932,14 @@ const runNative = Effect.gen(function* () {
   const fork = yield* Config.schema(Schema.String, "OPENCODE_DEV")
   const home = yield* Effect.acquireRelease(Effect.sync(() => scratch("settle-child-attempts-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
   const child = yield* Effect.acquireRelease(
-    Effect.sync(() => owned(["bun", "--conditions=browser", path.resolve("tests/settle-child-attempts.test.ts")], {
-      cwd: home.path,
-      env: {
-        PATH: parentEnv.PATH, HOME: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
+    Effect.sync(() => ownedCheckoutBun("tests/settle-child-attempts.test.ts", {
+      condition: "browser", startIn: home.path,
+      scratch: {
+        HOME: home.path, TMPDIR: home.path, XDG_CONFIG_HOME: path.join(home.path, "config"), XDG_DATA_HOME: path.join(home.path, "data"),
         XDG_STATE_HOME: path.join(home.path, "state"), XDG_CACHE_HOME: path.join(home.path, "cache"),
-        LIFECYCLE_FIXTURE_HOME: home.path, LIFECYCLE_FIXTURE_FORK: path.resolve(fork), LIFECYCLE_FIXTURE_PLUGIN: path.resolve("cmd"),
+        LIFECYCLE_FIXTURE_HOME: home.path,
       },
-      stdout: "pipe", stderr: "pipe",
+      external: { LIFECYCLE_FIXTURE_FORK: path.resolve(fork) }, values: {},
     })),
     (child) => Effect.suspend(() => {
       child.kill()

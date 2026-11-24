@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // The simctl adapter's own parts: the booted simulators read from
 // `simctl list devices booted -j`, the ssh call (batch mode, a plain host,
 // never an option), the Mac-side screenshot command, and the pane's words

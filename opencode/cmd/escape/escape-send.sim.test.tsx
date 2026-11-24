@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // tests/escape-send.test.ts's names on the simulated TUI (sim-tui/), each at
 // its first SEEDS seeds and for both chords the real file runs (Ctrl+Enter,
 // and its fallback leader then F): the fork's real TUI in this process with

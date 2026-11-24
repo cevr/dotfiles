@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The queue on the simulated host (sim/world.ts), at 20 seeds: the verify-opencode skill's queue journey
 // (`.claude/skills/verify-opencode/features/queue.md`), driven by the verify model
 // (sim/verify-model.ts `worldScript`), the same prompts a verifier types into the real TUI. The plugin

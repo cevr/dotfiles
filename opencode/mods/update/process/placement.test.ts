@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/placement.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-placement"]).stdout.toString().trim(
 import { describe, expect, test } from "bun:test"
 import { spawnSync, write } from "bun"
 import { Effect, Option } from "effect"

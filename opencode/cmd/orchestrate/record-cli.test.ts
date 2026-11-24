@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at cmd/orchestrate/record-cli.test.ts: for (const args of [["add", "docs/record.md"], ["commit", "-q", "-m", "docs"]]) spawnSync(["git
 // The record's CLI on scratch files: a structured call per action with the tool's refusals, `list` on a file it may
 // not write, and `import --map ergo-register` from a register built with Ergo's DDL (`register.sql`, below) and
 // invented rows: the mapping row by row, counts in equal counts out by state, a row that does not map refused by its

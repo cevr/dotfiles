@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/digest/pair.test.ts: expect(statSync(join(dir, FilePairing.FILE)).mode & 0o777).toBe(0o600)
 // `digest pair` over a scratch digest folder:
 // - The link it prints carries a code that pairs one browser once, and never a token.
 // - The pairing file is the owner's alone (0600).

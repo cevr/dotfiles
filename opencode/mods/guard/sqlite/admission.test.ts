@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/sqlite/admission.ts: const stat = yield* fs.lstat(dir).pipe(Effect.mapError(unavailable))
 import { Effect, FileSystem, Option, Path, Result, Schema } from "effect"
 import { test } from "bun:test"
 import { expect, it } from "effect-bun-test"

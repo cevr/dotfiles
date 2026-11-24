@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A generated property over the guard's faults, on the simulated host at 20
 // seeds: the guard (`cmd/guard/server.ts`'s `make`, sim/plugins.ts `guard`) in
 // a root session and its subagent, the seed choosing up to 40 commands of shell

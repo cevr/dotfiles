@@ -9,13 +9,11 @@ import { spawnSync } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { scratchInput } from "../tests/read-path.ts"
+import { checkoutShellFixtureCommand, writeScratchScript } from "../tests/scratch-child.ts"
 import table from "./fixtures/chrome-launch-args.json" with { type: "json" }
 
-/** The shim, from this file's URL (opencode/scripts). */
-const shimPath = Effect.gen(function* () {
-  const path = yield* Path.Path
-  return yield* path.fromFileUrl(new URL("../../claude/bin/chrome-mock-keychain", import.meta.url))
-})
+const SHIM = "../claude/bin/chrome-mock-keychain"
 
 /** The two flags it adds, one a line (a list literal holding them beside --headless is the list the repository's lint reads). */
 const FLAGS = "--use-mock-keychain\n--password-store=basic".split("\n")
@@ -35,7 +33,7 @@ const plant = (path: string, text: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     yield* fs.makeDirectory(path.replace(/\/[^/]+$/, ""), { recursive: true })
-    yield* fs.writeFileString(path, text)
+    yield* Effect.sync(() => writeScratchScript(path, text))
     yield* fs.chmod(path, 0o755)
     return path
   })
@@ -45,11 +43,14 @@ const argvOf = (pid: number) => spawnSync(["ps", "-ww", "-o", "command=", "-p", 
 
 const text = (stream: Stream.Stream<Uint8Array, unknown>) => stream.pipe(Stream.decodeText(), Stream.mkString)
 
-/** The shim run with `args` and `env` over this process's, in a scope that ends it. */
-const through = (args: ReadonlyArray<string>, env: Readonly<Record<string, string>>, options: Partial<ChildProcess.CommandOptions> = {}) =>
+/** The real shim, staged beside only the fake browser tools in a fresh fixture. */
+const through = (
+  dir: string, args: ReadonlyArray<string>, paths: Readonly<Record<string, string>>,
+  lifecycle: Pick<ChildProcess.CommandOptions, "stdin" | "additionalFds"> = {}, self = false,
+) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    return yield* spawner.spawn(ChildProcess.make(yield* shimPath, args, { env, extendEnv: true, forceKillAfter: "2 seconds", ...options }))
+    return yield* spawner.spawn(checkoutShellFixtureCommand(SHIM, dir, args, { paths, lifecycle, ...(self && { self: "CHROME_KEYCHAIN_TARGET" }) }))
   })
 
 /** What the fake browser `child` recorded in `out`: its path, then its arguments; read once it says it is ready. */
@@ -57,7 +58,7 @@ const recorded = (child: ChildProcessSpawner.ChildProcessHandle, out: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     yield* child.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead)
-    return (yield* fs.readFileString(out)).trimEnd().split("\n")
+    return (yield* fs.readFileString(scratchInput(out))).trimEnd().split("\n")
   })
 
 describe("an argument list through the shim", () => {
@@ -70,7 +71,7 @@ describe("an argument list through the shim", () => {
       for (const [at, launch] of LAUNCHES.entries()) {
         const out = `${dir}/args-${at}.txt`
         const args = launch.args.map((arg) => arg.replace(/=X$/, `=${dir}/profile-${at}`))
-        const child = yield* through(args, { CHROME_KEYCHAIN_TARGET: fake, SHIM_TEST_OUT: out })
+        const child = yield* through(dir, args, { CHROME_KEYCHAIN_TARGET: fake, SHIM_TEST_OUT: out })
         const [program, ...received] = yield* recorded(child, out)
         expect([launch.source, program, received]).toEqual([launch.source, fake, [...args, ...FLAGS]])
         const argv = argvOf(child.pid)
@@ -87,7 +88,7 @@ describe("an argument list through the shim", () => {
       const fake = yield* plant(`${dir}/bin/fake-chrome`, FAKE)
       const run = (args: ReadonlyArray<string>, name: string) =>
         Effect.gen(function* () {
-          const child = yield* through(args, { CHROME_KEYCHAIN_TARGET: fake, SHIM_TEST_OUT: `${dir}/${name}` })
+          const child = yield* through(dir, args, { CHROME_KEYCHAIN_TARGET: fake, SHIM_TEST_OUT: `${dir}/${name}` })
           const received = (yield* recorded(child, `${dir}/${name}`)).slice(1)
           yield* child.kill()
           return received
@@ -103,7 +104,7 @@ describe("an argument list through the shim", () => {
       const fs = yield* FileSystem.FileSystem
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-shim-" })
       const browser = yield* plant(`${dir}/bin/pipe-chrome`, PIPE)
-      const child = yield* through(`${HEADLESS}=new --remote-debugging-pipe`.split(" "), { CHROME_KEYCHAIN_TARGET: browser }, { stdin: "ignore", additionalFds: { fd3: { type: "input" }, fd4: { type: "output" } } })
+      const child = yield* through(dir, `${HEADLESS}=new --remote-debugging-pipe`.split(" "), { CHROME_KEYCHAIN_TARGET: browser }, { stdin: "ignore", additionalFds: { fd3: { type: "input" }, fd4: { type: "output" } } })
       const asked = '{"id":1,"method":"Browser.getVersion"}\n'
       const [, answer] = yield* Effect.all([Stream.make(new TextEncoder().encode(asked)).pipe(Stream.run(child.getInputFd(3))), text(child.getOutputFd(4))], { concurrency: 2 })
       expect(answer).toBe(`answer:${asked}`)
@@ -124,7 +125,7 @@ describe("the browser it runs", () => {
         yield* plant(`${dir}/pw/chromium-${version}/${linux}`, FAKE)
       }
       const out = `${dir}/args.txt`
-      const child = yield* through([HEADLESS], { CHROME_KEYCHAIN_TARGET: "", PLAYWRIGHT_BROWSERS_PATH: `${dir}/pw`, HOME: dir, SHIM_TEST_OUT: out })
+      const child = yield* through(dir, [HEADLESS], { PLAYWRIGHT_BROWSERS_PATH: `${dir}/pw`, SHIM_TEST_OUT: out })
       const [program] = yield* recorded(child, out)
       expect([`${dir}/pw/chromium-1255/chrome-mac-arm64/${app}`, `${dir}/pw/chromium-1255/${linux}`]).toContain(program ?? "")
       yield* child.kill()
@@ -135,19 +136,20 @@ describe("the browser it runs", () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "chrome-shim-" })
-      const refused = (env: Readonly<Record<string, string>>) =>
+      const refused = (paths: Readonly<Record<string, string>>, self = false) =>
         Effect.gen(function* () {
-          const child = yield* through([HEADLESS], env, { stdin: "ignore" })
+          const child = yield* through(dir, [HEADLESS], paths, { stdin: "ignore" }, self)
           const [said, code] = yield* Effect.all([text(child.stderr), child.exitCode], { concurrency: 2 })
           return [Number(code), said.trim()] as const
         })
-      const self = yield* refused({ CHROME_KEYCHAIN_TARGET: yield* shimPath })
+      const self = yield* refused({}, true)
       expect(self[0]).toBe(126)
       expect(self[1]).toContain("refusing to exec itself")
-      const owners = yield* refused({ CHROME_KEYCHAIN_TARGET: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" })
+      const pretendOwner = yield* plant(`${dir}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, "exit 99\n")
+      const owners = yield* refused({ CHROME_KEYCHAIN_TARGET: pretendOwner })
       expect(owners[0]).toBe(126)
       expect(owners[1]).toContain("refusing the owner's Google Chrome.app")
-      const none = yield* refused({ CHROME_KEYCHAIN_TARGET: "", PLAYWRIGHT_BROWSERS_PATH: `${dir}/empty`, HOME: dir })
+      const none = yield* refused({ PLAYWRIGHT_BROWSERS_PATH: `${dir}/empty` })
       expect(none[0]).toBe(127)
       expect(none[1]).toContain("set CHROME_KEYCHAIN_TARGET")
     }),

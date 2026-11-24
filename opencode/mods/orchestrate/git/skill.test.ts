@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at mods/orchestrate/git/skill.test.ts: const run = Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gp
 // The skill read through real git: a scratch checkout whose `skills/orchestrate`
 // is reached by a link, as `~/.claude/skills/orchestrate` reaches the dotfiles.
 import { afterAll, expect, test } from "bun:test"

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/cache/filestore/request-log.ts: try: () => readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOE
 import { afterAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

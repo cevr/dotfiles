@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/kernel/server.test.ts: execute: (input: { readonly path: string }) => Effect.promise(() => Bun.file(input.path).text()
 // The plugin seam: the composition root on a stand-in host, with the sessions
 // in memory, the stored bindings in OpenCode's storage format over the
 // stand-in's storage, and the workers live (the worker is this repo's own

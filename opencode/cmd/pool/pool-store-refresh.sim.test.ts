@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A store account whose refresh is rate-limited, on the simulated host, at 20
 // seeds: tests/pool-store-refresh.test.ts's name and claims, moved off real
 // OpenCode. Two accounts in a login store the pool reads in place (memory
