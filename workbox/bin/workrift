@@ -3033,8 +3033,8 @@ EOF
     if sudo -n true 2>/dev/null; then
       sv_log "the walk could not look into $k_n process(es) of uid $k_uids; read again with privilege, read only:"
       for k_pid in $k_unknown; do
-        sv_log "  sudo -n find $proc_root/$k_pid/fd $proc_root/$k_pid/cwd -maxdepth 1 ( -lname $1 -o -lname $1/* ) -print"
-        if ! k_found=$(sudo -n find "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd" -maxdepth 1 \( -lname "$1" -o -lname "$1/*" \) -print 2>/dev/null); then
+        sv_log "  sudo -n find $proc_root/$k_pid/fd $proc_root/$k_pid/cwd -ignore_readdir_race -maxdepth 1 ( -lname $1 -o -lname $1/* ) -print"
+        if ! k_found=$(sudo -n find "$proc_root/$k_pid/fd" "$proc_root/$k_pid/cwd" -ignore_readdir_race -maxdepth 1 \( -lname "$1" -o -lname "$1/*" \) -print 2>/dev/null); then
           # One gone meanwhile holds nothing.
           [ ! -e "$proc_root/$k_pid" ] || { sv_why="the privileged read of process $k_pid failed (sudo -n find over $proc_root/$k_pid)"; return 1; }
           continue
@@ -3597,20 +3597,21 @@ sv_lines() {
 # packed-refs. A ref Git cannot resolve is among them. Fails when a read fails,
 # or when the refs are not kept in files (reftable: no such listing).
 sv_ref_store() {
-  local s_dir="$1/.git" s_loose s_packed='' s_format
+  local s_dir="$1/.git" s_loose s_packed='' s_format s_names
   if s_format=$(base_git "$1" config --get extensions.refStorage); then
     [ "$s_format" = files ] || return 1
   elif [ $? -ne 1 ]; then
     return 1
   fi
   s_loose=$(find "$s_dir/refs" -type f ! -name '*.lock' -print) || return 1
+  # Each stage into a variable, its status checked: a stage inside a pipe
+  # that failed would read as fewer names, and a skipped ref as none.
+  s_loose=$(printf '%s\n' "$s_loose" | awk -v p="$s_dir/" 'index($0, p) == 1 { print substr($0, length(p) + 1) }') || return 1
   if [ -e "$s_dir/packed-refs" ]; then
     s_packed=$(awk '/^[#^]/ { next } NF >= 2 { print $2 }' "$s_dir/packed-refs") || return 1
   fi
-  {
-    sv_lines "$s_loose" | awk -v p="$s_dir/" 'index($0, p) == 1 { print substr($0, length(p) + 1) }'
-    sv_lines "$s_packed"
-  } | LC_ALL=C sort -u
+  s_names=$(printf '%s\n%s\n' "$s_loose" "$s_packed" | LC_ALL=C sort -u) || return 1
+  sv_lines "$s_names"
 }
 
 # The base's refs, `oid ref` a line, sorted; fails when Git cannot list them.
