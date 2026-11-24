@@ -6,7 +6,7 @@ import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Random } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { FORM_CASES } from "../../../sim/witness-cases.ts"
-import { assertEffectWitness } from "../../../sim/witnesses.ts"
+import { assertEffectWitnessCases } from "../../../sim/witnesses.ts"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
 import { FormRefused, type FormHost, opener, type PendingForm, QuestionsUnread } from "./form.ts"
@@ -190,39 +190,36 @@ describe("opening the questions form", () => {
     TIMEOUT_MS,
   )
 
-  effectTest("W: a released open lists the pending form; answered keys do not return on reopen", Effect.gen(function* () {
-    const play = (click: boolean, submit: boolean) => Effect.gen(function* () {
-      const stand = yield* host({ open: [asked("ses_root", "q1", 1)], hold: true })
-      const forms = opener(stand.view)
-      const open = () => {
-        if (click) return forms.open("ses_root")
-        return Effect.succeed("no click")
-      }
-      const opening = yield* Effect.forkChild(open())
-      yield* Effect.yieldNow
-      yield* stand.release
-      const first = yield* Fiber.join(opening)
-      const listed = () => stand.view.pending("ses_root").map((form) => form.fields.map((field) => field.key))
-      const pending = listed()
-      const submitted: Array<string> = []
-      if (submit) submitted.push(...(yield* stand.submit))
-      else for (const form of stand.view.pending("ses_root")) yield* stand.view.cancel("ses_root", form.id)
-      const reopened = yield* Effect.forkChild(open())
-      yield* Effect.yieldNow
-      yield* stand.release
-      return { pending, first, submitted, next: yield* Fiber.join(reopened), listed: listed() }
-    })
-    const cases = {
-      "opened form": (name) => assertEffectWitness(name, [["ask_user_async:q1"]], (cause) =>
-        Effect.map(play(cause, false), (run) => run.pending)),
-      "submitted form": (name) => assertEffectWitness(name, { next: "none", listed: [] }, (cause) =>
-        Effect.map(play(true, cause), ({ first, submitted, next, listed }) => {
-          if (cause) expect({ first, submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
-          else expect({ next, listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
-          return { next, listed }
-        })),
-    } satisfies Record<(typeof FORM_CASES)[number], (name: string) => Effect.Effect<string>>
-    const ran = yield* Effect.forEach(Object.entries(cases), ([name, run]) => run(name))
-    expect(ran.toSorted()).toEqual(FORM_CASES.toSorted())
+  const play = (click: boolean, submit: boolean) => Effect.gen(function* () {
+    const stand = yield* host({ open: [asked("ses_root", "q1", 1)], hold: true })
+    const forms = opener(stand.view)
+    const open = () => {
+      if (click) return forms.open("ses_root")
+      return Effect.succeed("no click")
+    }
+    const opening = yield* Effect.forkChild(open())
+    yield* Effect.yieldNow
+    yield* stand.release
+    const first = yield* Fiber.join(opening)
+    const listed = () => stand.view.pending("ses_root").map((form) => form.fields.map((field) => field.key))
+    const pending = listed()
+    const submitted: Array<string> = []
+    if (submit) submitted.push(...(yield* stand.submit))
+    else for (const form of stand.view.pending("ses_root")) yield* stand.view.cancel("ses_root", form.id)
+    const reopened = yield* Effect.forkChild(open())
+    yield* Effect.yieldNow
+    yield* stand.release
+    return { pending, first, submitted, next: yield* Fiber.join(reopened), listed: listed() }
+  })
+  effectTest("W: a released open lists the pending form; answered keys do not return on reopen", assertEffectWitnessCases(FORM_CASES, {
+    "opened form": { expected: [["ask_user_async:q1"]], run: (cause) => Effect.map(play(cause, false), (run) => run.pending) },
+    "submitted form": {
+      expected: { next: "none", listed: [] },
+      run: (cause) => Effect.map(play(true, cause), ({ first, submitted, next, listed }) => {
+        if (cause) expect({ first, submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
+        else expect({ next, listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
+        return { next, listed }
+      }),
+    },
   }), TIMEOUT_MS)
 })

@@ -43,20 +43,28 @@ import {
 } from "./claim-rule.ts"
 
 // This domain's import fence keeps the simulator helper out.
-const assertWitness = <A>(name: string, expected: A, run: (cause: boolean) => A) => {
-  const observed = run(true)
-  const withoutCause = run(false)
-  const label = `W: ${name}`
-  expect(observed, label).toEqual(expected)
-  expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
-  return name
+type WitnessTable<Key extends string> = Readonly<Record<Key, { readonly expected: ReadonlyArray<string>; readonly run: (cause: boolean) => ReadonlyArray<string> }>>
+const assertWitnessCases = <const Key extends string>(
+  required: ReadonlyArray<Key>,
+  table: WitnessTable<NoInfer<Key>>,
+) => {
+  expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+  const completed = required.map((key) => {
+    const { expected, run } = table[key]
+    const observed = run(true)
+    const withoutCause = run(false)
+    const label = `W: ${key}`
+    expect(observed, label).toEqual(expected)
+    expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+    return key
+  })
+  expect(completed, "witness cases completed").toEqual([...required])
 }
 
 // Mirrors of the coverage registry, checked by scripts/sim-coverage.test.ts.
-const POOL_CLAIM_BOUNDS = [0, 20] as const
-const POOL_WAIT_BOUNDS = [0, 100] as const
-const POOL_CLAIMS = ["forecast", "expiry"] as const
-const POOL_WAITS = ["room", "exhaustion"] as const
+const POOL_LAW = [[0, 20, "forecast", "expiry"], [0, 100, "room", "exhaustion"]] as const
+const assertPoolWitnessCases = (law: typeof POOL_LAW, table: WitnessTable<string>) =>
+  assertWitnessCases(law.flatMap(([first, last, ...kinds]) => Arr.range(first, last).flatMap((index) => kinds.map((kind) => `${kind} ${index}`))), table)
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -428,7 +436,8 @@ describe("the rule on one pool, by example", () => {
     expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
     expect(room.verdict._tag).toBe("NoClaim")
   }
-  type PoolCase = (typeof POOL_CLAIMS | typeof POOL_WAITS)[number]
+  const [[claimFirst, claimLast, ...claimKinds], [waitFirst, waitLast, ...waitKinds]] = POOL_LAW
+  type PoolCase = (typeof claimKinds | typeof waitKinds)[number]
   type Input = Parameters<typeof pool>
   const room = (index: number): Input => [0.25, 2 * DAY, 30 * DAY, index, 3]
   const spent = (index: number): Input => [1, 3 * DAY, 30 * DAY, index]
@@ -451,34 +460,27 @@ describe("the rule on one pool, by example", () => {
     },
   } satisfies Record<PoolCase, (index: number, cause: boolean) => Input>
   const cases = [
-    ...Arr.range(...POOL_CLAIM_BOUNDS).flatMap((index) => POOL_CLAIMS.map((kind) => ({ index, kind }))),
-    ...Arr.range(...POOL_WAIT_BOUNDS).flatMap((index) => POOL_WAITS.map((kind) => ({ index, kind }))),
+    ...Arr.range(claimFirst, claimLast).flatMap((index) => claimKinds.map((kind) => ({ index, kind }))),
+    ...Arr.range(waitFirst, waitLast).flatMap((index) => waitKinds.map((kind) => ({ index, kind }))),
   ]
-  test("W: all forecast, expiry, room, and exhaustion decisions", () => {
-    const ran: Array<string> = []
-    for (const { index, kind } of cases) {
-      const expected = { forecast: ["reset", "ra"], expiry: ["expiring", "ra"], room: ["NoClaim"], exhaustion: ["ra"] }[kind]
-      ran.push(assertWitness(`${kind} ${index}`, expected, (cause) => {
-        const input: Input = fixtures[kind](index, cause)
-        const decision = pool(...input)
-        if ((kind === "room" && cause) || (kind === "forecast" && !cause)) checkedRoom(decision)
-        if (!cause && kind !== "forecast") expect(taken(decision)).toEqual(["reset", "ra"])
-        if (kind === "forecast" && cause) eachClaimHolds([decision])
-        if (kind === "expiry" && cause) expiringGoFirst([decision])
-        if (kind === "exhaustion") {
-          if (!cause) claimedBeforeOut([decision])
-          return unclaimed(decision)
-        }
-        if (kind === "room") return [decision.verdict._tag]
-        return taken(decision)
-      }))
-    }
-    const required = [
-      ...Arr.range(...POOL_CLAIM_BOUNDS).flatMap((index) => POOL_CLAIMS.map((kind) => `${kind} ${index}`)),
-      ...Arr.range(...POOL_WAIT_BOUNDS).flatMap((index) => POOL_WAITS.map((kind) => `${kind} ${index}`)),
-    ]
-    expect(ran.toSorted()).toEqual(required.toSorted())
-  })
+  const poolFixtures = Object.fromEntries(cases.map(({ index, kind }) => [`${kind} ${index}`, {
+    expected: { forecast: ["reset", "ra"], expiry: ["expiring", "ra"], room: ["NoClaim"], exhaustion: ["ra"] }[kind],
+    run: (cause: boolean) => {
+      const input: Input = fixtures[kind](index, cause)
+      const decision = pool(...input)
+      if ((kind === "room" && cause) || (kind === "forecast" && !cause)) checkedRoom(decision)
+      if (!cause && kind !== "forecast") expect(taken(decision)).toEqual(["reset", "ra"])
+      if (kind === "forecast" && cause) eachClaimHolds([decision])
+      if (kind === "expiry" && cause) expiringGoFirst([decision])
+      if (kind === "exhaustion") {
+        if (!cause) claimedBeforeOut([decision])
+        return unclaimed(decision)
+      }
+      if (kind === "room") return [decision.verdict._tag]
+      return taken(decision)
+    },
+  }]))
+  test("W: all forecast, expiry, room, and exhaustion decisions", () => assertPoolWitnessCases(POOL_LAW, { ...poolFixtures }))
 })
 
 describe("the standing allowance's rule over generated weeks", () => {

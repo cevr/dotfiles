@@ -23,7 +23,7 @@ import { Array as Arr, Config, Effect, Layer, Match, Option, type Random } from 
 import { below, generator } from "../../sim/runtime.ts"
 import * as Seed from "../../sim/seed.ts"
 import { RECORD_CASES } from "../../sim/witness-cases.ts"
-import { assertEffectWitness, witnesses } from "../../sim/witnesses.ts"
+import { assertEffectWitnessCases, witnesses } from "../../sim/witnesses.ts"
 import { platform as ownPlatform } from "@dotfiles/opencode-orchestrate/node/platform"
 import { hostServices } from "../../sim/host-services.ts"
 import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
@@ -551,23 +551,19 @@ seeded("no commitment disappears: every open one is held or listed, through rest
   onSubject((open) => runSeed(seed, expect, open)),
 )
 
-Seed.effect("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", Effect.gen(function* () {
-  type Evidence = ReturnType<typeof coverPromises>
-  const cases = {
-    "six promises": { field: "promises", expected: ["w0", "w1", "w2", "w3", "w4", "w5"] },
-    "follow-up": { field: "followUp", expected: { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") } },
-    deferral: { field: "deferral", expected: { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") } },
-    decision: { field: "decision", expected: { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") } },
-  } satisfies { [Name in (typeof RECORD_CASES)[number]]: { readonly field: keyof Evidence; readonly expected: Evidence[keyof Evidence] } }
-  const ran: Array<string> = []
-  for (const [name, { field, expected }] of witnesses(RECORD_CASES, cases)) {
-    ran.push(yield* assertEffectWitness(name, expected, (cause) =>
-      onSubject((open) => {
-        const without = Option.getOrElse(Option.liftPredicate<OmitWitness>(name, () => !cause), (): OmitWitness => "none")
-        return coverPromises(open, without)[field]
-      })))
-  }
-  expect(ran.toSorted()).toEqual(RECORD_CASES.toSorted())
+type Evidence = ReturnType<typeof coverPromises>
+const recordCase = <Field extends keyof Evidence>(name: OmitWitness, field: Field, expected: Evidence[Field]) => ({
+  expected,
+  run: (cause: boolean) => onSubject((open) => {
+    const without = Option.getOrElse(Option.liftPredicate(name, () => !cause), (): OmitWitness => "none")
+    return coverPromises(open, without)[field]
+  }),
+})
+Seed.effect("W: six promised commitments and a reason for each successful follow-up, deferral and decision survive a restart", assertEffectWitnessCases(RECORD_CASES, {
+  "six promises": recordCase("six promises", "promises", ["w0", "w1", "w2", "w3", "w4", "w5"]),
+  "follow-up": recordCase("follow-up", "followUp", { state: Option.some<State>("open"), last: "promised", reason: Option.some("dependency commitment/w0") }),
+  deferral: recordCase("deferral", "deferral", { state: Option.some<State>("open"), last: "deferred", reason: Option.some("guarantee invariant/i1") }),
+  decision: recordCase("decision", "decision", { state: Option.some<State>("decided"), last: "decided", reason: Option.some("guarantee invariant/i1") }),
 }))
 
 Seed.effect(

@@ -30,3 +30,24 @@ export const assertEffectWitness = <A, E, R>(name: string, expected: A, run: (ca
     const withoutCause = yield* run(false)
     return compared(name, expected, observed, withoutCause)
   })
+
+type Observation = object | string | number | boolean | void
+
+/** Iterate the required keys, not the fixture table. A successful result has finished every pair. */
+export const assertWitnessCases = <const Kind extends string>(
+  required: ReadonlyArray<Kind>,
+  table: Readonly<Record<NoInfer<Kind>, { readonly expected: Observation; readonly run: (cause: boolean) => Observation }>>,
+) => {
+  expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+  const completed = required.map((key) => assertWitness(key, table[key].expected, table[key].run))
+  expect(completed, "witness cases completed").toEqual([...required])
+}
+
+export const assertEffectWitnessCases = <const Kind extends string, E, R>(
+  required: ReadonlyArray<Kind>,
+  table: Readonly<Record<NoInfer<Kind>, { readonly expected: Observation; readonly run: (cause: boolean) => Effect.Effect<Observation, E, R> }>>,
+) => Effect.gen(function* () {
+  expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+  const completed = yield* Effect.forEach(required, (key) => assertEffectWitness(key, table[key].expected, table[key].run))
+  expect(completed, "witness cases completed").toEqual([...required])
+})

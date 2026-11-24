@@ -12,17 +12,6 @@ import type { Target } from "./target.ts"
 import { HANDOFF_LIMIT, type Rejected, type Running } from "./update.ts"
 import { RESIDENT_DELAY, watch } from "./watch.ts"
 
-// This domain's import fence keeps the simulator helper out.
-const assertEffectWitness = <A, E, R>(name: string, expected: A, run: (cause: boolean) => Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const observed = yield* run(true)
-    const withoutCause = yield* run(false)
-    const label = `W: ${name}`
-    expect(observed, label).toEqual(expected)
-    expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
-    return name
-  })
-
 /** 2026-11-11T17:00:00Z, a Wednesday noon in Knowlton. */
 const WEDNESDAY_NOON = 1_794_416_400_000
 /** 2026-11-14T17:00:00Z, a Saturday noon in Knowlton: the Sabbath. */
@@ -1332,6 +1321,23 @@ describe("plugin trees", () => {
 
   /** Runs `scenarios` (each on its own host), then `assert` on what they answer, through the file's one runner (`run`). */
   const check = <A>(scenarios: Effect.Effect<A, UpdateFailed>, assert: (ran: A) => void) => run(world(), Effect.map(scenarios, assert))
+  // This domain's import fence keeps the simulator helper out.
+  const assertEffectWitnessCases = <const Key extends string>(
+    required: ReadonlyArray<Key>,
+    table: { readonly [Name in NoInfer<Key>]: { readonly expected: object; readonly run: (cause: boolean) => Effect.Effect<object, UpdateFailed> } },
+  ) => check(Effect.gen(function* () {
+    expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+    const completed = yield* Effect.forEach(required, (key) => Effect.gen(function* () {
+      const { expected, run } = table[key]
+      const observed = yield* run(true)
+      const withoutCause = yield* run(false)
+      const label = `W: ${key}`
+      expect(observed, label).toEqual(expected)
+      expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+      return key
+    }))
+    expect(completed, "witness cases completed").toEqual([...required])
+  }), constVoid)
 
   /** One generated host and its update, and a second update on top of it; what the invariant found, and each update's calls. */
   const scenario = (start: Start, tuis: number, endings: readonly [Ending, Ending], stay: ReadonlyArray<string>, crashAt: Option.Option<number | "restart"> = Option.none(), fails: Option.Option<"make tree" | "stage"> = Option.none()) => {
@@ -1427,20 +1433,32 @@ describe("plugin trees", () => {
     })
     type Observation = Ran["outcomes"] | ReturnType<typeof rejectConfig> | ReturnType<typeof untreed> | ReturnType<ReturnType<typeof atBuild>> | ReadonlyArray<Reopened>
     type Case = { readonly example: ReturnType<typeof reach>; readonly control: ReturnType<typeof reach>; readonly observe: (ran: Ran) => Observation; readonly want: Observation; readonly otherwise: Observation }
+    const witnessCase = (example: Case) => ({
+      expected: example.want,
+      run: (cause: boolean) => {
+        const input = Option.getOrElse(Option.liftPredicate(example.example, () => cause), () => example.control)
+        return Effect.map(runCase(input), (result) => {
+          assertRuns([result])
+          const observation = example.observe(result.ran)
+          if (!cause) expect(observation, "control setup reached the alternate outcome").toEqual(example.otherwise)
+          return observation
+        })
+      },
+    })
     const between = ["record", "restart"] as const
-    const cases = {
-      "both handoffs are proven": { example: ready, control: recovered, observe: exits, want: ["proven", "proven"], otherwise: ["rolled-back", "rolled-back"] },
-      "both handoffs roll back": { example: recovered, control: sickTwice, observe: exits, want: ["rolled-back", "rolled-back"], otherwise: ["gave-up", "gave-up"] },
-      "both handoffs give up": { example: sickTwice, control: recovered, observe: exits, want: ["gave-up", "gave-up"], otherwise: ["rolled-back", "rolled-back"] },
-      "both handoffs reject listed plugins before writes": { example: reach("lists ours", "healthy"), control: ready, observe: rejectConfig, want: [true, true], otherwise: [false, false] },
-      "cannot roll back to an untreed good build": {
+    test("W: A4 crash, handoff, rollback, and build outcomes", () => assertEffectWitnessCases(UPDATE_CASES, {
+      "both handoffs are proven": witnessCase({ example: ready, control: recovered, observe: exits, want: ["proven", "proven"], otherwise: ["rolled-back", "rolled-back"] }),
+      "both handoffs roll back": witnessCase({ example: recovered, control: sickTwice, observe: exits, want: ["rolled-back", "rolled-back"], otherwise: ["gave-up", "gave-up"] }),
+      "both handoffs give up": witnessCase({ example: sickTwice, control: recovered, observe: exits, want: ["gave-up", "gave-up"], otherwise: ["rolled-back", "rolled-back"] }),
+      "both handoffs reject listed plugins before writes": witnessCase({ example: reach("lists ours", "healthy"), control: ready, observe: rejectConfig, want: [true, true], otherwise: [false, false] }),
+      "cannot roll back to an untreed good build": witnessCase({
         example: reach("untreed good", "rolled back"), control: recovered, observe: untreed,
         want: { outcome: "gave-up", calls: ["record", "restart", "reject health"] },
         otherwise: { outcome: "rolled-back", calls: ["record", "restart", "record (good)", "restart", "reject health"] },
-      },
-      "make tree aborts before handoff": buildFails("make tree"),
-      "stage aborts before handoff": buildFails("stage"),
-      "crash replaces the old service and opens a competing TUI before the explicit restart": {
+      }),
+      "make tree aborts before handoff": witnessCase(buildFails("make tree")),
+      "stage aborts before handoff": witnessCase(buildFails("stage")),
+      "crash replaces the old service and opens a competing TUI before the explicit restart": witnessCase({
         example: reach("on trees", "healthy", Option.none(), Option.some("restart")), control: ready,
         observe: (ran: Ran) => ran.host.reopened,
         want: [
@@ -1448,23 +1466,8 @@ describe("plugin trees", () => {
           { previous: NEW.version, service: NEW.version, installed: NEWER.version, tui: NEWER.version, between },
         ],
         otherwise: [],
-      },
-    } satisfies { readonly [Key in (typeof UPDATE_CASES)[number]]: Case }
-    test("W: A4 crash, handoff, rollback, and build outcomes", () => check(Effect.gen(function* () {
-      const ran: Array<string> = []
-      for (const [name, example] of Object.entries(cases)) {
-        ran.push(yield* assertEffectWitness<Observation, UpdateFailed, never>(name, example.want, (cause) => {
-          const input = Option.getOrElse(Option.liftPredicate(example.example, () => cause), () => example.control)
-          return Effect.map(runCase(input), (result) => {
-            assertRuns([result])
-            const observation = example.observe(result.ran)
-            if (!cause) expect(observation, "control setup reached the alternate outcome").toEqual(example.otherwise)
-            return observation
-          })
-        }))
-      }
-      expect(ran.toSorted()).toEqual(UPDATE_CASES.toSorted())
-    }), constVoid))
+      }),
+    }))
 
     test("A4: over generated hosts, endings, crashes and a second update, no step breaks I1 to I7, no step of the old scheme runs, a server config listing ours ends with no write and no restart, and a good build with no tree is never rolled back onto", () =>
       check(
