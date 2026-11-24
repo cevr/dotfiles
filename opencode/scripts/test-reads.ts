@@ -933,6 +933,12 @@ const checkScope = (pattern: string, declarations: ReturnType<typeof readDeclara
   return `declare @reads${(indirect && "-indirect") || ""} ${pattern}`
 }
 
+const siteLiterals = (site: Site, needed: string): ReadonlyArray<string> => {
+  if (site.listing) return []
+  const address = Option.filter(site.result, (value) => !("glob" in value))
+  return Option.getOrElse(Option.map(address, (value) => ("choices" in value && patternParts(needed)) || [needed]), () => [])
+}
+
 const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: ReturnType<typeof readDeclarations>, hasAll: boolean) => {
   const found = new Set<string>()
   const literalPaths = new Set<string>()
@@ -951,10 +957,7 @@ const siteReport = (file: string, sites: ReadonlyArray<Site>, declarations: Retu
     }
     if (!needed.value) continue
     found.add(needed.value)
-    if (!site.listing && Option.exists(site.result, (address) => !("glob" in address))) {
-      const choices = Option.exists(site.result, (address) => "choices" in address)
-      for (const part of (choices && patternParts(needed.value)) || [needed.value]) literalPaths.add(part)
-    }
+    siteLiterals(site, needed.value).forEach((part) => literalPaths.add(part))
     if (!Option.exists(site.result, (a) => "glob" in a && a.bounded)) continue
     for (const scope of patternParts(needed.value)) {
       bounded.add(scope)
@@ -993,7 +996,10 @@ const report = (file: string, source: string, comments: ReadonlyArray<string>, s
     issue("@reads declarations must be source comments, not text in a string")
   if (declared.some(wholeTree)) issue("@reads must name the input or use @reads all for an opaque read")
   for (const message of unsupportedDeclarations(declarations, bounded)) issue(message)
-  return { patterns: [...found].toSorted(), ...((literalPaths.size > 0 && { literalPaths: [...literalPaths].toSorted() }) || {}), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size), opensCompiler: sites.some((site) => site.result === COMPILER_PROJECT) }
+  const literals = [...literalPaths].toSorted()
+  const result = { patterns: [...found].toSorted(), bounded: [...bounded].toSorted(), indirect, issues, classification: readClassification(indirect.length > 0, bounded.size), opensCompiler: sites.some((site) => site.result === COMPILER_PROJECT) }
+  if (literals.length > 0) return { ...result, literalPaths: literals }
+  return result
 }
 
 export const readInputChecker = (loadSource: Source, resolvePackage: ResolvePackage = () => "") => {
