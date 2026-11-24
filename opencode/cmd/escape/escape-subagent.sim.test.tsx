@@ -14,6 +14,7 @@ import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
 import { MODEL_REF, type Model, stall, subagent, text } from "../../sim-tui/server.ts"
 import { composerRow } from "../../tests/composer.ts"
+import { fixtureChildRows } from "../../tests/held-child-rows.ts"
 
 const FILE = "cmd/escape/escape-subagent.sim.test.tsx"
 /** Seeds this file runs: sim-tui's measured headroom rule (a file keeps half its 5 s of CPU). */
@@ -74,8 +75,10 @@ const play = (seed: number) => {
     served.stalled = served.elapsed()
     return [text([WORKING, STEERED][Number(kind === "steer")] ?? WORKING), stall]
   }
-  return App.seed(BOOT, { key: "escape-subagent", seed, model, title: () => "money parsing" }, (tui) =>
+  const owner = fixtureChildRows()
+  return App.seed(BOOT, { key: "escape-subagent", seed, model, title: () => "money parsing", rpc: owner.rpc }, (tui) =>
     Effect.gen(function* () {
+      owner.attach(tui.server)
       served.elapsed = tui.elapsed
       const frames = new Map<Name, ReadonlyArray<string>>()
       const save = (name: Name) => Effect.sync(() => frames.set(name, tui.text()))

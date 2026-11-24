@@ -13,7 +13,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Effect, Schedule } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { HELLO, PIXEL_FILE, PIXEL_PNG, QUEUED_PROMPT, REPORT_TASK, SELF, serve, type Seen, STALL_TASK, STOP_TASK, isReport } from "./sim.ts"
 
@@ -43,43 +43,6 @@ export interface Result {
   readonly waited: number
 }
 
-const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
-const base = scratchInput(spec.base)
-const work = join(base, "work")
-const config = join(base, "config")
-mkdirSync(work, { recursive: true })
-mkdirSync(config, { recursive: true })
-const file = join(work, "hello.txt")
-writeFileSync(file, `${HELLO}\n`)
-writeFileSync(join(work, PIXEL_FILE), Buffer.from(PIXEL_PNG, "base64"))
-
-const sim = serve(file)
-const content = {
-  model: "sim/sim-model",
-  providers: {
-    sim: {
-      name: "Sim",
-      package: "@opencode/ai/providers/openai-compatible",
-      settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
-      models: {
-        "sim-model": {
-          name: "Sim",
-          capabilities: { tools: true, input: spec.images ? ["text", "image"] : ["text"], output: ["text"] },
-          limit: { context: 128_000, output: 16_000 },
-        },
-      },
-    },
-  },
-  plugins: [
-    {
-      package: matchingInput("cmd/kernel", spec.plugin),
-      options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
-    },
-    ...(spec.orchestrate ? [{ package: matchingInput("cmd/orchestrate", spec.orchestrate.plugin), options: { now: spec.orchestrate.now, log: join(base, "agents.jsonl") } }] : []),
-    ...(spec.memory ? [{ package: matchingInput("cmd/memory", spec.memory.plugin), options: { path: join(base, "memory.db") } }] : []),
-  ],
-}
-
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
 interface Embedded {
   readonly sessions: {
@@ -95,50 +58,99 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
-const opencode = await OpenCode.create({
-  events: { persist: true },
-  // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
-  models: { fetch: false },
-  config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+// These modules resolve in their own projects; decode their exports at the import boundary.
+const importNativeModule = (file: string): Promise<object> => import(file)
+const sdkFile = (fork: string) => externalInput(join(fork, "packages/sdk/src/index.ts"))
+const loadNativeModule = <A>(file: string, contract: Schema.Codec<A>) =>
+  Effect.tryPromise(() => importNativeModule(file)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(contract)))
+export const loadKernelSdk = <A>(fork: string, contract: Schema.Codec<A>) =>
+  loadNativeModule(sdkFile(fork), contract)
+export const loadKernelRowFixture = <A>(contract: Schema.Codec<A>) =>
+  loadNativeModule(matchingInput("mods/subagents/solid/native-row.fixture.ts"), contract)
 
-try {
-  const session = await opencode.sessions.create({ location: { directory: work } })
-  // A task names the session itself by `SELF`: a session that is no subagent of its own.
-  await opencode.sessions.prompt({ sessionID: session.id, text: spec.task.replace(SELF, session.id) })
-  const done = Effect.promise(() => opencode.experimental.session.wait({ sessionID: session.id }))
-  // The run ends with the session's turn. The stop task's subagent gets a prompt queued behind its stalled turn,
-  // which its stop must drop; after the run, what still waits in its inbox.
-  const ran = Effect.gen(function* () {
-    if (spec.task.endsWith(REPORT_TASK)) {
-      yield* done
-      // The parent's turn ended; now its subagent answers, and its report wakes the parent into a turn of its own.
-      sim.release()
-      yield* Effect.sync(() => sim.seen.some((request) => request.task.endsWith(REPORT_TASK) && isReport(request.last))).pipe(
-        Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (heard) => heard }),
-      )
-      yield* done
-      return []
-    }
-    if (!spec.task.endsWith(STOP_TASK)) {
-      yield* done
-      return []
-    }
-    // The child asked for its shell, then for the answer that holds: it is mid-turn with its shell running.
-    yield* Effect.sync(() => sim.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0).length >= 2).pipe(
-      Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (stalled) => stalled }),
-    )
-    const children = (yield* Effect.promise(() => opencode.sessions.list({ parentID: session.id }))).data
-    yield* Effect.forEach(children, (child) => Effect.promise(() => opencode.sessions.prompt({ sessionID: child.id, text: QUEUED_PROMPT, delivery: "queue" })))
-    yield* done
-    return (yield* Effect.forEach(children, (child) => Effect.promise(() => opencode.sessions.inbox.list({ sessionID: child.id })))).flat()
+if (import.meta.main) {
+  const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+  const base = scratchInput(spec.base)
+  const work = join(base, "work")
+  const config = join(base, "config")
+  mkdirSync(work, { recursive: true })
+  mkdirSync(config, { recursive: true })
+  const file = join(work, "hello.txt")
+  writeFileSync(file, `${HELLO}\n`)
+  writeFileSync(join(work, PIXEL_FILE), Buffer.from(PIXEL_PNG, "base64"))
+
+  const sim = serve(file)
+  const content = {
+    model: "sim/sim-model",
+    providers: {
+      sim: {
+        name: "Sim",
+        package: "@opencode/ai/providers/openai-compatible",
+        settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
+        models: {
+          "sim-model": {
+            name: "Sim",
+            capabilities: { tools: true, input: spec.images ? ["text", "image"] : ["text"], output: ["text"] },
+            limit: { context: 128_000, output: 16_000 },
+          },
+        },
+      },
+    },
+    plugins: [
+      {
+        package: matchingInput("cmd/kernel", spec.plugin),
+        options: { denyExecute: spec.denyExecute, timeoutMs: 20_000, ...(spec.codeOnly === undefined ? {} : { codeOnly: spec.codeOnly }) },
+      },
+      ...(spec.orchestrate ? [{ package: matchingInput("cmd/orchestrate", spec.orchestrate.plugin), options: { now: spec.orchestrate.now, log: join(base, "agents.jsonl") } }] : []),
+      ...(spec.memory ? [{ package: matchingInput("cmd/memory", spec.memory.plugin), options: { path: join(base, "memory.db") } }] : []),
+    ],
+  }
+
+  const { OpenCode } = (await importNativeModule(sdkFile(spec.fork))) as Sdk
+  const opencode = await OpenCode.create({
+    events: { persist: true },
+    // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
+    models: { fetch: false },
+    config: { directory: config, project: false, content: JSON.stringify(content) },
   })
-  const inbox = await Effect.runPromise(ran)
-  const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox, waited: sim.waited() }
-  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
-} finally {
-  await opencode.close()
-  sim.server.stop(true)
+
+  try {
+    const session = await opencode.sessions.create({ location: { directory: work } })
+    // A task names the session itself by `SELF`: a session that is no subagent of its own.
+    await opencode.sessions.prompt({ sessionID: session.id, text: spec.task.replace(SELF, session.id) })
+    const done = Effect.promise(() => opencode.experimental.session.wait({ sessionID: session.id }))
+    // The run ends with the session's turn. The stop task's subagent gets a prompt queued behind its stalled turn,
+    // which its stop must drop; after the run, what still waits in its inbox.
+    const ran = Effect.gen(function* () {
+      if (spec.task.endsWith(REPORT_TASK)) {
+        yield* done
+        // The parent's turn ended; now its subagent answers, and its report wakes the parent into a turn of its own.
+        sim.release()
+        yield* Effect.sync(() => sim.seen.some((request) => request.task.endsWith(REPORT_TASK) && isReport(request.last))).pipe(
+          Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (heard) => heard }),
+        )
+        yield* done
+        return []
+      }
+      if (!spec.task.endsWith(STOP_TASK)) {
+        yield* done
+        return []
+      }
+      // The child asked for its shell, then for the answer that holds: it is mid-turn with its shell running.
+      yield* Effect.sync(() => sim.seen.filter((request) => request.task.endsWith(STALL_TASK) && request.tools.length > 0).length >= 2).pipe(
+        Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (stalled) => stalled }),
+      )
+      const children = (yield* Effect.promise(() => opencode.sessions.list({ parentID: session.id }))).data
+      yield* Effect.forEach(children, (child) => Effect.promise(() => opencode.sessions.prompt({ sessionID: child.id, text: QUEUED_PROMPT, delivery: "queue" })))
+      yield* done
+      return (yield* Effect.forEach(children, (child) => Effect.promise(() => opencode.sessions.inbox.list({ sessionID: child.id })))).flat()
+    })
+    const inbox = await Effect.runPromise(ran)
+    const result: Result = { messages: await opencode.sessions.context({ sessionID: session.id }), seen: sim.seen, inbox, waited: sim.waited() }
+    writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
+  } finally {
+    await opencode.close()
+    sim.server.stop(true)
+  }
+  process.exit(0)
 }
-process.exit(0)

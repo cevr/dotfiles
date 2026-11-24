@@ -43,6 +43,8 @@ interface FixtureEnvironment {
   readonly checkout?: Readonly<Record<string, string>>
   readonly values: Readonly<Record<string, string>>
   readonly scratchArgs?: ReadonlyArray<string>
+  readonly condition?: "browser"
+  readonly startIn?: string
   /** A scratch directory containing only one validated external work executable. */
   readonly workBinDir?: string
 }
@@ -75,8 +77,9 @@ export const checkoutBun = (entry: string, inputs: FixtureEnvironment) => {
   }
   for (const name of bunStatePaths)
     if (!Object.hasOwn(inputs.scratch, name)) return reject(`missing scratch fixture environment: ${name}`)
-  const argv: [string, ...Array<string>] = [localTestProcess.execPath, "--no-env-file", matchingInput(entry), ...(inputs.scratchArgs ?? []).map(scratchInput)]
-  return { argv, cwd: ROOT, env: Object.fromEntries(env) }
+  const condition = inputs.condition === "browser" && ["--conditions=browser"] || []
+  const argv: [string, ...Array<string>] = [localTestProcess.execPath, "--no-env-file", ...condition, matchingInput(entry), ...(inputs.scratchArgs ?? []).map(scratchInput)]
+  return { argv, cwd: inputs.startIn && scratchInput(inputs.startIn) || ROOT, env: Object.fromEntries(env) }
 }
 
 /** A fixed local Bun entry, with each generated, pinned and checkout input checked before launch. */
