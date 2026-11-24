@@ -77,7 +77,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 - A round is one request and its verdict; it fails on `changes`, a proven Blocker or Major. Its next round goes to the same implementor (from main's head once it landed); from round 3, a fresh one ([hosts](references/hosts.md)).
 - At the third failed round, the unit goes to decide: [rewrite](references/rewrite.md), re-plan (sharpen the spec, split it, narrow it to the owner's ask) or drop. `stuck` (no round can help) goes to re-plan.
-- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
+- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Follow [worker restarts](references/hosts.md#worker-restarts). A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
 - A red merge check, acceptance run or CI on main becomes a fix unit, fixed forward, never reverted; until main's CI is green, only fix units land.
 - **Close a unit**: `merged <hash>` in its row, its and its findings' follow-ups in the plan; stop its agents and remove its workspace. End an abandoned one by `log.ts --current <unit dir> dropped r<N> superseded-by <hash>` (or a reason), or status lists it.
 
