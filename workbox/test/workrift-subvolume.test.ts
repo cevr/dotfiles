@@ -7,6 +7,7 @@
 // `findmnt`, `df` and /sys/fs/btrfs are files of the bench; /proc is a folder of the bench. Nothing touches the host.
 import { afterAll, describe, expect, test } from "bun:test"
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -407,6 +408,45 @@ const filesUnder = (dir: string): ReadonlyArray<string> => readdirSync(dir, { re
 const whole = (b: Bench, path = b.base) => {
   expect(readFileSync(join(path, "README.md"), "utf8")).toBe("app\n")
   for (const line of textLines(b.original)) expect(b.refs(path)).toContain(line)
+}
+
+/**
+ * What a tree holds, to compare with the original (the round-4 verifier's oracle): every file but .git's with its
+ * checksum, the refs but those a carry keeps aside (refs/subvolume-move/) and those `aside` names, HEAD, the status
+ * (untracked files too) and git fsck's verdict on connectivity.
+ */
+const content = (b: Bench, path: string, aside: ReadonlyArray<string> = []) => {
+  const files: Array<string> = []
+  const walk = (dir: string, rel: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (rel === "" && entry.name === ".git") continue
+      const at = join(dir, entry.name)
+      const name = rel ? `${rel}/${entry.name}` : entry.name
+      if (entry.isDirectory()) walk(at, name)
+      else files.push(`${name} ${createHash("sha1").update(readFileSync(at)).digest("hex")}`)
+    }
+  }
+  walk(path, "")
+  const refs = textLines(b.refs(path)).filter((line) => !line.includes(" refs/subvolume-move/") && !aside.some((ref) => line.endsWith(` ${ref}`)))
+  const head = sh(path, b.env, "git", "symbolic-ref", "HEAD").trim()
+  const status = sh(path, b.env, "git", "--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=all").trim()
+  const fsck = Bun.spawnSync(["git", "fsck", "--connectivity-only", "--no-progress"], { cwd: path, env: b.env, stdout: "pipe", stderr: "pipe" }).exitCode
+  return { files: files.sort(), refs: refs.sort(), head, status, fsck }
+}
+
+/** A base with more than a README: an untracked file, a staged one, a nested folder. */
+const enrich = (b: Bench) => {
+  writeFileSync(join(b.base, "notes.txt"), "untracked\n")
+  writeFileSync(join(b.base, "staged.txt"), "staged\n")
+  sh(b.base, b.env, "git", "add", "staged.txt")
+  mkdirSync(join(b.base, "src"), { recursive: true })
+  writeFileSync(join(b.base, "src", "deep.txt"), "deep\n")
+}
+
+/** The command of the last `next:` line, as printed (`cd / && WORKRIFT_SOURCE=… workrift subvolume --flags`). */
+const printedNext = (err: string) => {
+  const line = textLines(err).filter((l) => l.startsWith("workrift subvolume: next: ")).at(-1)
+  return line?.slice("workrift subvolume: next: ".length).match(/^cd \/ && WORKRIFT_SOURCE=\S+ workrift subvolume(?: --[a-z-]+)*/)?.[0]
 }
 
 /** After a forward switch: the base a subvolume, the old folder kept, no copy left, the switch recorded. */
@@ -2913,17 +2953,34 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
       if (ran.signal) await Bun.sleep(300)
       return ran
     }
+    /** The printed next, run as printed: `workrift` on PATH is the script, WORKRIFT_SOURCE only what the line sets. */
+    const runPrinted = async (b: Bench, command: string) => {
+      const wbin = join(b.dir, "wbin")
+      mkdirSync(wbin, { recursive: true })
+      if (!existsSync(join(wbin, "workrift"))) symlinkSync(SCRIPT, join(wbin, "workrift"))
+      const env: Env = { ...b.envFor(planEnv), PATH: `${wbin}:${b.env.PATH}` }
+      delete (env as Record<string, string | undefined>).WORKRIFT_SOURCE
+      const child = Bun.spawn(["/bin/sh", "-c", command], { cwd: b.dir, env, stdout: "pipe", stderr: "pipe" })
+      const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
+      await child.exited
+      const ran: Ran = { code: child.signalCode ? null : child.exitCode, signal: child.signalCode ?? null, out, err }
+      writeFileSync(join(b.dir, "case.log"), `$ ${command} (the printed next)\n${said(ran)}\n`, { flag: "a" })
+      return ran
+    }
+    /** The refs a carry plan changes on the way (census-new arrives, census-both moves): checked on their own. */
+    const aside = plan.env === carryEnv ? ["refs/heads/census-new", "refs/heads/census-both"] : []
     const prepare = async (label: string) => {
       const b = bench(label)
+      enrich(b)
       for (const step of plan.before) {
         const ran = await run(b, step.argv, undefined, step.env)
         expect(ran.code, `${label} before: ${step.argv.join(" ")}: ${said(ran)}`).toBe(step.code)
       }
       plan.setup?.(b)
-      return b
+      return { b, original: content(b, b.base, aside) }
     }
     // The count: the command once, every call logged with its site.
-    const counted = await prepare("census-count")
+    const { b: counted } = await prepare("census-count")
     const countLog = join(counted.dir, "census.calls")
     const first = await run(counted, plan.argv, { log: countLog })
     expect(first.code, said(first)).toBe(plan.settle === "refused" ? 1 : 0)
@@ -2944,7 +3001,12 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
     const bad: Array<string> = outside.map((o) => `a call no site names: ${o}`)
     await pool(
       cases.map((target) => async () => {
-        const b = await prepare(`census-${target.site.line}-${target.site.command}-${target.site.ordinal}`)
+        const { b, original } = await prepare(`census-${target.site.line}-${target.site.command}-${target.site.ordinal}`)
+        /** Both trees hold what the base held before (the kept tree, where there is one, too). */
+        const same = (at: string) => {
+          expect(content(b, b.base, aside), `the base ${at}`).toEqual(original)
+          if (existsSync(b.paths.old)) expect(content(b, b.paths.old, aside), `the kept tree ${at}`).toEqual(original)
+        }
         const log = join(b.dir, "census.calls")
         const ran = await run(b, plan.argv, { log, at: target })
         const problems: Array<string> = []
@@ -2971,17 +3033,24 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
           check("other after the kill", () => expect(["ok", "refused"]).toContain(end(other)))
           check("whole after other", () => whole(b))
         }
-        const again = await run(b, plan.argv)
-        runs.push(["again", again])
-        result.again = { end: end(again), said: lastSaid(again) }
+        // The case goes on as a person would: by the next command the last run printed, run as printed (a run that
+        // ended well, or was cut, printed none: the plan's command again).
+        const last = runs.at(-1)![1]
+        const next = last.code !== 0 && !last.signal ? printedNext(last.err) : undefined
+        if (last.code !== 0 && !last.signal) check("the printed next is a command", () => expect(next, last.err).toBeDefined())
+        const again = next ? await runPrinted(b, next) : await run(b, plan.argv)
+        runs.push([next ? `again, as printed: ${next.replace(/^.* workrift /, "workrift ")}` : "again", again])
+        result.again = { end: end(again), said: lastSaid(again), ...(next ? { printed: next.replace(/^.* workrift /, "workrift ") } : {}) }
         if (plan.settle === "refused") {
           check("again refused", () => expect(again.code, said(again)).toBe(1))
           check("layout again", () => expect(b.layout()).toEqual({ base: "F", new: "-", back: "-", old: "-" }))
           check("whole again", () => whole(b))
+          check("content again", () => same("after the refusal"))
         } else if (plan.settle === "drop") {
           check("again", () => expect(again.code, said(again)).toBe(0))
           check("layout again", () => expect(b.layout()).toEqual({ base: "S", new: "-", back: "-", old: "-" }))
           check("whole again", () => whole(b))
+          check("content again", () => same("after the drop"))
           const way = await run(b, back.argv)
           runs.push(["back", way])
           check("back after the drop", () => expect(way.code, said(way)).toBe(0))
@@ -2993,6 +3062,16 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
             whole(b)
             whole(b, b.paths.old)
           })
+          check("content again", () => same("once the switch finished"))
+          // The carry plan's refs arrived: census-new at feat-a, and census-both's value moved in the kept tree (HEAD's)
+          // is in the base, as itself or kept aside under refs/subvolume-move/.
+          if (aside.length > 0)
+            check("the carried refs arrived", () => {
+              const refs = b.refs(b.base)
+              const feat = refs.match(/(\w+) refs\/heads\/feat-a/)![1]!
+              expect(refs).toContain(`${feat} refs/heads/census-new`)
+              expect(refs).toMatch(new RegExp(`^${b.head} refs/(heads|subvolume-move/heads)/census-both$`, "m"))
+            })
           const way = await run(b, forward ? back.argv : fwd.argv)
           runs.push(["the other way", way])
           check("the other way", () => expect(way.code, said(way)).toBe(0))
@@ -3003,9 +3082,14 @@ describe.skipIf(!process.env.WORKRIFT_CENSUS)("census: a failure or a kill at ev
             whole(b)
             whole(b, b.paths.old)
           })
+          check("content at the end", () => same("at the end"))
         }
-        // No end but a success or a cut goes without the three facts.
-        for (const [what, r] of runs) if (r.code !== 0 && !r.signal) check(`the three facts (${what})`, () => expect(hasFacts(r.err), r.err).toBe(true))
+        // No end but a success or a cut goes without the three facts, and none is a set -e stop: a command that failed
+        // with no check of its own, even after a finished switch (the round-4 review's m4: queue_leave's rm).
+        for (const [what, r] of runs) {
+          if (r.code !== 0 && !r.signal) check(`the three facts (${what})`, () => expect(hasFacts(r.err), r.err).toBe(true))
+          check(`no set -e end (${what})`, () => expect(end(r), lastSaid(r)).not.toBe("set-e"))
+        }
         result.problems = problems
         appendFileSync(out, `${JSON.stringify(result)}\n`)
         if (problems.length > 0) bad.push(`site ${target.site.id} (${target.site.fn}: ${target.site.text.slice(0, 60)}): ${problems.join("; ")} [bench ${b.dir}]`)
