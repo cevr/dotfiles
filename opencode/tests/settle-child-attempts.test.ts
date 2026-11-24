@@ -13,6 +13,8 @@ import { Diagnostic, Phase, Undetermined } from "../mods/kernel/child-lifecycle.
 import { lifecycleEventTypes } from "../mods/kernel/lifecycle-event-types.ts"
 import { envelopeFields, lifecycleEnvelope, routedDelete } from "../cmd/kernel/lifecycle-envelope.fixture.ts"
 import { readMark, type MarkRead } from "../mods/wake/latch.ts"
+import { beforeRunnerCap, bridgeBudget, hangGuard } from "./hang-guard.ts"
+import { loadKernelRowFixture, loadKernelSdk } from "./kernel/run.ts"
 import { owned, released } from "./owned.ts"
 import { forkRuns, parentEnv, scratch } from "./scratch.ts"
 
@@ -123,11 +125,7 @@ const fixtureModule = Schema.declare((value): value is SolidFixture =>
   Predicate.isObject(value) && Predicate.isFunction(value.liveEvents) && Predicate.isFunction(value.mountRows) &&
   Predicate.isFunction(value.replayRows) && Predicate.isFunction(value.openBarrier),
 )
-const solidFixture = Effect.gen(function* () {
-  const path = yield* Path.Path
-  const module = yield* path.fromFileUrl(new URL("../mods/subagents/solid/native-row.fixture.ts", import.meta.url))
-  return yield* promised("Solid row harness import failed", () => loadSdk(module)).pipe(Effect.flatMap(Schema.decodeUnknownEffect(fixtureModule)))
-})
+const solidFixture = loadKernelRowFixture(fixtureModule)
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
 const denied = "SCRIPTED_CHILD_DENIAL"
@@ -266,8 +264,6 @@ const observeUntil = Effect.fn("LifecycleFixture.observeUntil")(function* (event
   }
 })
 
-const loadSdk = (file: string) => import(file)
-
 const pluginConfig = (cmd: string, base: string, join: Path.Path["join"], opensAt: number): ReadonlyArray<Schema.JsonObject> => [
   { package: join(cmd, "kernel", "fixtures", "lifecycle-envelopes"), options: { direct: ["subagents", "shell", "fixture_shell_suppress"] } },
   { package: join(cmd, "wake"), options: { backstop: "off" } },
@@ -279,9 +275,7 @@ const host = Effect.fn("LifecycleFixture.host")(function* (
   baseURL: string, base: string, fork: string, plugins: ReadonlyArray<Schema.JsonObject>,
 ) {
   const path = yield* Path.Path
-  const sdk = yield* promised("pinned SDK import failed", () => loadSdk(path.join(fork, "packages/sdk/src/index.ts"))).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Sdk)),
-  )
+  const sdk = yield* promised("pinned SDK import failed", () => loadKernelSdk(fork, Sdk))
   const provider = {
     name: "Sim", package: "@opencode/ai/providers/openai-compatible", settings: { baseURL, apiKey: "fixture" },
     models: { "sim-model": { name: "Sim", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 128_000, output: 16_000 } } },
@@ -924,7 +918,7 @@ const runNative = Effect.gen(function* () {
   const [stdout, stderr, code] = yield* Effect.all(
     [text(child.stdout), text(child.stderr), Effect.promise(() => child.exited)],
     { concurrency: 3 },
-  ).pipe(Effect.timeout("45 seconds"))
+  ).pipe(beforeRunnerCap("lifecycle native capture", bridgeBudget(hangGuard("process-fixture"))))
   expect({ code, stderr, stdout }).toMatchObject({ code: 0 })
   return { frames: envelopeFrames(stdout), result: yield* report(stdout.trim().split("\n").at(-1)) }
 })
@@ -941,10 +935,10 @@ if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
       return runNative.pipe(Effect.scoped, Effect.provide(BunServices.layer), Effect.onExit((exit) => Deferred.done(complete, exit)))
     }))
     for (const kind of lifecycleEventTypes) {
-      it.live(`native envelope through Kernel: ${kind}`, () => native.pipe(Effect.flatMap(({ frames }) => verifyEnvelope(frames, kind))), 55_000)
+      it.live(`native envelope through Kernel: ${kind}`, () => native.pipe(Effect.flatMap(({ frames }) => verifyEnvelope(frames, kind))), hangGuard("process-fixture"))
     }
     it.live("the native envelope comparison rejects an invented builder data field", () =>
-      native.pipe(Effect.flatMap(({ frames }) => extraDataControl(frames))), 55_000)
+      native.pipe(Effect.flatMap(({ frames }) => extraDataControl(frames))), hangGuard("process-fixture"))
     it.live("a child with an ended step keeps its identity through shell wake and host restart", () =>
       Effect.gen(function* () {
         const { result } = yield* native
@@ -997,7 +991,7 @@ if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
         expect(reheld.recheckAt).toBeGreaterThan(clamped.recheckAt)
         yield* verifyLife(result)
       }),
-      55_000,
+      hangGuard("process-fixture"),
     )
   })
 }

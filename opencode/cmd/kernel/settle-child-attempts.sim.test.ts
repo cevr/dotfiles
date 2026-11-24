@@ -2,12 +2,12 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Config, DateTime, Effect, FileSystem, Option, Queue, Schema, Stream } from "effect"
 import { make, live } from "./server.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { CHILD_ROWS, readRows } from "../../mods/kernel/opencode/child-row.ts"
 import { lifecycleEnvelope, routedDelete } from "./lifecycle-envelope.fixture.ts"
 
-const { seeded } = Seed.runner("cmd/kernel/settle-child-attempts.sim.test.ts")
+const { seeded } = simulationRunner("cmd/kernel/settle-child-attempts.sim.test.ts")
 const WORK = "/scratch/lifecycle"
 const OTHER = "/scratch/unrelated"
 const type = {

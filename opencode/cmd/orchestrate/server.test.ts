@@ -8,13 +8,14 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { Clock, Deferred, Effect, Fiber, FiberSet, Layer, Match, Option, Queue, Schema, Stream } from "effect"
+import { Clock, DateTime, Deferred, Effect, Fiber, FiberSet, Layer, Match, Option, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { RESTART_NOTICE } from "@dotfiles/opencode-orchestrate/restart-hold"
 import { Hold, Phase } from "../../mods/kernel/child-lifecycle.ts"
 import { RowFact } from "../../mods/kernel/child-row.ts"
 import type { OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
 import { MarkRead } from "../../mods/wake/latch.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 import { type Latch, type LatchAsk, Opened } from "@dotfiles/opencode-wake/latch"
 import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
@@ -154,7 +155,7 @@ const start = (options: Record<string, unknown>, world: World = {}) =>
     const contexts = new Map<string, ReadonlyArray<unknown>>()
     const kept = world.kept ?? []
     const latchOf = (child: string) => kept.find((item) => item.child === child)
-    const fixtureTime = Option.map(Schema.decodeUnknownOption(Schema.String)(options.now), Date.parse)
+    const fixtureTime = Option.map(Schema.decodeUnknownOption(Schema.DateTimeUtcFromString)(options.now), DateTime.toEpochMillis)
     const latchMark = (latch: LatchAsk) => {
       if (latch.hold !== "pace" || Option.isNone(fixtureTime)) return { ...latch, at: latch.recheckAt }
       const recheckAt = fixtureTime.value + 120_000
@@ -803,7 +804,7 @@ describe("a latch", () => {
         expect(answer.content).not.toContain("is latched")
         expect(reads).toEqual([8])
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("a composed launch never repeats native running prose or reuses a hold when the owner cannot confirm it", () =>
     scenario(
@@ -826,7 +827,7 @@ describe("a latch", () => {
         expect(withoutReply.output).not.toHaveProperty("latch")
         expect(unavailable.ran).toEqual([])
       }),
-    ))
+    ), hangGuard("local-fixture"))
 
   test("over the Sabbath a new subagent latches until work resumes", () =>
     scenario(
