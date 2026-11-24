@@ -12,19 +12,27 @@
 // notice is not work once the registry no longer lists its shell or its child
 // stopped. A notice that never comes (a shell killed by PID or by the agent through its handle,
 // a server restart) leaves nothing behind.
-import type { Family, Session } from "./family.ts"
+import type { Family, Lifecycle, Session } from "./family.ts"
 
 export type Works = "running" | "waiting" | "blocked" | "latched"
+type Activity = Works | undefined
 
-function ownedWork(kind: NonNullable<Session["lifecycle"]>["kind"]) {
-  switch (kind) {
+/** Row visibility is not evidence of activity. Historical and unconfirmed rows stay visible without counting. */
+export function activeOf(state: Lifecycle): Activity {
+  if (state.sinceReload) return
+  switch (state.kind) {
     case "running": return "running"
     case "blocked": return "blocked"
     case "latched": return "latched"
-    case "undetermined":
     case "continuing":
-    case "recovering":
-    case "checking": return "waiting"
+    case "recovering": return "waiting"
+    case "checking":
+    case "unknown":
+    case "undetermined":
+    case "none":
+    case "done":
+    case "failed":
+    case "cancelled": return
   }
 }
 
@@ -48,7 +56,7 @@ export function childrenOf(sessions: ReadonlyArray<Session>): Map<string, Sessio
   return children
 }
 
-const kept = new WeakMap<Family, (id: string) => Works | undefined>()
+const kept = new WeakMap<Family, (id: string) => Activity>()
 
 /**
  * How each session of `family` works now, by id; undefined for one that does
@@ -56,7 +64,7 @@ const kept = new WeakMap<Family, (id: string) => Works | undefined>()
  * for every session is worked out on the first call, and every reader of the
  * same family (the rows, the dock's count, the hints) shares it.
  */
-export function worksNow(family: Family): (id: string) => Works | undefined {
+export function worksNow(family: Family): (id: string) => Activity {
   let works = kept.get(family)
   if (works === undefined) {
     works = worksOf(family)
@@ -65,18 +73,18 @@ export function worksNow(family: Family): (id: string) => Works | undefined {
   return works
 }
 
-function worksOf(family: Family): (id: string) => Works | undefined {
+function worksOf(family: Family): (id: string) => Activity {
   const byID = new Map(family.sessions.map((session) => [session.id, session]))
   const children = childrenOf(family.sessions)
-  const known = new Map<string, Works | undefined>()
+  const known = new Map<string, Activity>()
   // `path` holds the sessions being worked out: a cycle in the parents counts nothing twice.
-  const of = (id: string, path: ReadonlySet<string>): Works | undefined => {
+  const of = (id: string, path: ReadonlySet<string>): Activity => {
     if (known.has(id)) return known.get(id)
     const session = byID.get(id)
     if (session === undefined || path.has(id)) return undefined
-    if (session.lifecycle) return ownedWork(session.lifecycle.kind)
+    if (session.lifecycle) return activeOf(session.lifecycle)
     const inner = new Set([...path, id])
-    const works: Works | undefined =
+    const works: Activity =
       session.permissions.length > 0 || session.questions.length > 0
         ? "blocked"
         : session.running

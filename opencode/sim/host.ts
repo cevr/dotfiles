@@ -46,7 +46,7 @@ import { Agent } from "@opencode/schema/agent"
 import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, type Fiber, Match, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
+import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, Fiber, Match, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
 import { AUTOMATION_TOOLS } from "../mods/wake/automations.ts"
 import * as Faults from "./faults.ts"
 import * as Http from "./http.ts"
@@ -740,6 +740,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
   const subscribers = new Set<Subscriber>()
   const directories = new Map<number, string>()
   const fibers = new Set<Fiber.Fiber<unknown, unknown>>()
+  const executions = new Map<string, Fiber.Fiber<unknown, unknown>>()
   const processes = options.processes ?? PROCESSES
   const shellProgram = options.shell ?? SHELL
   /** Every command the shell spawned, in order. */
@@ -871,6 +872,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     const fiber = runtime.fork(effect.pipe(Effect.catchCause((cause) => Effect.sync(() => record("host-failure", { cause: String(cause) })))))
     fibers.add(fiber)
     fiber.addObserver(() => fibers.delete(fiber))
+    return fiber
   }
 
   /** Each event with an id of its own, from a counter (no seed drawn, so the ids move no other choice). */
@@ -1689,7 +1691,11 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     if (!state.up || session.running || !sessions.has(session.id)) return
     if (!session.inbox.some((item) => item.resume)) return
     session.running = true
-    spawn(execute(session))
+    const fiber = spawn(execute(session))
+    executions.set(session.id, fiber)
+    fiber.addObserver(() => {
+      if (executions.get(session.id) === fiber) executions.delete(session.id)
+    })
   }
 
   /** An inbox admission: the first of an id wins; each publishes `session.inbox.enqueued`; a resumable one wakes the session. */
@@ -1950,6 +1956,20 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       return publish({ type: "session.inbox.cancelled", data: { sessionID: session.id, inboxID } })
     })
 
+  /** `Plugin.Context.session.stop`: interrupt the live execution and cancel input it did not take. */
+  const stopSession = (session: Session) =>
+    Effect.gen(function* () {
+      const execution = Option.filter(Option.fromUndefinedOr(executions.get(session.id)), () => session.running)
+      if (Option.isSome(execution)) {
+        yield* Fiber.interrupt(execution.value)
+        session.running = false
+        session.idle = Option.some(runtime.now())
+        yield* publish({ type: "session.execution.interrupted", data: { sessionID: session.id, reason: "user" } })
+      }
+      yield* Effect.forEach([...session.inbox], ({ id }) => cancel(session, id), { discard: true })
+      return { interrupted: Option.isSome(execution) }
+    })
+
   /** The owner takes the newest queued prompt back into the composer (the TUI's take-back: `session.inbox.cancel`). */
   const takeBack = (session: Session) =>
     Option.match(Option.fromUndefinedOr(session.inbox.findLast((item) => item.type === "prompt")), {
@@ -2032,6 +2052,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     revert,
     takeBack,
     cancel,
+    stopSession,
     merge,
     stop,
     resume,

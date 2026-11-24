@@ -112,6 +112,8 @@ interface SolidFixture {
 }
 type Display = ReadonlyArray<{ readonly state: string; readonly update: string }>
 interface Barrier {
+  readonly active: () => boolean
+  readonly fallback: Effect.Effect<void>
   readonly notify: (details: HostEvent) => void
   readonly hideShell: () => void
   readonly next: Effect.Effect<{ readonly revision: number; readonly release: Effect.Effect<boolean> }>
@@ -417,11 +419,20 @@ const finishBarriers = Effect.fn("LifecycleFixture.finishBarriers")(function* (
     yield* stale.release
     const pending = yield* barrier.next
     const outstanding = barrier.snapshot()
+    const activeDuringRead = barrier.active()
     yield* pending.release
     yield* barrier.ready
+    const after = barrier.snapshot()
+    const activeAfter = barrier.active()
+    const accepted = barrier.revision()
+    barrier.notify({ type: "server.connected" })
+    const stalled = yield* barrier.next
+    yield* barrier.fallback
+    yield* stalled.release
     return {
-      order, live: barrier.live, acrossFirst, outstanding, after: barrier.snapshot(),
-      old: stale.revision, current: pending.revision, accepted: Number(barrier.revision()),
+      order, live: barrier.live, acrossFirst, outstanding, after,
+      activeDuringRead, activeAfter, fallback: barrier.snapshot(),
+      old: stale.revision, current: pending.revision, accepted,
     }
   }), { concurrency: 2 })
 })
@@ -713,7 +724,8 @@ const Remount = Schema.Struct({
   afterClose: Schema.Int, afterSecondClose: Schema.Int,
 })
 const CutEvidence = Schema.Struct({
-  order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay, after: RowDisplay,
+  order: Schema.String, live: RowDisplay, acrossFirst: RowDisplay, outstanding: RowDisplay, after: RowDisplay, fallback: RowDisplay,
+  activeDuringRead: Schema.Boolean, activeAfter: Schema.Boolean,
   old: Schema.Int, current: Schema.Int, accepted: Schema.Int,
 })
 const InboxCut = Schema.Struct({
@@ -861,6 +873,8 @@ const verifyLife = Effect.fn("LifecycleFixture.verifyLife")(function* (result: E
   for (const cut of result.silent.scheduled) {
     for (const rows of [cut.live, cut.acrossFirst, cut.outstanding]) expect(rows.map(({ state }) => state)).toEqual(["waiting"])
     expect(cut.after).toEqual(undetermined)
+    expect(cut).toMatchObject({ activeDuringRead: false, activeAfter: false })
+    expect(cut.fallback.map(({ update }) => update)).not.toContain("Checking the last execution")
     expect(previous).toHaveProperty("revision", cut.old)
     expect(current).toHaveProperty("revision", cut.accepted)
     expect(cut.accepted === cut.current && cut.current > cut.old).toBe(true)

@@ -26,6 +26,7 @@
 import { Option, Schema } from "effect"
 import { Hold, Observation, Phase } from "../child-lifecycle.ts"
 import type { Json } from "../frame.ts"
+import { readLaunchStatus } from "../launch-status.ts"
 import { observedState } from "../subagents.ts"
 
 /** A subagent as the subagents tool answers it. */
@@ -195,8 +196,16 @@ export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle
     const started = recordOf(result)
     const child = String(started.sessionID)
     const observed = observationOf(started.observation, child)
-    const latch = Option.orElse(observed, () =>
-      Option.map(Option.liftPredicate(started.status, (status) => status === "latched"), () => latchOf(started.latch, child)),
+    const observation = Option.orElse(observed, () =>
+      Option.flatMap(readLaunchStatus(started.status), (status) => {
+        switch (status) {
+          case "latched": return Option.some(latchOf(started.latch, child))
+          case "checking":
+          case "unknown": return Option.some(unknown(child))
+          case "running":
+          case "completed": return Option.none()
+        }
+      }),
     )
     return makeSubagentHandle(
       {
@@ -207,7 +216,7 @@ export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle
         message: "",
         note: "",
         ...Option.getOrElse(decodeStarted(result), () => ({})),
-        ...observationFields(latch),
+        ...observationFields(observation),
       },
       call,
     )

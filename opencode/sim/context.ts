@@ -56,6 +56,7 @@ export const OPERATIONS = [
   "session.synthetic",
   "session.create",
   "session.prompt",
+  "session.stop",
   "session.update",
   "session.move",
   "session.switchModel",
@@ -479,6 +480,11 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       )(input).pipe(
         Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
         Effect.flatMap(host.removeSession),
+      ),
+    stop: <I>(input: I) =>
+      parse(SessionInput, "session.stop")(input).pipe(
+        Effect.flatMap(({ sessionID }) => host.sessionOr(sessionID)),
+        Effect.flatMap(host.stopSession),
       ),
     list: <I>(input: I) => parse(ListInput, "session.list")(input).pipe(Effect.map(list)),
     context: <I>(input: I) =>

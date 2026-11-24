@@ -16,6 +16,7 @@
 // overlap can be measured: a cell of two or more calls carries how many it
 // made and the most that ran at once (`concurrency`).
 import { Clock, Effect, Option } from "effect"
+import { readLaunchStatus } from "./launch-status.ts"
 
 /** The metadata key the record is kept under. */
 export const OPERATIONS_KEY = "operations"
@@ -77,7 +78,7 @@ const textOf = (content: unknown): string => {
 }
 
 /** The result metadata the transcript reads, bounded. */
-export const briefMetadata = (metadata: unknown): Record<string, unknown> | undefined => {
+const briefMetadata = (tool: string, metadata: unknown): Record<string, unknown> | undefined => {
   if (!isRecord(metadata)) return undefined
   const brief: Record<string, unknown> = {}
   if (typeof metadata.exit === "number") brief.exit = metadata.exit
@@ -88,8 +89,11 @@ export const briefMetadata = (metadata: unknown): Record<string, unknown> | unde
   if (typeof metadata.id === "string" && metadata.id.startsWith("sh_")) brief.id = metadata.id
   // One the host moved there by its time limit or the reader's ctrl+b: the row says it moved.
   if (metadata.backgrounded === "limit" || metadata.backgrounded === "user") brief.backgrounded = metadata.backgrounded
-  // A latched subagent's call answers at once; its child starts when the latch opens (orchestrate).
-  if (metadata.status === "latched") brief.status = "latched"
+  // Keep launch receipts separate from the kernel operation's own completion.
+  if (tool === "subagent") {
+    const launch = readLaunchStatus(metadata.status)
+    if (Option.isSome(launch)) brief.status = launch.value
+  }
   if (Array.isArray(metadata.files))
     brief.files = metadata.files.slice(0, 20).flatMap((file) => {
       if (!isRecord(file)) return []
@@ -208,7 +212,7 @@ export const journal = (publish: (metadata: Record<string, unknown>) => Effect.E
           Effect.andThen(Effect.ensuring(run, ended)),
           Effect.tap((result) => {
             const output = textOf(result.content)
-            const kept = briefMetadata(result.metadata)
+            const kept = briefMetadata(tool, result.metadata)
             return settle(index, {
               ...started,
               status: "completed",

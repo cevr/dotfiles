@@ -20,7 +20,7 @@ import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Array as Arr, Cause, Data, DateTime, Deferred, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import { envelopesOf } from "../mods/subagents/envelope.ts"
 import { isAutomationTool } from "../mods/wake/automations.ts"
 import type { OPERATIONS } from "./context.ts"
@@ -97,6 +97,9 @@ const waitFor = <E>(holds: Effect.Effect<boolean, E>, message: string) =>
       yield* Effect.sleep("100 millis")
     }
   })
+
+const STOP_WITNESS_DEADLINE = "10 seconds"
+const readStopReply = Schema.decodeUnknownEffect(Schema.Struct({ interrupted: Schema.Boolean }))
 
 export interface Law {
   readonly name: string
@@ -269,6 +272,46 @@ const terminalTool = (status: "completed" | "error"): Law["check"] => (ctx, prob
   })
 
 export const LAWS: ReadonlyArray<Law> = [
+  {
+    name: LAW.stop,
+    operations: ["session.stop", "session.create", "session.hook", "session.prompt", "session.context", "event.subscribe"],
+    check: (ctx, probe) => Effect.gen(function* () {
+      const { id: sessionID } = yield* fresh(ctx)
+      const idle = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+      const entered = yield* Deferred.make<void>()
+      const interrupted = yield* Deferred.make<string>()
+      const cancelled = yield* Deferred.make<void>()
+      const queued = SessionMessage.ID.make("msg_law_stop_queued")
+      yield* Effect.scoped(Effect.gen(function* () {
+        yield* ctx.session.hook("model.request", (input) => {
+          if (input.sessionID !== sessionID || input.kind !== "primary") return Effect.void
+          return Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
+        })
+        yield* Effect.forkScoped(ctx.event.subscribe({
+          types: ["session.execution.interrupted", "session.inbox.cancelled"],
+        }).pipe(Stream.runForEach((event) => {
+          if (event.data.sessionID !== sessionID) return Effect.void
+          if (event.type === "session.execution.interrupted") return Deferred.succeed(interrupted, event.data.reason).pipe(Effect.asVoid)
+          if (event.data.inboxID === queued) return Deferred.succeed(cancelled, void 0).pipe(Effect.asVoid)
+          return Effect.void
+        })), { startImmediately: true })
+        yield* ctx.session.prompt({ sessionID, text: "law: stop running" })
+        yield* Deferred.await(entered).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* ctx.session.prompt({ sessionID, id: queued, text: "law: stop queued" })
+        const active = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+        const reason = yield* Deferred.await(interrupted).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* Deferred.await(cancelled).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        const again = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+        yield* ensure(!idle.interrupted && active.interrupted && !again.interrupted && reason === "user", "stop did not interrupt exactly the live turn as user")
+      }))
+      const primaries = Effect.map(probe.requests, (requests) => requests.filter((request) => request.sessionID === sessionID && request.kind === "primary").length)
+      const before = yield* primaries
+      yield* probe.turn(sessionID, ctx.session.prompt({ sessionID, text: "law: stop fresh" }))
+      yield* ensure((yield* primaries) === before + 1, "a new request did not run after stop")
+      const texts = yield* contextText(ctx, sessionID)
+      yield* ensure(count(texts, "law: stop queued") === 0, "the cancelled queued prompt was delivered")
+    }),
+  },
   {
     name: LAW.storage,
     operations: ["storage.get", "storage.set", "storage.setIf", "storage.remove", "storage.scan"],
