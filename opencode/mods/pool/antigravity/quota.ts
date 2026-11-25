@@ -125,6 +125,9 @@ const bucketWindow = (bucket: Bucket, display: Option.Option<string>, requestedA
 export const keyOf = (window: Pick<Window, "group" | "span">) => `${window.group}/${window.span}`
 
 /** The last of each key, in the order first seen. */
+/** Of two readings of one window, the more used; the first on a tie. */
+const worse = (before: Window, next: Window): Window => Match.value(next.used > before.used).pipe(Match.when(true, () => next), Match.orElse(() => before))
+
 const byKey = (windows: ReadonlyArray<Window>, keep: (before: Window, next: Window) => Window): ReadonlyArray<Window> => {
   const kept = new Map<string, Window>()
   for (const window of windows) {
@@ -150,7 +153,8 @@ export const summaryWindows = (summary: Summary, requestedAt: number): ReadonlyA
   )
   return byKey(
     items.flatMap(({ bucket, display }) => Option.toArray(bucketWindow(bucket, display, requestedAt))),
-    (_before, next) => next,
+    // Two buckets of one group and span: the more used one holds, so a full one is never hidden behind one with room.
+    worse,
   )
 }
 
@@ -181,7 +185,7 @@ export const modelWindows = (models: Models): ReadonlyArray<Window> =>
         ]),
       ),
     ),
-    (before, next) => Match.value(next.used > before.used).pipe(Match.when(true, () => next), Match.orElse(() => before)),
+    worse,
   )
 
 /** The endpoints' answers in the order asked: the first that reads a window wins it; one that reads only some adds the rest. */

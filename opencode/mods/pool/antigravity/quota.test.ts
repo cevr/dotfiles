@@ -74,6 +74,14 @@ describe("Antigravity quota summary", () => {
     ])
   })
 
+  test("two buckets of one group and window: the more used holds, in either order", () => {
+    const full = { bucketId: "gemini-5h", window: "5h", remainingFraction: 0, resetTime: "2030-01-01T05:00:00Z", description: "used" }
+    const roomy = { bucketId: "gemini-5h-pro", window: "5h", remainingFraction: 0.9, resetTime: "2030-01-01T04:00:00Z", description: "used" }
+    for (const buckets of [[full, roomy], [roomy, full]]) {
+      expect(brief(summary(decodeSummary({ buckets }), at("2030-01-01T00:00:00Z")))).toEqual([["gemini", "5h", 1, Option.some(at("2030-01-01T05:00:00Z"))]])
+    }
+  })
+
   test("the 60-second tolerance applies to both lengths", () => {
     const requestedAt = at("2026-10-21T10:16:04Z")
     const bucket = (bucketId: string, window: string, resetTime: string) => ({ bucketId, window, remainingFraction: 1, resetTime })
