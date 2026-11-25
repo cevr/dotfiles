@@ -17,7 +17,7 @@
 // `job-requests.json` and `job-transcripts.json`.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()

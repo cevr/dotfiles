@@ -70,7 +70,7 @@ const turnOn = (root: string, turn: FakeAnswer) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const { fork, path } = yield* ENV
+    const { fork } = yield* ENV
     const now = yield* Clock.currentTimeMillis
     const accounts = { only: fakeAccount() }
     const fake = yield* Effect.acquireRelease(
@@ -101,7 +101,6 @@ const turnOn = (root: string, turn: FakeAnswer) =>
     )
     const launch = forkLaunch(fork, process.execPath)
     const env = {
-      PATH: path,
       HOME: home,
       XDG_CONFIG_HOME: `${home}/.config`,
       XDG_DATA_HOME: `${home}/.local/share`,

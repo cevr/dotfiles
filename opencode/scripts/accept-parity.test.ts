@@ -138,7 +138,8 @@ export const expects = (source: string) => {
 const simulatedCounts = (files: ReadonlyArray<string>) =>
   output(process.execPath, ["test", ...files.map((file) => `./${file}`)], { SIM_EXPECTS: "1" }).pipe(
     Effect.map((run) => {
-      const lines = `${run.stdout}\n${run.stderr}`.split("\n")
+      const output = `${run.stdout}\n${run.stderr}`
+      const lines = output.split("\n")
       const counts = new Map(
         files.map((file) => {
           const prefix = `sim-expects ${file} `
@@ -146,7 +147,7 @@ const simulatedCounts = (files: ReadonlyArray<string>) =>
           return [file, new Map(own.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))] as const
         }),
       )
-      return { counts, code: run.code }
+      return { counts, code: run.code, output }
     }),
   )
 
@@ -207,7 +208,7 @@ describe("no assertion lost", () => {
         const entries = (yield* manifests).flatMap((manifest) => manifest.entries)
         const run = yield* simulatedCounts([...new Set(entries.map(([, entry]) => entry.simulated))])
         // A file over its CPU budget fails in the child (sim/seed.ts); its counts then judge nothing.
-        expect({ simulatedRun: run.code }).toEqual({ simulatedRun: 0 })
+        expect({ simulatedRun: run.code }, run.output).toEqual({ simulatedRun: 0 })
         for (const [file, entry] of entries) {
           const simulated = run.counts.get(entry.simulated) ?? new Map<string, number>()
           const real = expects(yield* readReal(file))

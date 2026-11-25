@@ -89,7 +89,6 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       }),
     )
     const env: Record<string, string> = {
-      PATH: process.env.PATH ?? "",
       HOME: join(base, "home"),
       XDG_CONFIG_HOME: join(base, "home/.config"),
       XDG_DATA_HOME: join(base, "home/.local/share"),

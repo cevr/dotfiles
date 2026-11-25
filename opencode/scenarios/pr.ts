@@ -7,7 +7,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { type FakeWorld, install } from "../mods/git/process/fake-gh.ts"
 
 const root = process.cwd()

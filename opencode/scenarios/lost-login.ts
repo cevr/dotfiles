@@ -10,7 +10,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { fakeAccount, startFakeAnthropic, type FakeTokenAnswer } from "../tests/fake-anthropic.ts"
 import { stamp } from "../tests/hang-guard.ts"
 

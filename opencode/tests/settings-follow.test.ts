@@ -70,7 +70,7 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
-        const { fork, path } = yield* ENV
+        const { fork } = yield* ENV
         // A short folder name: the terminal host's socket lives in it, and a socket path has at most 104 bytes on macOS.
         const root = yield* fs.realPath(scratchInput(kept.dir("s")))
         const home = `${root}/home`
@@ -97,7 +97,6 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
         const launch = forkLaunch(fork, process.execPath)
         const envOn = (tree: string) =>
           Effect.map(fs.readFileString(scratchInput(`${root}/${tree}/config/cli.json`)), (cli) => ({
-            PATH: path,
             HOME: home,
             TERM: "xterm-256color",
             HERDR_ENV: "1",
@@ -107,7 +106,6 @@ describe.skipIf(!forkRuns)("the settings follow an update, from each build's tre
             XDG_CACHE_HOME: `${home}/.cache`,
             OPENCODE_DB: `${root}/opencode.db`,
             OPENCODE_DISABLE_MODELS_FETCH: "1",
-            OPENCODE_DISABLE_FILEWATCHER: "1",
             OPENCODE_CONFIG: `${root}/${tree}/config/opencode.json`,
             OPENCODE_CLI_CONFIG_CONTENT: cli,
             ...launch.env,

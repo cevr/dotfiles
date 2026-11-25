@@ -1,6 +1,7 @@
 import { gunzipSync, spawn, spawnSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ChildProcess } from "effect/process"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { cloneGitArgv, initGitArgv, QUIET_GIT, type GitEnv } from "./git-repo.ts"
 import { checkoutRoot as ROOT, externalInput, matchingInput, scratchInput } from "./read-path.ts"
 import { localTestPaths, localTestProcess, scratchRoot } from "./scratch.ts"
@@ -21,11 +22,17 @@ const reject = (reason: string) =>
   Option.getOrThrowWith(Option.none<never>(), () => new ScratchChildInput({ message: `scratch child: ${reason}` }))
 
 const containsCheckout = (text: string) => text.includes(checkout) || text.includes(physicalCheckout)
-const searchPath = () => systemPath.filter((item) => {
-  if (!localTestPaths.existsSync(item) || containsCheckout(localTestPaths.realpathSync(item))) return false
+const safeSystemEntry = (item: string) => {
+  if (!systemPath.includes(item) || !localTestPaths.existsSync(item) || containsCheckout(localTestPaths.realpathSync(item))) return false
   const git = resolve(item, "git")
   return !localTestPaths.existsSync(git) || !containsCheckout(localTestPaths.realpathSync(git))
-}).join(":")
+}
+const searchPath = () => systemPath.filter(safeSystemEntry).join(":")
+const safeBunDir = () => {
+  const dir = resolve(localTestProcess.execPath, "..")
+  if (containsCheckout(dir) || containsCheckout(localTestPaths.realpathSync(dir))) return reject("checkout directory on the fixture PATH")
+  return dir
+}
 
 const isEntryName = (entry: string) => /^(?:[\w-]+\/)+[\w.-]+\.[cm]?[jt]sx?$/.test(entry)
 const loaderVariable = /^(?:BASH|BUN|DYLD|ENV|LD_|NODE|SHELL|ZDOTDIR)/
@@ -206,8 +213,8 @@ const servicePathVariables = new Set([
   "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "TMPDIR",
 ])
 const serviceValues = new Set([
-  "PATH", "TERM", "HERDR_ENV", "OPENCODE_PASSWORD", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH",
-  "OPENCODE_DISABLE_FILEWATCHER", "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
+  "TERM", "HERDR_ENV", "OPENCODE_PASSWORD", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH",
+  ...Object.keys(testHostEnv()), "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
   "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "OPENCODE_CLI_CONFIG_CONTENT",
 ])
 const exactArgs = (given: ReadonlyArray<string>, ...expected: ReadonlyArray<string>) =>
@@ -247,12 +254,29 @@ const checkForkBunOptions = (env: Readonly<Record<string, string>>, preload: str
     return reject("unexpected Bun fixture options")
 }
 
-const checkForkEnvironment = (env: Readonly<Record<string, string>>) => {
+const checkForkPath = (value: string) => {
+  const bunDir = safeBunDir()
+  const physicalBunDir = localTestPaths.realpathSync(bunDir)
+  for (const entry of value.split(":")) {
+    if (!entry || !localTestPaths.isAbsolute(entry)) return reject("redirecting fork fixture environment: PATH")
+    const normalized = resolve(entry)
+    if (containsCheckout(entry) || containsCheckout(normalized)) return reject("redirecting fork fixture environment: PATH")
+    if (safeSystemEntry(normalized)) continue
+    if (normalized === bunDir && localTestPaths.existsSync(entry) && localTestPaths.realpathSync(entry) === physicalBunDir) continue
+    scratchInput(entry)
+  }
+}
+
+export const checkForkEnvironment = (env: Readonly<Record<string, string>>) => {
   for (const variable of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB"]) {
     const path = env[variable]
     if (!path) return reject(`missing fork fixture environment: ${variable}`)
   }
   for (const [name, value] of Object.entries(env)) {
+    if (name === "PATH") {
+      checkForkPath(value)
+      continue
+    }
     if (containsCheckout(value) || (!servicePathVariables.has(name) && !serviceValues.has(name)))
       return reject(`redirecting fork fixture environment: ${name}`)
     if (servicePathVariables.has(name)) scratchInput(value)
@@ -273,8 +297,7 @@ export const forkFixture = (
   const preload = externalInput(resolve(fork, "packages/tui/node_modules/@opentui/solid/scripts/preload.js"))
   checkForkBunOptions(env, preload, version)
   checkForkEnvironment(env)
-  const path = resolve(localTestProcess.execPath, "..")
-  if (containsCheckout(path) || containsCheckout(localTestPaths.realpathSync(path))) return reject("checkout directory on the fixture PATH")
+  const path = safeBunDir()
   return {
     argv: [localTestProcess.execPath, "--no-env-file", entry, ...args] as const, cwd: scratchInput(cwd),
     env: { TMPDIR: scratchRoot(), ...env, PATH: `${path}:${searchPath()}` },

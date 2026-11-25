@@ -478,7 +478,6 @@ const fixture = (root: string) =>
     if (Option.isSome(old)) yield* fs.copyFile(externalInput(old.value), scratchBinary)
     const tui = Option.match(old, { onNone: () => launch.base, onSome: () => [scratchBinary] })
     const env = {
-      PATH: path,
       HOME: home,
       TERM: "xterm-256color",
       // The owner's TUIs run in herdr panes, where OpenCode turns session tabs off.
@@ -489,13 +488,9 @@ const fixture = (root: string) =>
       XDG_CACHE_HOME: `${home}/.cache`,
       OPENCODE_DB: `${root}/opencode.db`,
       OPENCODE_DISABLE_MODELS_FETCH: "1",
-      // No file watching in the scratch service and TUIs: the TUI's plugin load waits for a watch on every
-      // plugin source directory, and on a Mac with a busy fseventsd each watch costs 0.1 to 2 s, so the cases'
-      // TUIs sat on "Loading plugins…" past their windows. These cases test reconnects, not live reload.
-      OPENCODE_DISABLE_FILEWATCHER: "1",
       ...launch.env,
     }
-    const tuiEnv = { ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => Option.isSome(old))) }
+    const tuiEnv = { PATH: path, ...env, ...Object.fromEntries([["BUN_OPTIONS", ""]].filter(() => Option.isSome(old))) }
     const serviceFile = `${home}/.local/state/opencode/service-local.json`
     // The fork's CLI in the scratch HOME, run to its end, on this case's child processes.
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

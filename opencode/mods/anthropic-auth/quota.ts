@@ -11,8 +11,8 @@
  * its reset.
  */
 import type { ClaimAnswer, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
-import { grantKind } from "@dotfiles/opencode-pool/quota"
-import { Option, Predicate } from "effect"
+import { Absent, grantKind, Reported, Unknown, type WindowReading } from "@dotfiles/opencode-pool/quota"
+import { Array as Arr, Match, Option, Schema } from "effect"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
@@ -265,36 +265,83 @@ function readResets(block: unknown, now: number): QuotaResets | undefined {
   }
 }
 
+/** A window as the usage endpoint answers it: its use in percent, and its reset (ISO) while it runs. */
+const UsageWindowBody = Schema.Struct({ utilization: Schema.Finite, resets_at: Schema.optionalKey(Schema.Unknown) })
+/** A tracked window's field: the window, or `null` for an account with none of it. */
+const TrackedField = Schema.NullOr(UsageWindowBody)
+const decodeTracked = Schema.decodeUnknownOption(TrackedField)
+const decodeWindow = Schema.decodeUnknownOption(UsageWindowBody)
+
+const usageWindow = (name: string, body: typeof UsageWindowBody.Type): QuotaWindow => {
+  const resetAt = Option.filter(Option.fromUndefinedOr(isoMs(body.resets_at)), Number.isFinite)
+  return {
+    name,
+    utilization: Math.min(Math.max(body.utilization / 100, 0), 1),
+    ...Option.match(resetAt, { onNone: () => ({}), onSome: (resetAt) => ({ resetAt }) }),
+  }
+}
+
+/** The tracked fields of a usage answer, each as it came: a key may be missing. */
+const TrackedBody = Schema.Struct({ five_hour: Schema.optionalKey(Schema.Unknown), seven_day: Schema.optionalKey(Schema.Unknown) })
+const decodeTrackedBody = Schema.decodeUnknownOption(TrackedBody)
+const TRACKED_FIELDS = [
+  ["five_hour", "5h"],
+  ["seven_day", "7d"],
+] as const
+
+/** One tracked field in its three states: REPORTED (a window), ABSENT (`null`), UNKNOWN (missing, or a shape that does not read, named). */
+const readTracked = (tracked: typeof TrackedBody.Type, field: (typeof TRACKED_FIELDS)[number][0], name: string, now: number): WindowReading =>
+  Option.match(Option.filter(Option.some(field), (key) => Object.hasOwn(tracked, key)), {
+    onNone: (): WindowReading => Unknown.make({ unrecognised: [] }),
+    onSome: (key) =>
+      Option.match(decodeTracked(tracked[key]), {
+        onNone: (): WindowReading => Unknown.make({ unrecognised: [key] }),
+        onSome: (window): WindowReading =>
+          Option.match(Option.fromNullOr(window), {
+            onNone: (): WindowReading => Absent.make({ at: now }),
+            onSome: (read): WindowReading => Reported.make({ window: usageWindow(name, read) }),
+          }),
+      }),
+  })
+
+const decodeObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))
+/** The answer's top-level key names, never a value: what a log may say of an answer that did not read. */
+export const usageKeys = (body: Option.Option<unknown>): string =>
+  Option.match(Option.flatMap(body, decodeObject), {
+    onNone: () => "not an object",
+    onSome: (object) => `keys ${Arr.match(Object.keys(object).toSorted(), { onEmpty: () => "none", onNonEmpty: (keys) => keys.join(", ") })}`,
+  })
+
 /**
- * The usage endpoint's answer as a reading. It names each window with a
- * utilization in percent and an ISO reset; an explicit `five_hour: null`
- * records when the five-hour limit was absent. Other null windows are left
- * out. Windows beyond the 5-hour and 7-day ones keep their own names,
- * and each model's own window is `<window>:<model>`. The reset grants come
- * along when the body carries them.
+ * The usage endpoint's answer as a reading, window by window in three states
+ * (quota.ts `WindowReading`). Each of the tracked `five_hour` and `seven_day`
+ * fields is REPORTED (utilization in percent, an ISO reset), ABSENT (an
+ * explicit `null`: the account has no such limit, as Anthropic answers for an
+ * account whose five-hour limit was removed) or UNKNOWN (the field missing, or
+ * in a shape that does not read: named in `unrecognised`). Other fields
+ * holding a window keep their own names and never bind; each model's own
+ * window is `<window>:<model>`. The reset grants come along when the body
+ * carries them. An answer with no tracked field read either way, and no
+ * window at all, is no reading: a failed read.
  */
 export function readUsageBody(body: unknown, now: number): QuotaReading | undefined {
   if (!isRecord(body)) return undefined
-  const windows: QuotaWindow[] = []
+  const tracked = Option.getOrElse(decodeTrackedBody(body), () => ({}))
+  const read = TRACKED_FIELDS.map(([field, name]) => ({ name, state: readTracked(tracked, field, name, now) }))
+  const windows: QuotaWindow[] = read.flatMap(({ state }) => Match.value(state).pipe(Match.tag("Reported", ({ window }) => [window]), Match.orElse(() => [])))
   for (const [key, record] of Object.entries(body)) {
-    if (!isRecord(record)) continue
-    if (typeof record.utilization !== "number") continue
-    if (!Number.isFinite(record.utilization)) continue
-    const resetAt = typeof record.resets_at === "string" ? Date.parse(record.resets_at) : Number.NaN
-    windows.push({
-      name: USAGE_WINDOWS[key] ?? key,
-      utilization: Math.min(Math.max(record.utilization / 100, 0), 1),
-      ...(Number.isFinite(resetAt) ? { resetAt } : {}),
-    })
+    if (Object.hasOwn(USAGE_WINDOWS, key)) continue
+    Option.map(decodeWindow(record), (window) => windows.push(usageWindow(key, window)))
   }
   windows.push(...modelWindows(body))
-  if (windows.length === 0) return undefined
+  const absent = read.flatMap(({ name, state }) => Match.value(state).pipe(Match.tag("Absent", ({ at }) => [{ name, at }]), Match.orElse(() => [])))
+  if (!read.some(({ state }) => state._tag !== "Unknown")) return undefined
   const resets = readResets(body.cedar_ember, now)
-  const absent = Option.filter(Option.some(now), () => Predicate.isNull(body.five_hour))
   return {
     at: now,
     windows,
-    ...Option.match(absent, { onNone: () => ({}), onSome: (fiveHourAbsentAt) => ({ fiveHourAbsentAt }) }),
+    ...Arr.match(absent, { onEmpty: () => ({}), onNonEmpty: (absent) => ({ absent }) }),
+    unrecognised: read.flatMap(({ state }) => Match.value(state).pipe(Match.tag("Unknown", ({ unrecognised }) => unrecognised), Match.orElse(() => []))),
     ...(resets === undefined ? {} : { resets }),
   }
 }

@@ -1,10 +1,14 @@
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { file as bunFile } from "bun"
 import { expect, test } from "bun:test"
+import { Effect, FileSystem } from "effect"
+import { it } from "effect-bun-test"
 import { hangGuard } from "../tests/hang-guard.ts"
-import { matchingInput } from "../tests/read-path.ts"
-import { spawnScratchGitSync, spawnScratchShell } from "../tests/scratch-child.ts"
-import { scratch } from "../tests/scratch.ts"
+import { checkoutRoot, matchingInput } from "../tests/read-path.ts"
+import { checkForkEnvironment, spawnScratchGitSync, spawnScratchShell } from "../tests/scratch-child.ts"
+import { localTestPaths, localTestProcess, scratch } from "../tests/scratch.ts"
 import { readMatcher } from "./read-declarations.ts"
+import { testHostEnv } from "./test-host.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, unitTests, workboxTestFiles } from "./test-population.ts"
 import { checkReadInputs } from "./test-reads.ts"
 
@@ -108,6 +112,45 @@ test("scratch Git refuses a checkout operand before spawning", () => {
   expect(() => spawnScratchShell(fixture.path, `cat '${matchingInput("scripts/test-reads.ts")}'`))
     .toThrow("checkout path in generated shell script")
 }, hangGuard("unit-law"))
+
+it.live.layer(BunServices.layer)("fork fixture environment accepts safe PATH entries and rejects checkout, relative, symlink and home PATH entries", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    using fixture = scratch("read-guard-fork-env-")
+    using scratchBin = scratch("read-guard-fork-bin-")
+    const { join, resolve } = localTestPaths
+    const home = join(fixture.path, "home")
+    const bunDir = resolve(localTestProcess.execPath, "..")
+    const homeOutsideBun = resolve(bunDir, "..")
+    const base = {
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, ".config"),
+      XDG_DATA_HOME: join(home, ".local/share"),
+      XDG_STATE_HOME: join(home, ".local/state"),
+      XDG_CACHE_HOME: join(home, ".cache"),
+      OPENCODE_DB: join(fixture.path, "opencode.db"),
+      ...testHostEnv(),
+    }
+    expect(() => checkForkEnvironment(base)).not.toThrow()
+    expect(() => checkForkEnvironment({ ...base, PATH: "/usr/bin:/bin" })).not.toThrow()
+    expect(() => checkForkEnvironment({ ...base, PATH: `${bunDir}:/usr/bin:/bin` })).not.toThrow()
+    expect(() => checkForkEnvironment({ ...base, PATH: `${scratchBin.path}:/usr/bin:/bin` })).not.toThrow()
+
+    expect(() => checkForkEnvironment({ ...base, PATH: `${join(checkoutRoot, "node_modules/.bin")}:/usr/bin:/bin` }))
+      .toThrow("redirecting fork fixture environment: PATH")
+    expect(() => checkForkEnvironment({ ...base, PATH: "" }))
+      .toThrow("redirecting fork fixture environment: PATH")
+    expect(() => checkForkEnvironment({ ...base, PATH: "/usr/bin:" }))
+      .toThrow("redirecting fork fixture environment: PATH")
+    expect(() => checkForkEnvironment({ ...base, PATH: "./node_modules/.bin:/usr/bin" }))
+      .toThrow("redirecting fork fixture environment: PATH")
+    const link = join(fixture.path, "checkout-link")
+    yield* fs.symlink(checkoutRoot, link)
+    expect(() => checkForkEnvironment({ ...base, PATH: `${link}:/usr/bin:/bin` }))
+      .toThrow("is not under")
+    expect(() => checkForkEnvironment({ ...base, PATH: `${homeOutsideBun}:/usr/bin:/bin` }))
+      .toThrow("is not under")
+  }), hangGuard("unit-law"))
 
 test("a resolver with finite local operands anchors every candidate", () => {
   const source = `const name = choose() ? "./static.ts" : "./alternate.ts"

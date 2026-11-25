@@ -18,7 +18,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { BUILTIN_AUTOMATION_OFF } from "../scripts/daily.ts"
 import { stamp } from "../tests/hang-guard.ts"
 

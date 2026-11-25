@@ -68,7 +68,6 @@ describe.skipIf(!ready)("OpenCode runs on a login store's Claude accounts throug
           }),
         )
         const env: Record<string, string> = {
-          PATH: process.env.PATH ?? "",
           HOME: join(base, "home"),
           XDG_CONFIG_HOME: join(base, "home/.config"),
           XDG_DATA_HOME: join(base, "home/.local/share"),

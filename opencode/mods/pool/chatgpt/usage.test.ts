@@ -2,11 +2,18 @@
 // and a websocket frame each read as the same windows; a failure is no reading;
 // the quota RPC it serves answers a fresh held reading without asking again.
 import { describe, expect, test } from "bun:test"
-import { Effect, Fiber, Stream } from "effect"
-import type { QuotaReading } from "../quota.ts"
-import { fromFrame, fromHeaders, fromUsage, make, withCredits } from "./usage.ts"
+import { Array as Arr, Effect, Fiber, Match, Option, Schema, Stream } from "effect"
+import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
+import { AccountPool, HoldCleared, ReadingTaken, TakeReading } from "../account-pool.ts"
+import { DEFAULT_RULES } from "../accounts.ts"
+import { dispatchPace } from "../pace.ts"
+import { carryOver, type QuotaReading, windowReading } from "../quota.ts"
+import { fromFrame, fromHeaders, fromUsage, make, usageKeys, withCredits } from "./usage.ts"
 
 const now = Date.parse("2026-11-05T14:21:00Z")
+/** The JSON `null` a slot holds for a window the account does not have. */
+const NONE = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null")
 const weekReset = Date.parse("2026-11-11T07:36:00Z") / 1000
 
 /** The usage endpoint's answer as measured on both hosts at 14:21Z: 16% of the week, no 5-hour window. */
@@ -22,7 +29,11 @@ const observedUsage = {
 
 describe("ChatGPT usage readings", () => {
   test("the usage endpoint's windows read as the pool's 5h and 7d windows", () => {
-    expect(fromUsage(observedUsage, now)).toEqual({ at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 }] })
+    // A weekly-only plan: its 5-hour window is ABSENT (the answer's other slot is null), not unread.
+    expect(fromUsage(observedUsage, now)).toEqual({
+      at: now, status: "allowed", windows: [{ name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 }],
+      usage: { at: now, samples: 1 }, unrecognised: [], absent: [{ name: "5h", at: now }],
+    })
     const both = {
       rate_limit: {
         allowed: false,
@@ -39,9 +50,76 @@ describe("ChatGPT usage readings", () => {
         { name: "7d", utilization: 0.4, resetAt: 1_800_100_001_001 },
       ],
       refusal: { kind: "usage-limit", until: 1_800_000_001_001 },
+      usage: { at: now, samples: 1 },
+      unrecognised: [],
     })
     expect(fromUsage({ detail: "Unauthorized" }, now)).toBeUndefined()
-    expect(fromUsage({ rate_limit: { primary_window: null } }, now)).toBeUndefined()
+    // A slot missing: the windows it may hold are UNKNOWN, and with none read the answer is a failed read.
+    expect(fromUsage({ rate_limit: { primary_window: NONE } }, now)).toBeUndefined()
+    // Both slots null: no window at all, both ABSENT.
+    expect(fromUsage({ rate_limit: { primary_window: NONE, secondary_window: NONE } }, now)).toMatchObject({
+      windows: [], absent: [{ name: "5h", at: now }, { name: "7d", at: now }], unrecognised: [],
+    })
+    // A slot in a shape that does not read is named, and absences are not inferred around it.
+    const changed = fromUsage({ rate_limit: { ...observedUsage.rate_limit, secondary_window: { used: "16%" } } }, now)
+    expect(changed).toMatchObject({ unrecognised: ["rate_limit.secondary_window"] })
+    expect(changed).not.toHaveProperty("absent")
+    // A zero or negative window length is malformed, never valid and never infers absence.
+    const zeroSpan = fromUsage({ rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 0 }, secondary_window: NONE } }, now)
+    expect(zeroSpan).toBeUndefined()
+    // Missing secondary slot leaves 5h UNKNOWN without naming an unrecognised field.
+    const omitted = fromUsage({ rate_limit: { primary_window: observedUsage.rate_limit.primary_window } }, now)
+    expect(omitted).toMatchObject({ unrecognised: [] })
+    expect(omitted).not.toHaveProperty("absent")
+    // A slot with an unknown duration alongside an unreadable slot reads no tracked window: failed read.
+    expect(fromUsage({ rate_limit: { primary_window: { used_percent: 16, limit_window_seconds: 3_600 }, secondary_window: { used: "bad" } } }, now)).toBeUndefined()
+    // Key names for failed reads carry no values and no tokens.
+    expect(usageKeys(Option.some({ rate_limit: { primary_window: "secret-val" }, extra: "tok" }))).toBe("keys extra, rate_limit; rate_limit keys primary_window")
+  })
+
+  effectTest("ChatGPT usage readings carry usage evidence: lifting sign-in, repairing unreadable holds, and tracking model-unreported samples", Effect.gen(function* () {
+    const decider = AccountPool(DEFAULT_RULES)
+    const first = Option.getOrThrow(Option.fromUndefinedOr(fromUsage(observedUsage, now + 60_000)))
+    const signInHeld = { ...decider.initial, credentials: ["codex"], holds: { codex: { kind: "signin" as const, at: now, until: now + 60_000 } } }
+    const lifted = yield* decider.decide(signInHeld, TakeReading.make({ credentialID: "codex", reading: first }), now + 60_000)
+    expect(lifted).toEqual([ReadingTaken.make({ credentialID: "codex", reading: first }), HoldCleared.make({ credentialID: "codex" })])
+    const damaged = { ...decider.initial, credentials: ["codex"], holds: { codex: { kind: "record-unreadable" as const, at: now, until: now + 60_000 } } }
+    const repaired = yield* decider.decide(damaged, TakeReading.make({ credentialID: "codex", reading: first, freshUsage: true }), now + 60_000)
+    expect(repaired).toEqual([ReadingTaken.make({ credentialID: "codex", reading: first }), HoldCleared.make({ credentialID: "codex" })])
+    const second = Option.getOrThrow(Option.fromUndefinedOr(fromUsage(observedUsage, now + 120_000)))
+    const combined = carryOver(first, second)
+    expect(combined.usage).toEqual({ at: now + 120_000, samples: 2 })
+    const pace = dispatchPace([{ credentialID: "codex", live: 0, load: 0, noRoom: false, reading: combined }], now + 120_000, {}, 0.04, "claude-fable-5-2")
+    expect(pace).toMatchObject({ ok: false, reasonCode: "model-unreported" })
+  }), hangGuard("unit-law"))
+
+  test("every combination of the two slots maps each tracked window to its three states", () => {
+    const layouts = [
+      { holds: Option.some("5h"), slot: Option.some<unknown>({ used_percent: 30, limit_window_seconds: 18_000, reset_at: 1_800_000_000 }) },
+      { holds: Option.some("7d"), slot: Option.some<unknown>({ used_percent: 30, limit_window_seconds: 604_800, reset_at: 1_800_100_000 }) },
+      { holds: Option.none<string>(), slot: Option.some<unknown>(NONE) },
+      { holds: Option.none<string>(), slot: Option.none<unknown>() },
+      { holds: Option.none<string>(), slot: Option.some<unknown>({ used: "30%" }) },
+    ]
+    for (const [primary, secondary] of Arr.cartesian(layouts, layouts)) {
+      const rate_limit = {
+        ...Option.match(primary.slot, { onNone: () => ({}), onSome: (primary_window) => ({ primary_window }) }),
+        ...Option.match(secondary.slot, { onNone: () => ({}), onSome: (secondary_window) => ({ secondary_window }) }),
+      }
+      const reading = Option.fromUndefinedOr(fromUsage({ rate_limit }, now))
+      // Both slots read (a window or null): a window neither holds is ABSENT. A slot missing or unreadable: UNKNOWN.
+      const complete = [primary, secondary].every((layout) => Option.isSome(layout.holds) || Option.exists(layout.slot, (slot) => slot === NONE))
+      const held = [primary.holds, secondary.holds].flatMap(Option.toArray)
+      const expected = (name: string) => Match.value({ reported: held.includes(name), complete }).pipe(
+        Match.when({ reported: true }, () => "Reported"),
+        Match.when({ complete: true }, () => "Absent"),
+        Match.orElse(() => "Unknown"),
+      )
+      const tags: Array<string> = ["5h", "7d"].map(expected)
+      expect([rate_limit, Option.isSome(reading)]).toEqual([rate_limit, tags.some((tag) => tag !== "Unknown")])
+      Option.map(reading, (reading) =>
+        expect({ rate_limit, tags: [windowReading(reading, "5h")._tag, windowReading(reading, "7d")._tag].map(String) }).toEqual({ rate_limit, tags }))
+    }
   })
 
   test("reset credits: the usage endpoint's count, and the credit list with what a claim needs", () => {
@@ -91,6 +169,9 @@ describe("ChatGPT usage readings", () => {
         { name: "7d", utilization: 0.16, resetAt: weekReset * 1000 + 1001 },
         { name: "7d:GPT-6-Astra", utilization: 1, resetAt: weekReset * 1000 + 1001 },
       ],
+      usage: { at: now, samples: 1 },
+      unrecognised: [],
+      absent: [{ name: "5h", at: now }],
     })
   })
 

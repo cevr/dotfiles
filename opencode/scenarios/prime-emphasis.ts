@@ -23,7 +23,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { main as memory } from "../cmd/memory/cli.ts"
 import { stamp } from "../tests/hang-guard.ts"
 

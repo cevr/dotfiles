@@ -12,7 +12,7 @@ const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ cre
 
 test("weekly-only admission needs fresh explicit absence, retains it through headers, and obeys a returning five-hour limit", () => {
   const weekly = { name: "7d", utilization: 0.2, resetAt: now + 3.5 * day }
-  const absent: QuotaReading = { at: now, windows: [weekly], fiveHourAbsentAt: now }
+  const absent: QuotaReading = { at: now, windows: [weekly], absent: [{ name: "5h", at: now }] }
   const dispatch = (reading: QuotaReading, at = now, model = "claude-opus-5-5") =>
     dispatchPace([{ ...account(0.2), reading }], at, {}, 0.04, model)
   expect(dispatch(absent)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["a"] })
@@ -21,15 +21,16 @@ test("weekly-only admission needs fresh explicit absence, retains it through hea
   expect(dispatch(carryOver(absent, headers(now + minute)), now + minute).ok).toBe(true)
   expect(dispatch(carryOver(absent, headers(now + 31 * minute)), now + 31 * minute)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
   expect(dispatch(headers(now))).toMatchObject({ ok: false, reasonCode: "usage-unread" })
-  expect(dispatch({ ...absent, fiveHourAbsentAt: now + minute })).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  expect(dispatch({ ...absent, absent: [{ name: "5h", at: now + minute }] })).toMatchObject({ ok: false, reasonCode: "usage-unread" })
   // A returned limit applies immediately; partial headers cannot restore the retired exemption.
   const limited: QuotaReading = { at: now + minute, windows: [weekly, { name: "5h", utilization: 0.95, resetAt: now + hour }] }
   const returned = carryOver(absent, limited)
-  expect(returned).not.toHaveProperty("fiveHourAbsentAt")
+  expect(returned).not.toHaveProperty("absent")
   expect(dispatch(returned, now + minute)).toMatchObject({ ok: false, reasonCode: "quota-limit" })
-  expect(dispatch(carryOver(returned, headers(now + 2 * minute)), now + 2 * minute)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  // REPORTED, then UNKNOWN (headers without it): the last reported window binds until its own reset.
+  expect(dispatch(carryOver(returned, headers(now + 2 * minute)), now + 2 * minute)).toMatchObject({ ok: false, reasonCode: "quota-limit", retryAt: now + hour })
   // Another explicit removal retires the former limit, without inventing a zero-use window.
-  const removedAgain = carryOver(returned, { ...absent, at: now + 2 * minute, fiveHourAbsentAt: now + 2 * minute })
+  const removedAgain = carryOver(returned, { ...absent, at: now + 2 * minute, absent: [{ name: "5h", at: now + 2 * minute }] })
   expect(removedAgain.windows).toEqual([weekly])
   expect(dispatch(removedAgain, now + 2 * minute).ok).toBe(true)
   expect(dispatch({ ...absent, windows: [{ ...weekly, utilization: 1 }] })).toMatchObject({ ok: false, reasonCode: "quota-limit" })

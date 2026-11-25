@@ -7,6 +7,7 @@ import { TestClock } from "effect/testing"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
 import { PoolId, RequestRefused } from "../account-pool.ts"
+import { windowReading } from "../quota.ts"
 import { ledgerLaws } from "../laws.ts"
 import { Ledger } from "../service.ts"
 import * as OpenCodeLedger from "./ledger.ts"
@@ -74,3 +75,17 @@ effectTest("a newer process slot cannot read for a send until the older slot dra
     yield* Scope.close(prior, Exit.void)
     expect(yield* read).toEqual({ a: { kind: "rate-limit", at: 0, until: 90_000 } })
   }).pipe(Effect.provide(virtual))), hangGuard("unit-law"))
+
+effectTest("a stored reading written at 04287dc0 with fiveHourAbsentAt restores with 5h ABSENT",
+  Effect.gen(function* () {
+    const at = 1_800_000_000_000
+    const ledger = yield* Ledger
+    const pool = PoolId.make("anthropic")
+    const restored = yield* ledger.restore(pool)
+    const row = Option.fromUndefinedOr(restored.readings["ultra"])
+    expect(Option.map(row, (reading) => [reading.absent, windowReading(reading, "5h")._tag])).toEqual(Option.some([[{ name: "5h", at }], "Absent"]))
+    const first = yield* ledger.firstReading(pool, "ultra", Effect.succeed(Option.none()))
+    expect(Option.map(first, (reading) => [reading.absent, windowReading(reading, "5h")._tag])).toEqual(Option.some([[{ name: "5h", at }], "Absent"]))
+  }).pipe(Effect.provide(OpenCodeLedger.layer(pagedByOne(new Map([
+    ["anthropic/reading/ultra", { at: 1_800_000_000_000, windows: [{ name: "7d", utilization: 0.2, resetAt: 1_800_086_400_000 }], fiveHourAbsentAt: 1_800_000_000_000, usage: { at: 1_800_000_000_000, samples: 1 } }],
+  ]))))), hangGuard("unit-law"))

@@ -30,10 +30,13 @@
 // given, so a scenario driving OpenCode from source loads its own plugins and not the installed
 // tree's. A newer build keeps its binding out of the environment and drops an inherited one itself;
 // this stays for shells of older installed builds and for children the fork does not reach.
+// Native hosts inherit the test watcher policy here; a scenario that needs file events opts in
+// at its private driver launch, not in the parent test process.
 import { outsideBuild } from "../scripts/bound-env.ts"
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
 import { type ChildTemp, childTemp, parentEnv, scratch, scratchRoot } from "./scratch.ts"
 import { checkOwnedCommand, scratchInput } from "./read-path.ts"
@@ -154,7 +157,7 @@ export const owned = <
     },
   }
   const [program = "", ...rest] = command
-  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsideBuild(outsidePanes(temp.env, parentEnv), parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
+  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsideBuild(outsidePanes(temp.env, parentEnv), parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS, ...testHostEnv() }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)
