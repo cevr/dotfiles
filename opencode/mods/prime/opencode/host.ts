@@ -17,6 +17,7 @@ import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import type { asks } from "./asks.ts"
 import { killJob, readJobs } from "./jobs.ts"
+import { readPaneAgents } from "./pane-agent.ts"
 import { pendingLeader } from "../pending.ts"
 import { openPending } from "./pending.ts"
 import { queues } from "./queue.ts"
@@ -88,6 +89,7 @@ export function host(
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
     subagents: (sessionID) => family(data, sessionID, context.location),
+    paneAgents: (sessionID) => readPaneAgents(context, sessionID),
     // The host syncs only the open transcript on route entry. Drawing a row
     // also needs that child's messages; the host coalesces and retains this
     // read, and the family observes its result through the native store.

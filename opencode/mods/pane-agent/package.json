@@ -1,0 +1,14 @@
+{
+  "name": "@dotfiles/opencode-pane-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Drive another harness's interactive CLI (agy first) in a Rex right-split pane as an OpenCode worker.",
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "rex-sdk": "github:dmmulroy/rex-sdk#55f8b98c28f2a8b525b24bc1a42bdf69511e4e0e"
+  }
+}

@@ -231,6 +231,7 @@ export const SERVER_PLUGINS: ReadonlyArray<string> = [
   "memory",
   "stall",
   "rex",
+  "pane-agent",
   "escape",
   "update",
 ]
@@ -262,7 +263,7 @@ export const TUI_FIRST = "prime"
  * in the sidebar's layout, with the Queue section after them all. Order only: which plugins load is
  * derived (`tuiPluginsOf`).
  */
-export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
+export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "pane-agent", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
 
 /** A plugin's place: its index in `TUI_ORDER`, and after every listed one for a plugin it does not list. */
 const placeOf = (name: string): number => Option.getOrElse(Arr.findFirstIndex(TUI_ORDER, (listed) => listed === name), () => TUI_ORDER.length)

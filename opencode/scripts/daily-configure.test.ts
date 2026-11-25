@@ -39,7 +39,7 @@ describe("the TUI's plugin list in a build's tree", () => {
     expect(tuiPluginsOf(packages.toReversed())).toEqual(tuiPluginsOf(packages))
     // This checkout's plugins: the list the TUI had before trees, and Queue, which reached it through the server, after it.
     const text = tuiText()
-    const order = ["prime", "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape", "queue"]
+    const order = ["prime", "status", "herdr", "rex", "pane-agent", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape", "queue"]
     const places = order.map((name) => text.indexOf(`"${ROOT}/cmd/${name}"`))
     expect(places.every((place) => place >= 0)).toBe(true)
     expect(places).toEqual(places.toSorted((left, right) => left - right))
