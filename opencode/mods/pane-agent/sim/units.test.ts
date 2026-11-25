@@ -299,7 +299,19 @@ describe("pane-agent-sim pins are per violation signature (SPEC v2 ruling 7, wid
       expect(pinDiff(pin, { ...pin, [job]: [wedge] })).toEqual([])
       expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: WEDGE.replace("w1:", "w2:") })] }).length).toBeGreaterThan(0)
       expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: "w1: 1 queued turn(s) never typed though the pane is idle" })] }).length).toBeGreaterThan(0)
+      expect(pinDiff(pin, { ...pin, [job]: [wedge, wedge] }).length, "a second occurrence of a pinned signature (a multiset)").toBeGreaterThan(0)
       expect(pinDiff(pin, {}).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "the untyped-defect class accepts only the injector's own defect text; a defect a broken double throws by itself is not in it",
+    Effect.sync(() => {
+      const defect = (text: string) => signatureOf({ invariant: 1, detail: `follow_up#3 (w1) died with an untyped defect: Error: ${text}` })
+      expect(classOf(defect("sim: defect injected at notifier.changed #4"))).toEqual(Option.some("untyped defect reaches the caller"))
+      expect(Option.isNone(classOf(defect("sim: this boundary has no typed failure")))).toBe(true)
+      expect(Option.isNone(classOf(defect("boom")))).toBe(true)
     }),
     hangGuard("unit-law"),
   )

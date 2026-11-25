@@ -100,6 +100,19 @@ const liveness = (trace: Trace): ReadonlyArray<Violation> =>
 const SPLIT_UNKNOWN = /split.?result.?unknown/i
 
 /** Ruling (2): until orphan adoption exists, an orphan split is acceptable only when the shell reported it. */
+/** The worker key a token names (TK-<worker>-<n>), so a fault named by its token says whose it is. */
+const workerOfToken = (token: string): string => Option.getOrElse(Option.fromUndefinedOr(/^TK-([a-z0-9]+)-\d+$/.exec(token)?.[1]), () => "?")
+
+const TOKEN_IN = /\bTK-[a-z0-9]+-\d+\b/
+
+/** The worker a pane belongs to: the first token typed into it or passed to its split ("?" when none was). */
+const paneWorker = (world: WorldState, blockId: string): string => {
+  const texts = [...world.writes.filter((write) => write.blockId === blockId && write.proc >= 0).map((write) => write.data), ...world.splits.filter((split) => split.blockId === blockId).flatMap((split) => split.input.command)]
+  return Option.getOrElse(Option.map(Option.fromUndefinedOr(texts.flatMap((text) => Option.toArray(tokenIn(text)))[0]), workerOfToken), () => "?")
+}
+
+const tokenIn = (text: string): Option.Option<string> => Option.fromNullishOr(TOKEN_IN.exec(text)).pipe(Option.flatMap((match) => Option.fromUndefinedOr(match[0])))
+
 const orphanReported = (trace: Trace): boolean =>
   trace.world.wakes.some((wake) => SPLIT_UNKNOWN.test(wake.letter.text)) ||
   trace.calls.some((call) => SPLIT_UNKNOWN.test(call.error) || call.reply.some((w) => SPLIT_UNKNOWN.test(w.update)))
@@ -109,7 +122,7 @@ const orphanPanes = (trace: Trace): ReadonlyArray<Violation> => {
   if (orphanReported(trace)) return []
   return trace.world.panes
     .filter((pane) => pane.owned && pane.alive && !pane.closed && !referenced.has(pane.blockId))
-    .map((pane) => v(2, `pane ${pane.blockId} was split by the unit and is running, but no worker record owns it and no "split result unknown" was reported (orphan)`))
+    .map((pane) => v(2, `${paneWorker(trace.world, pane.blockId)}: pane ${pane.blockId} was split by the unit and is running, but no worker record owns it and no "split result unknown" was reported (orphan)`))
 }
 
 /** 2. A success is an accepted turn; a typed failure has no side effect on turns. */
@@ -117,8 +130,8 @@ const owned = (trace: Trace, ref: Reference): ReadonlyArray<Violation> => {
   const rejected = [...ref.rejected].flatMap((token) => {
     const typed = typings(trace.world, token).length
     const stored = trace.world.store.workers.some((w) => (w.pendingTurns ?? []).some((turn) => mentions(turn.brief, token)))
-    if (typed > 0) return [v(2, `${token} was refused to the caller, yet typed ${typed}x`)]
-    if (stored) return [v(2, `${token} was refused to the caller, yet the store queues it`)]
+    if (typed > 0) return [v(2, `${workerOfToken(token)}: ${token} was refused to the caller, yet typed ${typed}x`)]
+    if (stored) return [v(2, `${workerOfToken(token)}: ${token} was refused to the caller, yet the store queues it`)]
     return []
   })
   const counters = [...ref.workers.values()].flatMap((worker) =>
@@ -221,7 +234,7 @@ const printable = (data: string): string => data.slice(0, 40).split(ESC).join("\
 const promptWrite = (trace: Trace): ReadonlyArray<Violation> =>
   orchestratorWrites(trace.world)
     .filter((write) => PROMPT_SCREENS.includes(write.screen))
-    .map((write) => v(5, `wrote "${printable(write.data)}" into ${write.blockId} while it showed a ${write.screen} prompt (t=${write.at})`))
+    .map((write) => v(5, `${paneWorker(trace.world, write.blockId)}: wrote "${printable(write.data)}" into ${write.blockId} while it showed a ${write.screen} prompt (t=${write.at})`))
 
 const named = (trace: Trace): ReadonlySet<string> => {
   if (trace.calls.some((call) => call.command === "start" && call.worker.startsWith("named"))) return new Set([OWNER_BLOCK])
@@ -235,8 +248,8 @@ const safety = (trace: Trace): ReadonlyArray<Violation> => {
   const allowed = named(trace)
   const foreign = orchestratorWrites(trace.world)
     .filter((write) => !write.owned && !allowed.has(write.blockId))
-    .map((write) => v(5, `wrote into ${write.blockId}, a pane the unit did not create and the caller did not name`))
-  const closes = trace.world.closes.filter((close) => !close.owned).map((close) => v(5, `closed ${close.blockId}, a pane the unit did not create`))
+    .map((write) => v(5, `${paneWorker(trace.world, write.blockId)}: wrote into ${write.blockId}, a pane the unit did not create and the caller did not name`))
+  const closes = trace.world.closes.filter((close) => !close.owned).map((close) => v(5, `${paneWorker(trace.world, close.blockId)}: closed ${close.blockId}, a pane the unit did not create`))
   const senders = orchestratorWrites(trace.world).flatMap((write) =>
     Option.fromNullishOr(HEADING.exec(write.data)).pipe(
       Option.map((match) => match[1]),

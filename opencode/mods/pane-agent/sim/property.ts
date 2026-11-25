@@ -62,7 +62,8 @@ export type Fingerprint = Readonly<Record<string, ReadonlyArray<string>>>
 
 export const invariantsOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<number> => [...new Set(violations.map((item) => item.invariant))].sort((a, b) => a - b)
 
-export const signaturesOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<string> => [...new Set(violations.map(signatureOf))].sort()
+/** A job's violation signatures as a multiset (ruling 7, widened): every occurrence counts, sorted. */
+export const signaturesOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<string> => violations.map(signatureOf).sort()
 
 /** The invariant ids a signature set names (each signature starts with "I<n> "). */
 export const invariantsOfSignatures = (signatures: ReadonlyArray<string>): ReadonlyArray<number> =>

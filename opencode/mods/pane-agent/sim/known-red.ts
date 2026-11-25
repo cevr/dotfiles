@@ -44,18 +44,18 @@ export const CLASSES: ReadonlyArray<{ readonly name: string; readonly reference:
     pattern: /^I6 \S+: at quiescence status says \S+\/turn N but the store says \S+\/turn N$/,
   },
   { name: "call never answers", reference: "H and F1 (diagnosis §3, r3), diagnosis #2, #11 and #12: a tool call with no bound", pattern: /^I1 \S+#N \(\S+\) did not answer within N ms$/ },
-  { name: "untyped defect reaches the caller", reference: "F1 (r3), diagnosis §3 I: a defect is not a typed error", pattern: /^I1 \S+#N \(\S+\) died with an untyped defect: / },
+  { name: "untyped defect reaches the caller", reference: "F1 (r3), diagnosis §3 I: a defect is not a typed error", pattern: /^I1 \S+#N \(\S+\) died with an untyped defect: Error: sim: defect injected at [a-z]+\.[A-Za-z]+ #N$/ },
   { name: "settled turn never woken", reference: "I, R1 and Q2 (diagnosis §3, r1, r2): a turn ends in the pane and no done wake carries it", pattern: /^I4 \S+ turn N \(<tok>\) ended in the pane, but no done wake ever carried its answer$/ },
   { name: "duplicate wake", reference: "I4 one wake per (turn, kind), diagnosis section 4", pattern: /^I4 \S+: N distinct wakes for \(turn, kind\) N:\S+$/ },
   { name: "done before the turn ended", reference: "B1 and R3 (r1), review r2 (await:second:reattach@10: a ready screen read as done)", pattern: /^I6 \S+: done wake for turn N \(<tok>\) at t=N, but that turn had not ended in the pane$/ },
   { name: "answer re-delivered for another turn", reference: "diagnosis #8: a crash after Persist(typed) reports a turn that never ran", pattern: /^I6 \S+: done wake for turn N at t=N carries the answer of turn N \(<tok>\), a turn already reported$/ },
   { name: "working with no typed turn", reference: "I and G (diagnosis §3): the store says working forever", pattern: /^I6 \S+: at quiescence the store says working, but no typed turn is open in the pane$/ },
   { name: "status says done too early", reference: "B3 (r1), I6 truth: a reply claims done before the turn ended", pattern: /^I6 \S+: status#N says done at t=N, but turn N \(<tok>\) has not ended in the pane$/ },
-  { name: "orphan split", reference: "diagnosis #5, ruling (2): a split no record owns and no \"split result unknown\"", pattern: /^I2 pane <block> was split by the unit and is running, but no worker record owns it/ },
+  { name: "orphan split", reference: "diagnosis #5, ruling (2): a split no record owns and no \"split result unknown\"", pattern: /^I2 \S+: pane <block> was split by the unit and is running, but no worker record owns it/ },
   { name: "store ahead of the caller", reference: "G (diagnosis §3, #7): the store records a turn the caller was refused", pattern: /^I2 \S+: the store records turn N, but the caller saw only N turn\(s\) accepted$/ },
-  { name: "refused yet typed", reference: "review r2 grouping, G's class: a refused turn was typed", pattern: /^I2 <tok> was refused to the caller, yet typed Nx$/ },
+  { name: "refused yet typed", reference: "review r2 grouping, G's class: a refused turn was typed", pattern: /^I2 \S+: <tok> was refused to the caller, yet typed Nx$/ },
   { name: "accepted turn never typed", reference: "E1 and Q1 (r2), ruling (3): no not_typed report", pattern: /^I3 \S+ turn N \(<tok>, \S+\) was accepted but never typed and never reported "not typed"$/ },
-  { name: "write into a prompt", reference: "B2 (r1): bytes typed while a trust or permission prompt shows", pattern: /^I5 wrote .* into <block> while it showed a \S+ prompt \(t=N\)$/ },
+  { name: "write into a prompt", reference: "B2 (r1): bytes typed while a trust or permission prompt shows", pattern: /^I5 \S+: wrote .* into <block> while it showed a \S+ prompt \(t=N\)$/ },
   { name: "queued turn never typed", reference: "Q1 (r2), F1 (r3): a queued turn waits on an idle pane", pattern: /^I8 \S+: N queued turn\(s\) never typed though the pane is idle$/ },
   { name: "wake stuck in the outbox", reference: "R1 and Q2 (r1, r2), diagnosis #3: a pending wake never delivered", pattern: /^I8 \S+: N wake\(s\) still pending in the outbox at quiescence$/ },
   { name: "usage limit not handled", reference: "SPEC v2 addition and ruling (5): no limited wake, no resume", pattern: /^I9 \S+ turn N \(<tok>\) hit the usage limit at t=N(, but no "limited" wake reported it|; never resumed after its reset at t=N and never reported "not typed")$/ },
@@ -69,14 +69,26 @@ export const pinnedRed = (key: string): Fingerprint => Option.getOrElse(Option.f
 
 export const isPinned = (key: string): boolean => Object.keys(pinnedRed(key)).length > 0
 
-/** How an observed red set differs from its pin, per job and violation signature: new, missing, or a job turned green. */
+const counts = (signatures: ReadonlyArray<string>): ReadonlyMap<string, number> => {
+  const out = new Map<string, number>()
+  for (const signature of signatures) out.set(signature, Option.getOrElse(Option.fromUndefinedOr(out.get(signature)), () => 0) + 1)
+  return out
+}
+
+/** How an observed red set differs from its pin, per job and signature counted as a multiset: extra, missing, or a job turned green. */
 export const pinDiff = (pinned: Fingerprint, observed: Fingerprint): ReadonlyArray<string> => {
   const out: Array<string> = []
   for (const [job, signatures] of Object.entries(observed)) {
-    const want = new Set(Option.getOrElse(Option.fromUndefinedOr(pinned[job]), () => []))
-    for (const signature of signatures) if (!want.has(signature)) out.push(`new violation: ${job}: ${signature} (not in the pin)`)
-    const seen = new Set(signatures)
-    for (const signature of want) if (!seen.has(signature)) out.push(`missing: ${job}: ${signature} (pinned, not seen): shrink its pin in sim/pins.ts`)
+    const want = counts(Option.getOrElse(Option.fromUndefinedOr(pinned[job]), () => []))
+    const seen = counts(signatures)
+    for (const [signature, n] of seen) {
+      const pinnedN = Option.getOrElse(Option.fromUndefinedOr(want.get(signature)), () => 0)
+      if (n > pinnedN) out.push(`new violation: ${job}: ${signature} seen ${n}x, pinned ${pinnedN}x`)
+    }
+    for (const [signature, n] of want) {
+      const seenN = Option.getOrElse(Option.fromUndefinedOr(seen.get(signature)), () => 0)
+      if (seenN < n) out.push(`missing: ${job}: ${signature} pinned ${n}x, seen ${seenN}x: shrink its pin in sim/pins.ts`)
+    }
   }
   for (const job of Object.keys(pinned)) {
     if (!(job in observed)) out.push(`turned green: ${job} (pinned with ${(pinned[job] ?? []).length} signature(s)): shrink its pin in sim/pins.ts`)
