@@ -91,6 +91,8 @@ interface SessionEvent {
 
 /** A session missing from the stand-in host, matching OpenCode's Session.NotFoundError shape. */
 const SessionNotFound = Schema.TaggedStruct("Session.NotFoundError", { sessionID: Schema.String })
+/** The stand-in host could not admit a notice (`World.wakeAccess.fails`). */
+const SyntheticRefused = Schema.TaggedStruct("Session.SyntheticConflictError", { sessionID: Schema.String })
 
 /** A limit tally of the test's own, in every start's options: the live adapters otherwise keep it under the owner's XDG_STATE_HOME. */
 const scratchLimits = (root: string) => join(mkdtempSync(join(root, "pool-state-")), "limits.json")
@@ -299,19 +301,20 @@ const start = <R = never,>(
           })
         },
         synthetic: (input: { readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean }) =>
-          Effect.suspend(() => {
+          Effect.suspend((): Effect.Effect<void, unknown> => {
             state.wakeAccess.calls += 1
             if (state.missing.has(input.sessionID)) return Effect.fail(SessionNotFound.make({ sessionID: input.sessionID }))
             if (state.wakeAccess.fails > 0) {
               state.wakeAccess.fails -= 1
-              return Effect.fail(new Error("the host could not admit the notice"))
+              return Effect.fail(SyntheticRefused.make({ sessionID: input.sessionID }))
             }
             const key = Option.map(Option.fromUndefinedOr(input.id), (id) => `${input.sessionID}\0${id}`)
             if (Option.exists(key, (value) => state.admitted.has(value))) return Effect.void
             if (Option.isSome(key)) state.admitted.add(key.value)
             const woke = input.resume !== false && !state.stopped.has(input.sessionID)
             state.synthetics.push({ ...input, woke })
-            return state.wakeAccess.hang ? Effect.never : Effect.void
+            if (state.wakeAccess.hang) return Effect.never
+            return Effect.void
           }),
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {

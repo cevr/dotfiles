@@ -695,7 +695,7 @@ export const make = <R = never,>(
           yield* ctx.storage.set(key, HeldSend.make({ ...current.value, recheckAt: decision.recheckAt }))
           return { decision, next: Option.some(decision.recheckAt) }
         }
-        return { decision, next: HoldWake.Decision.guards.Wait(decision) ? HoldWake.dueAt(current.value) : Option.none<number>() }
+        return { decision, next: Option.filter(HoldWake.dueAt(current.value), () => HoldWake.Decision.guards.Wait(decision)) }
       })
       const deliverWake = Effect.fn("Pool.deliverWake")(function* (sessionID: string, deliveryID: string) {
         yield* ctx.session.synthetic({
@@ -712,9 +712,13 @@ export const make = <R = never,>(
         if (Option.isNone(current) || !HoldWake.sameHold(seen, current.value) || Option.isSome(Option.fromUndefinedOr(current.value.wokenAt)))
           return Option.none<number>()
         const now = yield* Clock.currentTimeMillis
-        const row = took ? HoldWake.delivered(current.value, now) : HoldWake.failed(current.value, now)
+        if (took) {
+          yield* ctx.storage.set(key, HeldSend.make(HoldWake.delivered(current.value, now)))
+          return Option.none<number>()
+        }
+        const row = HoldWake.failed(current.value, now)
         yield* ctx.storage.set(key, HeldSend.make(row))
-        return took ? Option.none<number>() : Option.some(Option.getOrElse(Option.fromUndefinedOr(row.wakeFailures), () => 0))
+        return Option.some(Option.getOrElse(Option.fromUndefinedOr(row.wakeFailures), () => 0))
       })
       /** Look at one row: when it is next due, or none when nothing more is to be done for it. */
       const checkHeldRow = Effect.fn("Pool.checkHeldRow")(function* (key: string, row: HeldSend) {
@@ -771,8 +775,10 @@ export const make = <R = never,>(
         return next
       })
       // The scanner sleeps until the earliest row is due, or until a row is written: with no row it has no timer.
-      const wakeBell = yield* Queue.sliding<void>(1)
-      const ring = () => void Queue.offerUnsafe(wakeBell, undefined)
+      const wakeBell = yield* Queue.sliding<boolean>(1)
+      const ring = () => {
+        Queue.offerUnsafe(wakeBell, true)
+      }
       yield* Effect.acquireRelease(
         Effect.sync(() => wakeBells().add(ring)),
         () => Effect.sync(() => void wakeBells().delete(ring)),

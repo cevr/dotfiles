@@ -48,10 +48,8 @@ const pacesAt = (now: number): ReadonlyArray<readonly [string, Option.Option<Wir
   ["held-stale", Option.some<WirePace>({ ok: false, measured: true, reason: "stale time", reasonCode: "quota-limit", retryAt: now })],
 ]
 
-const optional = <K extends string, A>(key: K, value: Option.Option<A>) =>
-  Option.match(value, { onNone: () => ({}), onSome: (present) => ({ [key]: present }) as Record<K, A> })
-
-interface Shape {
+/** The fields a row is built from, each present or absent. */
+interface RowFields {
   readonly reasonCode: HoldReason
   readonly model: Option.Option<string>
   readonly wokenAt: Option.Option<number>
@@ -60,60 +58,89 @@ interface Shape {
   readonly wakeFailures: Option.Option<number>
 }
 
-const makeRow = (shape: Shape): HeldSend =>
+const makeRow = (fields: RowFields): HeldSend =>
   HeldSend.make({
     sessionID: "ses_child",
     providerID: "anthropic",
-    reasonCode: shape.reasonCode,
+    reasonCode: fields.reasonCode,
     retryAt: RETRY,
-    ...optional("model", shape.model),
-    ...optional("wokenAt", shape.wokenAt),
-    ...optional("stepID", shape.stepID),
-    ...optional("recheckAt", shape.recheckAt),
-    ...optional("wakeFailures", shape.wakeFailures),
+    ...Option.match(fields.model, { onNone: () => ({}), onSome: (model) => ({ model }) }),
+    ...Option.match(fields.wokenAt, { onNone: () => ({}), onSome: (wokenAt) => ({ wokenAt }) }),
+    ...Option.match(fields.stepID, { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+    ...Option.match(fields.recheckAt, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
+    ...Option.match(fields.wakeFailures, { onNone: () => ({}), onSome: (wakeFailures) => ({ wakeFailures }) }),
   })
 
-/** The decision as the rules state it, from the shape the row was built from (not from the row's own fields). */
-const expectedDecision = (shape: Shape, session: SessionRole, now: number, pace: Option.Option<WirePace>): string => {
-  if (Option.isSome(shape.wokenAt) || Option.isSome(shape.stepID) || Option.isNone(shape.model)) return "Drop"
-  if (Option.exists(shape.wakeFailures, (count) => count >= MAX_WAKE_FAILURES) || session !== "subagent") return "Drop"
-  const due = Option.getOrElse(shape.recheckAt, () => RETRY)
-  if (now < due || Option.isNone(pace)) return "Wait"
-  return pace.value.ok ? "Wake" : "Hold"
+const FRESH: RowFields = { reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), stepID: Option.none(), recheckAt: Option.none(), wakeFailures: Option.none() }
+
+/** Whether the pool may ever wake a row built from `fields`, as the rules state it (not read from the row). */
+const wakeable = (fields: RowFields): boolean =>
+  Option.isNone(fields.wokenAt) &&
+  Option.isNone(fields.stepID) &&
+  Option.isSome(fields.model) &&
+  !Option.exists(fields.wakeFailures, (count) => count >= MAX_WAKE_FAILURES)
+
+/** The decision as the rules state it, from the fields the row was built from. */
+const expectedDecision = (fields: RowFields, session: SessionRole, now: number, pace: Option.Option<WirePace>): string => {
+  if (!wakeable(fields) || session !== "subagent") return "Drop"
+  if (now < Option.getOrElse(fields.recheckAt, () => RETRY) || Option.isNone(pace)) return "Wait"
+  return Option.match(Option.liftPredicate(pace.value, (answer) => answer.ok), { onNone: () => "Hold", onSome: () => "Wake" })
+}
+
+/** Every combination of the row's fields. */
+const everyRow: ReadonlyArray<RowFields> = HoldReason.literals.flatMap((reasonCode) =>
+  MODELS.flatMap((model) =>
+    WOKEN.flatMap((wokenAt) =>
+      STEPS.flatMap((stepID) =>
+        RECHECKS.flatMap((recheckAt) => FAILURES.map((wakeFailures) => ({ reasonCode, model, wokenAt, stepID, recheckAt, wakeFailures }))),
+      ),
+    ),
+  ),
+)
+
+const labelOf = (fields: RowFields, clock: string, session: SessionRole, pace: string) =>
+  [
+    fields.reasonCode,
+    `model=${Option.isSome(fields.model)}`,
+    `woken=${Option.isSome(fields.wokenAt)}`,
+    `step=${Option.isSome(fields.stepID)}`,
+    `recheck=${Option.isSome(fields.recheckAt)}`,
+    `failures=${Option.getOrElse(fields.wakeFailures, () => 0)}`,
+    clock,
+    session,
+    pace,
+  ].join("/")
+
+/** One case of the domain: the decision, its id or recheck, and whether `needsCheck` agrees. */
+const checkCase = (fields: RowFields, session: SessionRole, [clock, now]: readonly [string, number], [paceName, pace]: readonly [string, Option.Option<WirePace>]) => {
+  const row = makeRow(fields)
+  const label = labelOf(fields, clock, session, paceName)
+  const actual = decide({ row, session, now, pace })
+  expect([label, actual._tag]).toEqual([label, expectedDecision(fields, session, now, pace)])
+  // A wake carries the hold's one id; a recheck is strictly later than now.
+  if (Decision.guards.Wake(actual)) expect([label, actual.id]).toEqual([label, wakeDeliveryId("ses_child", RETRY)])
+  if (Decision.guards.Hold(actual)) expect([label, actual.recheckAt > now]).toEqual([label, true])
+  // needsCheck is false only where no Wake or Hold can come.
+  if (!needsCheck(row, now)) expect([label, Decision.guards.Wake(actual) || Decision.guards.Hold(actual)]).toEqual([label, false])
 }
 
 describe("hold-wake decision domain", () => {
   test("enumerates the entire input domain: reason, model, woken, Step, recheck, failures, session, clock and pace", () => {
     let checked = 0
-    for (const reasonCode of HoldReason.literals)
-      for (const model of MODELS)
-        for (const wokenAt of WOKEN)
-          for (const stepID of STEPS)
-            for (const recheckAt of RECHECKS)
-              for (const wakeFailures of FAILURES) {
-                const shape = { reasonCode, model, wokenAt, stepID, recheckAt, wakeFailures }
-                const row = makeRow(shape)
-                for (const session of SESSIONS)
-                  for (const [clockName, now] of CLOCKS)
-                    for (const [paceName, pace] of pacesAt(now)) {
-                      checked += 1
-                      const actual = decide({ row, session, now, pace })
-                      const label = `${reasonCode}/model=${Option.isSome(model)}/woken=${Option.isSome(wokenAt)}/step=${Option.isSome(stepID)}/recheck=${Option.isSome(recheckAt)}/failures=${Option.getOrElse(wakeFailures, () => 0)}/${clockName}/${session}/${paceName}`
-                      expect([label, actual._tag]).toEqual([label, expectedDecision(shape, session, now, pace)])
-                      // A wake carries the hold's one id; a recheck is strictly later than now.
-                      if (Decision.guards.Wake(actual)) expect([label, actual.id]).toEqual([label, wakeDeliveryId("ses_child", RETRY)])
-                      if (Decision.guards.Hold(actual)) expect([label, actual.recheckAt > now]).toEqual([label, true])
-                      // needsCheck is false only where no Wake or Hold can come.
-                      if (!needsCheck(row, now)) expect([label, Decision.guards.Wake(actual) || Decision.guards.Hold(actual)]).toEqual([label, false])
-                    }
-              }
+    for (const fields of everyRow)
+      for (const session of SESSIONS)
+        for (const clock of CLOCKS)
+          for (const pace of pacesAt(clock[1])) {
+            checkCase(fields, session, clock, pace)
+            checked += 1
+          }
     expect(checked).toBe(
       HoldReason.literals.length * MODELS.length * WOKEN.length * STEPS.length * RECHECKS.length * FAILURES.length * SESSIONS.length * CLOCKS.length * 5,
     )
   })
 
   test("a row only this pool wrote has a due time: no model, woken, a Step's, or out of attempts never wakes", () => {
-    const row = makeRow({ reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), stepID: Option.none(), recheckAt: Option.none(), wakeFailures: Option.none() })
+    const row = makeRow(FRESH)
     expect(dueAt(row)).toEqual(Option.some(RETRY))
     const { model: _model, ...legacy } = row
     expect(dueAt(HeldSend.make(legacy))).toEqual(Option.none())
@@ -126,7 +153,7 @@ describe("hold-wake decision domain", () => {
 })
 
 describe("what the row records", () => {
-  const row = makeRow({ reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), stepID: Option.none(), recheckAt: Option.none(), wakeFailures: Option.none() })
+  const row = makeRow(FRESH)
 
   test("a delivery marks it woken and keeps the hold's time and id", () => {
     const after = delivered(row, RETRY + 1)
