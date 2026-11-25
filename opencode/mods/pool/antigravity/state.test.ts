@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Match, Option, Schema } from "effect"
 import type { Span, Window } from "./quota.ts"
 import { Answer, answerAt, backoffMs, due, EMPTY, Event, evolve, keychainAllowed, READ_EVERY_MS, type State, Why } from "./state.ts"
-import { statusLines } from "./text.ts"
+import { openText, statusLines } from "./text.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -34,14 +34,20 @@ const pick = <A,>(random: Random, from: readonly [A, ...ReadonlyArray<A>]): A =>
 const either = <A,>(random: Random, p: number, often: () => A, rarely: () => A): A =>
   Option.getOrElse(Arr.get([rarely, often], Number(random() < p)), () => rarely)()
 
-/** The reference: the newest reading's time and windows, the newest limit, nothing else. */
+interface ModelLimit {
+  readonly group: string
+  readonly seenAt: number
+  readonly resetAt: Option.Option<number>
+}
+
+/** The reference: the newest reading's time and windows, each group's newest limit, nothing else. */
 interface Model {
   readonly readAt: Option.Option<number>
   readonly windows: ReadonlyArray<Window>
-  readonly limit: Option.Option<{ readonly seenAt: number; readonly resetAt: Option.Option<number>; readonly group: Option.Option<string> }>
+  readonly limits: ReadonlyArray<ModelLimit>
 }
 
-const Expected = Schema.TaggedUnion({ Open: {}, Limited: { until: Schema.Finite }, Unknown: {} })
+const Expected = Schema.TaggedUnion({ Open: {}, Limited: { until: Schema.Finite }, LimitedResetUnknown: {}, Unmeasured: {}, Unknown: {} })
 type Expected = typeof Expected.Type
 
 const resetOf = (window: Window) => Option.fromUndefinedOr(window.resetAt)
@@ -49,11 +55,12 @@ const liveAt = (window: Window, now: number) => !Option.exists(resetOf(window), 
 
 /** The model's answer, read off its rules in order: the pane's limit, then nothing read, full windows, both windows read. */
 const expected = (model: Model, now: number, group: string): Expected => {
-  const limit = Option.filter(model.limit, (seen) => !Option.exists(seen.group, (named) => named !== group))
+  const limit = Arr.findFirst(model.limits, (seen) => seen.group === group)
   const until = Option.flatMap(limit, (seen) => Option.filter(seen.resetAt, (at) => at > now))
   if (Option.isSome(until)) return Expected.cases.Limited.make({ until: until.value })
   const silent = Option.exists(limit, (seen) => Option.isNone(seen.resetAt) && !Option.exists(model.readAt, (at) => at > seen.seenAt))
-  if (silent || Option.isNone(model.readAt)) return Expected.cases.Unknown.make({})
+  if (silent) return Expected.cases.LimitedResetUnknown.make({})
+  if (Option.isNone(model.readAt)) return Expected.cases.Unmeasured.make({})
   const live = model.windows.filter((window) => window.group === group && liveAt(window, now))
   const full = live.filter((window) => window.used >= 1)
   if (full.some((window) => Option.isNone(resetOf(window)))) return Expected.cases.Unknown.make({})
@@ -106,7 +113,16 @@ const seeLimit = (random: Random, world: World): World => {
   const withReset = Option.match(resetAt, { onNone: () => base, onSome: (at) => ({ ...base, resetAt: at }) })
   const limit = Option.match(group, { onNone: () => withReset, onSome: (named) => ({ ...withReset, group: named }) })
   const state = evolve(world.state, Event.cases.LimitSeen.make({ limit }))
-  return { ...world, state, model: { ...world.model, limit: Option.some({ seenAt: world.now, resetAt, group }) } }
+  const named: ReadonlyArray<string> = Option.match(group, { onNone: () => GROUPS, onSome: (one) => [one] })
+  const limits = [...world.model.limits.filter((seen) => !named.includes(seen.group)), ...named.map((one) => ({ group: one, seenAt: world.now, resetAt }))]
+  return { ...world, state, model: { ...world.model, limits } }
+}
+
+const clearLimit = (random: Random, world: World): World => {
+  const group = either(random, 0.5, () => Option.some<string>(pick(random, GROUPS)), () => Option.none<string>())
+  const named: ReadonlyArray<string> = Option.match(group, { onNone: () => GROUPS, onSome: (one) => [one] })
+  const state = evolve(world.state, Option.match(group, { onNone: () => Event.cases.LimitCleared.make({}), onSome: (one) => Event.cases.LimitCleared.make({ group: one }) }))
+  return { ...world, state, model: { ...world.model, limits: world.model.limits.filter((seen) => !named.includes(seen.group)) } }
 }
 
 const advance = (random: Random, world: World): World => ({ ...world, now: world.now + Math.floor(random() * 2 * HOUR) })
@@ -125,15 +141,22 @@ const check = (world: World) => {
       Limited: ({ until, by }) => {
         expect(Number.isFinite(until)).toBe(true)
         expect(until).toBeGreaterThan(now)
-        expect(Expected.match(reference, { Limited: (limited) => limited.until, Open: () => -1, Unknown: () => -1 })).toBe(until)
+        expect(Expected.match(reference, { Limited: (limited) => limited.until, Open: () => -1, LimitedResetUnknown: () => -1, Unmeasured: () => -1, Unknown: () => -1 })).toBe(until)
         // A limit whose reset has passed never holds by itself.
-        if (by === "limit") expect(Option.exists(Option.flatMap(model.limit, (seen) => seen.resetAt), (at) => at > now)).toBe(true)
+        if (by === "limit") expect(Option.exists(Option.flatMap(Arr.findFirst(model.limits, (seen) => seen.group === group), (seen) => seen.resetAt), (at) => at > now)).toBe(true)
+      },
+      LimitedResetUnknown: ({ seenAt }) => expect(seenAt).toBeLessThanOrEqual(now),
+      // Not measured only with nothing read: usable, never "open", never a hold.
+      Unmeasured: ({ why }) => {
+        expect(Option.isNone(model.readAt)).toBe(true)
+        expect(WHY_TAGS.has(why._tag)).toBe(true)
+        expect(openText(answer)).toStartWith("usable: yes, unmeasured")
       },
       Unknown: ({ why }) => expect(WHY_TAGS.has(why._tag)).toBe(true),
     })
   }
   const lines = statusLines(state, now)
-  expect(lines.join("\n")).not.toMatch(/unlimited|100% left|no limit/i)
+  expect(lines.join("\n")).not.toMatch(/unlimited|100% left|no limit(?! seen)/i)
   GROUPS.forEach((group, index) => {
     for (const span of SPANS) {
       const live = model.windows.some((window) => window.group === group && window.span === span && liveAt(window, now))
@@ -143,14 +166,14 @@ const check = (world: World) => {
   })
 }
 
-const STEPS = [read, fail, seeLimit, advance] as const
-const WEIGHTS = [0.3, 0.15, 0.15, 0.4]
+const STEPS = [read, fail, seeLimit, clearLimit, advance] as const
+const WEIGHTS = [0.3, 0.15, 0.15, 0.05, 0.35]
 
 describe("Antigravity reading store", () => {
   test("generated sequences hold the invariants and the reference model's answers", () => {
     for (let seed = 1; seed <= 150; seed++) {
       const random = generator(seed)
-      let world: World = { now: START, state: EMPTY, model: { readAt: Option.none(), windows: [], limit: Option.none() } }
+      let world: World = { now: START, state: EMPTY, model: { readAt: Option.none(), windows: [], limits: [] } }
       for (let step = 0; step < 60; step++) {
         const roll = random()
         const index = WEIGHTS.findIndex((_weight, at) => roll < WEIGHTS.slice(0, at + 1).reduce((sum, weight) => sum + weight, 0))
@@ -159,6 +182,25 @@ describe("Antigravity reading store", () => {
         check(world)
       }
     }
+  })
+
+  test("three states: limited until T, measured open, not measured; a limit with no reset holds until a reading with room or a clear", () => {
+    const gemini = (state: State, now: number) => answerAt(state, now, "gemini")._tag
+    expect(gemini(EMPTY, START)).toBe("Unmeasured")
+    const limited = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: { seenAt: START, resetAt: START + HOUR } }))
+    expect(answerAt(limited, START, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + HOUR, by: "limit" }))
+    expect(answerAt(limited, START, "claude-gpt")._tag).toBe("Limited")
+    expect(answerAt(limited, START + 2 * HOUR, "gemini")).toEqual(Answer.cases.Unmeasured.make({ why: Why.cases.NotRead.make({}), since: START + HOUR }))
+    const room = Event.cases.Read.make({
+      at: START + 3 * HOUR,
+      windows: SPANS.map((span) => ({ group: "gemini", label: "Gemini", span, used: 0.3, resetAt: START + 5 * HOUR })),
+    })
+    expect(gemini(evolve(limited, room), START + 3 * HOUR)).toBe("Open")
+    const silent = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: { seenAt: START, group: "Gemini" } }))
+    expect(gemini(silent, START + 30 * HOUR)).toBe("LimitedResetUnknown")
+    expect(answerAt(silent, START, "claude-gpt")._tag).toBe("Unmeasured")
+    expect(gemini(evolve(silent, Event.cases.LimitCleared.make({ group: "gemini" })), START)).toBe("Unmeasured")
+    expect(gemini(evolve(silent, room), START + 3 * HOUR)).toBe("Open")
   })
 
   test("a keychain refusal stops every later attempt until the owner asks", () => {

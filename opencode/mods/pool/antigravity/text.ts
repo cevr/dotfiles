@@ -2,11 +2,11 @@
 // in `pool_push` status and in the `antigravity` tool's answers. Use is the
 // share of a window used out of 100% (usage-text.ts), times are the house
 // format (decider/notification-time.ts), and an unknown window says why.
-import { Match, Option } from "effect"
+import { Array as Arr, Match, Option } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { used } from "../usage-text.ts"
 import type { Span } from "./quota.ts"
-import { type Answer, answerAt, groupsOf, type Shown, type State, type Why, windowAt } from "./state.ts"
+import { Answer, answerAt, groupsOf, type Shown, type State, type Why, windowAt } from "./state.ts"
 
 const SPAN_NAME = { "5h": "5-hour", "7d": "weekly", quota: "quota" } as const satisfies { readonly [K in Span]: string }
 
@@ -33,19 +33,37 @@ export const whyText = (why: Why): string =>
       HostRefused: ({ host }) => `a request to ${host} was refused: not a Google host`,
       WindowUnknown: ({ span }) => `the ${SPAN_NAME[span]} window is unknown`,
       FullWithoutReset: ({ span }) => `the ${SPAN_NAME[span]} window is full, its reset unknown`,
-      LimitWithoutReset: ({ seenAt }) => `a pane showed a limit at ${formatNotificationTime(seenAt)} with no reset time`,
     }),
   )
 
-/** An answer in words: `open`, `limited until <time>` or `unknown: <why>`. */
+const sinceText = (since: Option.Option<number>) =>
+  Option.match(since, { onNone: () => "no limit seen ever", onSome: (at) => `no limit seen since ${formatNotificationTime(at)}` })
+
+/**
+ * An answer in words: `open` (measured), `limited until <time>`, `limited,
+ * reset unknown`, `not measured (no limit seen since <time or ever>)` or
+ * `unknown: <why>`.
+ */
 export const answerText = (answer: Answer): string =>
   Match.value(answer).pipe(
     Match.tagsExhaustive({
       Open: () => "open",
       Limited: ({ until, by }) => `limited until ${formatNotificationTime(until)}${Match.value(by).pipe(Match.when("limit", () => " (a pane's limit)"), Match.orElse(() => ""))}`,
+      LimitedResetUnknown: ({ seenAt }) => `limited, reset unknown (a pane's limit at ${formatNotificationTime(seenAt)})`,
+      Unmeasured: ({ why, since }) => `not measured (${sinceText(Option.fromUndefinedOr(since))}): ${whyText(why)}`,
       Unknown: ({ why }) => `unknown: ${whyText(why)}`,
     }),
   )
+
+/** The answer to "is it open now": an unmeasured group is usable, never called open. */
+export const openText = (answer: Answer): string =>
+  Answer.match(answer, {
+    Open: () => "open (measured)",
+    Limited: () => answerText(answer),
+    LimitedResetUnknown: () => answerText(answer),
+    Unmeasured: ({ since }) => `usable: yes, unmeasured (${sinceText(Option.fromUndefinedOr(since))})`,
+    Unknown: () => answerText(answer),
+  })
 
 /** One window's row: `  5h 23% used of 100% · reset <time>`, or `  7d unknown: <why>`. */
 export const windowText = (span: Span, shown: Shown): string =>
@@ -77,14 +95,16 @@ const reportedLine = (state: State): ReadonlyArray<string> =>
     }),
   )
 
+/** Each group's newest pane limit: `  last limit seen <time> on <group>, resets <time>`. */
 const limitLine = (state: State): ReadonlyArray<string> =>
-  Option.toArray(
-    Option.map(Option.fromUndefinedOr(state.limit), (limit) => {
-      const reset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => "no reset given", onSome: (at) => `resets ${formatNotificationTime(at)}` })
-      const group = Option.match(Option.fromUndefinedOr(limit.group), { onNone: () => "", onSome: (named) => ` (${named})` })
-      return `  last limit seen ${formatNotificationTime(limit.seenAt)}${group}, ${reset}`
-    }),
-  )
+  Option.getOrElse(Option.fromUndefinedOr(state.limits), () => []).map((limit) => {
+    const reset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => "no reset given", onSome: (at) => `resets ${formatNotificationTime(at)}` })
+    const label = Option.getOrElse(
+      Option.map(Arr.findFirst(groupsOf(state), (group) => group.id === limit.group), (group) => group.label),
+      () => limit.group,
+    )
+    return `  last limit seen ${formatNotificationTime(limit.seenAt)} on ${label}, ${reset}`
+  })
 
 /**
  * Antigravity's rows at `now`: each group with its answer and its 5-hour and

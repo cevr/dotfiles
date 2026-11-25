@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/antigravity/live.ts: fs.exists and fs.readFileString of a path in the test's own makeTempDirectoryScoped root (`confined` dies on any other)
 // The Antigravity source against a fake Google on loopback: Google's own URLs,
 // carried by the test's transport to a local server that answers as each host
 // would. Success, an expired or refused token, a 429, a hang past the
@@ -29,6 +31,8 @@ interface Seen {
   readonly authorization: string
   readonly agent: string
   readonly body: string
+  /** What Google would see of it: method, host, path and the header names, sorted. */
+  readonly wire: string
 }
 
 const Reply = Schema.TaggedUnion({ Answer: { status: Schema.Finite, body: Schema.Unknown }, Hang: {} })
@@ -47,7 +51,8 @@ const fakeGoogle = Effect.fn("fakeGoogle")(function* (reply: (host: string, path
       const [, host = "", ...rest] = request.url.split("?")[0]?.split("/") ?? []
       const path = `/${rest.join("/")}`
       const body = yield* Effect.orElseSucceed(request.text, () => "")
-      yield* Ref.update(seen, (all) => [...all, { host, path, authorization: header(request, "authorization"), agent: header(request, "user-agent"), body }])
+      const wire = `${request.method} ${host}${path} [${Object.keys(request.headers).toSorted().join(",")}]`
+      yield* Ref.update(seen, (all) => [...all, { host, path, authorization: header(request, "authorization"), agent: header(request, "user-agent"), body, wire }])
       return yield* Reply.match(reply(host, path), {
         Answer: ({ status, body: json }) => Effect.succeed(HttpServerResponse.jsonUnsafe(json, { status })),
         // Past every deadline, yet short enough that the server's shutdown, which waits for it, ends.
@@ -183,6 +188,58 @@ describe("Antigravity source on a fake Google", () => {
     }),
   )
 
+  // Every request a read can make, as Google sees it, is one T3 Code makes
+  // (apps/server/src/provider/antigravityUsageLimits.ts at 55085df2) and no other:
+  // - POST oauth2.googleapis.com/token, form body (client_id, client_secret,
+  //   refresh_token, grant_type): T3's refresh of acp_token.json (its lines 402-411);
+  // - POST {daily,prod}/v1internal:retrieveUserQuotaSummary, then, when no summary
+  //   reads, v1internal:fetchAvailableModels, to both hosts, each with only
+  //   Authorization and User-Agent set and a JSON body `{ project }` or `{}`
+  //   (its lines 24-31 and 436-476); the user agent is T3's `antigravityUserAgent`
+  //   (its line 21).
+  // T3's GET www.googleapis.com/oauth2/v2/userinfo (an account fingerprint) is not
+  // made here: this reads one sign-in per host. The other header names are the
+  // runtime's fetch transport's (Bun's here, Node's in T3), set by neither. T3's Effect
+  // client also sends the b3 and traceparent trace headers; this sends neither.
+  live(
+    "every request a read can make is one T3 Code makes: hosts, paths, methods and header names pinned",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const google = yield* fakeGoogle((host, path) =>
+        Match.value({ host, path }).pipe(
+          Match.when({ host: "oauth2.googleapis.com" }, () => answer(200, { access_token: "fake-refreshed-access", expires_in: 3600 })),
+          Match.when({ path: "/v1internal:retrieveUserQuotaSummary" }, () => answer(200, {})),
+          Match.orElse(() => answer(200, { models: { "gemini-3-pro": { quotaInfo: { remainingFraction: 0.5, resetTime: "2030-01-01T05:00:00Z" } } } })),
+        ),
+      )
+      yield* setup.write("acp_token.json", yield* Schema.encodeEffect(AcpToken)({ client_id: "client", client_secret: SECRET, refresh_token: REFRESH, project_id: "proj" }))
+      yield* (yield* sourceOf(setup, google.base, {}, EMPTY)).refresh
+      const refreshable = yield* google.seen
+      yield* setup.fs.remove(`${setup.profile}/antigravity-acp/acp_token.json`)
+      yield* setup.write("antigravity-oauth-token", yield* cliToken(60))
+      yield* (yield* sourceOf(setup, google.base, { auth: "business" }, EMPTY)).refresh
+      const all = yield* google.seen
+      expect([...new Set(all.map((entry) => entry.wire))].toSorted()).toMatchInlineSnapshot(`
+        [
+          "POST cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels [accept,accept-encoding,authorization,connection,content-length,content-type,host,user-agent]",
+          "POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary [accept,accept-encoding,authorization,connection,content-length,content-type,host,user-agent]",
+          "POST daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels [accept,accept-encoding,authorization,connection,content-length,content-type,host,user-agent]",
+          "POST daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary [accept,accept-encoding,authorization,connection,content-length,content-type,host,user-agent]",
+          "POST oauth2.googleapis.com/token [accept,accept-encoding,connection,content-length,content-type,host,user-agent]",
+        ]
+      `)
+      expect(refreshable.map((entry) => `${entry.host}${entry.path}`)).toEqual([
+        "oauth2.googleapis.com/token",
+        "daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        "cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        "daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+        "cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      ])
+      expect(new Set(all.filter((entry) => entry.host !== "oauth2.googleapis.com").map((entry) => entry.agent))).toEqual(new Set([userAgent("darwin", "arm64")]))
+      expect(new Set(all.filter((entry) => entry.host !== "oauth2.googleapis.com").map((entry) => entry.body))).toEqual(new Set(['{"project":"proj"}', "{}"]))
+    }),
+  )
+
   live(
     "reads are spaced: none again before five minutes, one once due",
     Effect.gen(function* () {
@@ -222,7 +279,7 @@ describe("Antigravity source on a fake Google", () => {
       const state = yield* refused.state
       expect(state.failure?.why).toEqual(Why.cases.SignInExpired.make({}))
       const lines = yield* refused.lines
-      expect(lines[0]).toBe("antigravity / Gemini · unknown: sign-in expired: start an Antigravity turn")
+      expect(lines[0]).toBe("antigravity / Gemini · not measured (no limit seen ever): sign-in expired: start an Antigravity turn")
       expectNoSecret(yield* setup.fs.readFileString(setup.stateFile), lines.join("\n"), yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(state))
     }),
   )

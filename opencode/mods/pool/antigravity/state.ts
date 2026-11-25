@@ -46,8 +46,6 @@ export const Why = Schema.TaggedUnion({
   WindowUnknown: { group: Schema.String, span: Span },
   /** A full window with no reset time. */
   FullWithoutReset: { group: Schema.String, span: Span },
-  /** A pane printed a limit with no reset time, and no reading came since. */
-  LimitWithoutReset: { seenAt: Schema.Finite },
 })
 export type Why = typeof Why.Type
 
@@ -59,6 +57,10 @@ export const SeenLimit = Schema.Struct({
 })
 export type SeenLimit = typeof SeenLimit.Type
 
+/** The newest limit a pane printed on one group. */
+export const GroupLimit = Schema.Struct({ group: Schema.String, seenAt: Schema.Finite, resetAt: Schema.optionalKey(Schema.Finite) })
+export type GroupLimit = typeof GroupLimit.Type
+
 export const Reading = Schema.Struct({ at: Schema.Finite, windows: Schema.Array(Window) })
 export type Reading = typeof Reading.Type
 
@@ -68,7 +70,8 @@ export const State = Schema.Struct({
   failure: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, why: Why })),
   failures: Schema.Finite,
   nextReadAt: Schema.Finite,
-  limit: Schema.optionalKey(SeenLimit),
+  /** Each group's newest pane limit; a limit naming no group is kept on every group. */
+  limits: Schema.optionalKey(Schema.Array(GroupLimit)),
   keychain: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, outcome: KeychainOutcome })),
   /** When the owner last asked, through the tool, to read again (the keychain too). */
   askedAt: Schema.optionalKey(Schema.Finite),
@@ -84,6 +87,8 @@ export const Event = Schema.TaggedUnion({
   Failed: { at: Schema.Finite, why: Why },
   /** A pane printed a limit. */
   LimitSeen: { limit: SeenLimit },
+  /** A pane on the group (every group when none is named) ran a turn since its limit: the limit is gone. */
+  LimitCleared: { group: Schema.optionalKey(Schema.String) },
   /** The one keychain attempt came to `outcome`. */
   KeychainTried: { at: Schema.Finite, outcome: KeychainOutcome },
   /** The owner asked, through the tool, to read again: the keychain too. */
@@ -104,15 +109,45 @@ const withoutKeychain = (state: State): State => {
   return rest
 }
 
+const limitsOf = (state: State): ReadonlyArray<GroupLimit> => Option.getOrElse(Option.fromUndefinedOr(state.limits), () => [])
+
+/** The group ids a name means (a group's id or label, any case), every group when none is named; an unknown name as given. */
+const namedGroups = (state: State, name: Option.Option<string>): ReadonlyArray<string> =>
+  Option.match(name, {
+    onNone: () => groupsOf(state).map((group) => group.id),
+    onSome: (named) => [
+      Option.getOrElse(
+        Option.map(
+          Arr.findFirst(groupsOf(state), (group) => [group.id, group.label].some((key) => key.toLowerCase() === named.toLowerCase())),
+          (group) => group.id,
+        ),
+        () => named,
+      ),
+    ],
+  })
+
 export const evolve = (state: State, event: Event): State =>
   Event.match(event, {
     Read: ({ at, windows }) => ({ ...withoutFailure(state), reading: { at, windows }, failures: 0, nextReadAt: at + READ_EVERY_MS }),
     Failed: ({ at, why }) => ({ ...state, failure: { at, why }, failures: state.failures + 1, nextReadAt: at + backoffMs(state.failures + 1) }),
     LimitSeen: ({ limit }) =>
-      Match.value(Option.exists(Option.fromUndefinedOr(state.limit), (before) => before.seenAt > limit.seenAt)).pipe(
-        Match.when(true, () => state),
-        Match.orElse(() => ({ ...state, limit })),
-      ),
+      ({
+        ...state,
+        limits: namedGroups(state, Option.fromUndefinedOr(limit.group)).reduce((limits, group) => {
+          const seen = Option.match(Option.fromUndefinedOr(limit.resetAt), {
+            onNone: (): GroupLimit => ({ group, seenAt: limit.seenAt }),
+            onSome: (resetAt): GroupLimit => ({ group, seenAt: limit.seenAt, resetAt }),
+          })
+          return Match.value(limits.some((before) => before.group === group && before.seenAt > limit.seenAt)).pipe(
+            Match.when(true, () => limits),
+            Match.orElse(() => [...limits.filter((before) => before.group !== group), seen]),
+          )
+        }, limitsOf(state)),
+      }),
+    LimitCleared: ({ group }) => {
+      const cleared = namedGroups(state, Option.fromUndefinedOr(group))
+      return { ...state, limits: limitsOf(state).filter((seen) => !cleared.includes(seen.group)) }
+    },
     KeychainTried: ({ at, outcome }) => ({ ...state, keychain: { at, outcome } }),
     RetryAsked: ({ at }) => ({ ...withoutKeychain(state), failures: 0, nextReadAt: at, askedAt: at }),
   })
@@ -154,16 +189,23 @@ export const windowAt = (state: State, now: number, group: string, span: Span): 
   )
 }
 
-/** Is a group open: yes, no until a time, or a typed unknown. */
+/**
+ * Is a group open: measured open (a reading with room), limited until a
+ * time, limited with its reset unknown (a pane's limit gave none), not
+ * measured (no reading and no live limit: usable, but never called open, and
+ * never a hold), or a typed unknown (a reading that leaves a window unsaid).
+ */
 export const Answer = Schema.TaggedUnion({
   Open: {},
   Limited: { until: Schema.Finite, by: Schema.Literals(["limit", "window"]) },
+  LimitedResetUnknown: { seenAt: Schema.Finite },
+  /** `since`: when the group's last limit reset, if one was seen. */
+  Unmeasured: { why: Why, since: Schema.optionalKey(Schema.Finite) },
   Unknown: { why: Why },
 })
 export type Answer = typeof Answer.Type
 
-const limitOn = (state: State, group: string) =>
-  Option.filter(Option.fromUndefinedOr(state.limit), (limit) => Option.getOrElse(Option.map(Option.fromUndefinedOr(limit.group), (named) => named === group), () => true))
+const limitOn = (state: State, group: string) => Arr.findFirst(limitsOf(state), (limit) => limit.group === group)
 
 /** Why nothing is read: the last failure's reason, else not read yet. */
 const unreadWhy = (state: State): Why =>
@@ -171,10 +213,11 @@ const unreadWhy = (state: State): Why =>
 
 /**
  * Whether `group` is open at `now`. A limit a pane printed holds until its
- * reset; with none given it is unknown until a reading after it. Then a full
- * window holds until its reset (the last of them), or is unknown with none.
- * Open only with both the 5-hour and the weekly window read and neither full;
- * any other case is unknown, never open.
+ * reset; with none given it holds, its reset unknown, until a reading after
+ * it or a clear. With no reading it is not measured. Then a full window holds
+ * until its reset (the last of them), or is unknown with none. Open only with
+ * both the 5-hour and the weekly window read and neither full; any other case
+ * is unknown, never open.
  */
 export const answerAt = (state: State, now: number, group: string): Answer => {
   const reading = Option.fromUndefinedOr(state.reading)
@@ -184,8 +227,12 @@ export const answerAt = (state: State, now: number, group: string): Answer => {
   const silent = Option.filter(limit, (seen) =>
     Option.isNone(Option.fromUndefinedOr(seen.resetAt)) && !Option.exists(reading, (read) => read.at > seen.seenAt),
   )
-  if (Option.isSome(silent)) return Answer.cases.Unknown.make({ why: Why.cases.LimitWithoutReset.make({ seenAt: silent.value.seenAt }) })
-  if (Option.isNone(reading)) return Answer.cases.Unknown.make({ why: unreadWhy(state) })
+  if (Option.isSome(silent)) return Answer.cases.LimitedResetUnknown.make({ seenAt: silent.value.seenAt })
+  if (Option.isNone(reading))
+    return Option.match(Option.flatMap(limit, (seen) => Option.fromUndefinedOr(seen.resetAt)), {
+      onNone: () => Answer.cases.Unmeasured.make({ why: unreadWhy(state) }),
+      onSome: (since) => Answer.cases.Unmeasured.make({ why: unreadWhy(state), since }),
+    })
   const spans: ReadonlyArray<Span> = ["5h", "7d", "quota"]
   const known = spans.flatMap((span) => {
     const shown = windowAt(state, now, group, span)

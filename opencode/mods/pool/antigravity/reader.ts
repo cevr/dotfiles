@@ -5,8 +5,8 @@
 // the daily host first for a personal sign-in and the production one first
 // for a business one, with the bearer and Antigravity's user agent; when no
 // summary reads, `v1internal:fetchAvailableModels`. Each request has
-// REQUEST_TIMEOUT_MS, follows no redirect, and goes only to Google's token,
-// userinfo and Code Assist hosts: a URL on any other host is refused before
+// REQUEST_TIMEOUT_MS, follows no redirect, and goes only to Google's token
+// and Code Assist hosts (T3's userinfo call is not made): a URL on any other host is refused before
 // anything is sent. A failure is a `Why` and nothing else: no response text,
 // no header and no token ever reaches it.
 import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect"
@@ -23,7 +23,6 @@ export const EXPIRY_MARGIN_MS = 60_000
 /** Google's hosts, the only ones a read may reach. */
 export const GOOGLE_HOSTS: ReadonlySet<string> = new Set([
   "oauth2.googleapis.com",
-  "www.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
   "cloudcode-pa.googleapis.com",
 ])
@@ -94,6 +93,8 @@ const send = Effect.fn("Antigravity.send")(function* (request: HttpClientRequest
   const response: HttpClientResponse.HttpClientResponse = yield* client.execute(request).pipe(
     // A redirect is an answer, never followed: it could lead off Google's hosts.
     Effect.provideService(FetchHttpClient.RequestInit, NO_REDIRECT),
+    // No trace ids to Google: they carry nothing a quota read needs.
+    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
     Effect.mapError(() => failed("unreachable", Option.none())),
     Effect.timeoutOrElse({ duration: REQUEST_TIMEOUT_MS, orElse: () => Effect.fail(failed("timed-out", Option.none())) }),
   )

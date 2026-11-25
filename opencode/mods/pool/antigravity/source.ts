@@ -46,6 +46,8 @@ export interface Source {
   readonly open: (group: Option.Option<string>) => Effect.Effect<ReadonlyArray<GroupAnswer>>
   /** A pane's text: its limit recorded when it is one; none when it is not. */
   readonly record: (text: string, group: Option.Option<string>) => Effect.Effect<Option.Option<UsageLimit>>
+  /** A pane on the group (every group when none) ran a turn since its limit: forget the limit. */
+  readonly clear: (group: Option.Option<string>) => Effect.Effect<void>
   /** Read Google when a read is due; otherwise nothing. */
   readonly refresh: Effect.Effect<void>
   /** The owner asked: forget a keychain refusal and read now. */
@@ -148,6 +150,7 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
         })
         return limit
       }),
+    clear: (group) => apply([Option.match(group, { onNone: () => Event.cases.LimitCleared.make({}), onSome: (named) => Event.cases.LimitCleared.make({ group: named }) })]),
     refresh: reading.withPermits(1)(read()).pipe(Effect.provideService(HttpClient.HttpClient, client)),
     retry: Effect.gen(function* () {
       yield* apply([Event.cases.RetryAsked.make({ at: yield* now })])
