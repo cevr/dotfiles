@@ -57,7 +57,7 @@ const held = (seed: number, input: { readonly root: boolean; readonly copies: nu
     })
     yield* world.prompt(session, "do the held work")
     yield* world.advance(MINUTE)
-    const running = () => Option.exists(Option.fromUndefinedOr(world.sessions.get(session)), (it) => it.running)
+    const running = () => Option.exists(Option.fromUndefinedOr(world.sessions.get(session)), (entry) => entry.running)
     const executions = () => world.trace().split("\n").filter((entry) => entry.includes("session.execution.started") && entry.includes(session)).length
     return { world, session, sends, opens, hold, running, executions }
   })
