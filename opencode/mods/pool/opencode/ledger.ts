@@ -450,6 +450,7 @@ export const layer = (storage: Storage, steps: Steps = ownSteps(storage), author
   Layer.effect(Ledger, Effect.gen(function* () {
     yield* Effect.acquireRelease(Effect.sync(authority.enter), (leave) => Effect.sync(leave))
     return Ledger.of({
+    steps: (pool) => steps(pool).entries,
     holds: (pool, credentialID) => confirmedHolds(storage, authority, pool, credentialID),
     withHolds: (operation) => authority.lock.withPermits(1)(operation),
     firstReading: firstReading(storage, authority.lock),

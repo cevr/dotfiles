@@ -21,6 +21,8 @@ import {
   takePeer,
   tally,
   USE_KEPT_MS,
+  workCosts,
+  type WorkGroup,
   type LimitRow,
   type LimitsState,
   type Use,
@@ -164,6 +166,10 @@ export const layer = (storage: Storage, path: string = defaultPath(), recorded: 
         )
 
       return {
+        workCosts: (pool: PoolId, groups: ReadonlyArray<WorkGroup>) => Effect.gen(function* () {
+          const at = yield* Clock.currentTimeMillis
+          return workCosts(tally(recount(yield* Ref.get(state), [...uses.values()], at), at), uses, pool, groups)
+        }),
         use: (messageID: string, use: Use) =>
           uses.has(messageID)
             ? Effect.void

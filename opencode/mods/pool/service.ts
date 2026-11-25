@@ -7,7 +7,7 @@ import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
 import type { AntigravityReport } from "./antigravity-report.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
-import type { LimitsReport, Tally, Use } from "./limits.ts"
+import type { LimitsReport, Tally, Use, WorkGroup } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
@@ -29,6 +29,8 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly restore: (pool: PoolId) => Effect.Effect<LedgerState>
+    /** The process-shared priced-step history, including other directory instances. */
+    readonly steps: (pool: PoolId) => Effect.Effect<LedgerState["steps"]>
     /** Only the current hold records, never the historical ledger or an empty fallback on failure. */
     readonly holds: (pool: PoolId, credentialID?: string) => Effect.Effect<Holds, HoldStoreUnavailable>
     /** Serialize this host's hold publication and observation across activations. */
@@ -213,6 +215,8 @@ export class Limits extends Context.Service<
     readonly flush: Effect.Effect<void>
     /** The tally now. */
     readonly tally: Effect.Effect<Tally>
+    /** Estimate the shared weekly quota of whole completed agents from their actual token records. */
+    readonly workCosts: (pool: PoolId, groups: ReadonlyArray<WorkGroup>) => Effect.Effect<Readonly<Record<string, number>>>
   }
 >()("dotfiles-opencode/pool/Limits") {}
 
