@@ -17,6 +17,8 @@ export type Head = "48b4a22b" | "fca6400f" | "44f5ed09"
 export const start = (worker: string, token: string, proc = 1): Command => Command.Start({ worker, token, proc, skipPermissions: Option.none(), named: false })
 export const startOpts = (worker: string, token: string, skipPermissions: boolean): Command =>
   Command.Start({ worker, token, proc: 1, skipPermissions: Option.some(skipPermissions), named: false })
+/** A start into a pane the caller named (the owner's pane); the worker key starts with "named" so I5 allows writes there. */
+export const startNamed = (worker: string, token: string, proc = 1): Command => Command.Start({ worker, token, proc, skipPermissions: Option.none(), named: true })
 export const followUp = (worker: string, token: string, proc = 1, ownFile = false): Command => Command.FollowUp({ worker, token, proc, steer: false, ownFile })
 export const steer = (worker: string, token: string, proc = 1): Command => Command.FollowUp({ worker, token, proc, steer: true, ownFile: false })
 export const status = (worker: string, proc = 1): Command => Command.Status({ worker, proc })
@@ -196,6 +198,27 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
     triggers: {},
     world: { limitRuns: [1] },
     steps: [start("w1", "TK-w1-1"), wait(1_800)],
+  },
+  {
+    name: "usage-limit-sibling",
+    what: "w1's turn hits the usage limit while w2 works on the same sign-in; the limit marks w2's turn too (SPEC v2 ruling 5)",
+    triggers: {},
+    world: { limitRuns: [1] },
+    steps: [start("w1", "TK-w1-1"), start("w2", "TK-w2-1"), wait(1_800)],
+  },
+  {
+    name: "D12-reattach-serial-one-hang",
+    what: "two workers are mid-turn when the server restarts; reattach meets one blocks.alive that never answers (diagnosis #12)",
+    triggers: {},
+    world: { workMs: 400 },
+    steps: [start("w1", "TK-w1-1"), start("w2", "TK-w2-1"), wait(20), next("pane.alive", "hang"), crash(1), wait(600), status("w2"), followUp("w2", "TK-w2-2"), wait(400)],
+  },
+  {
+    name: "named-pane",
+    what: "a worker starts in a pane the caller named, takes a follow_up, and is stopped with close (the owner's pane must stay)",
+    triggers: {},
+    world: {},
+    steps: [startNamed("named1", "TK-named1-1"), wait(200), followUp("named1", "TK-named1-2"), wait(200), stop("named1", true), wait(100)],
   },
 ]
 

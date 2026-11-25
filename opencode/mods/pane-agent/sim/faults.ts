@@ -27,6 +27,7 @@ export const FAULTS = [
   "gone",
   "unsupported",
   "conflict",
+  "corrupt",
   "defect",
   "hang",
   "timeout",
@@ -37,10 +38,10 @@ export type Fault = (typeof FAULTS)[number]
 
 const REX: ReadonlyArray<Fault> = ["ok", "transient", "unavailable", "gone", "unsupported", "defect", "hang", "timeout", "late", "crash"]
 
-/** The faults that mean something at each boundary (a read has no conflict; `changed` has no error channel). */
+/** The faults that mean something at each boundary (a read has no conflict; `changed` has no error channel; only a read meets a corrupt row). */
 export const faultsAt = (boundary: Boundary): ReadonlyArray<Fault> => {
   if (boundary.startsWith("pane.")) return REX
-  if (boundary === "store.read") return ["ok", "transient", "defect", "hang", "timeout", "crash"]
+  if (boundary === "store.read") return ["ok", "transient", "corrupt", "defect", "hang", "timeout", "crash"]
   if (boundary === "store.write") return ["ok", "transient", "conflict", "defect", "hang", "timeout", "late", "crash"]
   if (boundary === "notifier.wake") return ["ok", "transient", "defect", "hang", "timeout", "late", "crash"]
   if (boundary === "notifier.changed") return ["ok", "defect", "hang", "late", "crash"]

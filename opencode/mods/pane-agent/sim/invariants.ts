@@ -3,7 +3,7 @@ import type { PaneWorker } from "../worker.ts"
 import { DEADLINES_MS } from "./doubles.ts"
 import { type CommandName, TICK_MS, type ToolCall, type Trace } from "./driver.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn, type RefWorker } from "./reference.ts"
-import { answerOf, goneAt, OWNER_BLOCK, PLACEHOLDER, PROMPT_SCREENS, type Run, STALE_CONTENT, type WakeRecord, type WorldState } from "./world.ts"
+import { answerOf, goneAt, LIMIT_MS, OWNER_BLOCK, PLACEHOLDER, PROMPT_SCREENS, type Run, STALE_CONTENT, TOKEN, type WakeRecord, type WorldState } from "./world.ts"
 
 /** The eight invariants of the diagnosis section 4, plus the SPEC v2 usage-limit rule. */
 export const INVARIANTS = {
@@ -153,15 +153,19 @@ const notTypedReports = (trace: Trace, worker: RefWorker, turn: RefTurn): number
 const dischargedByStop = (worker: RefWorker, turn: RefTurn, typedAt: Option.Option<number>): boolean =>
   Option.exists(worker.stoppedAt, (stop) => stop >= turn.acceptedAt && !Option.exists(typedAt, (at) => at < stop))
 
+/** Tokens whose turn met the usage limit: a "not typed" report there is about the resume (ruling 5), not the brief. */
+const limitedTokens = (world: WorldState): ReadonlySet<string> => new Set(world.runs.filter((run) => run.limited).flatMap((run) => Option.toArray(run.token)))
+
 /** 3. Every accepted turn is typed exactly once, FIFO per worker, or reported "not typed" exactly once; never both. */
 const typing = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
   [...ref.workers.values()].flatMap((worker) => {
     const out: Array<Violation> = []
+    const limited = limitedTokens(trace.world)
     for (const turn of worker.turns) {
       const typed = typings(trace.world, turn.token)
       const reported = notTypedReports(trace, worker, turn)
       if (typed.length > 1) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) typed ${typed.length} times`))
-      if (typed.length > 0 && reported > 0) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was typed and also reported "not typed"`))
+      if (typed.length > 0 && reported > 0 && !limited.has(turn.token)) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was typed and also reported "not typed"`))
       if (reported > 1) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was reported "not typed" ${reported} times`))
       if (!turn.certain || typed.length > 0 || dischargedByStop(worker, turn, Option.fromUndefinedOr(typed[0]))) continue
       if (reported === 0) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}, ${turn.mode}) was accepted but never typed and never reported "not typed"`))
@@ -408,17 +412,57 @@ const progress = (trace: Trace, ref: Reference): ReadonlyArray<Violation> => {
   return [...wedged, ...[...ref.workers.values()].flatMap((worker) => stuckRow(trace, worker))]
 }
 
-/** 9 (SPEC v2 addition). A turn that hit the usage limit is resumed exactly once after its reset, or reported. */
+/** 9 (SPEC v2 addition, ruling 5). A limited turn gets one "limited" wake and is resumed exactly once after its reset, or reported "not typed". */
+const LIMITED_TEXT = /<pane-agent-result state="limited" turn="\d+" reset="[^"]+">/
+const CONTINUE = /\bcontinue\b/i
+
+const ownerOf = (ref: Reference, token: string): Option.Option<readonly [RefWorker, RefTurn]> =>
+  Option.fromUndefinedOr(
+    [...ref.workers.values()].flatMap((worker) => worker.turns.filter((turn) => turn.token === token).map((turn) => [worker, turn] as const))[0],
+  )
+
+/** The `continue` writes into the run's pane from its limit until the pane's next limit (if any). */
+const continueWrites = (trace: Trace, run: Run) => {
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const next = Option.fromUndefinedOr(trace.world.runs.find((other) => other.blockId === run.blockId && other.limited && other.id > run.id))
+  const until = Option.getOrElse(Option.flatMap(next, (other) => other.endedAt), () => Infinity)
+  return orchestratorWrites(trace.world).filter((write) => write.blockId === run.blockId && write.at >= end && write.at < until && CONTINUE.test(write.data) && !TOKEN.test(write.data))
+}
+
+const limitReports = (trace: Trace, worker: RefWorker, turn: RefTurn): number => {
+  const numbers = numbersOf(trace, worker, turn)
+  return new Set(
+    wakesOf(trace.world, worker.id)
+      .filter((wake) => stateOf(wake) === "limited" && numbers.has(turnOf(wake)) && LIMITED_TEXT.test(wake.letter.text))
+      .map((wake) => wake.letter.id),
+  ).size
+}
+
+const limitedRun = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): ReadonlyArray<Violation> => {
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const resetAt = Option.getOrElse(run.resetAt, () => end + LIMIT_MS)
+  const writes = continueWrites(trace, run)
+  const early = writes.filter((write) => write.at < resetAt).length
+  const resumes = writes.length - early
+  const what = `${worker.key} turn ${turn.index} (${turn.token}) hit the usage limit at t=${end}`
+  const out: Array<Violation> = []
+  if (early > 0) out.push(v(9, `${what}; "continue" was typed ${early} time(s) before its reset at t=${resetAt}`))
+  if (worker.supersedes.some((command) => command.at >= turn.acceptedAt && command.issuedAt <= resetAt)) return out
+  if (limitReports(trace, worker, turn) === 0) out.push(v(9, `${what}, but no "limited" wake reported it`))
+  if (resumes > 1) out.push(v(9, `${what}; resumed ${resumes} times after its reset at t=${resetAt} (once is the rule)`))
+  if (resumes === 0 && notTypedReports(trace, worker, turn) === 0) out.push(v(9, `${what}; never resumed after its reset at t=${resetAt} and never reported "not typed"`))
+  return out
+}
+
 const usageLimit = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
   trace.world.runs
     .filter((run) => run.limited && Option.isSome(run.endedAt))
-    .flatMap((run) => {
-      const resetAt = Option.getOrElse(run.endedAt, () => 0) + 1_000
-      const resumes = orchestratorWrites(trace.world).filter((write) => write.blockId === run.blockId && write.at >= resetAt && /continue/i.test(write.data)).length
-      const reported = [...ref.workers.values()].some((worker) => wakesOf(trace.world, worker.id).some((wake) => /limit/i.test(stateOf(wake))))
-      if (resumes === 1 || (resumes === 0 && reported)) return []
-      return [v(9, `run ${run.id} hit the usage limit; resumed ${resumes} time(s) after its reset; reported: ${reported}`)]
-    })
+    .flatMap((run) =>
+      Option.match(Option.flatMap(run.token, (token) => ownerOf(ref, token)), {
+        onNone: () => [],
+        onSome: ([worker, turn]) => limitedRun(trace, worker, turn, run),
+      }),
+    )
 
 export const checkAll = (trace: Trace, ref: Reference = referenceOfTrace(trace)): ReadonlyArray<Violation> => [
   ...liveness(trace),

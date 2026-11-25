@@ -1,15 +1,15 @@
 // reads: none (every world is in memory: no file system, no Rex, no agy, no network)
 import { describe, expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
-import { defaultConfig } from "./driver.ts"
+import { defaultConfig, type SimConfig, type Step } from "./driver.ts"
 import { mergeCoverage, type PlannedFault, unhitPairs } from "./faults.ts"
 import { CORE, INJECTED } from "./generator.ts"
 import { formatViolations } from "./invariants.ts"
-import { knownRed } from "./known-red.ts"
-import { awaitJobs, crashJobs, pairJobs, randomJobs, report, runBatch, runOne, runScenario, SEEDS, shrink } from "./property.ts"
-import { reportRunner } from "./register.ts"
+import { isPinned, reasonOf } from "./known-red.ts"
+import { awaitJobs, crashJobs, invariantsOf, pairJobs, randomJobs, report, runBatch, runOne, runScenario, SEEDS, shrink, slice } from "./property.ts"
+import { type CheckResult, pinnedRunner } from "./register.ts"
 import { type Scenario, SCENARIOS } from "./scenarios.ts"
 import { type Break, DEFAULT_WORLD } from "./world.ts"
 
@@ -18,48 +18,45 @@ const claims = (scenario: Scenario): string =>
     .map(([head, triggers]) => `${head}: ${(triggers ?? []).join(", ")}`)
     .join("; ")
 
-const scenarioReport = (scenario: Scenario) =>
+const scenarioCheck = (scenario: Scenario): Effect.Effect<CheckResult> =>
   Effect.map(runScenario(scenario), (result) => {
-    if (result.violations.length === 0) return ""
-    return `${report(result, result.trace.fired, result.violations)}\n  claims: ${claims(scenario) || "none (a regression net)"}`
+    if (result.violations.length === 0) return { fingerprint: {}, report: "" }
+    return {
+      fingerprint: { [scenario.name]: invariantsOf(result.violations) },
+      report: `${report(result, result.trace.fired, result.violations)}\n  claims: ${claims(scenario) || "none (a regression net)"}`,
+    }
   })
 
-const batchReport = (label: string, jobs: Parameters<typeof runBatch>[1], shrinkFirst: number) =>
-  Effect.map(runBatch(label, jobs, shrinkFirst), (batch) => {
-    if (batch.red.length === 0) return ""
-    return batch.text
-  })
+type Job = Effect.Effect<{ readonly config: SimConfig; readonly steps: ReadonlyArray<Step> }>
+
+const batchCheck = (label: string, jobs: Effect.Effect<ReadonlyArray<Job>>, k: number, of: number, shrinkFirst: number): Effect.Effect<CheckResult> =>
+  Effect.flatMap(jobs, (all) => Effect.map(runBatch(`${label} ${k + 1}/${of}`, slice(all, k, of), shrinkFirst), (batch) => ({ fingerprint: batch.fingerprint, report: batch.text })))
 
 /**
- * Registers one acceptance check. A check named in KNOWN_RED_AT_BASE (sim/known-red.ts) is held as
- * `test.failing`, the repo's red-first form: red is its expected state at 44f5ed09 until the shell rewrite lands.
+ * Registers one acceptance check as a plain test that holds its pin exactly (SPEC v2 ruling 7; sim/known-red.ts).
+ * A check pinned red at 44f5ed09 says so in its name; every other check must be green.
  */
-const simTest = (key: string, what: string, body: Effect.Effect<string>) => {
-  const held = knownRed(key)
-  if (Option.isSome(held)) return test.failing(`pane-agent-sim ${key}: ${what} [known red at 44f5ed09: ${held.value}]`, reportRunner(key, body), hangGuard("local-fixture"))
-  return test(`pane-agent-sim ${key}: ${what}`, reportRunner(key, body), hangGuard("local-fixture"))
+const check = (key: string, what: string, body: Effect.Effect<CheckResult>) => {
+  if (isPinned(key)) return test(`pane-agent-sim ${key}: ${what} [pinned red at 44f5ed09: ${reasonOf(key)}]`, pinnedRunner(key, body), hangGuard("local-fixture"))
+  return test(`pane-agent-sim ${key}: ${what}`, pinnedRunner(key, body), hangGuard("local-fixture"))
+}
+
+const slices = (label: string, of: number, what: string, jobs: Effect.Effect<ReadonlyArray<Job>>, shrinkFirst: number) => {
+  for (let k = 0; k < of; k++) check(`batch ${label} ${k + 1}/${of}`, what, batchCheck(label, jobs, k, of, shrinkFirst))
 }
 
 describe("pane-agent-sim: the diagnosis section 4 acceptance property", () => {
-  for (const scenario of SCENARIOS) simTest(`scenario ${scenario.name}`, scenario.what, scenarioReport(scenario))
+  for (const scenario of SCENARIOS) check(`scenario ${scenario.name}`, scenario.what, scenarioCheck(scenario))
 
-  simTest(
-    "batch crash",
-    "the process crashes at every effect index of the happy trace and restarts on the same world",
-    Effect.flatMap(crashJobs(), (jobs) => batchReport("crash", jobs, 3)),
-  )
+  slices("crash", 4, "the process crashes at every effect index of the happy trace and restarts on the same world", crashJobs(), 2)
 
   for (const command of INJECTED) {
-    simTest(
-      `batch await:${command.name}`,
-      `${command.name} injected at every await point of start, turn 1, a follow_up and turn 2 (the idle-confirm wait included)`,
-      Effect.flatMap(awaitJobs(command), (jobs) => batchReport(`await:${command.name}`, jobs, 1)),
-    )
+    slices(`await:${command.name}`, 4, `${command.name} injected at every await point of two starts, turn 1, a follow_up and turn 2 (the idle-confirm wait included)`, awaitJobs(command), 1)
   }
 
-  simTest("batch seeds", `${SEEDS.length} seeded random runs: commands, owner actions, crashes, a second server, random faults`, batchReport("seeds", randomJobs(SEEDS), 3))
+  slices("seeds", 3, `${SEEDS.length} seeded random runs: two workers, a named pane, commands, owner actions, crashes, a second server, random faults`, Effect.succeed(randomJobs(SEEDS)), 2)
 
-  simTest("batch pairs", "one run per (boundary, fault) pair, the fault on that boundary's second call", batchReport("pairs", pairJobs(), 3))
+  slices("pairs", 6, "one run per (boundary, fault, call): the fault on that boundary's first, second or third call", Effect.succeed(pairJobs()), 2)
 
   effectTest(
     "pane-agent-sim coverage: the seed set hits every (boundary, fault) pair at least once",

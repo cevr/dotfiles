@@ -257,6 +257,13 @@ const upsert = (state: WorldState, given: PaneWorker, expected: Option.Option<nu
   return [Option.none<number>(), next] as const
 }
 
+/**
+ * A read that meets an undecodable row (the "corrupt" fault): the store quarantines the first row and answers
+ * with its siblings, as the per-row store of unit pane-agent-store must. The row stays on disk (the world);
+ * only this read cannot see it, so a writer that saves the whole snapshot back loses it (I7).
+ */
+export const quarantined = (store: StoreSnapshot): StoreSnapshot => ({ ...store, workers: store.workers.slice(1) })
+
 const storeLayer = (env: ProcEnv) =>
   Layer.succeed(
     Service.WorkerStore,
@@ -266,7 +273,10 @@ const storeLayer = (env: ProcEnv) =>
           boundary: "store.read",
           detail: "read",
           apply: Effect.andThen(lateHang(env), Effect.map(env.world.get, (state) => state.store)),
-          fail: (fault) => Effect.fail(new Service.StoreFailed({ operation: "read", message: `simulated store ${fault}` })),
+          fail: (fault) => {
+            if (fault === "corrupt") return Effect.map(env.world.get, (state) => quarantined(state.store))
+            return Effect.fail(new Service.StoreFailed({ operation: "read", message: `simulated store ${fault}` }))
+          },
           lands: false,
         }),
       write: (snapshot) =>

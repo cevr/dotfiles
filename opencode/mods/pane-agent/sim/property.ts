@@ -57,14 +57,22 @@ export const report = (result: RunResult, minimal: ReadonlyArray<PlannedFault>, 
     formatViolations(violations.slice(0, 6)),
   ].join("\n")
 
+/** A check's red set: each red job (scenario or batch run) by name, with the invariants it broke (sorted). */
+export type Fingerprint = Readonly<Record<string, ReadonlyArray<number>>>
+
+export const invariantsOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<number> => [...new Set(violations.map((item) => item.invariant))].sort((a, b) => a - b)
+
+export const formatInvariants = (ids: ReadonlyArray<number>): string => `[${ids.map((id) => `I${id}`).join(" ")}]`
+
 export interface BatchResult {
   readonly runs: number
   readonly red: ReadonlyArray<RunResult>
   readonly coverage: ReadonlyMap<string, number>
+  readonly fingerprint: Fingerprint
   readonly text: string
 }
 
-/** Runs a batch; prints a summary line, and the seed, minimal faults and violations of the first red runs. */
+/** Runs a batch; prints a summary line, every red job with its invariants, and the minimal faults of the first red runs. */
 export const runBatch = Effect.fn("Sim.runBatch")(function* (
   label: string,
   jobs: ReadonlyArray<Effect.Effect<{ readonly config: SimConfig; readonly steps: ReadonlyArray<Step> }>>,
@@ -78,16 +86,18 @@ export const runBatch = Effect.fn("Sim.runBatch")(function* (
     mergeCoverage(coverage, result.trace.coverage)
     if (result.violations.length > 0) red.push(result)
   }
-  const lines = [`SIM-BATCH ${label}: ${red.length} red of ${jobs.length} runs`]
+  const fingerprint: Fingerprint = Object.fromEntries(red.map((result) => [result.name, invariantsOf(result.violations)]))
+  const lines = [`SIM-BATCH ${label}: ${red.length} red of ${jobs.length} runs`, ...red.map((result) => `SIM-JOB ${result.name} ${formatInvariants(invariantsOf(result.violations))}`)]
   for (const result of red.slice(0, shrinkFirst)) {
     const minimal = yield* shrink(result)
     lines.push(report(result, minimal.faults, minimal.violations))
   }
-  const invariants = new Set(red.flatMap((result) => result.violations.map((item) => item.invariant)))
-  lines.push(`SIM-BATCH ${label}: invariants broken: ${[...invariants].sort().map((id) => `I${id}`).join(" ") || "none"}`)
-  const batch: BatchResult = { runs: jobs.length, red, coverage, text: lines.join("\n") }
+  const batch: BatchResult = { runs: jobs.length, red, coverage, fingerprint, text: lines.join("\n") }
   return batch
 })
+
+/** Every `of`-th job from the k-th: a batch is registered as slices so each check stays well under its cap. */
+export const slice = <A>(items: ReadonlyArray<A>, k: number, of: number): ReadonlyArray<A> => items.filter((_, i) => i % of === k)
 
 const job = (config: SimConfig, steps: ReadonlyArray<Step>) => Effect.succeed({ config, steps })
 

@@ -30,6 +30,8 @@ export interface Run {
   readonly endedAt: Option.Option<number>
   readonly interrupted: boolean
   readonly limited: boolean
+  /** When a limited run's quota resets (the sign-in's reset); none for a run that was not limited. */
+  readonly resetAt: Option.Option<number>
 }
 
 export interface Pane {
@@ -94,7 +96,9 @@ export interface FileEntry {
 /**
  * Deliberately broken doubles, used only to show each invariant can fail (non-vacuity): a notifier that
  * drops done wakes, a pane that shows ready over a prompt, a pane reported gone while alive, a store that
- * drops options, a store that refuses or never answers late writes and reads, a pane that types `continue`.
+ * drops options, a store that refuses or never answers late writes and reads, a pane that logs every write
+ * twice (an echo), a pane that logs its first paste late (out of order), an agent whose `continue` after a
+ * usage limit starts a fresh run that lost the turn's token.
  */
 export type Break =
   | "drop-done-wakes"
@@ -103,8 +107,14 @@ export type Break =
   | "drop-options"
   | "refuse-late-writes"
   | "hang-late-reads"
-  | "type-continue-once"
-  | "type-continue-twice"
+  | "echo-writes"
+  | "late-stamp-first-paste"
+  | "continue-loses-token"
+
+/** How long the quota frame says the limit lasts ("Resets in 0h0m1s"). */
+export const LIMIT_MS = 1_000
+/** How far in the future the broken "late-stamp-first-paste" pane logs its first paste. */
+export const LATE_STAMP_MS = 10_000
 
 export interface WorldConfig {
   readonly workMs: number
@@ -142,6 +152,8 @@ export interface WorldState {
   readonly deadProcs: ReadonlySet<number>
   readonly splitCount: number
   readonly deaths: ReadonlyArray<{ readonly blockId: string; readonly at: number }>
+  /** Every pane shares one sign-in: until this moment its quota is spent, and every run ends at the limit. */
+  readonly limitUntil: number
 }
 
 export const ANCHOR = { session: "session:root", block: "block:anchor" } as const
@@ -181,7 +193,10 @@ export const initialWorld = (config: WorldConfig): WorldState => ({
   deadProcs: new Set(),
   splitCount: 0,
   deaths: [],
+  limitUntil: 0,
 })
+
+const hasBreak = (state: WorldState, name: Break): boolean => state.config.breaks.includes(name)
 
 const replaceLine = (frame: string, from: string, to: string): string =>
   frame
@@ -259,6 +274,12 @@ const writeFile = (state: WorldState, path: Option.Option<string>, content: stri
     onSome: (p) => ({ ...state, files: new Map([...state.files, [p, { content, mtimeMs }]]) }),
   })
 
+/** A run started while the sign-in's quota is spent meets the limit at once. */
+const workMsOf = (state: WorldState): number => {
+  if (state.now < state.limitUntil) return 1
+  return state.config.workMs
+}
+
 /** Starts a turn in a pane: the brief was submitted, the agent is now working on it. */
 export const startRun = (state: WorldState, blockId: string, brief: string, human: boolean): WorldState => {
   const [fileMode, withMode] = takeFileMode(state)
@@ -273,11 +294,12 @@ export const startRun = (state: WorldState, blockId: string, brief: string, huma
     resultFile,
     fileMode,
     startedAt: state.now,
-    endsAt: state.now + state.config.workMs,
+    endsAt: state.now + workMsOf(state),
     permissionAt: Option.some(state.now + Math.floor(state.config.workMs / 3)).pipe(Option.filter(() => state.config.permissionRuns.includes(id))),
     endedAt: Option.none(),
     interrupted: false,
-    limited: state.config.limitRuns.includes(id),
+    limited: state.config.limitRuns.includes(id) || state.now < state.limitUntil,
+    resetAt: Option.none(),
   }
   const stale = Option.filter(resultFile, () => fileMode === "stale")
   const staled = writeFile(withMode, stale, STALE_CONTENT, Math.max(0, state.now - 10_000))
@@ -303,9 +325,30 @@ const submit = (state: WorldState, pane: Pane, steer: boolean): WorldState => {
   if (pane.screen === "trust") return updatePane(cleared, pane.blockId, (p) => ({ ...p, screen: "ready" }))
   if (pane.screen === "permission") return updatePane(cleared, pane.blockId, (p) => ({ ...p, screen: "working" }))
   if (pane.screen === "prompt" || pane.screen === "exited" || text.length === 0) return cleared
+  if (pane.screen === "limit") return resume(cleared, pane, text)
   if (pane.screen === "working" && !steer) return updatePane(cleared, pane.blockId, (p) => ({ ...p, queue: [...p.queue, text] }))
   if (pane.screen === "working") return startRun(interruptCurrent(cleared, pane), pane.blockId, text, !TOKEN.test(text))
   return startRun(cleared, pane.blockId, text, !TOKEN.test(text))
+}
+
+const ALL_TOKENS = new RegExp(TOKEN.source, "g")
+
+/** The brief the continued run works on: the limited run's own (its token kept), unless the agent is broken. */
+const continuedBrief = (state: WorldState, brief: string): string => {
+  if (hasBreak(state, "continue-loses-token")) return brief.replace(ALL_TOKENS, "lost-token")
+  return brief
+}
+
+/**
+ * Text submitted at the usage-limit screen. `continue` after the reset continues the limited run: the SAME
+ * turn, same brief, token and result file (SPEC v2 ruling 5). Before the reset agy still refuses it. Any
+ * other text is a new prompt.
+ */
+const resume = (state: WorldState, pane: Pane, text: string): WorldState => {
+  if (text.trim().toLowerCase() !== "continue") return startRun(state, pane.blockId, text, !TOKEN.test(text))
+  const limited = Option.fromUndefinedOr(state.runs.findLast((run) => run.blockId === pane.blockId && run.limited))
+  if (Option.isNone(limited) || Option.exists(limited.value.resetAt, (at) => state.now < at)) return state
+  return startRun(state, pane.blockId, continuedBrief(state, limited.value.brief), false)
 }
 
 const ESC = String.fromCharCode(27)
@@ -316,15 +359,23 @@ const STEER = `${ESC}m`
 const pasted = (data: string): Option.Option<string> =>
   Option.liftPredicate(data, (d) => d.startsWith(PASTE_START) && d.endsWith(PASTE_END)).pipe(Option.map((d) => d.slice(PASTE_START.length, d.length - PASTE_END.length)))
 
+const firstPaste = (state: WorldState, blockId: string): boolean =>
+  !state.writes.some((write) => write.blockId === blockId && Option.isSome(pasted(write.data)))
+
+/** The pane's log of one write; the broken echo and late-stamp panes log it wrongly (non-vacuity only). */
+const writeRecords = (state: WorldState, pane: Pane, data: string, proc: number): ReadonlyArray<WriteRecord> => {
+  const late = hasBreak(state, "late-stamp-first-paste") && Option.isSome(pasted(data)) && firstPaste(state, pane.blockId)
+  const record: WriteRecord = { at: state.now + Number(late) * LATE_STAMP_MS, proc, blockId: pane.blockId, data, screen: pane.screen, owned: pane.owned }
+  if (hasBreak(state, "echo-writes") && proc >= 0) return [record, record]
+  return [record]
+}
+
 /** The agent's reading of bytes written to its pane: paste, Enter (submit, queue or confirm a prompt), Alt+M (steer), Esc. */
 export const applyWrite = (state: WorldState, blockId: string, data: string, proc: number): WorldState => {
   const found = findPane(state, blockId)
   if (Option.isNone(found)) return state
   const pane = found.value
-  const logged: WorldState = {
-    ...state,
-    writes: [...state.writes, { at: state.now, proc, blockId, data, screen: pane.screen, owned: pane.owned }],
-  }
+  const logged: WorldState = { ...state, writes: [...state.writes, ...writeRecords(state, pane, data, proc)] }
   const paste = pasted(data)
   if (Option.isSome(paste)) return updatePane(logged, blockId, (p) => ({ ...p, input: p.input + paste.value }))
   if (data === "\r") return submit(logged, pane, false)
@@ -336,22 +387,29 @@ export const applyWrite = (state: WorldState, blockId: string, data: string, pro
   return updatePane(logged, blockId, (p) => ({ ...p, input: p.input + data }))
 }
 
-const endScreen = (limited: boolean): ScreenKind => {
-  if (limited) return "limit"
-  return "done"
+/**
+ * The run meets the usage limit: no answer, the quota frame, and the whole sign-in limited until the reset.
+ * Text queued in the pane waits for the reset.
+ */
+const limitRun = (state: WorldState, pane: Pane, run: Run): WorldState => {
+  const until = Math.max(state.limitUntil, state.now + LIMIT_MS)
+  const ended = updateRun({ ...state, limitUntil: until }, run.id, (r) => ({ ...r, limited: true, endedAt: Option.some(state.now), resetAt: Option.some(until) }))
+  const nextStartAt = Option.filter(Option.some(until), () => pane.queue.length > 0)
+  return updatePane(ended, pane.blockId, (p) => ({ ...p, screen: "limit", current: Option.none(), nextStartAt }))
 }
 
 const finishRun = (state: WorldState, pane: Pane, run: Run): WorldState => {
+  if (run.limited) return limitRun(state, pane, run)
   const answer = Option.match(run.token, { onNone: () => "human answer", onSome: answerOf })
   const withFile = writeFile(state, Option.filter(run.resultFile, () => run.fileMode === "final" || run.fileMode === "partial"), answer, state.now)
   const ended = updateRun(withFile, run.id, (r) => ({ ...r, endedAt: Option.some(state.now) }))
   const nextStartAt = Option.filter(Option.some(state.now + state.config.queueGapMs), () => pane.queue.length > 0)
-  const screen = endScreen(run.limited)
-  return updatePane(ended, pane.blockId, (p) => ({ ...p, screen, current: Option.none(), lastAnswer: answer, nextStartAt }))
+  return updatePane(ended, pane.blockId, (p) => ({ ...p, screen: "done", current: Option.none(), lastAnswer: answer, nextStartAt }))
 }
 
 const tickRun = (state: WorldState, pane: Pane, run: Run): WorldState => {
   if (pane.screen !== "working") return state
+  if (state.now < state.limitUntil && !run.limited) return limitRun(state, pane, run)
   if (Option.exists(run.permissionAt, (at) => state.now >= at)) {
     const asked = updateRun(state, run.id, (r) => ({ ...r, permissionAt: Option.none() }))
     return updatePane(asked, pane.blockId, (p) => ({ ...p, screen: "permission" }))
@@ -378,28 +436,8 @@ const tickPane = (state: WorldState, pane: Pane): WorldState => {
 /** Advances the agents in every pane to `now`. */
 export const tick = (state: WorldState, now: number): WorldState => {
   const at = { ...state, now }
-  const moved = at.panes.reduce((acc, pane) => Option.match(findPane(acc, pane.blockId), { onNone: () => acc, onSome: (p) => tickPane(acc, p) }), at)
-  return brokenContinue(moved)
+  return at.panes.reduce((acc, pane) => Option.match(findPane(acc, pane.blockId), { onNone: () => acc, onSome: (p) => tickPane(acc, p) }), at)
 }
-
-const continueTimes = (state: WorldState): number => {
-  if (state.config.breaks.includes("type-continue-twice")) return 2
-  if (state.config.breaks.includes("type-continue-once")) return 1
-  return 0
-}
-
-const brokenContinue = (state: WorldState): WorldState => {
-  const times = continueTimes(state)
-  return state.runs
-    .filter((run) => run.limited && Option.exists(run.endedAt, (end) => state.now === end + 1_000 + TICK_FOR_BREAK))
-    .reduce((acc, run) => {
-      let next = acc
-      for (let i = 0; i < times; i++) next = applyWrite(applyWrite(next, run.blockId, "continue", 1), run.blockId, "\r", 1)
-      return next
-    }, state)
-}
-
-const TICK_FOR_BREAK = 5
 
 /** Creates the agent pane a split asks for, showing the first configured start screen (ready by default). */
 export const applySplit = (state: WorldState, input: SplitRightInput, proc: number): readonly [string, WorldState] => {

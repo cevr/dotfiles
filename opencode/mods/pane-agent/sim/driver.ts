@@ -436,7 +436,7 @@ const probeAll = Effect.fn("Sim.probeAll")(function* (r: Runner) {
     const row = Option.fromUndefinedOr(state.store.workers.find((w) => w.id === id))
     const live = Option.exists(Option.flatMap(row, (w) => findPane(state, w.blockId)), (pane) => pane.alive && !pane.closed)
     if (!live || !Option.exists(row, (w) => w.state === "done")) continue
-    const token = `TK-probe-${worker.length}`
+    const token = `TK-probe${worker}-1`
     const call = spec(1, "follow_up", worker, Option.some(token), (model) => Effect.map(model.followUp({ parentSessionID: SESSION, id, prompt: promptOf(token) }), (w) => [w]))
     yield* issue(r, { ...call, probe: true })
   }

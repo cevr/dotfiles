@@ -7,7 +7,7 @@ import { hangGuard } from "../../../tests/hang-guard.ts"
 import * as Service from "../service.ts"
 import type { PaneWorker } from "../worker.ts"
 import { LATE_LAND_MS, type ProcEnv, servicesLayer, TIMEOUT_MS } from "./doubles.ts"
-import { defaultConfig, runScript, type Trace } from "./driver.ts"
+import { defaultConfig, runScript, type ToolCall, type Trace } from "./driver.ts"
 import { makeGate, makeInjector, type PlannedFault } from "./faults.ts"
 import { CORE } from "./generator.ts"
 import { checkAll, type InvariantId, referenceOfTrace, type Violation } from "./invariants.ts"
@@ -16,6 +16,7 @@ import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf
 import { configOf, HAPPY, type Scenario, SCENARIOS } from "./scenarios.ts"
 import {
   ANCHOR,
+  answerOf,
   applyEvent,
   applySplit,
   applyWrite,
@@ -29,6 +30,7 @@ import {
   resultFileOf,
   STALE_CONTENT,
   tick,
+  type WakeRecord,
   WorldEvent,
   type WorldState,
 } from "./world.ts"
@@ -36,6 +38,25 @@ import {
 const SPLIT = { sessionId: ANCHOR.session, anchorBlockId: ANCHOR.block, label: "agy:u", command: ["agy"], cwd: "/sim/repo" }
 const BRIEF = (token: string) => `[Task from the orchestrator]\n\nDo ${token}.\n\nWhen finished, write your final answer to /sim/run/r.md.tmp, then rename it to /sim/run/r.md.`
 const paste = (text: string) => `\x1b[200~${text}\x1b[201~`
+
+const SAMPLE_WORKER: PaneWorker = {
+  id: "pa_1",
+  parentSessionID: "ses",
+  directory: "/sim/repo",
+  harness: "agy",
+  role: "worker",
+  unit: "u",
+  rexSessionId: ANCHOR.session,
+  blockId: "block:sim-1",
+  ownedBlock: true,
+  resultFile: "/sim/run/r.md",
+  state: "working",
+  update: "",
+  turn: 1,
+  notifiedTurn: 0,
+  startedAt: 0,
+  updatedAt: 0,
+}
 
 const pane = (state: WorldState, blockId: string) => Option.getOrThrow(findPane(state, blockId))
 
@@ -209,24 +230,7 @@ describe("pane-agent-sim world doubles", () => {
     "the store refuses a stale revision and keeps the newer row; the notifier records every delivery, duplicates included",
     Effect.gen(function* () {
       const { env, store, notifier } = yield* doublesEnv([])
-      const worker: PaneWorker = {
-        id: "pa_1",
-        parentSessionID: "ses",
-        directory: "/sim/repo",
-        harness: "agy",
-        role: "worker",
-        unit: "u",
-        rexSessionId: ANCHOR.session,
-        blockId: "block:sim-1",
-        ownedBlock: true,
-        resultFile: "/sim/run/r.md",
-        state: "working",
-        update: "",
-        turn: 1,
-        notifiedTurn: 0,
-        startedAt: 0,
-        updatedAt: 0,
-      }
+      const worker = SAMPLE_WORKER
       yield* store.upsertWorker(worker, 0)
       yield* store.upsertWorker({ ...worker, turn: 2 }, 1)
       const stale = yield* Effect.flip(store.upsertWorker({ ...worker, turn: 3 }, 1))
@@ -237,6 +241,46 @@ describe("pane-agent-sim world doubles", () => {
       yield* notifier.wake("ses", letter)
       expect((yield* env.world.get).wakes.length).toBe(2)
     }).pipe(Effect.scoped),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "a corrupt-row read quarantines the first row and answers with its siblings; the row stays in the world for the next read",
+    Effect.gen(function* () {
+      const { store } = yield* doublesEnv([{ boundary: "store.read", nth: 1, fault: "corrupt" }])
+      yield* store.upsertWorker(SAMPLE_WORKER, 0)
+      yield* store.upsertWorker({ ...SAMPLE_WORKER, id: "pa_2", blockId: "block:sim-2" }, 0)
+      const ids = Effect.map(store.read(), (snapshot) => snapshot.workers.map((w) => w.id))
+      expect(yield* ids).toEqual(["pa_1", "pa_2"])
+      expect(yield* ids).toEqual(["pa_2"])
+      expect(yield* ids).toEqual(["pa_1", "pa_2"])
+    }).pipe(Effect.scoped),
+    hangGuard("unit-law"),
+  )
+})
+
+describe("pane-agent-sim usage limit in the world (SPEC v2 ruling 5)", () => {
+  effectTest(
+    "one limit marks every working run of the sign-in; a run started before the reset meets it at once; continue before the reset is refused, after it continues the same turn with its token",
+    Effect.sync(() => {
+      const world = initialWorld({ ...DEFAULT_WORLD, limitRuns: [1] })
+      const [a, one] = applySplit(world, SPLIT, 1)
+      const [b, two] = applySplit(one, SPLIT, 1)
+      const both = typed(typed(two, a, BRIEF("TK-a-1")), b, BRIEF("TK-b-1"))
+      const limited = tick(both, 60)
+      expect([pane(limited, a).screen, pane(limited, b).screen]).toEqual(["limit", "limit"])
+      expect(limited.runs.map((run) => [run.limited, Option.getOrNull(run.resetAt)])).toEqual([
+        [true, 1_060],
+        [true, 1_060],
+      ])
+      const early = continueAt(limited, a, 500)
+      expect(early.runs.length).toBe(2)
+      const resumed = continueAt(early, a, 1_060)
+      expect(Option.getOrNull(resumed.runs.at(-1)?.token ?? Option.none())).toBe("TK-a-1")
+      expect(tick(resumed, 1_120).files.get("/sim/run/r.md")?.content).toBe("ANSWER-TK-a-1")
+      const lost = continueAt({ ...early, config: { ...early.config, breaks: ["continue-loses-token"] } }, a, 1_060)
+      expect(Option.isNone(lost.runs.at(-1)?.token ?? Option.none())).toBe(true)
+    }),
     hangGuard("unit-law"),
   )
 })
@@ -283,11 +327,13 @@ describe("pane-agent-sim reference model", () => {
   )
 
   effectTest(
-    "the simulation is deterministic: the same scenario twice gives the same trace",
+    "the simulation is deterministic: each of three different scenarios (one worker, the limit on two workers, a crash with two workers) gives the same trace twice",
     Effect.gen(function* () {
-      const run = runScript(configOf(scenario("R3-follow-up-queued-during-turn")), scenario("R3-follow-up-queued-during-turn").steps)
-      const view = (trace: Trace) => [trace.calls.map((call) => [call.command, call.outcome, call.startedAt]), trace.world.writes, trace.world.wakes, trace.effects]
-      expect(view(yield* run)).toEqual(view(yield* run))
+      const view = (trace: Trace) => [trace.calls.map((call) => [call.command, call.outcome, call.startedAt]), trace.world.writes, trace.world.wakes, trace.world.runs, trace.effects]
+      for (const name of ["R3-follow-up-queued-during-turn", "usage-limit-sibling", "D12-reattach-serial-one-hang"]) {
+        const run = runScript(configOf(scenario(name)), scenario(name).steps)
+        expect(view(yield* run)).toEqual(view(yield* run))
+      }
     }),
     hangGuard("in-memory"),
   )
@@ -319,6 +365,64 @@ const phantomTurn = (ref: Reference): Reference => ({
   workers: new Map([...ref.workers].map(([key, worker]) => [key, { ...worker, turns: [...worker.turns, { ...phantom, index: worker.turns.length + 1 }] }])),
 })
 
+type LimitVariant = "correct" | "no-resume" | "two-resumes" | "early-resume" | "lost-token" | "unreported"
+
+const limitWake = (at: number, id: string, state: string, text: string): WakeRecord => ({
+  at,
+  proc: 1,
+  sessionID: "ses_sim",
+  letter: { id, description: "", text, metadata: { workerId: SAMPLE_WORKER.id, state, turn: 1 } },
+})
+
+const continueAt = (state: WorldState, blockId: string, at: number): WorldState => typed(tick(state, at), blockId, "continue")
+
+/** When the shell types `continue` in each variant (none: it never resumes). */
+const CONTINUES: Readonly<Record<LimitVariant, ReadonlyArray<number>>> = {
+  correct: [1_060],
+  "no-resume": [],
+  "two-resumes": [1_060, 1_065],
+  "early-resume": [500],
+  "lost-token": [1_060],
+  unreported: [1_060],
+}
+
+const ROW_STATES = ["working", "done"] as const
+
+/**
+ * A hand-built trace of the shell ruling (5) asks for, on the real world model: turn 1 meets the limit at
+ * t=60 (reset t=1060), one "limited" wake, `continue` typed at the reset, the continued run (the same turn,
+ * its token kept) ends, and the turn's one done wake. The variants break one step each.
+ */
+const limitTrace = (variant: LimitVariant): Trace => {
+  const breaks: ReadonlyArray<Break> = (["continue-loses-token"] as const).filter(() => variant === "lost-token")
+  const [blockId, split] = applySplit(initialWorld({ ...DEFAULT_WORLD, limitRuns: [1], breaks }), SPLIT, 1)
+  const limited = tick(typed(split, blockId, BRIEF("TK-w1-1")), 60)
+  const resumed = CONTINUES[variant].reduce((state, at) => continueAt(state, blockId, at), limited)
+  const ended = tick(resumed, 1_130)
+  const resumedOnce = CONTINUES[variant].length > 0 && variant !== "early-resume"
+  const limitedWake = limitWake(65, "msg_limited_1", "limited", `<pane-agent-result state="limited" turn="1" reset="1970-01-01T00:00:01.060Z">\nTurn 1 hit the usage limit.\n</pane-agent-result>`)
+  const doneWake = limitWake(1_135, "msg_done_1", "done", `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)
+  const wakes = [...[limitedWake].filter(() => variant !== "unreported"), ...[doneWake].filter(() => resumedOnce)]
+  const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: ROW_STATES[Number(resumedOnce)], notifiedTurn: Number(resumedOnce) }
+  const world: WorldState = { ...ended, now: 1_200, wakes, store: { version: 2, workers: [row], anchors: {} } }
+  const startCall: ToolCall = {
+    id: 1,
+    proc: 1,
+    command: "start",
+    worker: "w1",
+    token: Option.some("TK-w1-1"),
+    startedAt: 0,
+    endedAt: Option.some(0),
+    outcome: "success",
+    error: "",
+    reply: [{ ...row, state: "starting", notifiedTurn: 0 }],
+    probe: false,
+    skipPermissions: true,
+  }
+  const statusCall: ToolCall = { ...startCall, id: 2, command: "status", token: Option.none(), startedAt: 1_200, endedAt: Option.some(1_200), reply: [row], probe: true }
+  return { name: `limit:${variant}`, seed: 1, calls: [startCall, statusCall], world, effects: [], fired: [], coverage: new Map(), boundMs: 400, workerIds: new Map([["w1", row.id]]), restarts: 0 }
+}
+
 describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant reference makes each one fail", () => {
   effectTest(
     "the happy trace holds every invariant (the base the mutants are measured against)",
@@ -340,13 +444,33 @@ describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant
     [6, "a pane reported gone while it is alive", Effect.map(happy([]), (r) => r.violations), Effect.map(happy(["gone-when-alive"]), (r) => r.violations)],
     [7, "a store that drops the worker's options", Effect.map(happy([]), (r) => r.violations), Effect.map(happy(["drop-options"]), (r) => r.violations)],
     [8, "a store that refuses every late write", Effect.map(core([]), (r) => r.violations), Effect.map(core(["refuse-late-writes"]), (r) => r.violations)],
-    [
-      9,
-      "a pane that types continue twice after the reset (once holds)",
-      Effect.map(broken("usage-limit", ["type-continue-once"]), (r) => r.violations),
-      Effect.map(broken("usage-limit", ["type-continue-twice"]), (r) => r.violations),
-    ],
   ]
+
+  effectTest(
+    "invariant 3's typed-twice and FIFO clauses fire with a broken world double: a pane that logs each write twice, a pane that logs its first paste late",
+    Effect.gen(function* () {
+      expect(of((yield* happy([])).violations, 3)).toEqual([])
+      expect(of((yield* happy(["echo-writes"])).violations, 3).some((item) => /typed 2 times/.test(item.detail))).toBe(true)
+      expect(of((yield* happy(["late-stamp-first-paste"])).violations, 3).some((item) => /not FIFO/.test(item.detail))).toBe(true)
+    }),
+    hangGuard("in-memory"),
+  )
+
+  effectTest(
+    "invariant 9 (ruling 5): a correct limit trace (limit, one limited wake, one continue at the reset, the same turn's done) holds every invariant; each wrong variant fails I9 or I6",
+    Effect.sync(() => {
+      expect(checkAll(limitTrace("correct"))).toEqual([])
+      for (const variant of ["no-resume", "two-resumes", "early-resume", "lost-token", "unreported"] as const) {
+        const broke = checkAll(limitTrace(variant)).filter((item) => item.invariant === 9 || item.invariant === 6)
+        expect(broke.length, variant).toBeGreaterThan(0)
+      }
+      expect(of(checkAll(limitTrace("lost-token")), 6).length).toBeGreaterThan(0)
+      expect(of(checkAll(limitTrace("two-resumes")), 9).map((item) => item.detail).join()).toMatch(/resumed 2 times/)
+      expect(of(checkAll(limitTrace("early-resume")), 9).map((item) => item.detail).join()).toMatch(/before its reset/)
+      expect(of(checkAll(limitTrace("unreported")), 9).map((item) => item.detail).join()).toMatch(/no "limited" wake/)
+    }),
+    hangGuard("in-memory"),
+  )
 
   effectTest(
     "ruling (3): only <pane-agent-result state=\"not_typed\" turn=\"N\"> with \"Turn N was not typed: <reason>\" reports an untyped turn",
@@ -365,8 +489,9 @@ describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant
           ],
         },
       })
-      expect(of(checkAll(wakeAs("not_typed", `<pane-agent-result state="not_typed" turn="${n}">\nTurn ${n} was not typed: pane closed\n</pane-agent-result>`), ref), 3)).toEqual([])
-      expect(of(checkAll(wakeAs("failed", `Turn ${n} was not typed: pane closed`), ref), 3).length).toBeGreaterThan(0)
+      const mine = (violations: ReadonlyArray<Violation>) => of(violations, 3).filter((item) => item.detail.startsWith(`${worker.key} `))
+      expect(mine(checkAll(wakeAs("not_typed", `<pane-agent-result state="not_typed" turn="${n}">\nTurn ${n} was not typed: pane closed\n</pane-agent-result>`), ref))).toEqual([])
+      expect(mine(checkAll(wakeAs("failed", `Turn ${n} was not typed: pane closed`), ref)).length).toBeGreaterThan(0)
     }),
     hangGuard("in-memory"),
   )
