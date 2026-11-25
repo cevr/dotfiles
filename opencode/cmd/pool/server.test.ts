@@ -10,7 +10,9 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Console, Effect, Exit, Fiber, Latch, Layer, Option, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Stream } from "effect"
+import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
+import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -37,7 +39,7 @@ import { below, generator } from "../../sim/runtime.ts"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
-import Pool, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, liveWith, make } from "./server.ts"
+import Pool, { type AntigravityHost, type AntigravityRoot, CACHE_TTL_HEADER, CREDENTIAL_HEADER, LIVE_STORE_HOST, liveAntigravity, liveWith, make, NO_ANTIGRAVITY } from "./server.ts"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { stamp } from "../../tests/hang-guard.ts"
 import { sendCost } from "../../tests/pool-openai-send/cost.ts"
@@ -55,7 +57,7 @@ type Handler = (input: unknown) => Effect.Effect<unknown>
 /** A tool the plugin added: its name and how it runs, as the stand-in host keeps it. */
 interface ToolDefinition {
   readonly name: string
-  readonly execute: (input: never, context: { readonly sessionID: string }) => Effect.Effect<{ readonly content: ReadonlyArray<{ readonly text: string }> }, unknown>
+  readonly execute: (input: { readonly action: string }, context: { readonly sessionID: string }) => Effect.Effect<{ readonly content: ReadonlyArray<{ readonly text: string }> }, unknown>
 }
 
 /** The provider's logins: two OAuth logins and an API key, which the pool leaves out. */
@@ -185,12 +187,14 @@ const registered = <F>(table: Readonly<Record<string, F>>, name: string) =>
  * the host's integration, quota RPC and storage over `state`. `externals`
  * picks the adapters: the test layers by default, `live` for the real ones.
  */
-const start = (
+const start = <R = never,>(
   options: Record<string, unknown> = { sweepMinutes: 0 },
   state: World = world(),
   externals: Parameters<typeof make>[0] | "test" = "test",
   /** Whether the start waits until the pool answers, its ledger read; else it ends once the plugin is active. */
   ready = true,
+  /** The Antigravity root: none by default; one that needs the host's services makes the start need them too. */
+  antigravity: AntigravityRoot<R> = NO_ANTIGRAVITY,
 ) =>
   Effect.gen(function* () {
     const root = yield* scratchRoot
@@ -343,7 +347,7 @@ const start = (
         }),
       },
     } as unknown as Host
-    yield* make(externals === "test" ? testLayers(state, published, root) : externals).effect(host)
+    yield* make(externals === "test" ? testLayers(state, published, root) : externals, LIVE_STORE_HOST, LedgerLive.holdAuthority().lock, antigravity).effect(host)
     // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
     if (ready) yield* Effect.exit(rpc[POOL_STATUS.id]!["alerts"]!({}))
 
@@ -2225,5 +2229,74 @@ describe("the push", () => {
         const refused = yield* tool!.execute({ action: "start", goal: "" } as never, { sessionID: "ses_child" }).pipe(Effect.flip)
         expect(String((refused as { message?: string }).message)).toContain("A push needs a goal")
       }),
+    ))
+})
+
+/** The host's files and paths as the fork's plugin host gives them, here a file system that does nothing. */
+const HOST_FILES = Layer.mergeAll(FileSystem.layerNoop({}), Path.layer)
+
+const AGY_ROWS = ["antigravity / Gemini · open", "  read Nov 24, 2026, 8:00:00 PM EST (now)"]
+
+/** An Antigravity source that answers its rows and reads nothing. */
+const agySource: AgySource.Source = {
+  lines: Effect.succeed(AGY_ROWS),
+  open: () => Effect.succeed([]),
+  record: () => Effect.succeed(Option.none()),
+  clear: () => Effect.void,
+  read: () => Effect.succeed({ note: "Read now.", lines: AGY_ROWS }),
+}
+
+/** The `antigravity` tool's text for `action`, through the tool the plugin registered. */
+const agyTool = (plugin: { readonly tools: ReadonlyMap<string, ToolDefinition> }, action: string) =>
+  Effect.gen(function* () {
+    const tool = yield* Option.match(Option.fromUndefinedOr(plugin.tools.get("antigravity")), {
+      onNone: () => Effect.die("the antigravity tool is not registered"),
+      onSome: Effect.succeed,
+    })
+    const answer = yield* tool.execute({ action }, { sessionID: "ses_1" })
+    return answer.content.map((part) => part.text).join("\n")
+  })
+
+describe("Antigravity, composed as OpenCode composes the pool", () => {
+  test("the root runs under the host's files and paths, is called with the option, and the tool, the RPC and a status answer from it", () =>
+    scenario(
+      Effect.gen(function* () {
+        const calls: Array<AgyLive.PoolOption> = []
+        // Shaped as the live root is: it needs the host's FileSystem and Path, so the plugin does too.
+        const root: AntigravityRoot<AntigravityHost> = (option) =>
+          Effect.gen(function* () {
+            yield* FileSystem.FileSystem
+            yield* Path.Path
+            calls.push(option)
+            return Option.some(agySource)
+          })
+        const plugin = yield* start({ sweepMinutes: 0, antigravity: { auth: "business" } }, world(), "test", true, root)
+        expect(calls).toEqual([{ auth: "business" }])
+        expect(yield* agyTool(plugin, "status")).toBe(AGY_ROWS.join("\n"))
+        expect(yield* agyTool(plugin, "read")).toBe(["Read now.", ...AGY_ROWS].join("\n"))
+        const method = yield* Effect.flatMap(registered(plugin.rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, "antigravity"))
+        expect(yield* method({})).toEqual({ lines: AGY_ROWS })
+      }).pipe(Effect.provide(HOST_FILES)),
+    ))
+
+  test("each reason for no source says its own cause: 'off' only when the option is false, a failed build its reason with the option on", () =>
+    scenario(
+      Effect.gen(function* () {
+        // The option off, through the live root: no source, built with no I/O.
+        const off = yield* start({ sweepMinutes: 0, antigravity: false }, world(), "test", true, liveAntigravity)
+        expect(yield* agyTool(off, "status")).toBe("Antigravity's quota is not read on this host: the pool's antigravity option is off.")
+        // The option on, the root failing or dying: never "off".
+        for (const failing of [
+          (() => Effect.die(new TypeError("root threw"))) satisfies AntigravityRoot,
+          (() => Effect.flatMap(Path.Path, () => Effect.die(new RangeError("root died")))) satisfies AntigravityRoot<AntigravityHost>,
+        ]) {
+          const plugin = yield* start({ sweepMinutes: 0, antigravity: {} }, world(), "test", true, failing)
+          const text = yield* agyTool(plugin, "status")
+          expect(text).not.toContain("option is off")
+          expect(text).toMatch(/^antigravity · unavailable: its source did not build on this host \((TypeError|RangeError)\); the antigravity option is on$/)
+          const method = yield* Effect.flatMap(registered(plugin.rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, "antigravity"))
+          expect(yield* method({})).toEqual({ lines: [text] })
+        }
+      }).pipe(Effect.provide(HOST_FILES)),
     ))
 })

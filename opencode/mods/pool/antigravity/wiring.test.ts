@@ -7,7 +7,7 @@ import { describe } from "bun:test"
 import { Effect, Option } from "effect"
 import { expect, it } from "effect-bun-test"
 import type { Source } from "./source.ts"
-import { containedLine, wire } from "./wiring.ts"
+import { Availability, availability, containedLine, failedLine, wire } from "./wiring.ts"
 
 const ROWS = ["antigravity / Gemini · open", "  read Nov 24, 2026, 8:00:00 PM EST (now) · next read possible Nov 24, 2026, 8:05:00 PM EST"]
 
@@ -28,37 +28,53 @@ const dying: Source = {
   read: () => Effect.die(new TypeError("read threw")),
 }
 
-const toolText = (agy: Option.Option<Source>, action: "status" | "read") =>
+const toolText = (agy: Availability, action: "status" | "read") =>
   Effect.map(wire(agy).tool.execute({ action }), (result) => result.content.map((part) => part.text).join("\n"))
 
 describe("the pool's Antigravity wiring", () => {
   it.effect("a reading present: a status push carries its rows after the pool's; another action none; the RPC and the tool answer them", () =>
     Effect.gen(function* () {
-      const agy = wire(Option.some(present))
+      const agy = wire(Availability.Present({ source: present }))
       expect(yield* agy.pushText("status", "pool: 2 sources")).toBe(["pool: 2 sources", ...ROWS].join("\n"))
       expect(yield* agy.pushText("start", "started")).toBe("started")
       expect(yield* agy.rpc()).toEqual({ lines: ROWS })
-      expect(yield* toolText(Option.some(present), "read")).toContain("Read now.")
-      expect(yield* toolText(Option.some(present), "status")).toContain("antigravity / Gemini · open")
+      expect(yield* toolText(Availability.Present({ source: present }), "read")).toContain("Read now.")
+      expect(yield* toolText(Availability.Present({ source: present }), "status")).toContain("antigravity / Gemini · open")
     }),
   )
 
   it.effect("no source (the option off, or its build failed): the pool's text alone, no rows, and the tool says it is off", () =>
     Effect.gen(function* () {
-      const agy = wire(Option.none())
+      const agy = wire(Availability.Off())
       expect(yield* agy.pushText("status", "pool: 2 sources")).toBe("pool: 2 sources")
       expect(yield* agy.rpc()).toEqual({ lines: [] })
-      expect(yield* toolText(Option.none(), "status")).toContain("not read on this host")
+      expect(yield* toolText(Availability.Off(), "status")).toContain("not read on this host")
     }),
   )
 
   it.effect("a source whose every method dies: the pool's text still comes, with one typed unknown row; the RPC and the tool answer", () =>
     Effect.gen(function* () {
-      const agy = wire(Option.some(dying))
+      const agy = wire(Availability.Present({ source: dying }))
       expect(yield* agy.pushText("status", "pool: 2 sources")).toBe(["pool: 2 sources", containedLine("TypeError")].join("\n"))
       expect(yield* agy.rpc()).toEqual({ lines: [containedLine("TypeError")] })
-      for (const action of ["status", "read"] as const) expect(yield* toolText(Option.some(dying), action)).toBe(containedLine("TypeError"))
+      for (const action of ["status", "read"] as const) expect(yield* toolText(Availability.Present({ source: dying }), action)).toBe(containedLine("TypeError"))
       expect(containedLine("TypeError")).toBe("antigravity · unknown: the Antigravity reader failed here (TypeError)")
+    }),
+  )
+
+  it.effect("a root's answer is its availability: a source present, none as off, a failure or defect as failed with its reason, never off", () =>
+    Effect.gen(function* () {
+      expect(yield* availability(Effect.succeed(Option.some(present)))).toEqual(Availability.Present({ source: present }))
+      expect(yield* availability(Effect.succeed(Option.none()))).toEqual(Availability.Off())
+      expect(yield* availability(Effect.die(new RangeError("root died")))).toEqual(Availability.Failed({ reason: "RangeError" }))
+      const failed = wire(Availability.Failed({ reason: "RangeError" }))
+      expect(yield* failed.pushText("status", "pool: 2 sources")).toBe(["pool: 2 sources", failedLine("RangeError")].join("\n"))
+      expect(yield* failed.rpc()).toEqual({ lines: [failedLine("RangeError")] })
+      for (const action of ["status", "read"] as const) {
+        const text = yield* toolText(Availability.Failed({ reason: "RangeError" }), action)
+        expect(text).toBe("antigravity · unavailable: its source did not build on this host (RangeError); the antigravity option is on")
+        expect(text).not.toContain("option is off")
+      }
     }),
   )
 })

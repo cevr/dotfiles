@@ -133,7 +133,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, FileSystem, Layer, Option, Path, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
@@ -344,8 +344,14 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * host gives a server plugin FileSystem and Path (`@opencode/plugin/effect` `Plugin.Environment`), so the pool
  * imports no platform implementation.
  */
-export type AntigravityRoot = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | FileSystem.FileSystem | Path.Path>
+export type AntigravityRoot<R = never> = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | R>
 export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
+
+/** What the live Antigravity root needs of the host: its files and paths, as the fork's plugin host provides them. */
+export type AntigravityHost = FileSystem.FileSystem | Path.Path
+
+/** The live root: one authority per state file in the process (`AgyLive.poolSource`), Google over fetch. */
+export const liveAntigravity: AntigravityRoot<AntigravityHost> = (option) => AgyLive.poolSource(option).pipe(Effect.provide(FetchHttpClient.layer))
 
 /**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
@@ -451,7 +457,7 @@ const FIRST_SWEEP = "1 second"
  * seam tests. `externals` gets the store sources the options name, so the
  * plugin registers with the auth plugin exactly the sources the pool lists.
  */
-export const make = (
+export const make = <R = never,>(
   externals: (
     ctx: Plugin.Context,
     options: Options,
@@ -460,7 +466,7 @@ export const make = (
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
   sendRecords = LedgerLive.holdAuthority().lock,
-  antigravity: AntigravityRoot = NO_ANTIGRAVITY,
+  antigravity: AntigravityRoot<R> = NO_ANTIGRAVITY,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -496,15 +502,9 @@ export const make = (
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
       // Antigravity's quota: built with no I/O, read only when asked; its rows come from what was stored, and no
-      // failure of its code reaches the pool (AgyWiring is the one boundary). Its files and paths are the host's
-      // (Plugin.Environment); a host that gives none (a test's harness) has no Antigravity source.
-      const hostFiles = Option.all([yield* Effect.serviceOption(FileSystem.FileSystem), yield* Effect.serviceOption(Path.Path)])
-      const agySource = yield* Option.match(hostFiles, {
-        onNone: () => Effect.succeed(Option.none<AgySource.Source>()),
-        onSome: ([fs, path]) =>
-          antigravity(options.antigravity).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.provideService(Path.Path, path)),
-      }).pipe(Effect.catchCause(() => Effect.succeed(Option.none<AgySource.Source>())))
-      const agy = AgyWiring.wire(agySource)
+      // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
+      // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
+      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity)))
 
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
@@ -1000,6 +1000,4 @@ const sessionOf = (input: unknown) =>
     ? input.sessionID
     : undefined
 
-export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, (option) =>
-  AgyLive.poolSource(option).pipe(Effect.provide(FetchHttpClient.layer)),
-)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, liveAntigravity)
