@@ -21,7 +21,9 @@ export interface UsageLimit {
  * One limit frame parsed from a pane's text:
  * - "Individual quota reached ... Resets in <dur>" -> group `gemini`
  * - "Third-party quota reached ... Resets in <dur>" -> group `claude-gpt`
- * - Keyed by its Error ID line when present (`id:<id>`), else by reset time (`reset:<ms>`).
+ * - Keyed by its Error ID line when present (`id:<id>`), else by a
+ *   time-independent hash of the frame's exact text (`text:<hex>`), never by
+ *   `now` or `seenAt`.
  */
 export interface PaneLimit extends UsageLimit {
   readonly group: Option.Option<string>
@@ -94,12 +96,56 @@ const frameGroupOf = (frame: string): Option.Option<string> => {
 /** Max trailing lines after a limit header that belong to the same frame (e.g. "Resets in ..." and "Error ID: ..."). */
 const FRAME_TAIL_LINES = 5
 
+const FNV_OFFSET_A = 0xcbf29ce484222325n
+const FNV_OFFSET_B = 0x84222325cbf29ce4n
+const FNV_PRIME = 0x100000001b3n
+const MASK_64 = 0xffffffffffffffffn
+
+const fnv64 = (text: string, offset: bigint): string => {
+  let hash = offset
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= BigInt(text.charCodeAt(i))
+    hash = (hash * FNV_PRIME) & MASK_64
+  }
+  return hash.toString(16).padStart(16, "0")
+}
+
+/** Deterministic 128-bit hex hash of exact frame text: pure, no platform imports, never depends on clock. */
+const hashFrameText = (text: string): string => `${fnv64(text, FNV_OFFSET_A)}${fnv64(text, FNV_OFFSET_B)}`
+
+const resetMatchText = (frame: string): Option.Option<string> => {
+  const stamped = Option.fromNullishOr(RESET_TIMESTAMP.exec(frame))
+  if (Option.isSome(stamped)) return Option.some(stamped.value[0])
+  return Arr.findFirst(DELAYS, (pattern) => pattern.test(frame)).pipe(
+    Option.flatMap((pattern) => Option.fromNullishOr(pattern.exec(frame))),
+    Option.map((match) => match[0]),
+  )
+}
+
+/**
+ * Exact time-independent signature of a frame without an Error ID: the matched
+ * limit/group header line plus the printed "Resets in <dur>" (or API reset)
+ * token when it appears on a subsequent line. Trailing unrelated scrollback
+ * lines are excluded so later output never changes the key.
+ */
+const frameSignature = (frame: string): string => {
+  const header = Option.getOrElse(Arr.head(frame.split(/\r?\n/)), () => "").trim()
+  return Option.match(resetMatchText(frame), {
+    onNone: () => header,
+    onSome: (resetText) => {
+      if (header.includes(resetText)) return header
+      return `${header}\n${resetText.trim()}`
+    },
+  })
+}
+
 /**
  * Parse every live quota-limit frame from a pane's text (including multi-line
  * scrollback). Frames older than their own reset (`resetAt <= now` or
- * `resetAt <= seenAt`) are ignored. Each frame is keyed by its `Error ID:` line
- * when present (`id:<id>`), else by its reset time (`reset:<ms>`), else
- * `seen:<seenAt>`, and deduplicated within the text.
+ * `resetAt <= seenAt`) are ignored. Each frame's identity is independent of
+ * `now`: keyed by its `Error ID:` line when present (`id:<id>`), else by a
+ * deterministic hash of the frame's exact text (`text:<hash>`), and
+ * deduplicated within the text.
  */
 export const parsePaneLimits = (text: string, now: number, frameAt?: number): ReadonlyArray<PaneLimit> => {
   const seenAt = Option.getOrElse(Option.fromUndefinedOr(frameAt), () => now)
@@ -132,7 +178,7 @@ export const parsePaneLimits = (text: string, now: number, frameAt?: number): Re
     const errorId = captured(ERROR_ID, frame)
     const key = Option.match(errorId, {
       onSome: (id) => `id:${id}`,
-      onNone: () => Option.match(resetAt, { onSome: (at) => `reset:${at}`, onNone: () => `seen:${seenAt}` }),
+      onNone: () => `text:${hashFrameText(frameSignature(frame))}`,
     })
     if (seenKeys.has(key)) continue
     seenKeys.add(key)

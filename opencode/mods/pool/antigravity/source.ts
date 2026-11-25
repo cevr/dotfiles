@@ -31,8 +31,9 @@ import {
   type PeerRecord,
   readingHost,
   resolveGroup,
+  WireWhy,
 } from "./fleet.ts"
-import { checkStartGate, DEFAULT_GEMINI_CAP, GateDecision, type GateQuery, type GeminiCap, geminiStartProvider } from "./gate.ts"
+import { checkStartGate, DEFAULT_GEMINI_CAP, GateDecision, type GateQuery, type GeminiCap, geminiStartProvider, type PeerBusy } from "./gate.ts"
 import { type PaneLimit, parsePaneLimits } from "./limit.ts"
 import { type Access, type AuthMethod, accessOf, EXPIRY_MARGIN_MS, endpointOrder, type Endpoints, ReadFailed, readQuota } from "./reader.ts"
 import { fromFiles, fromKeychain, Lookup, type Places, SignIn as SignInSchema, type SignIn } from "./signin.ts"
@@ -50,20 +51,24 @@ export interface Store {
 /** The state file could not be locked, read or written. */
 export class StoreFailed extends Schema.TaggedError<StoreFailed>()("StoreFailed", { what: Schema.String }) {}
 
-/** A snapshot of the fleet as Antigravity reads it (from FleetStore + fleet config). */
+/** A snapshot of the fleet as Antigravity reads it (from the pool's shared FleetStore + busy set). */
 export interface FleetView {
   readonly host: string
   readonly peers: Readonly<Record<string, PeerRecord>>
   readonly peerNames: ReadonlyArray<string>
-  readonly starts: ReadonlyArray<{ readonly providerID: string; readonly at: number }>
-  readonly ownStarts?: ReadonlyArray<{ readonly providerID: string; readonly at: number }>
-  readonly settleMs: number
+  /** Currently running providers/agents on this host. */
+  readonly ownBusy: ReadonlyArray<string>
+  /** Each peer's last reported busy set and when its report was seen (local clock). */
+  readonly peerBusy: ReadonlyArray<PeerBusy>
 }
 
 /** Optional fleet bridge: reads peers' reports and host identity without blocking plugin startup. */
 export interface FleetContext {
+  /** Configured fleet host id (used even if `read` fails so reports never collide on a placeholder name). */
+  readonly host: string
   readonly read: Effect.Effect<FleetView>
-  readonly recordStart?: (providerID: string) => Effect.Effect<void>
+  readonly recordBusy?: (paneId: string, providerID: string) => Effect.Effect<void>
+  readonly releaseBusy?: (paneId: string) => Effect.Effect<void>
 }
 
 export interface Options {
@@ -75,9 +80,11 @@ export interface Options {
   readonly endpoints: Endpoints
   /** The user agent requests carry (reader.ts `userAgent`), worked out only when a read is made. */
   readonly agent: Effect.Effect<string>
-  /** Optional fleet context: enables cross-host merge, single reading host and fleet Gemini cap. */
+  /** Configured host id when standalone (overridden by `fleet.host` when in a fleet). */
+  readonly host?: string
+  /** Optional fleet context: enables cross-host merge, single reading host and fleet Gemini concurrency cap. */
   readonly fleet?: FleetContext
-  /** Concurrent Gemini agent cap: default 4 per agent and 4 fleet total across hosts. */
+  /** Concurrent Gemini agent cap: default 4 per agent and 8 fleet total across hosts. */
   readonly geminiCap?: GeminiCap
 }
 
@@ -181,11 +188,16 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
       return Option.isSome(yield* heldFor(at))
     }).pipe(Effect.catchCause(() => Effect.succeed(false)))
 
-  const singleHostView = (host: string): FleetView => ({ host, peers: {}, peerNames: [], starts: [], settleMs: 10 * 60_000 })
+  const localHost = Option.getOrElse(
+    Option.orElse(Option.map(Option.fromUndefinedOr(options.fleet), (fleet) => fleet.host), () => Option.fromUndefinedOr(options.host)),
+    () => "local",
+  )
+
+  const singleHostView = (host: string): FleetView => ({ host, peers: {}, peerNames: [], ownBusy: [], peerBusy: [] })
 
   const fleetView = Option.match(Option.fromUndefinedOr(options.fleet), {
-    onNone: () => Effect.succeed(singleHostView("this host")),
-    onSome: (fleet) => fleet.read.pipe(Effect.catchCause(() => Effect.succeed(singleHostView("this host")))),
+    onNone: () => Effect.succeed(singleHostView(localHost)),
+    onSome: (fleet) => fleet.read.pipe(Effect.catchCause(() => Effect.succeed(singleHostView(fleet.host)))),
   })
 
   const mergedView = Effect.gen(function* () {
@@ -209,13 +221,13 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
     const readable = yield* hasReadableSignIn(at)
     return fromLocalState(view.host, state, at, readable)
   }).pipe(
-    Effect.catchCause((cause) =>
+    Effect.catchCause(() =>
       Effect.map(now, (at): AntigravityReport => ({
-        host: "this host",
+        host: localHost,
         at,
         readableSignIn: false,
         limits: [],
-        failure: { at, why: contained(cause) },
+        failure: { at, why: WireWhy.cases.Contained.make({}) },
       })),
     ),
   )
@@ -367,9 +379,8 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
       Effect.flatMap(({ merged, at, view }) => {
         const decision = checkStartGate({
           merged,
-          fleetStarts: view.starts,
-          ...Option.match(Option.fromUndefinedOr(view.ownStarts), { onNone: () => ({}), onSome: (ownStarts) => ({ ownStarts }) }),
-          settleMs: view.settleMs,
+          ownBusy: view.ownBusy,
+          peerBusy: view.peerBusy,
           cap: geminiCap,
           now: at,
           query,
@@ -378,23 +389,26 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
           decision._tag === "Admitted" &&
           query.recordStart === true &&
           (decision.group === "gemini" || decision.group.startsWith("gemini-"))
-        const record = Option.flatMap(Option.fromUndefinedOr(options.fleet), (fleet) => Option.fromUndefinedOr(fleet.recordStart))
+        const record = Option.flatMap(Option.fromUndefinedOr(options.fleet), (fleet) => Option.fromUndefinedOr(fleet.recordBusy))
         return Match.value(shouldRecord).pipe(
           Match.when(true, () =>
             Option.match(record, {
               onNone: () => Effect.succeed(decision),
-              onSome: (recordStart) => Effect.as(recordStart(geminiStartProvider(query.agent)).pipe(Effect.ignoreCause), decision),
+              onSome: (recordBusy) => {
+                const paneId = Option.getOrElse(Option.fromUndefinedOr(query.paneId), () => `agy:${Option.getOrElse(Option.fromUndefinedOr(query.agent), () => "pane")}:${at}`)
+                return Effect.as(recordBusy(paneId, geminiStartProvider(query.agent)).pipe(Effect.ignoreCause), decision)
+              },
             }),
           ),
           Match.orElse(() => Effect.succeed(decision)),
         )
       }),
-      Effect.catchCause((cause) =>
+      Effect.catchCause(() =>
         Effect.succeed(
           GateDecision.cases.Admitted.make({
             group: Option.getOrElse(Option.orElse(Option.fromUndefinedOr(query.group), () => Option.fromUndefinedOr(query.model)), () => "gemini"),
             measured: false,
-            answer: openDecisionAt(fromReport({ host: "this host", at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: contained(cause) } }, 0), 0, "gemini").answer,
+            answer: openDecisionAt(fromReport({ host: localHost, at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: WireWhy.cases.Contained.make({}) } }, 0), 0, "gemini").answer,
             geminiFleetCount: 0,
             geminiAgentCount: 0,
           }),
@@ -422,10 +436,10 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
               return { group: entry.id, label: entry.label, answer: open.answer, open }
             })
         }),
-        Effect.catchCause((cause) =>
+        Effect.catchCause(() =>
           Effect.succeed(
             groupsOf({ failures: 0, nextReadAt: 0 }).map((entry) => {
-              const fallback = fromReport({ host: "this host", at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: contained(cause) } }, 0)
+              const fallback = fromReport({ host: localHost, at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: WireWhy.cases.Contained.make({}) } }, 0)
               const open = openDecisionAt(fallback, 0, entry.id)
               return { group: entry.id, label: entry.label, answer: open.answer, open }
             }),

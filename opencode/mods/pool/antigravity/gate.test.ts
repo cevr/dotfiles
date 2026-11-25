@@ -1,18 +1,22 @@
-// Start gate and cross-host Gemini concurrency cap tests:
+// Start gate and cross-host Gemini CONCURRENCY cap tests:
+// - defaults are coherent: perAgent 4, fleet 8 (configurable via pool option)
 // - limited group (from own host or peer, pane limit or full window, with or without reset) -> held with finite retryAt
 // - unknown/absent window or unmeasured -> admitted (never blocks by itself)
 // - stale peer with no limit -> admitted (never blocks by itself, measured: false)
-// - concurrent Gemini agents counted ACROSS hosts from fleet starts: default 4 per agent, 4 fleet total (configurable)
+// - concurrent Gemini agents counted ACROSS hosts from the fleet's busy set (sessions/panes currently running,
+//   however long ago they started), NOT starts in the last 10 minutes
+// - a stale peer counts its last reported running agents until its report is older than BUSY_FRESH_MS (10 min),
+//   after which they stop counting
 // - Claude/GPT group is not capped by Gemini cap
-// - settled starts no longer count; resuming while limited is still held
+// - gate always answers Admitted ("start") or Held ("hold until <finite time>")
 import { describe, expect, test } from "bun:test"
+import { BUSY_FRESH_MS } from "../fleet.ts"
 import { fromReport, fromStalePeer, mergeAll, mergeRecords } from "./fleet.ts"
 import { checkStartGate, DEFAULT_GEMINI_CAP, GateDecision, gateText, geminiStartProvider, isGeminiStart } from "./gate.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const NOW = Date.parse("2026-11-25T02:00:00Z")
-const SETTLE = 10 * MINUTE
 
 const roomyMerged = fromReport(
   {
@@ -35,8 +39,8 @@ const roomyMerged = fromReport(
 )
 
 describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
-  test("defaults are 4 per agent and 4 across the fleet (from Wed 4.5h/5h measurement)", () => {
-    expect(DEFAULT_GEMINI_CAP).toEqual({ perAgent: 4, fleet: 4 })
+  test("defaults are coherent: 4 per agent and 8 across the fleet (so perAgent can bind on a multi-host fleet)", () => {
+    expect(DEFAULT_GEMINI_CAP).toEqual({ perAgent: 4, fleet: 8 })
     expect(isGeminiStart(geminiStartProvider())).toBe(true)
     expect(isGeminiStart(geminiStartProvider("implementor"))).toBe(true)
     expect(isGeminiStart("anthropic")).toBe(false)
@@ -57,8 +61,8 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     for (const resume of [false, true]) {
       const decision = checkStartGate({
         merged,
-        fleetStarts: [],
-        settleMs: SETTLE,
+        ownBusy: [],
+        peerBusy: [],
         now: NOW,
         query: { model: "google/gemini-3-pro", resume },
       })
@@ -72,8 +76,8 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     // Claude/GPT is unaffected by Gemini's limit
     const claude = checkStartGate({
       merged,
-      fleetStarts: [],
-      settleMs: SETTLE,
+      ownBusy: [],
+      peerBusy: [],
       now: NOW,
       query: { model: "anthropic/claude-opus-4-6" },
     })
@@ -92,8 +96,8 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     )
     const decision = checkStartGate({
       merged: mergeRecords(roomyMerged, silentLimit),
-      fleetStarts: [],
-      settleMs: SETTLE,
+      ownBusy: [],
+      peerBusy: [],
       now: NOW,
       query: { model: "claude-opus-4-6" },
     })
@@ -123,8 +127,8 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     const withStale = mergeAll([partial, fromStalePeer({ host: "workbox", since: NOW - 5 * MINUTE, message: "ssh timed out" })])
     const decision = checkStartGate({
       merged: withStale,
-      fleetStarts: [],
-      settleMs: SETTLE,
+      ownBusy: [],
+      peerBusy: [],
       now: NOW,
       query: { model: "gemini-3-pro" },
     })
@@ -132,57 +136,21 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     if (decision._tag === "Admitted") expect(decision.measured).toBe(false)
   })
 
-  test("caps concurrent Gemini agents across hosts from fleet starts, with finite retryAt and configurable owner cap", () => {
-    // 2 starts on Mac + 2 starts on workbox = 4 across the fleet -> 5th Gemini start is held!
-    const starts = [
-      { providerID: geminiStartProvider("implementor"), at: NOW - 8 * MINUTE },
-      { providerID: geminiStartProvider("implementor"), at: NOW - 6 * MINUTE },
-      { providerID: geminiStartProvider("worker"), at: NOW - 4 * MINUTE },
-      { providerID: geminiStartProvider("worker"), at: NOW - 2 * MINUTE },
-      // Unrelated providers do not count toward Gemini cap
-      { providerID: "anthropic", at: NOW - MINUTE },
-      // Settled Gemini start (older than settleMs) does not count
-      { providerID: geminiStartProvider("implementor"), at: NOW - SETTLE - MINUTE },
-    ]
-    const heldFleet = checkStartGate({
-      merged: roomyMerged,
-      fleetStarts: starts,
-      settleMs: SETTLE,
-      now: NOW,
-      query: { model: "gemini-3-pro", agent: "worker" },
-    })
-    expect(heldFleet._tag).toBe("Held")
-    if (heldFleet._tag === "Held") {
-      expect(heldFleet.why).toBe("gemini-cap-fleet")
-      expect(heldFleet.geminiFleetCount).toBe(4)
-      // Earliest unsettled Gemini start settles at (NOW - 8m) + 10m = NOW + 2m
-      expect(heldFleet.retryAt).toBe(NOW + 2 * MINUTE)
-      expect(gateText(heldFleet)).toContain("held")
-    }
-
-    // Claude/GPT is NOT held by Gemini's concurrency cap
-    const claudeAllowed = checkStartGate({
-      merged: roomyMerged,
-      fleetStarts: starts,
-      settleMs: SETTLE,
-      now: NOW,
-      query: { model: "claude-opus-4-6" },
-    })
-    expect(claudeAllowed._tag).toBe("Admitted")
-
-    // Owner raises fleet total to 6 while keeping perAgent at 4:
-    // 4 starts on "implementor" -> 5th "implementor" is held by perAgent cap, but "worker" is admitted!
-    const sameAgentStarts = [
-      { providerID: geminiStartProvider("implementor"), at: NOW - 7 * MINUTE },
-      { providerID: geminiStartProvider("implementor"), at: NOW - 5 * MINUTE },
-      { providerID: geminiStartProvider("implementor"), at: NOW - 3 * MINUTE },
-      { providerID: geminiStartProvider("implementor"), at: NOW - MINUTE },
+  test("caps TRUE concurrency across hosts from the fleet busy set: perAgent 4 binds before fleet 8, and stale peers count until BUSY_FRESH_MS", () => {
+    // 4 running on implementor (2 on mac + 2 on workbox) -> 5th implementor is held by perAgent (4/4),
+    // while worker is ADMITTED because fleet is only 4/8!
+    const ownBusy = [geminiStartProvider("implementor"), geminiStartProvider("implementor"), "anthropic"]
+    const peerBusy = [
+      {
+        host: "workbox",
+        busy: [geminiStartProvider("implementor"), geminiStartProvider("implementor"), "openai"],
+        seenAt: NOW - 2 * MINUTE,
+      },
     ]
     const heldAgent = checkStartGate({
       merged: roomyMerged,
-      fleetStarts: sameAgentStarts,
-      settleMs: SETTLE,
-      cap: { perAgent: 4, fleet: 6 },
+      ownBusy,
+      peerBusy,
       now: NOW,
       query: { model: "gemini-3-pro", agent: "implementor" },
     })
@@ -190,18 +158,102 @@ describe("Antigravity start gate and cross-host Gemini concurrency cap", () => {
     if (heldAgent._tag === "Held") {
       expect(heldAgent.why).toBe("gemini-cap-agent")
       expect(heldAgent.geminiAgentCount).toBe(4)
-      expect(heldAgent.retryAt).toBe(NOW + 3 * MINUTE)
+      expect(heldAgent.geminiFleetCount).toBe(4)
+      expect(Number.isFinite(heldAgent.retryAt)).toBe(true)
+      expect(heldAgent.retryAt).toBeGreaterThan(NOW)
+      expect(gateText(heldAgent)).toContain("held")
     }
 
-    const otherAgent = checkStartGate({
+    const otherAgentAdmitted = checkStartGate({
       merged: roomyMerged,
-      fleetStarts: sameAgentStarts,
-      settleMs: SETTLE,
-      cap: { perAgent: 4, fleet: 6 },
+      ownBusy,
+      peerBusy,
       now: NOW,
       query: { model: "gemini-3-pro", agent: "worker" },
     })
-    expect(otherAgent._tag).toBe("Admitted")
+    expect(otherAgentAdmitted._tag).toBe("Admitted")
+    if (otherAgentAdmitted._tag === "Admitted") {
+      expect(otherAgentAdmitted.geminiFleetCount).toBe(4)
+      expect(otherAgentAdmitted.geminiAgentCount).toBe(0)
+    }
+
+    // 8 running across hosts (4 implementor + 4 worker) -> 9th Gemini agent (even a 3rd role) is held by fleet cap (8/8)!
+    const fullPeerBusy = [
+      {
+        host: "workbox",
+        busy: [
+          geminiStartProvider("implementor"),
+          geminiStartProvider("implementor"),
+          geminiStartProvider("worker"),
+          geminiStartProvider("worker"),
+          geminiStartProvider("worker"),
+          geminiStartProvider("worker"),
+        ],
+        seenAt: NOW - 5 * MINUTE,
+      },
+    ]
+    const heldFleet = checkStartGate({
+      merged: roomyMerged,
+      ownBusy: [geminiStartProvider("implementor"), geminiStartProvider("implementor")],
+      peerBusy: fullPeerBusy,
+      now: NOW,
+      query: { model: "gemini-3-pro", agent: "planner" },
+    })
+    expect(heldFleet._tag).toBe("Held")
+    if (heldFleet._tag === "Held") {
+      expect(heldFleet.why).toBe("gemini-cap-fleet")
+      expect(heldFleet.geminiFleetCount).toBe(8)
+      expect(Number.isFinite(heldFleet.retryAt)).toBe(true)
+      expect(heldFleet.retryAt).toBeGreaterThan(NOW)
+    }
+
+    // Claude/GPT is NOT held by Gemini's concurrency cap
+    const claudeAllowed = checkStartGate({
+      merged: roomyMerged,
+      ownBusy: [geminiStartProvider("implementor"), geminiStartProvider("implementor")],
+      peerBusy: fullPeerBusy,
+      now: NOW,
+      query: { model: "claude-opus-4-6" },
+    })
+    expect(claudeAllowed._tag).toBe("Admitted")
+
+    // A stale peer's last reported busy agents STILL count while seenAt > now - BUSY_FRESH_MS (e.g. 9 min ago),
+    // and STOP counting once older than BUSY_FRESH_MS (10 min + 1ms ago)!
+    const staleWithinFresh = checkStartGate({
+      merged: mergeRecords(roomyMerged, fromStalePeer({ host: "workbox", since: NOW - 3 * MINUTE, seenAt: NOW - (BUSY_FRESH_MS - MINUTE), message: "ssh timeout" })),
+      ownBusy: [geminiStartProvider("implementor"), geminiStartProvider("implementor")],
+      peerBusy: [{ host: "workbox", busy: fullPeerBusy[0]!.busy, seenAt: NOW - (BUSY_FRESH_MS - MINUTE) }],
+      now: NOW,
+      query: { model: "gemini-3-pro", agent: "planner" },
+    })
+    expect(staleWithinFresh._tag).toBe("Held")
+    if (staleWithinFresh._tag === "Held") {
+      expect(staleWithinFresh.why).toBe("gemini-cap-fleet")
+      // Finite retryAt bounded by at most the stale peer's BUSY_FRESH_MS expiry (NOW + 1m)
+      expect(staleWithinFresh.retryAt).toBeLessThanOrEqual(NOW + MINUTE)
+      expect(staleWithinFresh.retryAt).toBeGreaterThan(NOW)
+    }
+
+    const staleExpired = checkStartGate({
+      merged: mergeRecords(roomyMerged, fromStalePeer({ host: "workbox", since: NOW - BUSY_FRESH_MS, seenAt: NOW - BUSY_FRESH_MS - 1, message: "ssh timeout" })),
+      ownBusy: [geminiStartProvider("implementor"), geminiStartProvider("implementor")],
+      peerBusy: [{ host: "workbox", busy: fullPeerBusy[0]!.busy, seenAt: NOW - BUSY_FRESH_MS - 1 }],
+      now: NOW,
+      query: { model: "gemini-3-pro", agent: "planner" },
+    })
+    expect(staleExpired._tag).toBe("Admitted")
+    if (staleExpired._tag === "Admitted") expect(staleExpired.geminiFleetCount).toBe(2)
+
+    // Owner can customize cap (e.g. lower fleet total to 3)
+    const customHeld = checkStartGate({
+      merged: roomyMerged,
+      ownBusy: [geminiStartProvider("a"), geminiStartProvider("b"), geminiStartProvider("c")],
+      peerBusy: [],
+      cap: { perAgent: 4, fleet: 3 },
+      now: NOW,
+      query: { model: "gemini-3-pro", agent: "d" },
+    })
+    expect(customHeld._tag).toBe("Held")
     expect(GateDecision.cases.Admitted).toBeDefined()
   })
 })

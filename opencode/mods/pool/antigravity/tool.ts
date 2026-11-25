@@ -21,8 +21,9 @@ export const AntigravityToolInput = toolInput(
     host: Schema.optionalKey(Schema.String).annotate({ description: "For record/limit: the host whose pane printed the limit (default this host)." }),
     at: Schema.optionalKey(Schema.Finite).annotate({ description: "For record/limit: epoch ms when the pane frame was printed (default now); frames older than their own reset are ignored." }),
     agent: Schema.optionalKey(Schema.String).annotate({ description: "For gate: the agent/role name starting or resuming the pane, for per-agent Gemini concurrency cap." }),
+    paneId: Schema.optionalKey(Schema.String).annotate({ description: "For gate: optional stable pane/session id tracked in the host's busy set while running." }),
     resume: Schema.optionalKey(Schema.Boolean).annotate({ description: "For gate: true when resuming an existing agy pane." }),
-    recordStart: Schema.optionalKey(Schema.Boolean).annotate({ description: "For gate: when admitted on Gemini, also record the start in the fleet's starts." }),
+    recordStart: Schema.optionalKey(Schema.Boolean).annotate({ description: "For gate: when admitted on Gemini, also record the running pane in the host's busy set." }),
     consent: Schema.optionalKey(Schema.Boolean).annotate({
       description: "For read, a business sign-in only: the owner consented to one keychain attempt (macOS may show its dialog once). Set it only when the owner asked; one consent buys exactly one attempt. A personal sign-in never reads the keychain.",
     }),
@@ -76,6 +77,7 @@ export const answer = Effect.fn("Antigravity.tool")(function* (source: Option.Op
           ...Option.match(Option.fromUndefinedOr(input.group), { onNone: () => ({}), onSome: (group) => ({ group }) }),
           ...Option.match(Option.fromUndefinedOr(input.model), { onNone: () => ({}), onSome: (model) => ({ model }) }),
           ...Option.match(Option.fromUndefinedOr(input.agent), { onNone: () => ({}), onSome: (agent) => ({ agent }) }),
+          ...Option.match(Option.fromUndefinedOr(input.paneId), { onNone: () => ({}), onSome: (paneId) => ({ paneId }) }),
           ...Option.match(Option.fromUndefinedOr(input.resume), { onNone: () => ({}), onSome: (resume) => ({ resume }) }),
           ...Option.match(Option.fromUndefinedOr(input.recordStart), { onNone: () => ({}), onSome: (recordStart) => ({ recordStart }) }),
         }),

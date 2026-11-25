@@ -67,12 +67,22 @@ describe("Antigravity limit messages", () => {
     const staleFrame = "Individual quota reached. Resets in 10m."
     expect(parsePaneLimits(staleFrame, NOW, NOW - 15 * 60_000)).toEqual([])
 
-    // Frame without Error ID is keyed by its reset time
-    const noId = parsePaneLimits("Third-party quota reached. Resets in 30m.", NOW)
-    expect(noId.length).toBe(1)
-    expect(noId[0]?.group).toEqual(Option.some("claude-gpt"))
-    expect(noId[0]?.errorId).toEqual(Option.none())
-    expect(noId[0]?.key).toBe(`reset:${NOW + 30 * 60_000}`)
+    // Frame without Error ID is keyed by a time-independent hash of its exact text (never by `now` or `seenAt`)
+    const noIdText = "Third-party quota reached. Resets in 30m."
+    const noIdFirst = parsePaneLimits(noIdText, NOW)
+    const noIdLater = parsePaneLimits(noIdText, NOW + 10 * 60_000)
+    expect(noIdFirst.length).toBe(1)
+    expect(noIdLater.length).toBe(1)
+    expect(noIdFirst[0]?.group).toEqual(Option.some("claude-gpt"))
+    expect(noIdFirst[0]?.errorId).toEqual(Option.none())
+    expect(noIdFirst[0]?.key).toBe(noIdLater[0]?.key)
+    expect(noIdFirst[0]?.key).toStartWith("text:")
+
+    // A reset-less frame without Error ID also has a time-independent key
+    const noResetFirst = parsePaneLimits("Individual quota reached. Please upgrade your subscription.", NOW)
+    const noResetLater = parsePaneLimits("Individual quota reached. Please upgrade your subscription.", NOW + 25 * 60_000)
+    expect(noResetFirst[0]?.key).toBe(noResetLater[0]?.key)
+    expect(noResetFirst[0]?.key).toStartWith("text:")
   })
 })
 

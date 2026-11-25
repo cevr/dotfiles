@@ -235,6 +235,8 @@ export class Pool extends Context.Service<
     readonly started: (providerID: string) => Effect.Effect<void>
     /** A step of a session started on the provider: the session is busy, an agent running, until it goes idle (`release`). */
     readonly stepStarted: (sessionID: string, providerID: string) => Effect.Effect<void>
+    /** Providers of sessions currently busy on this host (used by fleet reports and Antigravity's concurrency gate). */
+    readonly busy: Effect.Effect<ReadonlyArray<string>>
     /** What this host tells a peer: its starts that still count, its busy sessions' providers and its readings. */
     readonly report: Effect.Effect<Report>
     /**
@@ -1612,6 +1614,7 @@ export const layer = (config: Config) =>
         logins: sessionLogins,
         started,
         stepStarted,
+        busy: Effect.map(Clock.currentTimeMillis, busyNow),
         report,
         poll,
         fleet: fleetStatus,

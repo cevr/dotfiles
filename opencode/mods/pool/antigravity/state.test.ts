@@ -6,6 +6,7 @@
 // unknown, the answer is the model's, and reads keep their spacing.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Match, Option, Schema } from "effect"
+import { parsePaneLimits } from "./limit.ts"
 import type { Span, Window } from "./quota.ts"
 import { Answer, answerAt, backoffMs, due, EMPTY, Event, evolve, keychainAllowed, READ_EVERY_MS, type State, Why } from "./state.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
@@ -286,5 +287,34 @@ describe("Antigravity reading store", () => {
       }),
     )
     expect(expired.limits).toBeUndefined()
+  })
+
+  test("B1 property: re-reading scrollback (with or without Error ID) at any later times never moves the reset or re-arms", () => {
+    const toLimit = (parsed: ReturnType<typeof parsePaneLimits>[number]) => {
+      const base = { seenAt: parsed.seenAt, key: parsed.key, host: "mac" }
+      const withReset = Option.match(parsed.resetAt, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
+      return Option.match(parsed.group, { onNone: () => withReset, onSome: (group) => ({ ...withReset, group }) })
+    }
+    const frames = [
+      "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.",
+      "Third-party quota reached. Please upgrade your subscription to increase your limits. Resets in 45m.\nError ID: err-3p-prop",
+      "Individual quota reached. Please upgrade your subscription.",
+    ]
+    for (const frame of frames) {
+      let state = EMPTY
+      const firstParsed = parsePaneLimits(frame, START)
+      expect(firstParsed.length).toBe(1)
+      const first = firstParsed[0]!
+      state = evolve(state, Event.cases.LimitSeen.make({ limit: toLimit(first) }))
+      const afterFirst = state
+      // Re-reading the exact same scrollback 10 times at arbitrary later times changes nothing
+      for (const offsetMin of [1, 5, 10, 30, 60, 90, 180, 500]) {
+        const later = START + offsetMin * MINUTE
+        for (const parsed of parsePaneLimits(frame, later)) {
+          state = evolve(state, Event.cases.LimitSeen.make({ limit: toLimit(parsed) }))
+        }
+        expect(state).toEqual(afterFirst)
+      }
+    }
   })
 })

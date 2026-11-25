@@ -1,4 +1,4 @@
-// Start gate and cross-host Gemini concurrency cap for agy panes and workers.
+// Start gate and cross-host Gemini CONCURRENCY cap for agy panes and workers.
 // The orchestrator's pane helper calls `checkStartGate` (pure) or the pool's
 // `antigravity` tool/RPC (`action: "gate"`) before starting or resuming an agy
 // pane or worker:
@@ -6,29 +6,27 @@
 //   window in the merged record) -> Held with a finite retryAt (> now).
 // - An unknown or absent window (or stale peer with no limit) NEVER blocks a
 //   start by itself (nullable limits rule).
-// - For Gemini, concurrent agents are counted ACROSS hosts from the fleet's
-//   unsettled starts: default 4 per agent and 4 across the fleet (from Wed's
-//   measurement: all panes together emptied Gemini's 5-hour window in ~4.5 h,
-//   ~11% faster than the 5h window; capping at 4 per agent and 4 fleet-wide
-//   lets one host burst to 4 when the other host is idle while preventing two
-//   hosts from running 8 concurrent panes and draining the window in ~2.25 h).
-//   The owner can adjust either cap in the pool's `antigravity.geminiCap` option.
+// - For Gemini, concurrent agents currently RUNNING are counted ACROSS hosts
+//   from the fleet's busy set (this host's busy sessions/panes plus each peer's
+//   last reported busy set while its report is within BUSY_FRESH_MS = 10 min,
+//   the fleet's own staleness rule). Default cap: 4 per agent and 8 fleet total
+//   across hosts (so perAgent 4 can bind on a multi-host fleet; the owner can
+//   adjust either cap in the pool's `antigravity.geminiCap` option).
+// - The gate always answers Admitted ("start") or Held ("hold until <finite time>").
 // Pure: no clock, no I/O.
 import { Array as Arr, Option, Schema } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
-import { type MergedRecord, openDecisionAt, OpenStatus, resolveGroup } from "./fleet.ts"
+import { BUSY_FRESH_MS } from "../fleet.ts"
+import { type MergedRecord, openDecisionAt, OpenStatus, resolveGroup, stalePeersOf } from "./fleet.ts"
 import { GEMINI } from "./quota.ts"
 import { Answer } from "./state.ts"
 import { openDecisionText } from "./text.ts"
 
-/** Provider prefix recorded in the fleet's starts for concurrent Gemini panes/workers. */
+/** Provider prefix recorded in the fleet's busy set for running Gemini panes/workers. */
 export const GEMINI_START_PREFIX = "antigravity:gemini"
 
-/** Fallback recheck delay when a cap holds without a future start expiry. */
+/** Fallback recheck delay when a concurrency cap holds. */
 export const CAP_RECHECK_MS = 2 * 60_000
-
-/** Same clock-skew tolerance as mods/pool/fleet.ts `SKEW_MS`. */
-const SKEW_MS = 60_000
 
 /** Concurrency cap for Gemini agents: per agent (caller/role) and fleet-wide total across hosts. */
 export const GeminiCap = Schema.Struct({
@@ -38,41 +36,44 @@ export const GeminiCap = Schema.Struct({
 export type GeminiCap = typeof GeminiCap.Type
 
 /**
- * Default concurrency cap derived from Wed measurements (plan.md):
- * all panes together emptied Gemini's 5-hour window in ~4.5 h (~11% over
- * sustainable 5h pace). Capping at 4 per agent and 4 fleet total lets one host
- * run up to 4 when the other is quiet while preventing 2 hosts × 4 = 8 from
- * draining the 5-hour window in ~2.25 h.
+ * Default concurrency cap: 4 concurrent Gemini agents per agent/role and 8
+ * across the fleet (coherent so per-agent cap binds before the fleet total on a
+ * two-host fleet, while still configurable by the owner in pool options).
  */
-export const DEFAULT_GEMINI_CAP: GeminiCap = { perAgent: 4, fleet: 4 }
+export const DEFAULT_GEMINI_CAP: GeminiCap = { perAgent: 4, fleet: 8 }
 
-/** Provider string recorded in the fleet's starts for one Gemini agent start. */
+/** Provider string recorded in the fleet's busy set for one running Gemini agent. */
 export const geminiStartProvider = (agent?: string): string =>
   Option.match(
     Option.filter(Option.map(Option.fromUndefinedOr(agent), (name) => name.trim()), (name) => name !== ""),
     { onNone: () => GEMINI_START_PREFIX, onSome: (name) => `${GEMINI_START_PREFIX}:${name}` },
   )
 
-/** Whether a fleet start's `providerID` is a Gemini Antigravity start. */
+/** Whether a busy/start provider token represents a running Gemini Antigravity agent. */
 export const isGeminiStart = (providerID: string): boolean =>
-  providerID === GEMINI_START_PREFIX || providerID.startsWith(`${GEMINI_START_PREFIX}:`)
+  providerID === GEMINI_START_PREFIX ||
+  providerID.startsWith(`${GEMINI_START_PREFIX}:`) ||
+  Option.contains(resolveGroup(providerID), GEMINI)
 
-/** The agent name carried by a Gemini start's `providerID`, if any. */
+/** The agent name carried by a Gemini busy token, if any. */
 export const agentOfGeminiStart = (providerID: string): Option.Option<string> =>
   Option.map(
     Option.liftPredicate(providerID, (id) => id.startsWith(`${GEMINI_START_PREFIX}:`)),
     (id) => id.slice(GEMINI_START_PREFIX.length + 1),
   )
 
-export interface FleetStart {
-  readonly providerID: string
-  readonly at: number
+/** One peer host's last reported busy set and when its report was seen (local clock). */
+export interface PeerBusy {
+  readonly host: string
+  readonly busy: ReadonlyArray<string>
+  readonly seenAt: number
 }
 
 export interface GateQuery {
   readonly model?: string
   readonly group?: string
   readonly agent?: string
+  readonly paneId?: string
   readonly resume?: boolean
 }
 
@@ -98,14 +99,19 @@ export type GateDecision = typeof GateDecision.Type
 
 const isGeminiGroup = (group: string): boolean => group === GEMINI || group.startsWith(`${GEMINI}-`)
 
-const unsettledGemini = (starts: ReadonlyArray<FleetStart>, now: number, settleMs: number): ReadonlyArray<FleetStart> =>
-  starts.filter((start) => isGeminiStart(start.providerID) && start.at > now - settleMs && start.at <= now + SKEW_MS)
-
-const capRetryAt = (starts: ReadonlyArray<FleetStart>, now: number, settleMs: number): number => {
-  const expiries = starts.flatMap((start) => Option.toArray(Option.filter(Option.some(start.at + settleMs), (at) => at > now)))
-  return Arr.match(expiries, {
+const capRetryAt = (
+  contributingPeers: ReadonlyArray<PeerBusy>,
+  staleHostNames: ReadonlySet<string>,
+  now: number,
+  busyFreshMs: number,
+): number => {
+  // If a stale peer is contributing to the count, its contribution expires at `seenAt + busyFreshMs`.
+  const staleExpiries = contributingPeers
+    .filter((peer) => staleHostNames.has(peer.host))
+    .flatMap((peer) => Option.toArray(Option.filter(Option.some(peer.seenAt + busyFreshMs), (at) => at > now)))
+  return Arr.match(staleExpiries, {
     onEmpty: () => now + CAP_RECHECK_MS,
-    onNonEmpty: (future) => Math.min(...future),
+    onNonEmpty: (future) => Math.min(now + CAP_RECHECK_MS, ...future),
   })
 }
 
@@ -113,28 +119,33 @@ const capRetryAt = (starts: ReadonlyArray<FleetStart>, now: number, settleMs: nu
  * Start gate for starting or resuming an agy pane or worker:
  * 1. Check the model/group's merged Antigravity status: limited -> Held with finite reset/retry time.
  *    An unknown or absent window (or stale peer without a limit) NEVER blocks by itself.
- * 2. For Gemini, enforce the cross-host fleet concurrency cap and per-agent cap from the fleet's starts.
+ * 2. For Gemini, enforce true cross-host concurrency caps (`perAgent` and `fleet`) from the fleet's
+ *    busy set (own running agents + each peer's last reported running agents while `seenAt > now - busyFreshMs`).
  */
 export const checkStartGate = (input: {
   readonly merged: MergedRecord
-  readonly fleetStarts: ReadonlyArray<FleetStart>
-  readonly ownStarts?: ReadonlyArray<FleetStart>
-  readonly settleMs: number
+  readonly ownBusy: ReadonlyArray<string>
+  readonly peerBusy: ReadonlyArray<PeerBusy>
+  readonly busyFreshMs?: number
   readonly cap?: GeminiCap
   readonly now: number
   readonly query: GateQuery
 }): GateDecision => {
   const cap = Option.getOrElse(Option.fromUndefinedOr(input.cap), () => DEFAULT_GEMINI_CAP)
+  const busyFreshMs = Option.getOrElse(Option.fromUndefinedOr(input.busyFreshMs), () => BUSY_FRESH_MS)
   const rawTarget = Option.orElse(Option.fromUndefinedOr(input.query.group), () => Option.fromUndefinedOr(input.query.model))
   const group = Option.getOrElse(
     Option.map(rawTarget, (name) => Option.getOrElse(resolveGroup(name), () => name)),
     () => GEMINI,
   )
-  const fleetGemini = unsettledGemini(input.fleetStarts, input.now, input.settleMs)
+
+  const ownGemini = input.ownBusy.filter(isGeminiStart)
+  const freshPeers = input.peerBusy.filter((peer) => peer.seenAt > input.now - busyFreshMs)
+  const fleetGemini = [...ownGemini, ...freshPeers.flatMap((peer) => peer.busy.filter(isGeminiStart))]
   const agent = Option.filter(Option.map(Option.fromUndefinedOr(input.query.agent), (name) => name.trim()), (name) => name !== "")
   const agentGemini = Option.match(agent, {
-    onSome: (named) => fleetGemini.filter((start) => Option.contains(agentOfGeminiStart(start.providerID), named)),
-    onNone: () => unsettledGemini(Option.getOrElse(Option.fromUndefinedOr(input.ownStarts), () => input.fleetStarts), input.now, input.settleMs),
+    onSome: (named) => fleetGemini.filter((entry) => Option.contains(agentOfGeminiStart(entry), named)),
+    onNone: () => ownGemini,
   })
   const geminiFleetCount = fleetGemini.length
   const geminiAgentCount = agentGemini.length
@@ -153,26 +164,32 @@ export const checkStartGate = (input: {
   }
 
   if (isGeminiGroup(group)) {
+    const staleHostNames = new Set(stalePeersOf(input.merged).map((peer) => peer.host))
+    const contributingPeers = freshPeers.filter((peer) => peer.busy.some(isGeminiStart))
     if (geminiFleetCount >= cap.fleet) {
-      const retryAt = capRetryAt(fleetGemini, input.now, input.settleMs)
+      const retryAt = capRetryAt(contributingPeers, staleHostNames, input.now, busyFreshMs)
       return GateDecision.cases.Held.make({
         group,
         why: "gemini-cap-fleet",
         retryAt,
-        reason: `gemini fleet concurrency cap reached (${geminiFleetCount}/${cap.fleet} across hosts); retry at ${formatNotificationTime(retryAt)}`,
+        reason: `gemini fleet concurrency cap reached (${geminiFleetCount}/${cap.fleet} running across hosts); retry at ${formatNotificationTime(retryAt)}`,
         answer: status.answer,
         geminiFleetCount,
         geminiAgentCount,
       })
     }
     if (geminiAgentCount >= cap.perAgent) {
-      const retryAt = capRetryAt(agentGemini, input.now, input.settleMs)
+      const agentPeers = Option.match(agent, {
+        onNone: () => Arr.empty<PeerBusy>(),
+        onSome: (named) => freshPeers.filter((peer) => peer.busy.some((entry) => Option.contains(agentOfGeminiStart(entry), named))),
+      })
+      const retryAt = capRetryAt(agentPeers, staleHostNames, input.now, busyFreshMs)
       const scope = Option.match(agent, { onNone: () => "this host", onSome: (name) => `agent ${name}` })
       return GateDecision.cases.Held.make({
         group,
         why: "gemini-cap-agent",
         retryAt,
-        reason: `gemini concurrency cap reached for ${scope} (${geminiAgentCount}/${cap.perAgent}); retry at ${formatNotificationTime(retryAt)}`,
+        reason: `gemini concurrency cap reached for ${scope} (${geminiAgentCount}/${cap.perAgent} running); retry at ${formatNotificationTime(retryAt)}`,
         answer: status.answer,
         geminiFleetCount,
         geminiAgentCount,
@@ -193,6 +210,6 @@ export const checkStartGate = (input: {
 export const gateText = (decision: GateDecision): string =>
   GateDecision.match(decision, {
     Admitted: ({ group, measured, answer, geminiFleetCount }) =>
-      `admitted (${group}): ${openDecisionText(OpenStatus.cases.Now.make({ measured, answer }))} · gemini fleet ${geminiFleetCount}`,
+      `admitted (${group}): ${openDecisionText(OpenStatus.cases.Now.make({ measured, answer }))} · gemini running ${geminiFleetCount}`,
     Held: ({ group, reason, retryAt }) => `held (${group}) until ${formatNotificationTime(retryAt)}: ${reason}`,
   })

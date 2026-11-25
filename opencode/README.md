@@ -1659,10 +1659,37 @@ A group answers in one of these states:
   called open;
 - unknown, when the reading leaves a window out.
 
-The `antigravity` tool answers `status`, `open`, `limit`, `clear` and `read`. The
-same rows appear in `pool_push` status, in the `/pool` pane (the pool's
+The `antigravity` tool answers `status`, `open`, `record` (alias `limit`), `gate`, `clear` and `read`. The
+same rows appear in `pool_push` status, in `orchestrate status` and `land`, in the `/pool` pane (the pool's
 `antigravity` RPC method) and from `bun cmd/pool/antigravity-read.ts`. The pool
 option `antigravity: false` turns all of this off.
+
+Across a fleet, each host includes its Antigravity record (limit events, latest
+reading, attempt floor, readable-sign-in bit and wire-safe reason kind — never a
+token, profile path or home directory) in its fleet report, decoded tolerantly
+on its own so an unknown future reason, field or garbage payload never drops a
+peer's Claude or OpenAI pool data. Reports merge as a commutative, associative,
+idempotent join-semilattice: the worse live reading wins, distinct resets never
+move earlier, a keyed pane frame (`Error ID` when present, else a
+time-independent hash of the frame's exact text) keeps its earliest sighting so
+replayed scrollback never re-arms or shifts its reset, and a cross-host reading
+lifts a limit only past the 5-minute clock-skew bound (`CLOCK_SKEW_BOUND_MS`)
+with extreme future resets clamped to 7 days + 5 minutes.
+
+Only one host in the fleet makes active Google reads: the lowest fresh host id
+with a readable sign-in, obeying the 5-minute floor across all hosts' merged
+attempts. During a network partition where hosts cannot reach each other, each
+side sees the other as stale and elects its own reading host (one reader per
+side, matching two independent T3 instances); right after the partition heals,
+at most one extra read can land within a single fleet poll interval before the
+merged floor converges.
+
+Before starting or resuming an agy pane or worker, the start gate (`gate`) holds
+any limited group until its finite reset time (leaving unknown/absent windows
+and stale peers without limits unblocked) and enforces a cross-host Gemini
+concurrency cap counted from the fleet's busy set (default 4 per agent and 8
+across the fleet, configurable via `antigravity.geminiCap`; a stale peer's last
+reported running agents count until its report ages past `BUSY_FRESH_MS`).
 
 ## Status
 

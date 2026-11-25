@@ -14,23 +14,31 @@ import { hangGuard } from "../../../tests/hang-guard.ts"
 import { Report } from "../status.ts"
 import {
   type AntigravityReport,
+  CLOCK_SKEW_BOUND_MS,
   EMPTY_MERGED,
+  fromLocalState,
   fromReport,
   fromStalePeer,
+  type HostFacts,
+  type HostFailure,
   type LimitEvent,
+  MAX_RESET_HORIZON_MS,
   mergeAll,
+  mergeFleet,
   mergedAnswerAt,
   mergedNextReadAt,
   mergedWindowAt,
   mergeRecords,
+  type MergedRecord,
   openDecisionAt,
   OpenStatus,
   readingHost,
   resolveGroup,
+  WireWhy,
 } from "./fleet.ts"
 import type { Span, Window } from "./quota.ts"
-import { Answer, Shown } from "./state.ts"
-import { mergedStatusLines } from "./text.ts"
+import { Answer, EMPTY, Event, evolve, READ_EVERY_MS, Shown, Why } from "./state.ts"
+import { mergedStatusLines, statusLines } from "./text.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -140,24 +148,100 @@ const genRecord = (random: Random, now: number) => {
   return { pieces, merged: mergeAll(pieces) }
 }
 
+const genWireWhy = (random: Random): WireWhy => {
+  const roll = Math.floor(random() * 6)
+  if (roll === 0) return WireWhy.cases.RequestFailed.make({ why: "refused", status: 401 })
+  if (roll === 1) return WireWhy.cases.RequestFailed.make({ why: "rate-limited", status: 429 })
+  if (roll === 2) return WireWhy.cases.RequestFailed.make({ why: "timed-out" })
+  if (roll === 3) return WireWhy.cases.NotSignedIn.make({})
+  if (roll === 4) return WireWhy.cases.KeychainRefused.make({ outcome: pick(random, ["denied", "failed", "timed-out"]) })
+  return WireWhy.cases.FromNewerHost.make({})
+}
+
+const genHostFacts = (random: Random, host: string, now: number): HostFacts => {
+  // Intentionally generate arbitrary combinations: fresh-only, missed-only, both,
+  // same-timestamp ties, and seenAt >= since (the reviewer's counterexample).
+  const tPool = [now - 20 * MINUTE, now - 15 * MINUTE, now - 10 * MINUTE, now - 5 * MINUTE, now] as const
+  const base: HostFacts = { host }
+  const withFresh = Match.value(random() < 0.6).pipe(
+    Match.when(true, () => ({ ...base, fresh: { at: pick(random, tPool), readableSignIn: random() < 0.5 } })),
+    Match.orElse(() => base),
+  )
+  const withMissed = Match.value(random() < 0.6).pipe(
+    Match.when(true, () => ({ ...withFresh, missed: { since: pick(random, tPool), message: pick(random, ["ssh timed out", "eof", "refused"]) } })),
+    Match.orElse(() => withFresh),
+  )
+  const withSeen = Match.value(random() < 0.7).pipe(
+    Match.when(true, () => ({ ...withMissed, lastSeenAt: pick(random, tPool) })),
+    Match.orElse(() => withMissed),
+  )
+  return Match.value(random() < 0.25).pipe(
+    Match.when(true, () => ({ ...withSeen, fromNewerHost: true })),
+    Match.orElse(() => withSeen),
+  )
+}
+
+/** Generate an arbitrary MergedRecord (not just fleet-shaped), with ties in timestamps, keys, and failures. */
+const genArbitraryRecord = (random: Random, now: number): MergedRecord => {
+  const hostCount = 1 + Math.floor(random() * HOSTS.length)
+  const chosen = HOSTS.slice(0, hostCount)
+  const hosts = chosen.map((host) => genHostFacts(random, host, now))
+  const sharedKeys = ["id:shared-1", "text:shared-2", "id:unique-a"] as const
+  const limits: Array<LimitEvent> = chosen.flatMap((host) => {
+    const count = Math.floor(random() * 3)
+    return Array.from({ length: count }, () => {
+      const seenAt = now - pick(random, [0, 5 * MINUTE, 10 * MINUTE, 20 * MINUTE])
+      const base: LimitEvent = { group: pick(random, GROUPS), seenAt, host }
+      const withReset = Match.value(random() < 0.8).pipe(
+        Match.when(true, () => ({ ...base, resetAt: seenAt + pick(random, [30 * MINUTE, 60 * MINUTE]) })),
+        Match.orElse(() => base),
+      )
+      return Match.value(random() < 0.7).pipe(
+        Match.when(true, () => ({ ...withReset, key: pick(random, sharedKeys) })),
+        Match.orElse(() => withReset),
+      )
+    })
+  })
+  const failures: Array<HostFailure> = chosen.flatMap((host) =>
+    Match.value(random() < 0.6).pipe(
+      Match.when(true, () => [{ host, at: now - pick(random, [0, 5 * MINUTE]), why: genWireWhy(random) }]),
+      Match.orElse(() => []),
+    ),
+  )
+  // Normalize through mergeRecords(EMPTY_MERGED, raw) so inputs are valid canonical semilattice elements
+  return mergeRecords(EMPTY_MERGED, {
+    hosts,
+    limits,
+    seenLimitKeys: limits.flatMap((l) => Option.toArray(Option.fromUndefinedOr(l.key))),
+    readings: chosen.flatMap((host) =>
+      Match.value(random() < 0.5).pipe(
+        Match.when(true, () => [{ at: now - pick(random, [0, 5 * MINUTE]), host, windows: genWindows(random, now) }]),
+        Match.orElse(() => []),
+      ),
+    ),
+    attempts: [],
+    failures,
+  })
+}
+
 describe("Antigravity fleet merge laws (property-tested)", () => {
   test("mergeRecords is commutative, associative, and idempotent across N hosts, permutations, duplicates, delays and stale peers", () => {
     for (let seed = 1; seed <= 120; seed++) {
       const random = generator(seed)
       const now = START + Math.floor(random() * 10 * HOUR)
-      const a = genRecord(random, now).merged
-      const b = genRecord(random, now).merged
-      const c = genRecord(random, now).merged
+      const a = genArbitraryRecord(random, now)
+      const b = genArbitraryRecord(random, now)
+      const c = genArbitraryRecord(random, now)
       // Commutative
       expect(mergeRecords(a, b)).toEqual(mergeRecords(b, a))
-      // Associative
+      // Associative (arbitrary triples, including seenAt >= since and failure ties)
       expect(mergeRecords(mergeRecords(a, b), c)).toEqual(mergeRecords(a, mergeRecords(b, c)))
       // Idempotent
       expect(mergeRecords(a, a)).toEqual(a)
       // Identity
       expect(mergeRecords(a, EMPTY_MERGED)).toEqual(a)
       expect(mergeRecords(EMPTY_MERGED, a)).toEqual(a)
-      // Permutation & duplication invariance
+      // Permutation & duplication invariance over fleet-shaped pieces too
       const { pieces, merged } = genRecord(random, now)
       const permuted = mergeAll(shuffle(random, pieces))
       const duplicated = mergeAll(shuffle(random, [...pieces, ...pieces]))
@@ -439,5 +523,290 @@ const checkMergedWindowLaw = (r1: ReturnType<typeof fromReport>, r2: ReturnType<
       expect(finite.until).toBeGreaterThan(now)
     }
     expect(OpenStatus.cases.NotNow).toBeDefined()
+  })
+
+  test("B1 cross-host merge: same key seen later on a peer keeps earliest sighting and never moves reset later", () => {
+    const first = fromReport(
+      {
+        host: "workbox",
+        at: START,
+        readableSignIn: false,
+        limits: [{ group: "gemini", seenAt: START, resetAt: START + 60 * MINUTE, host: "workbox", key: "text:sameframe" }],
+      },
+      START,
+    )
+    const replayOnPeer = fromReport(
+      {
+        host: "mac",
+        at: START + 10 * MINUTE,
+        readableSignIn: true,
+        limits: [{ group: "gemini", seenAt: START + 10 * MINUTE, resetAt: START + 70 * MINUTE, host: "mac", key: "text:sameframe" }],
+      },
+      START + 10 * MINUTE,
+    )
+    const merged = mergeRecords(first, replayOnPeer)
+    expect(mergedAnswerAt(merged, START + 20 * MINUTE, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + 60 * MINUTE, by: "limit" }))
+    expect(mergeRecords(first, replayOnPeer)).toEqual(mergeRecords(replayOnPeer, first))
+  })
+
+  test("B2 clock skew: within 5-min skew bound a cross-host reading never lifts a live limit early; beyond it errs toward limited and clamps extreme resets", () => {
+    expect(CLOCK_SKEW_BOUND_MS).toBe(READ_EVERY_MS)
+    expect(MAX_RESET_HORIZON_MS).toBe(7 * 24 * HOUR + CLOCK_SKEW_BOUND_MS)
+    const SKEW_BOUND = CLOCK_SKEW_BOUND_MS
+    const MAX_HORIZON = MAX_RESET_HORIZON_MS
+    // Direct reproduction of Probe 3: reader clock 5m ahead stamps a reading taken 3m before the limit as T+2m
+    const limitT = START + HOUR
+    const limitRec = fromReport(
+      {
+        host: "workbox",
+        at: limitT,
+        readableSignIn: false,
+        limits: [{ group: "gemini", seenAt: limitT, resetAt: limitT + HOUR, host: "workbox", key: "id:skew-1" }],
+      },
+      limitT,
+    )
+    const skewedReading = fromReport(
+      {
+        host: "mac",
+        at: limitT + 2 * MINUTE,
+        readableSignIn: true,
+        limits: [],
+        reading: {
+          at: limitT + 2 * MINUTE,
+          host: "mac",
+          windows: [
+            { group: "gemini", label: "Gemini", span: "5h", used: 0.1, resetAt: limitT + 4 * HOUR },
+            { group: "gemini", label: "Gemini", span: "7d", used: 0.1, resetAt: limitT + 48 * HOUR },
+          ],
+        },
+      },
+      limitT + 2 * MINUTE,
+    )
+    const merged = mergeRecords(limitRec, skewedReading)
+    // Must stay Limited, NOT Open!
+    expect(openDecisionAt(merged, limitT + MINUTE, "gemini")._tag).toBe("NotNow")
+
+    // Contrast: a reading from the SAME host ("workbox") 1 minute later on its own clock DOES lift the limit!
+    const sameHostLater = fromReport(
+      {
+        host: "workbox",
+        at: limitT + MINUTE,
+        readableSignIn: true,
+        limits: [],
+        reading: {
+          at: limitT + MINUTE,
+          host: "workbox",
+          windows: [
+            { group: "gemini", label: "Gemini", span: "5h", used: 0.1, resetAt: limitT + 4 * HOUR },
+            { group: "gemini", label: "Gemini", span: "7d", used: 0.1, resetAt: limitT + 48 * HOUR },
+          ],
+        },
+      },
+      limitT + MINUTE,
+    )
+    expect(openDecisionAt(mergeRecords(limitRec, sameHostLater), limitT + 2 * MINUTE, "gemini")._tag).toBe("Now")
+
+    // Property over generated per-host clock offsets up to the bound and beyond:
+    for (let seed = 400; seed <= 520; seed++) {
+      const random = generator(seed)
+      const trueNow = START + 2 * HOUR
+      const trueLimitAt = trueNow - Math.floor(random() * 5 * MINUTE)
+      const trueReadBeforeLimit = trueLimitAt - Math.floor(random() * 3 * MINUTE)
+      // Within bound: |offsetReader - offsetPane| <= SKEW_BOUND
+      const paneOffset = Math.floor((random() * 2 - 1) * (SKEW_BOUND / 2))
+      const readerOffset = Math.floor((random() * 2 - 1) * (SKEW_BOUND / 2))
+      const seenAt = trueLimitAt + paneOffset
+      const resetAt = seenAt + HOUR
+      const readAt = trueReadBeforeLimit + readerOffset
+      const rec = mergeRecords(
+        fromReport({ host: "pane-host", at: seenAt, readableSignIn: false, limits: [{ group: "gemini", seenAt, resetAt, host: "pane-host", key: `id:s-${seed}` }] }, trueNow),
+        fromReport(
+          {
+            host: "reader-host",
+            at: readAt,
+            readableSignIn: true,
+            limits: [],
+            reading: {
+              at: readAt,
+              host: "reader-host",
+              windows: [
+                { group: "gemini", label: "Gemini", span: "5h", used: 0.2, resetAt: trueNow + 4 * HOUR },
+                { group: "gemini", label: "Gemini", span: "7d", used: 0.2, resetAt: trueNow + 48 * HOUR },
+              ],
+            },
+          },
+          trueNow,
+        ),
+      )
+      const decision = openDecisionAt(rec, trueNow, "gemini")
+      expect(decision._tag).toBe("NotNow")
+      if (decision._tag === "NotNow") {
+        expect(Number.isFinite(decision.until)).toBe(true)
+        expect(decision.until).toBeLessThanOrEqual(trueNow + MAX_HORIZON)
+      }
+    }
+
+    // Beyond the bound: extreme future reset (30 days ahead from a broken clock) is clamped to 7d + 5m, finite
+    const absurdReset = fromReport(
+      {
+        host: "broken-clock",
+        at: limitT,
+        readableSignIn: false,
+        limits: [{ group: "gemini", seenAt: limitT, resetAt: limitT + 30 * 24 * HOUR, host: "broken-clock", key: "id:absurd" }],
+      },
+      limitT,
+    )
+    const clamped = openDecisionAt(absurdReset, limitT, "gemini")
+    expect(clamped._tag).toBe("NotNow")
+    if (clamped._tag === "NotNow") {
+      expect(clamped.until).toBe(limitT + MAX_HORIZON)
+    }
+
+    // Beyond the bound: reader clock +10m ahead of `now` stamps reading in the future (> now + 5m) -> errs toward Limited!
+    const futureReader = fromReport(
+      {
+        host: "fast-reader",
+        at: limitT + 10 * MINUTE,
+        readableSignIn: true,
+        limits: [],
+        reading: {
+          at: limitT + 10 * MINUTE,
+          host: "fast-reader",
+          windows: [
+            { group: "gemini", label: "Gemini", span: "5h", used: 0.1, resetAt: limitT + 4 * HOUR },
+            { group: "gemini", label: "Gemini", span: "7d", used: 0.1, resetAt: limitT + 48 * HOUR },
+          ],
+        },
+      },
+      limitT,
+    )
+    const beyondDecision = openDecisionAt(mergeRecords(limitRec, futureReader), limitT + MINUTE, "gemini")
+    expect(beyondDecision._tag).toBe("NotNow")
+    if (beyondDecision._tag === "NotNow") expect(Number.isFinite(beyondDecision.until)).toBe(true)
+  })
+
+  test("B3 associativity & commutativity: reviewer counterexample (stale seenAt > another stale since) and failure payload ties", () => {
+    const F = fromReport({ host: "x", at: 15, readableSignIn: true, limits: [] }, 15)
+    const S = fromStalePeer({ host: "x", since: 10, seenAt: 20, message: "err" })
+    const X = fromStalePeer({ host: "x", since: 18, message: "err" })
+    expect(mergeRecords(mergeRecords(F, S), X)).toEqual(mergeRecords(F, mergeRecords(S, X)))
+    expect(mergeRecords(F, S)).toEqual(mergeRecords(S, F))
+
+    // Failure payload ties at the same timestamp and same _tag must still be commutative and associative
+    const f401 = fromReport(
+      { host: "x", at: 100, readableSignIn: true, limits: [], failure: { at: 100, why: WireWhy.cases.RequestFailed.make({ why: "refused", status: 401 }) } },
+      100,
+    )
+    const f429 = fromReport(
+      { host: "x", at: 100, readableSignIn: true, limits: [], failure: { at: 100, why: WireWhy.cases.RequestFailed.make({ why: "rate-limited", status: 429 }) } },
+      100,
+    )
+    const f500 = fromReport(
+      { host: "x", at: 100, readableSignIn: true, limits: [], failure: { at: 100, why: WireWhy.cases.RequestFailed.make({ why: "failed", status: 500 }) } },
+      100,
+    )
+    expect(mergeRecords(f401, f429)).toEqual(mergeRecords(f429, f401))
+    expect(mergeRecords(mergeRecords(f401, f429), f500)).toEqual(mergeRecords(f401, mergeRecords(f429, f500)))
+  })
+
+  test("B4 wire privacy: encoded report from NotSignedIn state contains neither home directory nor profile path, while local text keeps it", () => {
+    const profile = "/Users/cvr/.local/state/opencode-pool/antigravity/profiles/default"
+    const localState = evolve(EMPTY, Event.cases.Unavailable.make({ at: START, why: Why.cases.NotSignedIn.make({ profile }) }))
+    // Local text keeps the profile path
+    expect(statusLines(localState, START).join("\n")).toContain(profile)
+    // Wire report carries NO path, NO home dir, NO user name
+    const wireReport = fromLocalState("mac", localState, START, false)
+    const codec = Schema.fromJsonString(Report)
+    const encoded = Schema.encodeSync(codec)({ host: "mac", at: START, starts: [], readings: [], antigravity: wireReport })
+    expect(encoded).not.toContain("/Users/cvr")
+    expect(encoded).not.toContain(profile)
+    expect(encoded).not.toContain("profiles/default")
+    expect(encoded).not.toContain("/")
+  })
+
+  test("B5 tolerant decoding: unknown reason, extra field, and garbage Antigravity part keep peer pool data identical", () => {
+    const codec = Schema.fromJsonString(Report)
+    const jsonUnknown = Schema.fromJsonString(Schema.Unknown)
+    const basePool = {
+      host: "workbox",
+      at: START,
+      starts: [{ providerID: "anthropic", at: START - MINUTE }],
+      busy: ["anthropic", "openai"],
+      readings: [],
+    }
+    const baseDecoded = Schema.decodeUnknownSync(codec)(Schema.encodeSync(jsonUnknown)(basePool))
+
+    const futureReason = Object.fromEntries([
+      ["_tag", "FutureReasonFromNewerHost"],
+      ["code", 99],
+    ])
+    const cases = [
+      {
+        name: "unknown reason",
+        antigravity: {
+          host: "workbox",
+          at: START,
+          readableSignIn: false,
+          limits: [],
+          failure: { at: START, why: futureReason },
+        },
+        expectNewerHost: true,
+      },
+      {
+        name: "extra field",
+        antigravity: {
+          host: "workbox",
+          at: START,
+          readableSignIn: true,
+          limits: [],
+          futureCapability: { version: 99 },
+        },
+        expectNewerHost: true,
+      },
+      {
+        name: "unknown group and unknown window span",
+        antigravity: {
+          host: "workbox",
+          at: START,
+          readableSignIn: true,
+          limits: [],
+          reading: {
+            at: START,
+            host: "workbox",
+            windows: [
+              { group: "future-family", label: "Future", span: "5h", used: 0.2, resetAt: START + 4 * HOUR },
+              { group: "gemini", label: "Gemini", span: "30d", used: 0.1, resetAt: START + 24 * HOUR },
+            ],
+          },
+        },
+        expectNewerHost: true,
+      },
+      {
+        name: "garbage antigravity",
+        antigravity: "not-a-valid-antigravity-report",
+        expectNewerHost: false,
+      },
+    ]
+
+    for (const item of cases) {
+      const json = Schema.encodeSync(jsonUnknown)({ ...basePool, antigravity: item.antigravity })
+      const decoded = Schema.decodeUnknownOption(codec)(json)
+      expect(Option.isSome(decoded)).toBe(true)
+      const rep = Option.getOrThrow(decoded)
+      expect(rep.host).toBe(baseDecoded.host)
+      expect(rep.at).toBe(baseDecoded.at)
+      expect(rep.starts).toEqual(baseDecoded.starts)
+      expect(rep.busy).toEqual(baseDecoded.busy)
+      expect(rep.readings).toEqual(baseDecoded.readings)
+
+      const own: AntigravityReport = { host: "mac", at: START, readableSignIn: true, limits: [] }
+      const merged = mergeFleet(own, { workbox: { report: rep, seenAt: START } }, ["workbox"], START)
+      const lines = mergedStatusLines(merged, START).join("\n")
+      if (item.expectNewerHost) {
+        expect(lines).toContain("unknown, from a newer host")
+      } else {
+        expect(lines).not.toContain("unknown, from a newer host")
+      }
+    }
   })
 })

@@ -241,3 +241,25 @@ seeded("status and land answers show Antigravity per group beside Claude and Ope
     expect(landed.text).toContain("antigravity / Claude & GPT (shared) · limited")
   }),
 )
+
+seeded("status stays contained and bounded when the pool RPC stalls after a restart", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true)
+    const stalledPool = Plugin.define({
+      id: "sim.pool-stalled",
+      effect: (ctx) =>
+        ctx.rpc.register(
+          { ...POOL_STATUS, methods: { status: POOL_STATUS.methods.status, antigravity: POOL_STATUS.methods.antigravity } },
+          {
+            status: () => Effect.never,
+            antigravity: () => Effect.never,
+          },
+        ).pipe(Effect.asVoid, Effect.orDie),
+    })
+    yield* run.world.load(stalledPool, { directory: WORK })
+    const root = yield* run.world.session(WORK)
+    const status = yield* run.probe(root, ORCHESTRATE, { action: "status" })
+    expect(status.error).toBe(false)
+    expect(status.text).toContain("orchestrate:")
+  }),
+)

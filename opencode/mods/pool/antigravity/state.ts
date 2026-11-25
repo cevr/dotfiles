@@ -9,7 +9,7 @@
 import { Array as Arr, Match, Option, Schema } from "effect"
 import { Why } from "../antigravity-report.ts"
 import { keyOf, Span, Window } from "./quota.ts"
-export { RequestWhy, Why } from "../antigravity-report.ts"
+export { fromWireWhy, RequestWhy, toWireWhy, Why, WireWhy } from "../antigravity-report.ts"
 
 const MINUTE = 60_000
 /** At most one read of Google per sign-in in this long. */
@@ -177,10 +177,10 @@ export const evolve = (state: State, event: Event): State =>
     Unavailable: ({ at, why }) => ({ ...state, failure: { at, why } }),
     LimitSeen: ({ limit }) => {
       const key = Option.fromUndefinedOr(limit.key)
-      // Keyed pane frames: ignore frames older than their own reset, and never re-arm a replayed frame.
+      // Keyed pane frames: ignore frames older than their own reset, and never re-arm or shift a replayed frame.
       if (Option.isSome(key)) {
         if (Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= limit.seenAt)) return state
-        if (seenKeysOf(state).includes(key.value)) return state
+        if (seenKeysOf(state).includes(key.value) || limitsOf(state).some((before) => before.key === key.value)) return state
       }
       const nextLimits = namedGroups(state, Option.fromUndefinedOr(limit.group)).reduce((limits, group) => {
         const prev = Arr.findFirst(limits, (before) => before.group === group)

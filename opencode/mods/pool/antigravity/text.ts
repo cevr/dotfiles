@@ -5,7 +5,7 @@
 import { Array as Arr, Match, Option } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { used } from "../usage-text.ts"
-import { type MergedRecord, mergedAnswerAt, mergedGroupsOf, mergedNextReadAt, mergedWindowAt, OpenStatus, staleAgeMs, stalePeersOf } from "./fleet.ts"
+import { fromWireWhy, type MergedRecord, mergedAnswerAt, mergedGroupsOf, mergedNextReadAt, mergedWindowAt, newerHostPeersOf, OpenStatus, staleAgeMs, stalePeersOf } from "./fleet.ts"
 import type { Span } from "./quota.ts"
 import { Answer, answerAt, groupsOf, type Shown, type State, type Why, windowAt } from "./state.ts"
 
@@ -22,6 +22,7 @@ export const whyText = (why: Why): string =>
       KeychainRefused: ({ outcome }) => `the keychain read ${Match.value(outcome).pipe(Match.when("denied", () => "was denied"), Match.when("failed", () => "failed"), Match.orElse(() => "timed out"))}: tried again only with a new consent (antigravity read, consent)`,
       NotHeld: () => "sign-in not held: no token file, and the keychain is read only with consent (antigravity read, consent)",
       NotSignedIn: ({ profile }) => `sign-in not readable: sign in to the managed profile (bun cmd/pool/antigravity-read.ts --profile-env ${profile})`,
+      NotSignedInRemote: () => "sign-in not readable: no sign-in in the managed profile",
       StateUnreadable: () => "the state file did not read (kept beside it as .undecodable): taken as an attempt then, so the floor holds",
       Contained: ({ reason }) => `the Antigravity reader failed here (${reason})`,
       RequestFailed: ({ why: reason, status }) =>
@@ -38,6 +39,7 @@ export const whyText = (why: Why): string =>
       WindowUnknown: ({ span }) => `the ${SPAN_NAME[span]} window is unknown`,
       FullWithoutReset: ({ span }) => `the ${SPAN_NAME[span]} window is full, its reset unknown`,
       PeerStale: ({ peer, ageMs }) => `stale: peer ${peer} unreadable (${ageText(ageMs)})`,
+      FromNewerHost: () => "unknown, from a newer host",
     }),
   )
 
@@ -161,7 +163,7 @@ export const mergedStatusLines = (merged: MergedRecord, now: number): ReadonlyAr
   const latestFailure = Arr.last([...merged.failures].toSorted((a, b) => a.at - b.at))
   const nextReadAt = mergedNextReadAt(merged)
   const readPart = Option.map(latestReading, (reading) => `read ${formatNotificationTime(reading.at)} (${ageText(now - reading.at)}, ${reading.host})`)
-  const failPart = Option.map(latestFailure, (failure) => `last attempt ${formatNotificationTime(failure.at)} (${failure.host}): ${whyText(failure.why)}`)
+  const failPart = Option.map(latestFailure, (failure) => `last attempt ${formatNotificationTime(failure.at)} (${failure.host}): ${whyText(fromWireWhy(failure.why))}`)
   const parts = [...Option.toArray(readPart), ...Option.toArray(failPart)]
   const next = Match.value(nextReadAt > now).pipe(
     Match.when(true, () => `next read possible ${formatNotificationTime(nextReadAt)}`),
@@ -172,6 +174,7 @@ export const mergedStatusLines = (merged: MergedRecord, now: number): ReadonlyAr
     const age = ageText(staleAgeMs(peer, now))
     return `  peer ${peer.host} · stale (${age}): ${peer.message}`
   })
+  const newerRows = newerHostPeersOf(merged).map((host) => `  peer ${host} · unknown, from a newer host`)
   const limitRows = merged.limits.map((limit) => {
     const reset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => "no reset given", onSome: (at) => `resets ${formatNotificationTime(at)}` })
     const label = Option.getOrElse(
@@ -192,6 +195,7 @@ export const mergedStatusLines = (merged: MergedRecord, now: number): ReadonlyAr
       ]
     }),
     ...staleRows,
+    ...newerRows,
     readRow,
     ...limitRows,
   ]

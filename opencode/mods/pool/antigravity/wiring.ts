@@ -52,6 +52,7 @@ export const RpcInput = Schema.Struct({
   host: Schema.optionalKey(Schema.String),
   at: Schema.optionalKey(Schema.Finite),
   agent: Schema.optionalKey(Schema.String),
+  paneId: Schema.optionalKey(Schema.String),
   resume: Schema.optionalKey(Schema.Boolean),
   recordStart: Schema.optionalKey(Schema.Boolean),
 })
@@ -167,6 +168,7 @@ export const wire = (agy: Availability): Wiring => {
             ...Option.match(Option.fromUndefinedOr(parsed.group), { onNone: () => ({}), onSome: (group) => ({ group }) }),
             ...Option.match(Option.fromUndefinedOr(parsed.model), { onNone: () => ({}), onSome: (model) => ({ model }) }),
             ...Option.match(Option.fromUndefinedOr(parsed.agent), { onNone: () => ({}), onSome: (agent) => ({ agent }) }),
+            ...Option.match(Option.fromUndefinedOr(parsed.paneId), { onNone: () => ({}), onSome: (paneId) => ({ paneId }) }),
             ...Option.match(Option.fromUndefinedOr(parsed.resume), { onNone: () => ({}), onSome: (resume) => ({ resume }) }),
             ...Option.match(Option.fromUndefinedOr(parsed.recordStart), { onNone: () => ({}), onSome: (recordStart) => ({ recordStart }) }),
           })

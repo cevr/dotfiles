@@ -326,7 +326,7 @@ export const PoolOption = Schema.Union([
     stateFile: Schema.optionalKey(Schema.String),
     /** `personal` (the daily host first, the default) or `business` (production first). */
     auth: Schema.optionalKey(AuthMethodSchema),
-    /** Concurrent Gemini agent cap: default 4 per agent and 4 fleet total across hosts. */
+    /** Concurrent Gemini agent cap: default 4 per agent and 8 fleet total across hosts. */
     geminiCap: Schema.optionalKey(
       Schema.Struct({
         perAgent: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),

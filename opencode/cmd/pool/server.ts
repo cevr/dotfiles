@@ -164,7 +164,6 @@ import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import { AntigravityReporter, FleetStore, type Ledger, type Limits, type Logins, type Owner, type Peers, type PushStore, type Quota, type ResetsStore, type Workload } from "@dotfiles/opencode-pool/service"
-import * as FleetModel from "@dotfiles/opencode-pool/fleet"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
@@ -503,38 +502,58 @@ export const make = <R = never,>(
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-      // Antigravity's quota: built with no I/O, read only when asked; its rows come from the merged fleet record, and no
-      // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
-      // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
-      const agyFleetStore = Context.get(yield* Layer.build(FleetStoreLive.layer(ctx.storage)), FleetStore)
-      const agyFleet: AgySource.FleetContext = {
-        read: Effect.gen(function* () {
-          const state = yield* agyFleetStore.read
-          const now = yield* Clock.currentTimeMillis
-          const settleMs = options.fleet.settleMinutes * 60_000
-          return {
-            host: options.fleet.host,
-            peers: state.peers,
-            peerNames: options.fleet.peers.map((peer) => peer.name),
-            starts: FleetModel.inflight(state, now, settleMs),
-            ownStarts: FleetModel.ownStarts(state, now, settleMs),
-            settleMs,
-          }
-        }),
-        recordStart: (providerID) => withPool((pool) => pool.started(providerID)).pipe(Effect.ignoreCause),
-      }
-      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity, agyFleet)))
-
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
       // serves no provider or model until all have, so the model builds off that path: the plugin's hooks, tools and
       // RPCs are in place at once and each waits for the model, a request's placement too. A model that cannot be
       // built fails every one of them.
       const ready = yield* Deferred.make<Model.Pool["Service"]>()
+      // One FleetStore shared between the pool model and Antigravity's merged fleet view: resolves as soon as
+      // `externals` builds, before the ledger scan finishes, so Antigravity reads do not wait on the ledger.
+      const fleetReady = yield* Deferred.make<FleetStore["Service"]>()
       let active = true
       yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+
+      // Antigravity's quota: built with no I/O, read only when asked; its rows come from the merged fleet record, and no
+      // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
+      // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
+      const agyFleet: AgySource.FleetContext = {
+        host: options.fleet.host,
+        read: Effect.gen(function* () {
+          const fleetStore = yield* Deferred.await(fleetReady)
+          const state = yield* fleetStore.read
+          const polled = yield* Deferred.poll(ready)
+          const ownBusy = yield* Option.match(polled, {
+            onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
+            onSome: (done) =>
+              done.pipe(
+                Effect.flatMap((pool) => pool.busy),
+                Effect.catchCause(() => Effect.succeed<ReadonlyArray<string>>([])),
+              ),
+          })
+          const peerBusy = Object.entries(state.peers).flatMap(([name, peer]) =>
+            Option.toArray(
+              Option.map(Option.fromUndefinedOr(peer.seenAt), (seenAt) => ({
+                host: Option.getOrElse(Option.map(Option.fromUndefinedOr(peer.report), (r) => r.host), () => name),
+                busy: Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(peer.report), (r) => Option.fromUndefinedOr(r.busy)), () => []),
+                seenAt,
+              })),
+            ),
+          )
+          return {
+            host: options.fleet.host,
+            peers: state.peers,
+            peerNames: options.fleet.peers.map((peer) => peer.name),
+            ownBusy,
+            peerBusy,
+          }
+        }),
+        recordBusy: (paneId, providerID) => withPool((pool) => pool.stepStarted(paneId, providerID)).pipe(Effect.ignoreCause),
+        releaseBusy: (paneId) => withPool((pool) => pool.release(paneId)).pipe(Effect.ignoreCause),
+      }
+      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity, agyFleet)))
       const routeTracking = (integration: string, input: Model.PlaceInput) => Effect.gen(function* () {
         const login = yield* loginOf(integration)
         if (login.active) return Option.none<Pace>()
@@ -595,6 +614,7 @@ export const make = <R = never,>(
       }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
+          const captureFleet = Layer.effectDiscard(Effect.flatMap(FleetStore, (store) => Deferred.succeed(fleetReady, store)))
           const services = yield* Layer.build(
             Model.layer({
               providers: options.providers,
@@ -611,6 +631,7 @@ export const make = <R = never,>(
               autoClaims: typeof options.resets === "boolean" || options.resets.auto,
               ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
             }).pipe(
+              Layer.merge(captureFleet),
               Layer.provideMerge(externals(ctx, options, sources, chatgpt)),
               Layer.provideMerge(Layer.succeed(AntigravityReporter, AntigravityReporter.of({ report: agy.report }))),
             ),
@@ -642,6 +663,7 @@ export const make = <R = never,>(
               // A start the plugin's end interrupted is no failure to report; its waiters end all the same.
               onFailure: (cause) =>
                 Effect.when(Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`), Effect.sync(() => !Cause.hasInterruptsOnly(cause))).pipe(
+                  Effect.andThen(Deferred.die(fleetReady, Cause.squash(cause))),
                   Effect.andThen(Deferred.die(ready, Cause.squash(cause))),
                 ),
             }),

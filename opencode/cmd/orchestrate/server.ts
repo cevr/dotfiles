@@ -1001,18 +1001,18 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           )
           return answer
         })
-      /** Pool quota rows (Claude, OpenAI and Antigravity per group) for status and land; empty when the pool is absent or unreadable. */
+      /** Pool quota rows (Claude, OpenAI and Antigravity per group) for status and land; bounded to 500 ms so a pool restart never stalls status, empty when absent or unreadable. */
       const poolQuotaRows = Effect.gen(function* () {
         const client = ctx.rpc(POOL_STATUS)
         const [pools, agy] = yield* Effect.all(
           [
             Effect.suspend(() => client.status({})).pipe(
-              Effect.timeoutOption("2 seconds"),
+              Effect.timeoutOption("500 millis"),
               Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodePools)),
               Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.PoolSnapshot>())),
             ),
             Effect.suspend(() => client.antigravity({})).pipe(
-              Effect.timeoutOption("2 seconds"),
+              Effect.timeoutOption("500 millis"),
               Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodeAntigravity)),
               Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.AntigravitySnapshot>())),
             ),

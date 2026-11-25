@@ -25,7 +25,7 @@ import { fileStore, places as livePlaces, prepareProfile } from "./live.ts"
 import { envFileText, managedProfile, signInLine } from "./profile.ts"
 import { GOOGLE, userAgent, type Endpoints } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
-import { make, type Options, type Source, type Store } from "./source.ts"
+import { make, type Options, type Source, type Store, StoreFailed } from "./source.ts"
 import { EMPTY, READ_EVERY_MS, type State, Why } from "./state.ts"
 
 const TOKEN = "fake-access-token-7f3c9e"
@@ -760,12 +760,13 @@ describe("Antigravity read authority on a fake Google", () => {
       // Higher host ("mac-pro") sees fresh peer "bite-cristian" with readableSignIn -> MUST NOT read Google!
       const mac = yield* sourceOf(setupB, google.base, {
         fleet: {
+          host: "mac-pro",
           read: Effect.succeed({
             host: "mac-pro",
             peers: { workbox: { report: { host: "bite-cristian", antigravity: workboxReport }, seenAt: now } },
             peerNames: ["workbox"],
-            starts: [],
-            settleMs: 10 * 60_000,
+            ownBusy: [],
+            peerBusy: [],
           }),
         },
       })
@@ -776,12 +777,13 @@ describe("Antigravity read authority on a fake Google", () => {
       // Lower host ("bite-cristian") sees "mac-pro" -> IS the reading host, reads Google!
       const workbox = yield* sourceOf(setupA, google.base, {
         fleet: {
+          host: "bite-cristian",
           read: Effect.succeed({
             host: "bite-cristian",
             peers: { mac: { report: { host: "mac-pro", antigravity: macReport }, seenAt: now } },
             peerNames: ["mac"],
-            starts: [],
-            settleMs: 10 * 60_000,
+            ownBusy: [],
+            peerBusy: [],
           }),
         },
       })
@@ -795,6 +797,7 @@ describe("Antigravity read authority on a fake Google", () => {
       const workboxAfter = yield* workbox.report
       const macAfterFloor = yield* sourceOf(setupB, google.base, {
         fleet: {
+          host: "mac-pro",
           read: Effect.succeed({
             host: "mac-pro",
             peers: {
@@ -804,14 +807,41 @@ describe("Antigravity read authority on a fake Google", () => {
               },
             },
             peerNames: ["workbox"],
-            starts: [],
-            settleMs: 10 * 60_000,
+            ownBusy: [],
+            peerBusy: [],
           }),
         },
       })
       const crossFloored = yield* macAfterFloor.read(false)
       expect(crossFloored.note).toContain("within the floor")
       expect((yield* google.seen).length).toBe(afterWorkbox)
+    }),
+  )
+
+  live(
+    "report fallback uses the configured fleet host id, never a colliding 'this host' placeholder",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const failingStore: Store = {
+        load: Effect.fail(new StoreFailed({ what: "disk offline" })),
+        transact: () => Effect.fail(new StoreFailed({ what: "disk offline" })),
+      }
+      const source = yield* make({
+        profile: setup.profile,
+        places: setup.places,
+        store: failingStore,
+        auth: "personal",
+        endpoints: GOOGLE,
+        agent: Effect.succeed(AGENT),
+        fleet: {
+          host: "bite-cristian",
+          read: Effect.die("fleet unavailable"),
+        },
+      }).pipe(Effect.provideService(HttpClient.HttpClient, HttpClient.make(() => Effect.die("unused"))))
+      const rep = yield* source.report
+      expect(rep.host).toBe("bite-cristian")
+      expect(rep.host).not.toBe("this host")
+      expect(rep.failure?.why._tag).toBe("Contained")
     }),
   )
 })

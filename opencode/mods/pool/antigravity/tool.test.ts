@@ -73,8 +73,8 @@ const fake = (state: Ref.Ref<State>, asked: Ref.Ref<number>): Source => ({
     Effect.map(Ref.get(state), (now) =>
       checkStartGate({
         merged: fromReport(fromLocalState("mac", now, NOW, true), NOW),
-        fleetStarts: [],
-        settleMs: 10 * 60_000,
+        ownBusy: [],
+        peerBusy: [],
         now: NOW,
         query,
       }),
