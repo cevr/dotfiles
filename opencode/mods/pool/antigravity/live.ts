@@ -8,13 +8,13 @@
 // profile's files, else "sign-in not readable here". One authority per state
 // file in the process; building it does no I/O.
 import { readableStreamToText, spawn } from "bun"
-import { Clock, Effect, FileSystem, Match, Option, Path, Redacted, Schedule, Schema } from "effect"
+import { Clock, Effect, FileSystem, Match, Option, Path, Random, Redacted, Schedule, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { envFileText, type ManagedProfile, signInLine, type UserLink } from "./profile.ts"
 import { type AuthMethod, AuthMethod as AuthMethodSchema, GOOGLE, userAgent } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
 import { make, type Source, type Store, StoreFailed } from "./source.ts"
-import { EMPTY, State } from "./state.ts"
+import { EMPTY, State, unreadable } from "./state.ts"
 
 /** How long the keychain read may take: long enough for the owner to answer macOS's dialog once. */
 export const KEYCHAIN_TIMEOUT_MS = 60_000
@@ -136,59 +136,120 @@ const StateFile = Schema.fromJsonString(State)
 const decodeState = Schema.decodeUnknownOption(StateFile)
 const encodeState = Schema.encodeEffect(StateFile)
 
-/** A lock file this old was left by a process that died holding it: it is taken over. */
+/** A lock this old was left by a process that died or stalled holding it: it is taken over. */
 export const LOCK_STALE_MS = 10_000
 /** How long a change waits for the lock: about 5 s, tried every 10 ms. */
 const LOCK_TRIES = 500
 
 class Held extends Schema.TaggedError<Held>()("Held", {}) {}
+class Lost extends Schema.TaggedError<Lost>()("Lost", {}) {}
+
+/** A name for one taking of the lock, unique on the host. */
+const ownerId = Effect.gen(function* () {
+  return `${yield* Clock.currentTimeMillis}-${yield* Random.nextIntBetween(0, 1_000_000_000)}-${yield* Random.nextIntBetween(0, 1_000_000_000)}`
+})
 
 /**
- * The state kept in `file`, every change under the lock file `<file>.lock`
- * (made exclusively; one older than LOCK_STALE_MS is taken over), so every
- * process on the host changes it one at a time from what is on disk. A save
- * is whole, through a temporary file. A state file that does not read is a
- * fresh start. Building it does no I/O.
+ * The state kept in `file`, every change under the lock file `<file>.lock`,
+ * so every process on the host changes it one at a time from what is on
+ * disk. The lock names its owner:
+ * - it is made whole and exclusively (a file of the owner's id, hard-linked to
+ *   the lock's name, which fails when one is there);
+ * - a lock older than LOCK_STALE_MS is taken over atomically: renamed to a
+ *   name of the taker's own, and kept dead only when it is still the one the
+ *   taker judged stale; a fresh one it caught is linked back;
+ * - a change is saved only while the lock is still its owner's (a holder that
+ *   stalled past the takeover finds it lost and saves nothing), and the lock
+ *   is let go the same way, so no one removes another's lock.
+ * A save is whole, through a temporary file of the owner's. A state file that
+ * does not decode keeps the floor: it reads as an attempt made just now
+ * (state.ts `unreadable`), and the first change keeps its text beside it as
+ * `<file>.undecodable`. Building it does no I/O.
  */
 export const fileStore = Effect.fn("Antigravity.fileStore")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const lock = `${file}.lock`
   const failed = (what: string) => () => new StoreFailed({ what })
-  const load = fs.exists(file).pipe(
-    Effect.flatMap((there) =>
-      Match.value(there).pipe(
-        Match.when(true, () => Effect.map(fs.readFileString(file), (text) => Option.getOrElse(decodeState(text), () => EMPTY))),
-        Match.orElse(() => Effect.succeed(EMPTY)),
-      ),
-    ),
+  /** The file's text and its state: none when there is no file; the floored state when it does not decode. */
+  const raw = Effect.gen(function* () {
+    if (!(yield* fs.exists(file))) return { text: Option.none<string>(), state: EMPTY }
+    const text = yield* fs.readFileString(file)
+    const decoded = decodeState(text)
+    if (Option.isSome(decoded)) return { text: Option.none<string>(), state: decoded.value }
+    return { text: Option.some(text), state: unreadable(yield* Clock.currentTimeMillis) }
+  })
+  const load = raw.pipe(
+    Effect.map((read) => read.state),
     Effect.mapError(failed(`reading ${file}`)),
   )
-  const save = (state: State) =>
+  /** The lock's owner and age; none when there is no lock. */
+  const lockOf = (name: string) =>
     Effect.gen(function* () {
+      const owner = yield* fs.readFileString(name)
+      const info = yield* fs.stat(name)
+      const now = yield* Clock.currentTimeMillis
+      return Option.some({ owner, age: Option.getOrElse(Option.map(info.mtime, (at) => now - at.getTime()), () => 0) })
+    }).pipe(Effect.orElseSucceed(() => Option.none<{ readonly owner: string; readonly age: number }>()))
+  /**
+   * The lock moved aside to `aside`: kept there when it is `expected`'s (the
+   * caller removes it), else linked back where it was, for its owner.
+   */
+  const moveAside = (aside: string, expected: string) =>
+    Effect.gen(function* () {
+      yield* fs.rename(lock, aside)
+      const moved = yield* fs.readFileString(aside).pipe(Effect.orElseSucceed(() => ""))
+      if (moved !== expected) yield* fs.link(aside, lock).pipe(Effect.ignore)
+      yield* fs.remove(aside).pipe(Effect.ignore)
+      return moved === expected
+    }).pipe(Effect.orElseSucceed(() => false))
+  const take = (id: string) =>
+    Effect.gen(function* () {
+      yield* fs.makeDirectory(path.dirname(file), { recursive: true })
+      const candidate = `${lock}.${id}`
+      yield* fs.writeFileString(candidate, id, { mode: 0o600 })
+      const made = yield* fs.link(candidate, lock).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      )
+      yield* fs.remove(candidate).pipe(Effect.ignore)
+      if (made) return
+      const there = yield* lockOf(lock)
+      if (Option.exists(there, (held) => held.age > LOCK_STALE_MS)) yield* moveAside(`${lock}.stale-${id}`, Option.getOrElse(Option.map(there, (held) => held.owner), () => ""))
+      return yield* new Held()
+    }).pipe(
+      Effect.catchIf((error) => !(error instanceof Held), () => Effect.fail(new Held())),
+      Effect.retry({ times: LOCK_TRIES, schedule: Schedule.spaced(10) }),
+      Effect.mapError(failed(`locking ${lock}`)),
+    )
+  const owns = (id: string) => Effect.map(lockOf(lock), (there) => Option.exists(there, (held) => held.owner === id))
+  const release = (id: string) => moveAside(`${lock}.release-${id}`, id).pipe(Effect.asVoid)
+  const save = (id: string, state: State) =>
+    Effect.gen(function* () {
+      if (!(yield* owns(id))) return yield* new Lost()
       const text = yield* encodeState(state)
-      const temporary = `${file}.tmp`
+      const temporary = `${file}.${id}.tmp`
       yield* fs.writeFileString(temporary, text, { mode: 0o600 })
       yield* fs.rename(temporary, file)
-    }).pipe(Effect.mapError(failed(`writing ${file}`)))
-  /** The lock taken over when it was left behind; else still held. */
-  const stale = Effect.gen(function* () {
-    const info = yield* fs.stat(lock)
-    const now = yield* Clock.currentTimeMillis
-    const age = Option.getOrElse(Option.map(info.mtime, (at) => now - at.getTime()), () => 0)
-    if (age > LOCK_STALE_MS) yield* fs.remove(lock)
-    return yield* new Held()
-  }).pipe(Effect.catchIf((error) => !(error instanceof Held), () => Effect.fail(new Held())))
-  const take = Effect.gen(function* () {
-    yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-    yield* fs.writeFileString(lock, "", { flag: "wx", mode: 0o600 }).pipe(Effect.catchCause(() => stale))
-  }).pipe(Effect.retry({ times: LOCK_TRIES, schedule: Schedule.spaced(10) }), Effect.mapError(failed(`locking ${lock}`)))
-  const release = fs.remove(lock).pipe(Effect.ignore)
+    }).pipe(
+      Effect.catchTag("Lost", () => Effect.fail(new StoreFailed({ what: `the lock ${lock} was taken over: nothing saved` }))),
+      Effect.mapError((error) => Match.value(error).pipe(Match.when(Match.instanceOf(StoreFailed), (lost) => lost), Match.orElse(failed(`writing ${file}`)))),
+    )
   const transact = <A, R>(step: (state: State) => Effect.Effect<readonly [State, A], never, R>) =>
-    Effect.acquireUseRelease(
-      take,
-      () => load.pipe(Effect.flatMap(step), Effect.flatMap(([next, answer]) => Effect.as(save(next), answer))),
-      () => release,
+    Effect.flatMap(ownerId, (id) =>
+      Effect.acquireUseRelease(
+        take(id),
+        () =>
+          Effect.gen(function* () {
+            const read = yield* raw.pipe(Effect.mapError(failed(`reading ${file}`)))
+            // A state file that does not decode is kept beside it, never lost.
+            if (Option.isSome(read.text)) yield* fs.writeFileString(`${file}.undecodable`, read.text.value, { mode: 0o600 }).pipe(Effect.mapError(failed(`keeping ${file}`)))
+            const [next, answer] = yield* step(read.state)
+            yield* save(id, next)
+            return answer
+          }),
+        () => release(id),
+      ),
     )
   return { load, transact } satisfies Store
 })

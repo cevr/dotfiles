@@ -16,7 +16,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { spawn } from "bun"
 import { describe } from "bun:test"
-import { DateTime, Duration, Effect, Exit, FileSystem, Layer, Match, Option, Path, Redacted, Ref, Schedule, Schema, type Scope } from "effect"
+import { DateTime, Deferred, Duration, Effect, Exit, Fiber, FileSystem, Layer, Match, Option, Path, Redacted, Ref, Schedule, Schema, type Scope } from "effect"
 import { Base64 } from "effect/encoding"
 import { expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
@@ -145,6 +145,13 @@ const sourceOf = Effect.fn("sourceOf")(function* (setup: Setup, base: string, ov
     agent: Option.getOrElse(Option.fromUndefinedOr(overrides.agent), () => Effect.succeed(AGENT)),
   }).pipe(Effect.provideService(HttpClient.HttpClient, yield* toFake(base)))
 })
+
+/** The lock over the setup's state file made to look left behind: older than the takeover time. */
+const staleLock = (setup: Setup) =>
+  Effect.flatMap(DateTime.now, (now) => {
+    const old = DateTime.toDate(DateTime.subtract(now, { minutes: 1 }))
+    return setup.fs.utimes(`${setup.stateFile}.lock`, old, old)
+  })
 
 /** A business sign-in: the only kind the keychain is ever read for, as T3 reads it. */
 const BUSINESS = { auth: "business" } as const
@@ -533,7 +540,7 @@ describe("Antigravity read authority on a fake Google", () => {
   )
 
   live(
-    "two processes and this one, six authorities on one state file, racing one consent at one moment: exactly one keychain attempt",
+    "six consenting reads in three processes, let go at one moment: one keychain attempt, the floor under the lock holding back the other five",
     Effect.gen(function* () {
       const setup = yield* scratch
       const attempts = `${setup.root}/keychain-attempts`
@@ -563,6 +570,93 @@ describe("Antigravity read authority on a fake Google", () => {
       const state = yield* setup.state
       expect(state.consentAt).toBeUndefined()
       expect(state.keychain?.outcome).toBe("absent")
+    }),
+  )
+
+  live(
+    "a stale lock that many authorities find at once is taken over by one: exactly one read, and nothing left beside the state file",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const google = yield* fakeGoogle(ok)
+      yield* setup.write("antigravity-oauth-token", yield* cliToken(60))
+      const directory = `${setup.root}/state`
+      yield* setup.fs.makeDirectory(directory, { recursive: true })
+      yield* setup.fs.writeFileString(`${setup.stateFile}.lock`, "a process that died")
+      yield* staleLock(setup)
+      // Each its own store over the file, as separate processes have.
+      const authorities = yield* Effect.forEach([1, 2, 3, 4], () => Effect.flatMap(fileStore(setup.stateFile), (store) => sourceOf(setup, google.base, { store })))
+      yield* Effect.all(
+        authorities.map((source) => source.read(false)),
+        { concurrency: 4 },
+      )
+      expect((yield* google.seen).length).toBe(2)
+      expect(yield* setup.fs.readDirectory(directory)).toEqual(["antigravity.json"])
+    }),
+  )
+
+  live(
+    "a holder that stalls past the takeover saves nothing and leaves the new holder's lock; the new holder's change stands",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const first = yield* fileStore(setup.stateFile)
+      const second = yield* fileStore(setup.stateFile)
+      const [firstIn, firstGo, secondIn, secondGo] = yield* Effect.all([Deferred.make<boolean>(), Deferred.make<boolean>(), Deferred.make<boolean>(), Deferred.make<boolean>()])
+      const stalled = yield* Effect.forkChild(
+        Effect.exit(first.transact((state) => Effect.as(Effect.andThen(Deferred.succeed(firstIn, true), Deferred.await(firstGo)), [{ ...state, failures: 99 }, "first"] as const))),
+      )
+      yield* Deferred.await(firstIn)
+      yield* staleLock(setup)
+      const taker = yield* Effect.forkChild(second.transact((state) => Effect.as(Effect.andThen(Deferred.succeed(secondIn, true), Deferred.await(secondGo)), [{ ...state, failures: 7 }, "second"] as const)))
+      yield* Deferred.await(secondIn)
+      yield* Deferred.succeed(firstGo, true)
+      const lost = yield* Fiber.join(stalled)
+      expect(Exit.isFailure(lost)).toBe(true)
+      expect(yield* setup.fs.exists(`${setup.stateFile}.lock`)).toBe(true)
+      yield* Deferred.succeed(secondGo, true)
+      expect(yield* Fiber.join(taker)).toBe("second")
+      expect((yield* setup.state).failures).toBe(7)
+      expect(yield* setup.fs.exists(`${setup.stateFile}.lock`)).toBe(false)
+    }),
+  )
+
+  live(
+    "an authority that stalls holding the lock past the takeover reads nothing: exactly one read",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const google = yield* fakeGoogle(ok)
+      yield* setup.write("antigravity-oauth-token", yield* cliToken(60))
+      const [entered, go] = yield* Effect.all([Deferred.make<boolean>(), Deferred.make<boolean>()])
+      const stalling: Places = { read: (path) => Effect.andThen(Effect.andThen(Deferred.succeed(entered, true), Deferred.await(go)), setup.places.read(path)), keychain: setup.places.keychain }
+      const slow = yield* Effect.flatMap(fileStore(setup.stateFile), (store) => sourceOf(setup, google.base, { store, places: stalling }))
+      const fast = yield* Effect.flatMap(fileStore(setup.stateFile), (store) => sourceOf(setup, google.base, { store }))
+      const stalled = yield* Effect.forkChild(slow.read(false))
+      yield* Deferred.await(entered)
+      yield* staleLock(setup)
+      expect((yield* fast.read(false)).note).toBe("Read now.")
+      yield* Deferred.succeed(go, true)
+      expect((yield* Fiber.join(stalled)).note).toStartWith("Not read")
+      expect((yield* google.seen).length).toBe(2)
+    }),
+  )
+
+  live(
+    "a state file that does not decode keeps the floor (an attempt made then) and is kept beside it, never a fresh start",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const google = yield* fakeGoogle(ok)
+      yield* setup.write("antigravity-oauth-token", yield* cliToken(60))
+      yield* setup.fs.makeDirectory(`${setup.root}/state`, { recursive: true })
+      yield* setup.fs.writeFileString(setup.stateFile, '{"version":"from a later schema"}')
+      const source = yield* sourceOf(setup, google.base)
+      expect((yield* source.lines).join("\n")).toContain("the state file did not read")
+      expect((yield* source.read(false)).note).toContain("Not read: a read was attempted within the floor")
+      expect(yield* google.seen).toEqual([])
+      expect(yield* setup.fs.readFileString(`${setup.stateFile}.undecodable`)).toBe('{"version":"from a later schema"}')
+      const state = yield* setup.state
+      expect(state.failure?.why).toEqual(Why.cases.StateUnreadable.make({}))
+      expect(Option.map(Option.fromUndefinedOr(state.attempt), (attempt) => state.nextReadAt - attempt.at)).toEqual(Option.some(READ_EVERY_MS))
+      yield* setup.floorPassed
+      expect((yield* source.read(false)).note).toBe("Read now.")
     }),
   )
 

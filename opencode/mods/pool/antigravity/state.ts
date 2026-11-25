@@ -39,6 +39,8 @@ export const Why = Schema.TaggedUnion({
   NotHeld: {},
   /** A personal sign-in: no token file in the managed profile `profile`; it is never read from the keychain. */
   NotSignedIn: { profile: Schema.String },
+  /** The state file did not decode (kept beside it as `.undecodable`): read as an attempt made then, so the floor holds. */
+  StateUnreadable: {},
   /** The Antigravity code itself failed here: contained, with its reason. */
   Contained: { reason: Schema.String },
   /** Google's answer was no reading: its status when it answered. */
@@ -289,3 +291,11 @@ export const answerAt = (state: State, now: number, group: string): Answer => {
     onSome: (span) => Answer.cases.Unknown.make({ why: Why.cases.WindowUnknown.make({ group, span }) }),
   })
 }
+
+/**
+ * The state read from a state file that does not decode, at `at`: never a
+ * fresh start, which would let the next read through at once, but an attempt
+ * made then, so the floor holds from it.
+ */
+export const unreadable = (at: number): State =>
+  evolve(evolve(EMPTY, Event.cases.Attempted.make({ id: `unreadable-${at}`, at, keychain: false })), Event.cases.Unavailable.make({ at, why: Why.cases.StateUnreadable.make({}) }))

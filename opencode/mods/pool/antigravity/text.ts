@@ -21,6 +21,7 @@ export const whyText = (why: Why): string =>
       KeychainRefused: ({ outcome }) => `the keychain read ${Match.value(outcome).pipe(Match.when("denied", () => "was denied"), Match.when("failed", () => "failed"), Match.orElse(() => "timed out"))}: tried again only with a new consent (antigravity read, consent)`,
       NotHeld: () => "sign-in not held: no token file, and the keychain is read only with consent (antigravity read, consent)",
       NotSignedIn: ({ profile }) => `sign-in not readable: sign in to the managed profile (bun cmd/pool/antigravity-read.ts --profile-env ${profile})`,
+      StateUnreadable: () => "the state file did not read (kept beside it as .undecodable): taken as an attempt then, so the floor holds",
       Contained: ({ reason }) => `the Antigravity reader failed here (${reason})`,
       RequestFailed: ({ why: reason, status }) =>
         `Google's quota read ${Match.value(reason).pipe(
