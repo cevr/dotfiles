@@ -183,7 +183,7 @@ describe("Antigravity quota decoding of generated bodies", () => {
         return either(random, 0.3, () => ({ ...described, disabled: any() }), () => described)
       }
       const buckets = Arr.makeBy(Math.floor(random() * 6), bucket)
-      const record = either(random, 0.6, () => ({ groups: [{ displayName: any(), buckets }] }), () => ({ buckets }))
+      const record = either<{ readonly groups?: ReadonlyArray<object>; readonly buckets?: ReadonlyArray<object> }>(random, 0.6, () => ({ groups: [{ displayName: any(), buckets }] }), () => ({ buckets }))
       const read = summary(decodeSummary(record), 1_800_000_000_000)
       for (const window of read) {
         expect(window.used).toBeGreaterThanOrEqual(0)

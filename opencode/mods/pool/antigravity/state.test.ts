@@ -91,7 +91,7 @@ const read = (random: Random, world: World): World => {
 
 const fail = (random: Random, world: World): World => {
   const before = world.state.failures
-  const why = pick(random, [Why.cases.SignInExpired.make({}), Why.cases.RequestFailed.make({ why: "rate-limited", status: 429 }), Why.cases.NoQuota.make({})])
+  const why = pick<Why>(random, [Why.cases.SignInExpired.make({}), Why.cases.RequestFailed.make({ why: "rate-limited", status: 429 }), Why.cases.NoQuota.make({})])
   const state = evolve(world.state, Event.cases.Failed.make({ at: world.now, why }))
   expect(state.failures).toBe(before + 1)
   expect(state.nextReadAt).toBe(world.now + Math.min(READ_EVERY_MS * 2 ** (before + 1), HOUR))
