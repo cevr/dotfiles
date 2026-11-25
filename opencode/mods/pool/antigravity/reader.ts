@@ -105,12 +105,6 @@ const send = Effect.fn("Antigravity.send")(function* (request: HttpClientRequest
   )
 })
 
-/**
- * The headers of T3's token refresh as Node's fetch (undici) sends them, where
- * Bun's would send its own user agent and none of the others.
- */
-export const TOKEN_HEADERS = { "user-agent": "node", "accept-language": "*", "sec-fetch-mode": "cors" } as const
-
 const TokenAnswer = Schema.Struct({ access_token: Schema.NonEmptyString, expires_in: Schema.Finite.check(Schema.isGreaterThan(0)) })
 const decodeTokenAnswer = Schema.decodeUnknownOption(TokenAnswer)
 
@@ -136,8 +130,7 @@ export const accessOf = Effect.fn("Antigravity.accessOf")(function* (signIn: Sig
     Refreshable: ({ clientId, clientSecret, refreshToken }) =>
       send(
         HttpClientRequest.post(endpoints.token).pipe(
-          // T3 sets no header here, so Node's fetch sends its own: these are the ones Bun's would send otherwise.
-          HttpClientRequest.setHeaders(TOKEN_HEADERS),
+          // The header rule (README): only the headers T3's code sets, which here is none; the runtime adds its defaults.
           HttpClientRequest.bodyUrlParams({
             client_id: clientId,
             client_secret: Redacted.value(clientSecret),

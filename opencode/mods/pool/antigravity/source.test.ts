@@ -22,7 +22,7 @@ import { expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { fileStore, places as livePlaces, prepareProfile } from "./live.ts"
 import { envFileText, managedProfile, signInLine } from "./profile.ts"
-import { GOOGLE, TOKEN_HEADERS, userAgent, type Endpoints } from "./reader.ts"
+import { GOOGLE, userAgent, type Endpoints } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
 import { make, type Options, type Source, type Store } from "./source.ts"
 import { EMPTY, READ_EVERY_MS, type State, Why } from "./state.ts"
@@ -210,8 +210,7 @@ describe("Antigravity read authority on a fake Google", () => {
   // (apps/server/src/provider/antigravityUsageLimits.ts at 55085df2) and no other:
   // - POST oauth2.googleapis.com/token, a form body of client_id, client_secret,
   //   refresh_token and grant_type: T3's refresh of acp_token.json (its lines
-  //   402-411); T3 sets no header on it, so it carries Node's fetch's, which
-  //   reader.ts TOKEN_HEADERS sets here;
+  //   402-411), on which T3 sets no header and neither does this;
   // - POST {daily,prod}/v1internal:retrieveUserQuotaSummary to both hosts, then,
   //   when no summary reads, v1internal:fetchAvailableModels to both (its lines
   //   24-31 and 436-476), each with only Authorization (Bearer) and User-Agent
@@ -247,7 +246,7 @@ describe("Antigravity read authority on a fake Google", () => {
         `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary ${quota}`,
         `POST daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels ${quota}`,
         `POST daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary ${quota}`,
-        "POST oauth2.googleapis.com/token [accept,accept-encoding,accept-language,connection,content-length,content-type,host,sec-fetch-mode,user-agent] content-type=application/x-www-form-urlencoded auth=",
+        "POST oauth2.googleapis.com/token [accept,accept-encoding,connection,content-length,content-type,host,user-agent] content-type=application/x-www-form-urlencoded auth=",
       ])
       expect(business.map((entry) => entry.wire).toSorted()).toEqual([
         `POST cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels ${quota}`,
@@ -263,7 +262,8 @@ describe("Antigravity read authority on a fake Google", () => {
       }
       expect(personal[0]?.path).toBe("/token")
       expect(decodeForm(personal[0]?.body ?? "")).toEqual(["client_id", "client_secret", "grant_type", "refresh_token"])
-      expect(personal[0]?.agent).toBe(TOKEN_HEADERS["user-agent"])
+      // The one header rule: the header names T3's code sets, and the runtime's defaults (Bun's user agent here, where T3 carries Node's).
+      expect(personal[0]?.agent).toStartWith("Bun/")
       const quotaCalls = [...personal, ...business].filter((entry) => entry.host !== "oauth2.googleapis.com")
       expect(new Set(quotaCalls.map((entry) => entry.agent))).toEqual(new Set([AGENT]))
       expect(personal.slice(1).map((entry) => entry.body)).toEqual(Array.from({ length: 4 }, () => '{"project":"proj"}'))
