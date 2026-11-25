@@ -1,0 +1,103 @@
+// The Antigravity rows' wording, as the /pool pane, pool_push status and the
+// antigravity tool print them: a snapshot of each state the owner can meet.
+import { describe, expect, test } from "bun:test"
+import { EMPTY, Event, evolve, type State, Why } from "./state.ts"
+import { statusLines } from "./text.ts"
+
+const NOW = Date.parse("2026-11-25T01:00:00Z")
+const MINUTE = 60_000
+
+const read: State = evolve(
+  EMPTY,
+  Event.cases.Read.make({
+    at: NOW - 2 * MINUTE,
+    windows: [
+      { group: "gemini", label: "Gemini", span: "5h", used: 0.04, resetAt: NOW + 180 * MINUTE },
+      { group: "gemini", label: "Gemini", span: "7d", used: 0.09, resetAt: NOW + 6 * 24 * 60 * MINUTE },
+      { group: "claude-gpt", label: "Claude & GPT (shared)", span: "5h", used: 1, resetAt: NOW + 68 * MINUTE },
+    ],
+  }),
+)
+
+describe("Antigravity status rows", () => {
+  test("a reading with one full window and one unknown", () => {
+    expect(statusLines(read, NOW)).toMatchInlineSnapshot(`
+      [
+        "antigravity / Gemini · open",
+        "  5h 4% used of 100% · reset Nov 24, 2026, 11:00:00 PM EST",
+        "  7d 9% used of 100% · reset Nov 30, 2026, 8:00:00 PM EST",
+        "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 9:08:00 PM EST",
+        "  5h 100% used of 100% · reset Nov 24, 2026, 9:08:00 PM EST",
+        "  7d unknown: the weekly window is unknown",
+        "  read Nov 24, 2026, 7:58:00 PM EST · next read Nov 24, 2026, 8:03:00 PM EST",
+        "  groups Antigravity reported: Gemini, Claude & GPT (shared)",
+      ]
+    `)
+  })
+
+  test("a pane's limit on top of the reading", () => {
+    const limited = evolve(read, Event.cases.LimitSeen.make({ limit: { seenAt: NOW - MINUTE, resetAt: NOW + 69 * MINUTE } }))
+    expect(statusLines(limited, NOW)).toMatchInlineSnapshot(`
+      [
+        "antigravity / Gemini · limited until Nov 24, 2026, 9:09:00 PM EST (a pane's limit)",
+        "  5h 4% used of 100% · reset Nov 24, 2026, 11:00:00 PM EST",
+        "  7d 9% used of 100% · reset Nov 30, 2026, 8:00:00 PM EST",
+        "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 9:09:00 PM EST (a pane's limit)",
+        "  5h 100% used of 100% · reset Nov 24, 2026, 9:08:00 PM EST",
+        "  7d unknown: the weekly window is unknown",
+        "  read Nov 24, 2026, 7:58:00 PM EST · next read Nov 24, 2026, 8:03:00 PM EST",
+        "  groups Antigravity reported: Gemini, Claude & GPT (shared)",
+        "  last limit seen Nov 24, 2026, 7:59:00 PM EST, resets Nov 24, 2026, 9:09:00 PM EST",
+      ]
+    `)
+  })
+
+  test("nothing readable: each reason in words", () => {
+    const failed = (why: Why) => statusLines(evolve(EMPTY, Event.cases.Failed.make({ at: NOW, why })), NOW)
+    expect(statusLines(EMPTY, NOW)).toMatchInlineSnapshot(`
+      [
+        "antigravity / Gemini · unknown: not read yet",
+        "  5h unknown: the 5-hour window is unknown",
+        "  7d unknown: the weekly window is unknown",
+        "antigravity / Claude & GPT (shared) · unknown: not read yet",
+        "  5h unknown: the 5-hour window is unknown",
+        "  7d unknown: the weekly window is unknown",
+        "  not read yet · next read due now",
+      ]
+    `)
+    expect(failed(Why.cases.SignInExpired.make({}))).toMatchInlineSnapshot(`
+      [
+        "antigravity / Gemini · unknown: sign-in expired: start an Antigravity turn",
+        "  5h unknown: the 5-hour window is unknown",
+        "  7d unknown: the weekly window is unknown",
+        "antigravity / Claude & GPT (shared) · unknown: sign-in expired: start an Antigravity turn",
+        "  5h unknown: the 5-hour window is unknown",
+        "  7d unknown: the weekly window is unknown",
+        "  last read Nov 24, 2026, 8:00:00 PM EST: sign-in expired: start an Antigravity turn · next read Nov 24, 2026, 8:10:00 PM EST",
+      ]
+    `)
+    expect([
+      Why.cases.NoSignIn.make({}),
+      Why.cases.NotReadableHere.make({}),
+      Why.cases.KeychainRefused.make({ outcome: "denied" }),
+      Why.cases.KeychainRefused.make({ outcome: "timed-out" }),
+      Why.cases.KeychainNotAsked.make({}),
+      Why.cases.RequestFailed.make({ why: "rate-limited", status: 429 }),
+      Why.cases.RequestFailed.make({ why: "timed-out" }),
+      Why.cases.NoQuota.make({}),
+      Why.cases.HostRefused.make({ host: "example.com" }),
+    ].map((why) => failed(why)[0])).toMatchInlineSnapshot(`
+      [
+        "antigravity / Gemini · unknown: no Antigravity sign-in on this host: sign in with agy",
+        "antigravity / Gemini · unknown: sign-in not readable here",
+        "antigravity / Gemini · unknown: the keychain read was denied: not tried again until asked (antigravity action read)",
+        "antigravity / Gemini · unknown: the keychain read timed out: not tried again until asked (antigravity action read)",
+        "antigravity / Gemini · unknown: no sign-in file: the keychain is read only once asked (antigravity action read)",
+        "antigravity / Gemini · unknown: Google's quota read was rate limited (429)",
+        "antigravity / Gemini · unknown: Google's quota read timed out",
+        "antigravity / Gemini · unknown: Google answered no quota this reads",
+        "antigravity / Gemini · unknown: a request to example.com was refused: not a Google host",
+      ]
+    `)
+  })
+})
