@@ -1,5 +1,5 @@
-import { Effect, Option } from "effect"
-import { defaultConfig, runScript, type SimConfig, type Step, type Trace } from "./driver.ts"
+import { Clock, Effect, Option } from "effect"
+import { defaultConfig, runScript, type SimConfig, type Step, TICK_MS, type Trace } from "./driver.ts"
 import { mergeCoverage, type PlannedFault } from "./faults.ts"
 import { CORE, INJECTED, PAIR_SCRIPT, pairConfigs, randomConfig } from "./generator.ts"
 import { checkAll, formatViolations, signatureOf, type Violation } from "./invariants.ts"
@@ -87,14 +87,22 @@ export const runBatch = Effect.fn("Sim.runBatch")(function* (
 ) {
   const red: Array<RunResult> = []
   const coverage = new Map<string, number>()
+  const timings: Array<string> = []
   for (const job of jobs) {
     const { config, steps } = yield* job
+    const started = yield* Clock.currentTimeMillis
     const result = yield* runOne(config, steps)
+    const wall = (yield* Clock.currentTimeMillis) - started
+    timings.push(`SIM-TIME ${config.name} steps=${Math.round(result.trace.world.now / TICK_MS)} wall_ms=${wall}`)
     mergeCoverage(coverage, result.trace.coverage)
     if (result.violations.length > 0) red.push(result)
   }
   const fingerprint: Fingerprint = Object.fromEntries(red.map((result) => [result.name, signaturesOf(result.violations)]))
-  const lines = [`SIM-BATCH ${label}: ${red.length} red of ${jobs.length} runs`, ...red.map((result) => `SIM-JOB ${result.name} ${formatInvariants(invariantsOf(result.violations))}`)]
+  const lines = [
+    `SIM-BATCH ${label}: ${red.length} red of ${jobs.length} runs`,
+    ...timings.filter(() => label.startsWith("seeds")),
+    ...red.map((result) => `SIM-JOB ${result.name} ${formatInvariants(invariantsOf(result.violations))}`),
+  ]
   for (const result of red.slice(0, shrinkFirst)) {
     const minimal = yield* shrink(result)
     lines.push(report(result, minimal.faults, minimal.violations))
@@ -108,10 +116,10 @@ export const slice = <A>(items: ReadonlyArray<A>, k: number, of: number): Readon
 
 const job = (config: SimConfig, steps: ReadonlyArray<Step>) => Effect.succeed({ config, steps })
 
-/** The effect count of the happy trace, so a crash is enumerated at every one of its effect indices. */
+/** The effect count of a script's own steps, so a crash or a command is enumerated at every one of its effect indices (adjudication 3a: never inside the probe or the final status). */
 export const effectCount = Effect.fn("Sim.effectCount")(function* (steps: ReadonlyArray<Step>) {
   const trace = yield* runScript({ ...defaultConfig("count", 0), probe: false }, steps)
-  return trace.effects.filter((effect) => effect.boundary !== "process.start").length
+  return trace.effects.slice(0, trace.scriptEffects).filter((effect) => effect.boundary !== "process.start").length
 })
 
 export const crashJobs = Effect.fn("Sim.crashJobs")(function* () {

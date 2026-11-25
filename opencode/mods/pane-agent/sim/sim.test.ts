@@ -54,7 +54,7 @@ describe("pane-agent-sim: the diagnosis section 4 acceptance property", () => {
     slices(`await:${command.name}`, 4, `${command.name} injected at every await point of two starts, turn 1, a follow_up and turn 2 (the idle-confirm wait included)`, awaitJobs(command), 1)
   }
 
-  slices("seeds", 3, `${SEEDS.length} seeded random runs: two workers, a named pane, commands, owner actions, crashes, a second server, random faults`, Effect.succeed(randomJobs(SEEDS)), 2)
+  slices("seeds", 6, `${SEEDS.length} seeded random runs: two workers, a named pane, commands, owner actions, crashes, a second server, random faults`, Effect.succeed(randomJobs(SEEDS)), 2)
 
   slices("pairs", 6, "one run per (boundary, fault, call): the fault on that boundary's first, second or third call", Effect.succeed(pairJobs()), 2)
 

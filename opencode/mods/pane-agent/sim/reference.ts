@@ -10,6 +10,8 @@ export interface RefTurn {
   readonly token: string
   readonly mode: TurnMode
   readonly acceptedAt: number
+  /** When the call that handed it over was issued (happens-before against another call's acceptance). */
+  readonly issuedAt: number
   readonly certain: boolean
 }
 
@@ -59,13 +61,13 @@ const TURN_COMMANDS = new Set(["start", "follow_up", "steer", "restart"])
 
 const addTurn = (worker: RefWorker, call: RefCall, token: string, certain: boolean): RefWorker => ({
   ...worker,
-  turns: [...worker.turns, { index: worker.turns.length + 1, token, mode: modeOf(call.command), acceptedAt: call.at, certain }],
+  turns: [...worker.turns, { index: worker.turns.length + 1, token, mode: modeOf(call.command), acceptedAt: call.at, issuedAt: call.issuedAt, certain }],
 })
 
 const started = (call: RefCall, id: string, token: string): RefWorker => ({
   key: call.worker,
   id,
-  turns: [{ index: 1, token, mode: "start", acceptedAt: call.at, certain: true }],
+  turns: [{ index: 1, token, mode: "start", acceptedAt: call.at, issuedAt: call.issuedAt, certain: true }],
   rejected: [],
   stoppedAt: Option.none(),
   supersedes: [],

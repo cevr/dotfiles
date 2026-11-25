@@ -97,6 +97,8 @@ export interface EffectRecord {
   readonly proc: number
   readonly fault: Fault
   readonly detail: string
+  /** The world's virtual time when the call was decided (0 for an injector with no world clock). */
+  readonly at: number
 }
 
 /** A gate holds one boundary call until the driver has injected a command at that await point. */
@@ -157,7 +159,7 @@ const gateMatches = (gate: Gate, record: EffectRecord): boolean =>
  * then the crash index, then the seed; records the call (the trace and the coverage counter); and holds a
  * gated call until the driver releases it.
  */
-export const makeInjector = Effect.fn("Sim.makeInjector")(function* (random: Option.Option<RandomFaults>) {
+export const makeInjector = Effect.fn("Sim.makeInjector")(function* (random: Option.Option<RandomFaults>, now: Effect.Effect<number> = Effect.succeed(0)) {
   const prng = yield* makePrng(Option.match(random, { onNone: () => 1, onSome: (r) => r.seed }))
   const state = yield* Ref.make<InjectorState>({
     index: 0,
@@ -193,7 +195,7 @@ export const makeInjector = Effect.fn("Sim.makeInjector")(function* (random: Opt
     const current = yield* Ref.get(state)
     const nth = Option.getOrElse(Option.fromUndefinedOr(current.counts.get(boundary)), () => 0)
     const chosen = yield* choose(current, boundary, nth)
-    const record: EffectRecord = { index: current.index, boundary, nth, proc, fault: chosen.fault, detail }
+    const record: EffectRecord = { index: current.index, boundary, nth, proc, fault: chosen.fault, detail, at: yield* now }
     yield* Ref.update(state, (prev) => {
       const counts = new Map(prev.counts)
       counts.set(boundary, nth + 1)
