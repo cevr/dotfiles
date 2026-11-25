@@ -18,11 +18,26 @@
 import { Cause, Clock, Effect, Match, Option, Predicate, Random, Redacted, Ref, Result, Schema, Semaphore } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { HttpClient } from "effect/http"
-import { type UsageLimit, parseLimit } from "./limit.ts"
+import {
+  type AntigravityReport,
+  fromLocalState,
+  fromReport,
+  mergedGroupsOf,
+  mergedNextReadAt,
+  mergeFleet,
+  type MergedRecord,
+  openDecisionAt,
+  type OpenStatus,
+  type PeerRecord,
+  readingHost,
+  resolveGroup,
+} from "./fleet.ts"
+import { checkStartGate, DEFAULT_GEMINI_CAP, GateDecision, type GateQuery, type GeminiCap, geminiStartProvider } from "./gate.ts"
+import { type PaneLimit, parsePaneLimits } from "./limit.ts"
 import { type Access, type AuthMethod, accessOf, EXPIRY_MARGIN_MS, endpointOrder, type Endpoints, ReadFailed, readQuota } from "./reader.ts"
 import { fromFiles, fromKeychain, Lookup, type Places, SignIn as SignInSchema, type SignIn } from "./signin.ts"
-import { type Answer, answerAt, due, Event, evolve, groupsOf, keychainAllowed, type State, Why } from "./state.ts"
-import { statusLines } from "./text.ts"
+import { type Answer, due, Event, evolve, groupsOf, keychainAllowed, type State, Why } from "./state.ts"
+import { mergedStatusLines, statusLines } from "./text.ts"
 
 /** The state file's store: never a token. */
 export interface Store {
@@ -35,6 +50,22 @@ export interface Store {
 /** The state file could not be locked, read or written. */
 export class StoreFailed extends Schema.TaggedError<StoreFailed>()("StoreFailed", { what: Schema.String }) {}
 
+/** A snapshot of the fleet as Antigravity reads it (from FleetStore + fleet config). */
+export interface FleetView {
+  readonly host: string
+  readonly peers: Readonly<Record<string, PeerRecord>>
+  readonly peerNames: ReadonlyArray<string>
+  readonly starts: ReadonlyArray<{ readonly providerID: string; readonly at: number }>
+  readonly ownStarts?: ReadonlyArray<{ readonly providerID: string; readonly at: number }>
+  readonly settleMs: number
+}
+
+/** Optional fleet bridge: reads peers' reports and host identity without blocking plugin startup. */
+export interface FleetContext {
+  readonly read: Effect.Effect<FleetView>
+  readonly recordStart?: (providerID: string) => Effect.Effect<void>
+}
+
 export interface Options {
   /** The CLI's profile directory: the managed one (profile.ts) by default.  */
   readonly profile: string
@@ -44,13 +75,18 @@ export interface Options {
   readonly endpoints: Endpoints
   /** The user agent requests carry (reader.ts `userAgent`), worked out only when a read is made. */
   readonly agent: Effect.Effect<string>
+  /** Optional fleet context: enables cross-host merge, single reading host and fleet Gemini cap. */
+  readonly fleet?: FleetContext
+  /** Concurrent Gemini agent cap: default 4 per agent and 4 fleet total across hosts. */
+  readonly geminiCap?: GeminiCap
 }
 
-/** A group's answer at a time, for the tool. */
+/** A group's answer at a time, for the tool and RPC: always carries OpenStatus with finite time when not now. */
 export interface GroupAnswer {
   readonly group: string
   readonly label: string
   readonly answer: Answer
+  readonly open: OpenStatus
 }
 
 /** What a `read` came to, in words, and the rows after it. */
@@ -59,17 +95,27 @@ export interface ReadAnswer {
   readonly lines: ReadonlyArray<string>
 }
 
+/** Optional metadata when recording a pane limit (e.g. a workbox pane read from the Mac). */
+export interface RecordOptions {
+  readonly host?: string
+  readonly at?: number
+}
+
 export interface Source {
-  /** Antigravity's rows from the stored state (text.ts `statusLines`). */
+  /** Antigravity's rows from the merged record (or stored local state when standalone). */
   readonly lines: Effect.Effect<ReadonlyArray<string>>
-  /** Each group's answer from the stored state, or the one group named. */
-  readonly open: (group: Option.Option<string>) => Effect.Effect<ReadonlyArray<GroupAnswer>>
-  /** A pane's text: its limit recorded when it is one; none when it is not (or the store failed). */
-  readonly record: (text: string, group: Option.Option<string>) => Effect.Effect<Option.Option<UsageLimit>>
+  /** Each group's "open now, else when" answer from the merged record, or the one group/model named. */
+  readonly open: (groupOrModel: Option.Option<string>) => Effect.Effect<ReadonlyArray<GroupAnswer>>
+  /** A pane's text: its live, non-replayed limit frame(s) recorded with host and seen-at; none when nothing new was recorded. */
+  readonly record: (text: string, groupOrModel: Option.Option<string>, options?: RecordOptions) => Effect.Effect<Option.Option<PaneLimit>>
   /** A pane on the group (every group when none) ran a turn since its limit: forget the limit. */
   readonly clear: (group: Option.Option<string>) => Effect.Effect<void>
   /** Read Google now unless the floor holds; `consent` allows the one keychain attempt. */
   readonly read: (consent: boolean) => Effect.Effect<ReadAnswer>
+  /** This host's own Antigravity report (never carries a token or peer data), for the fleet Report. */
+  readonly report: Effect.Effect<AntigravityReport>
+  /** Start gate before starting or resuming an agy pane/worker; with `recordStart`, records a Gemini start when admitted. */
+  readonly gate: (query: GateQuery & { readonly recordStart?: boolean }) => Effect.Effect<GateDecision>
 }
 
 const isRefused = (failure: ReadFailed) =>
@@ -88,6 +134,7 @@ type Plan =
 /** What the decision under the lock came to. */
 type Decision =
   | { readonly kind: "floored"; readonly nextReadAt: number }
+  | { readonly kind: "delegated"; readonly leader: string; readonly host: string }
   | { readonly kind: "unavailable"; readonly why: Why }
   | { readonly kind: "go"; readonly id: string; readonly plan: Plan }
 
@@ -121,18 +168,91 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
 
   const heldFor = (at: number) => Effect.map(Ref.get(held), (kept) => Option.filter(kept, (entry) => fresh(entry.access, at)))
 
-  /** Under the lock: the floor, then the sign-in, then the attempt committed. */
-  const decide = (consent: boolean, at: number) =>
+  /** Whether this host has a readable sign-in right now (token files or held memory token; never touches keychain). */
+  const hasReadableSignIn = (at: number): Effect.Effect<boolean> =>
+    Effect.gen(function* () {
+      const file = yield* fromFiles(options.places, options.profile)
+      if (Option.isSome(file)) {
+        return SignInSchema.match(file.value, {
+          Refreshable: () => true,
+          Access: (access) => !Option.exists(Option.fromUndefinedOr(access.expiresAt), (exp) => exp <= at + EXPIRY_MARGIN_MS),
+        })
+      }
+      return Option.isSome(yield* heldFor(at))
+    }).pipe(Effect.catchCause(() => Effect.succeed(false)))
+
+  const singleHostView = (host: string): FleetView => ({ host, peers: {}, peerNames: [], starts: [], settleMs: 10 * 60_000 })
+
+  const fleetView = Option.match(Option.fromUndefinedOr(options.fleet), {
+    onNone: () => Effect.succeed(singleHostView("this host")),
+    onSome: (fleet) => fleet.read.pipe(Effect.catchCause(() => Effect.succeed(singleHostView("this host")))),
+  })
+
+  const mergedView = Effect.gen(function* () {
+    const state = yield* options.store.load
+    const at = yield* now
+    const view = yield* fleetView
+    const readable = yield* hasReadableSignIn(at)
+    const own = fromLocalState(view.host, state, at, readable)
+    const hasPeers = view.peerNames.length > 0 || Object.keys(view.peers).length > 0
+    const merged: MergedRecord = Match.value(hasPeers).pipe(
+      Match.when(true, () => mergeFleet(own, view.peers, view.peerNames, at)),
+      Match.orElse(() => fromReport(own, at)),
+    )
+    return { state, at, view, own, merged, hasPeers }
+  })
+
+  const report: Effect.Effect<AntigravityReport> = Effect.gen(function* () {
+    const state = yield* options.store.load
+    const at = yield* now
+    const view = yield* fleetView
+    const readable = yield* hasReadableSignIn(at)
+    return fromLocalState(view.host, state, at, readable)
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.map(now, (at): AntigravityReport => ({
+        host: "this host",
+        at,
+        readableSignIn: false,
+        limits: [],
+        failure: { at, why: contained(cause) },
+      })),
+    ),
+  )
+
+  /** Under the lock: the cross-host floor, the sole reading host, then the sign-in, then the attempt committed. */
+  const decide = (consent: boolean, at: number, view: FleetView) =>
     options.store.transact((stored) =>
       Effect.gen(function* () {
-        // A floored read records no consent: a consent is for this read, never for a later one nobody asked for.
-        if (!due(stored, at)) return keep(stored, { kind: "floored", nextReadAt: stored.nextReadAt })
+        const hasPeers = view.peerNames.length > 0 || Object.keys(view.peers).length > 0
+        const peerMerged = Match.value(hasPeers).pipe(
+          Match.when(true, () => mergeFleet(fromLocalState(view.host, stored, at, false), view.peers, view.peerNames, at)),
+          Match.orElse(() => fromReport(fromLocalState(view.host, stored, at, false), at)),
+        )
+        // A floored read records no consent and touches no token file: a consent is for this read, never for a later one nobody asked for.
+        const floor = Math.max(stored.nextReadAt, mergedNextReadAt(peerMerged))
+        if (!due({ ...stored, nextReadAt: floor }, at)) return keep(stored, { kind: "floored", nextReadAt: floor })
+        const file = yield* fromFiles(options.places, options.profile)
+        const kept = yield* heldFor(at)
+        const fileFresh = Option.exists(file, (signIn) =>
+          SignInSchema.match(signIn, {
+            Refreshable: () => true,
+            Access: (access) => !Option.exists(Option.fromUndefinedOr(access.expiresAt), (exp) => exp <= at + EXPIRY_MARGIN_MS),
+          }),
+        )
+        const readable = fileFresh || Option.isSome(kept)
+        // One reading host across the fleet: the lowest host id with a readable sign-in reads Google.
+        if (hasPeers) {
+          const merged = mergeFleet(fromLocalState(view.host, stored, at, readable), view.peers, view.peerNames, at)
+          const leader = readingHost(merged)
+          if (Option.isSome(leader) && leader.value !== view.host) {
+            return keep(stored, { kind: "delegated", leader: leader.value, host: view.host })
+          }
+        }
         const state = Match.value(consent).pipe(
           Match.when(true, () => evolve(stored, Event.cases.ConsentGiven.make({ at }))),
           Match.orElse(() => stored),
         )
-        const file = yield* fromFiles(options.places, options.profile)
-        const kept = yield* heldFor(at)
         const plan: Option.Option<Plan> = Option.match(file, {
           onSome: (signIn) =>
             Option.some<Plan>({ kind: "use", signIn, access: Option.map(Option.filter(kept, (entry) => sameRefreshable(entry.signIn, signIn)), (entry) => entry.access) }),
@@ -208,21 +328,24 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
     return Result.match(outcome, { onFailure: (failure) => Option.some(failure.why), onSuccess: () => Option.none<Why>() })
   })
 
-  const loaded = Effect.gen(function* () {
-    return { state: yield* options.store.load, at: yield* now }
-  })
-
-  const lines = loaded.pipe(
-    Effect.map(({ state, at }) => statusLines(state, at)),
+  const lines = mergedView.pipe(
+    Effect.map(({ state, merged, at, hasPeers }) =>
+      Match.value(hasPeers).pipe(
+        Match.when(true, () => mergedStatusLines(merged, at)),
+        Match.orElse(() => statusLines(state, at)),
+      ),
+    ),
     Effect.catchCause((cause) => Effect.succeed(unknownLines(cause))),
   )
 
   const read = (consent: boolean) =>
     reading.withPermits(1)(
       Effect.gen(function* () {
-        const decision: Decision = yield* decide(consent, yield* now)
+        const view = yield* fleetView
+        const decision: Decision = yield* decide(consent, yield* now, view)
         const note = yield* Match.value(decision).pipe(
           Match.when({ kind: "floored" }, (floored) => Effect.succeed(`Not read: a read was attempted within the floor (5 minutes after each attempt, longer after failures); the next read is possible at ${formatNotificationTime(floored.nextReadAt)}.`)),
+          Match.when({ kind: "delegated" }, (delegated) => Effect.succeed(`Not read: ${delegated.leader} is the fleet's reading host (${delegated.host} leaves active reads to it).`)),
           Match.when({ kind: "unavailable" }, () => Match.value(options.auth).pipe(
             Match.when("personal", () => Effect.succeed(`Not read: no sign-in in the managed profile ${options.profile}. Sign in there (bun cmd/pool/antigravity-read.ts --profile-env ${options.profile} prints how).`)),
             Match.orElse(() => Effect.succeed("Not read: no token file, and no sign-in held. Read with consent to try the keychain once.")),
@@ -237,35 +360,107 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
       }),
     ).pipe(Effect.catchCause((cause) => Effect.succeed({ note: `Not read: ${reasonOf(cause)}.`, lines: unknownLines(cause) })))
 
+  const geminiCap = Option.getOrElse(Option.fromUndefinedOr(options.geminiCap), () => DEFAULT_GEMINI_CAP)
+
+  const gate = (query: GateQuery & { readonly recordStart?: boolean }): Effect.Effect<GateDecision> =>
+    mergedView.pipe(
+      Effect.flatMap(({ merged, at, view }) => {
+        const decision = checkStartGate({
+          merged,
+          fleetStarts: view.starts,
+          ...Option.match(Option.fromUndefinedOr(view.ownStarts), { onNone: () => ({}), onSome: (ownStarts) => ({ ownStarts }) }),
+          settleMs: view.settleMs,
+          cap: geminiCap,
+          now: at,
+          query,
+        })
+        const shouldRecord =
+          decision._tag === "Admitted" &&
+          query.recordStart === true &&
+          (decision.group === "gemini" || decision.group.startsWith("gemini-"))
+        const record = Option.flatMap(Option.fromUndefinedOr(options.fleet), (fleet) => Option.fromUndefinedOr(fleet.recordStart))
+        return Match.value(shouldRecord).pipe(
+          Match.when(true, () =>
+            Option.match(record, {
+              onNone: () => Effect.succeed(decision),
+              onSome: (recordStart) => Effect.as(recordStart(geminiStartProvider(query.agent)).pipe(Effect.ignoreCause), decision),
+            }),
+          ),
+          Match.orElse(() => Effect.succeed(decision)),
+        )
+      }),
+      Effect.catchCause((cause) =>
+        Effect.succeed(
+          GateDecision.cases.Admitted.make({
+            group: Option.getOrElse(Option.orElse(Option.fromUndefinedOr(query.group), () => Option.fromUndefinedOr(query.model)), () => "gemini"),
+            measured: false,
+            answer: openDecisionAt(fromReport({ host: "this host", at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: contained(cause) } }, 0), 0, "gemini").answer,
+            geminiFleetCount: 0,
+            geminiAgentCount: 0,
+          }),
+        ),
+      ),
+    )
+
   return {
     lines,
-    open: (group) =>
-      loaded.pipe(
-        Effect.map(({ state, at }) =>
-          groupsOf(state)
-            .filter((entry) => Option.getOrElse(Option.map(group, (named) => named === entry.id || named === entry.label), () => true))
-            .map((entry) => ({ group: entry.id, label: entry.label, answer: answerAt(state, at, entry.id) })),
-        ),
+    report,
+    gate,
+    open: (groupOrModel) =>
+      mergedView.pipe(
+        Effect.map(({ merged, at }) => {
+          const wanted = Option.map(groupOrModel, (named) => Option.getOrElse(resolveGroup(named), () => named))
+          return mergedGroupsOf(merged)
+            .filter((entry) =>
+              Option.getOrElse(
+                Option.map(wanted, (named) => named.toLowerCase() === entry.id.toLowerCase() || named.toLowerCase() === entry.label.toLowerCase()),
+                () => true,
+              ),
+            )
+            .map((entry) => {
+              const open = openDecisionAt(merged, at, entry.id)
+              return { group: entry.id, label: entry.label, answer: open.answer, open }
+            })
+        }),
         Effect.catchCause((cause) =>
           Effect.succeed(
-            groupsOf({ failures: 0, nextReadAt: 0 }).map((entry) => ({ group: entry.id, label: entry.label, answer: answerAt({ failures: 0, nextReadAt: 0, failure: { at: 0, why: contained(cause) } }, 0, entry.id) })),
+            groupsOf({ failures: 0, nextReadAt: 0 }).map((entry) => {
+              const fallback = fromReport({ host: "this host", at: 0, readableSignIn: false, limits: [], failure: { at: 0, why: contained(cause) } }, 0)
+              const open = openDecisionAt(fallback, 0, entry.id)
+              return { group: entry.id, label: entry.label, answer: open.answer, open }
+            }),
           ),
         ),
       ),
-    record: (text, group) =>
+    record: (text, groupOrModel, recordOptions) =>
       Effect.gen(function* () {
-        const limit = parseLimit(text, yield* now)
-        yield* Option.match(limit, {
-          onNone: () => Effect.void,
-          onSome: (seen) => {
-            const base = { seenAt: seen.seenAt }
+        const at = yield* now
+        const parsed = parsePaneLimits(text, at, Option.getOrUndefined(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.at))))
+        if (parsed.length === 0) return Option.none<PaneLimit>()
+        const view = yield* fleetView
+        const host = Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.host)), () => view.host)
+        const callerGroup = Option.map(groupOrModel, (named) => Option.getOrElse(resolveGroup(named), () => named))
+        // Cross-host seen keys from peers so replaying another host's already-seen scrollback frame never re-arms.
+        const peerMerged = mergeFleet(fromLocalState(view.host, { failures: 0, nextReadAt: 0 }, at, false), view.peers, view.peerNames, at)
+        const peerKeys = new Set(peerMerged.seenLimitKeys)
+        return yield* options.store.transact((stored) => {
+          let next = stored
+          let lastRecorded = Option.none<PaneLimit>()
+          for (const seen of parsed) {
+            if (peerKeys.has(seen.key)) continue
+            const group = Option.orElse(seen.group, () => callerGroup)
+            const base = { seenAt: seen.seenAt, host, key: seen.key }
             const withReset = Option.match(seen.resetAt, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
             const withGroup = Option.match(group, { onNone: () => withReset, onSome: (named) => ({ ...withReset, group: named }) })
-            return options.store.transact((state) => Effect.succeed([evolve(state, Event.cases.LimitSeen.make({ limit: withGroup })), true] as const))
-          },
+            const evolved = evolve(next, Event.cases.LimitSeen.make({ limit: withGroup }))
+            if (evolved !== next) {
+              next = evolved
+              lastRecorded = Option.some(Option.match(group, { onNone: () => seen, onSome: (named) => ({ ...seen, group: Option.some(named) }) }))
+            }
+          }
+          return Effect.succeed([next, lastRecorded] as const)
         })
-        return limit
-      }).pipe(Effect.catchCause(() => Effect.succeed(Option.none<UsageLimit>()))),
+      }).pipe(Effect.catchCause(() => Effect.succeed(Option.none<PaneLimit>()))),
     clear: (group) =>
       options.store
         .transact((state) =>

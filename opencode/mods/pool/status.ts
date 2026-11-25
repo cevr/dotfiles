@@ -9,6 +9,7 @@
 // schemas below describe the answers of the older methods. No answer carries
 // a secret.
 import { Schema } from "effect"
+import { AntigravityReport } from "./antigravity/fleet.ts"
 import { Hold } from "./hold.ts"
 import { QuotaReading, UsageReadFailure } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"
@@ -241,6 +242,8 @@ export const Report = Schema.Struct({
       ),
     }),
   ),
+  /** This host's Antigravity quota record (limit events, reading, attempt floor, readable sign-in). Never a token. */
+  antigravity: Schema.optionalKey(AntigravityReport),
 })
 export type Report = typeof Report.Type
 

@@ -10,7 +10,9 @@
 //   fleet target once.
 // - The rift tool's description, and the tool's name against the registry's.
 import { laneNote } from "@dotfiles/opencode-orchestrate/tools"
+import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { RIFT_DESCRIPTION } from "@dotfiles/opencode-work/rift"
+import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option } from "effect"
 import { nearest } from "../../mods/tool-names/near-miss.ts"
 import * as Plugins from "../../sim/plugins.ts"
@@ -193,5 +195,49 @@ seeded("a root of another warm source runs no units", ({ seed, expect }) =>
     const plain = yield* run.world.session(PLAIN)
     const status = yield* run.probe(plain, ORCHESTRATE, { action: "status" })
     expect(status.text).toBe(`orchestrate: no run of this repository holds a unit; orchestrate({ action: "lane", unit: "<unit>" }) starts one.`)
+  }),
+)
+
+seeded("status and land answers show Antigravity per group beside Claude and OpenAI when the pool answers", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const run = yield* boot(seed, true)
+    const fakePool = Plugin.define({
+      id: "sim.pool-status",
+      effect: (ctx) =>
+        ctx.rpc.register(
+          { ...POOL_STATUS, methods: { status: POOL_STATUS.methods.status, antigravity: POOL_STATUS.methods.antigravity } },
+          {
+            status: () =>
+              Effect.succeed({
+                anthropic: { accounts: [{ credentialID: "store:alpha", reading: { windows: [{ name: "5h", utilization: 0.2 }, { name: "7d", utilization: 0.4 }] } }] },
+                openai: { accounts: [{ credentialID: "chatgpt", reading: { windows: [{ name: "5h", utilization: 0.1 }, { name: "7d", utilization: 0.3 }] } }] },
+              }),
+            antigravity: () =>
+              Effect.succeed({
+                lines: [
+                  "antigravity / Gemini · open",
+                  "antigravity / Claude & GPT (shared) · limited until Nov 25, 2026, 2:00:00 AM EST (a pane's limit)",
+                ],
+              }),
+          },
+        ),
+    })
+    yield* run.world.load(fakePool, { directory: WORK })
+    const root = yield* run.world.session(WORK)
+    const status = yield* run.probe(root, ORCHESTRATE, { action: "status" })
+    expect(status.error).toBe(false)
+    expect(status.text).toContain("anthropic / store:alpha")
+    expect(status.text).toContain("openai / chatgpt")
+    expect(status.text).toContain("antigravity / Gemini · open")
+    expect(status.text).toContain("antigravity / Claude & GPT (shared) · limited")
+
+    yield* run.probe(root, ORCHESTRATE, { action: "lane", unit: "a" })
+    yield* implement(run, root, "a", 1, "implementor a r1", "ready")
+    const landed = yield* run.probe(root, ORCHESTRATE, { action: "land", units: ["a"] })
+    expect(landed.error).toBe(false)
+    expect(landed.text).toContain("anthropic / store:alpha")
+    expect(landed.text).toContain("openai / chatgpt")
+    expect(landed.text).toContain("antigravity / Gemini · open")
+    expect(landed.text).toContain("antigravity / Claude & GPT (shared) · limited")
   }),
 )

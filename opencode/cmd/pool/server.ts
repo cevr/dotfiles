@@ -163,7 +163,8 @@ import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
-import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload } from "@dotfiles/opencode-pool/service"
+import { AntigravityReporter, FleetStore, type Ledger, type Limits, type Logins, type Owner, type Peers, type PushStore, type Quota, type ResetsStore, type Workload } from "@dotfiles/opencode-pool/service"
+import * as FleetModel from "@dotfiles/opencode-pool/fleet"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
@@ -344,14 +345,15 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * host gives a server plugin FileSystem and Path (`@opencode/plugin/effect` `Plugin.Environment`), so the pool
  * imports no platform implementation.
  */
-export type AntigravityRoot<R = never> = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | R>
+export type AntigravityRoot<R = never> = (option: AgyLive.PoolOption, fleet?: AgySource.FleetContext) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | R>
 export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
 
 /** What the live Antigravity root needs of the host: its files and paths, as the fork's plugin host provides them. */
 export type AntigravityHost = FileSystem.FileSystem | Path.Path
 
 /** The live root: one authority per state file in the process (`AgyLive.poolSource`), Google over fetch. */
-export const liveAntigravity: AntigravityRoot<AntigravityHost> = (option) => AgyLive.poolSource(option).pipe(Effect.provide(FetchHttpClient.layer))
+export const liveAntigravity: AntigravityRoot<AntigravityHost> = (option, fleet) =>
+  AgyLive.poolSource(option, fleet).pipe(Effect.provide(FetchHttpClient.layer))
 
 /**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
@@ -501,10 +503,27 @@ export const make = <R = never,>(
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-      // Antigravity's quota: built with no I/O, read only when asked; its rows come from what was stored, and no
+      // Antigravity's quota: built with no I/O, read only when asked; its rows come from the merged fleet record, and no
       // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
       // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
-      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity)))
+      const agyFleetStore = Context.get(yield* Layer.build(FleetStoreLive.layer(ctx.storage)), FleetStore)
+      const agyFleet: AgySource.FleetContext = {
+        read: Effect.gen(function* () {
+          const state = yield* agyFleetStore.read
+          const now = yield* Clock.currentTimeMillis
+          const settleMs = options.fleet.settleMinutes * 60_000
+          return {
+            host: options.fleet.host,
+            peers: state.peers,
+            peerNames: options.fleet.peers.map((peer) => peer.name),
+            starts: FleetModel.inflight(state, now, settleMs),
+            ownStarts: FleetModel.ownStarts(state, now, settleMs),
+            settleMs,
+          }
+        }),
+        recordStart: (providerID) => withPool((pool) => pool.started(providerID)).pipe(Effect.ignoreCause),
+      }
+      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity, agyFleet)))
 
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
@@ -591,7 +610,10 @@ export const make = <R = never,>(
               resets: resetsOf(options),
               autoClaims: typeof options.resets === "boolean" || options.resets.auto,
               ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
-            }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
+            }).pipe(
+              Layer.provideMerge(externals(ctx, options, sources, chatgpt)),
+              Layer.provideMerge(Layer.succeed(AntigravityReporter, AntigravityReporter.of({ report: agy.report }))),
+            ),
           )
           const pool = Context.get(services, Model.Pool)
           yield* Deferred.succeed(ready, pool)
@@ -972,7 +994,7 @@ export const make = <R = never,>(
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
               onSome: (request) => withPool((pool) => pool.push(request)),
             }),
-          antigravity: agy.rpc,
+          antigravity: (input) => agy.rpc(Option.getOrUndefined(decodeAgyRpc(input))),
         })
         .pipe(Effect.orDie)
     }),
@@ -983,6 +1005,7 @@ const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
 const decodeLease = Schema.decodeUnknownOption(LeaseMessage)
 const decodePush = Schema.decodeUnknownOption(PushRequest)
+const decodeAgyRpc = Schema.decodeUnknownOption(AgyWiring.RpcInput)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""

@@ -136,7 +136,7 @@ const scratch = Effect.gen(function* () {
 type Setup = Effect.Success<typeof scratch>
 
 /** An authority over the setup's state file, as another plugin instance or process builds it: its own memory, the same file. */
-const sourceOf = Effect.fn("sourceOf")(function* (setup: Setup, base: string, overrides: Partial<Pick<Options, "endpoints" | "auth" | "places" | "store" | "agent">> = {}) {
+const sourceOf = Effect.fn("sourceOf")(function* (setup: Setup, base: string, overrides: Partial<Pick<Options, "endpoints" | "auth" | "places" | "store" | "agent" | "fleet">> = {}) {
   return yield* make({
     profile: setup.profile,
     places: Option.getOrElse(Option.fromUndefinedOr(overrides.places), () => setup.places),
@@ -144,6 +144,7 @@ const sourceOf = Effect.fn("sourceOf")(function* (setup: Setup, base: string, ov
     auth: Option.getOrElse(Option.fromUndefinedOr(overrides.auth), () => "personal"),
     endpoints: Option.getOrElse(Option.fromUndefinedOr(overrides.endpoints), () => GOOGLE),
     agent: Option.getOrElse(Option.fromUndefinedOr(overrides.agent), () => Effect.succeed(AGENT)),
+    ...Option.match(Option.fromUndefinedOr(overrides.fleet), { onNone: () => ({}), onSome: (fleet) => ({ fleet }) }),
   }).pipe(Effect.provideService(HttpClient.HttpClient, yield* toFake(base)))
 })
 
@@ -716,18 +717,101 @@ describe("Antigravity read authority on a fake Google", () => {
   )
 
   live(
-    "a pane's limit message is recorded with its reset, and answers limited until then",
+    "a pane's limit message is recorded with its group, host, seen-at and reset; replayed scrollback never re-arms",
     Effect.gen(function* () {
       const setup = yield* scratch
       const google = yield* fakeGoogle(ok)
       const source = yield* sourceOf(setup, google.base)
-      const limit = yield* source.record("Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.", Option.none())
+      const geminiFrame = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.\nError ID: err-gem-1"
+      const limit = yield* source.record(geminiFrame, Option.none(), { host: "workbox" })
       expect(Option.isSome(limit)).toBe(true)
       const answers = yield* source.open(Option.none())
-      expect(answers.map((entry) => entry.answer._tag)).toEqual(["Limited", "Limited"])
+      // Individual quota reached -> Gemini limited, Claude & GPT unmeasured
+      expect(answers.map((entry) => entry.answer._tag)).toEqual(["Limited", "Unmeasured"])
+      // Replaying the same scrollback frame with the same Error ID records nothing new
+      expect(Option.isNone(yield* source.record(geminiFrame, Option.none(), { host: "workbox" }))).toBe(true)
+      // Third-party quota reached -> Claude & GPT limited
+      const thirdPartyFrame = "Third-party quota reached. Please upgrade your subscription to increase your limits. Resets in 45m.\nError ID: err-3p-1"
+      expect(Option.isSome(yield* source.record(thirdPartyFrame, Option.none()))).toBe(true)
+      expect((yield* source.open(Option.none())).map((entry) => entry.answer._tag)).toEqual(["Limited", "Limited"])
       expect(Option.isNone(yield* source.record("All tests pass.", Option.none()))).toBe(true)
       expect(yield* google.seen).toEqual([])
-      expect(yield* setup.fs.readFileString(setup.stateFile)).toContain("seenAt")
+      const saved = yield* setup.fs.readFileString(setup.stateFile)
+      expect(saved).toContain("seenAt")
+      expect(saved).toContain("workbox")
+      expect(saved).toContain("id:err-gem-1")
+    }),
+  )
+
+  live(
+    "one reading host: only the lowest host id with a readable sign-in reads Google, and the 5-minute floor holds across hosts",
+    Effect.gen(function* () {
+      const setupA = yield* scratch
+      const setupB = yield* scratch
+      const google = yield* fakeGoogle(ok)
+      yield* setupA.write("antigravity-oauth-token", yield* cliToken(60))
+      yield* setupB.write("antigravity-oauth-token", yield* cliToken(60))
+      const now = (yield* DateTime.now).epochMilliseconds
+
+      // Both hosts ("bite-cristian" < "mac-pro") have readable sign-ins.
+      const macReport = { host: "mac-pro", at: now, readableSignIn: true, limits: [] }
+      const workboxReport = { host: "bite-cristian", at: now, readableSignIn: true, limits: [] }
+
+      // Higher host ("mac-pro") sees fresh peer "bite-cristian" with readableSignIn -> MUST NOT read Google!
+      const mac = yield* sourceOf(setupB, google.base, {
+        fleet: {
+          read: Effect.succeed({
+            host: "mac-pro",
+            peers: { workbox: { report: { host: "bite-cristian", antigravity: workboxReport }, seenAt: now } },
+            peerNames: ["workbox"],
+            starts: [],
+            settleMs: 10 * 60_000,
+          }),
+        },
+      })
+      const skipped = yield* mac.read(false)
+      expect(skipped.note).toContain("bite-cristian")
+      expect(yield* google.seen).toEqual([])
+
+      // Lower host ("bite-cristian") sees "mac-pro" -> IS the reading host, reads Google!
+      const workbox = yield* sourceOf(setupA, google.base, {
+        fleet: {
+          read: Effect.succeed({
+            host: "bite-cristian",
+            peers: { mac: { report: { host: "mac-pro", antigravity: macReport }, seenAt: now } },
+            peerNames: ["mac"],
+            starts: [],
+            settleMs: 10 * 60_000,
+          }),
+        },
+      })
+      const didRead = yield* workbox.read(false)
+      expect(didRead.note).toBe("Read now.")
+      const afterWorkbox = (yield* google.seen).length
+      expect(afterWorkbox).toBeGreaterThan(0)
+
+      // Now workbox loses its readable sign-in, so mac becomes eligible —
+      // BUT workbox's attempt set the merged 5-minute floor across hosts, so mac is STILL floored!
+      const workboxAfter = yield* workbox.report
+      const macAfterFloor = yield* sourceOf(setupB, google.base, {
+        fleet: {
+          read: Effect.succeed({
+            host: "mac-pro",
+            peers: {
+              workbox: {
+                report: { host: "bite-cristian", antigravity: { ...workboxAfter, readableSignIn: false } },
+                seenAt: now,
+              },
+            },
+            peerNames: ["workbox"],
+            starts: [],
+            settleMs: 10 * 60_000,
+          }),
+        },
+      })
+      const crossFloored = yield* macAfterFloor.read(false)
+      expect(crossFloored.note).toContain("within the floor")
+      expect((yield* google.seen).length).toBe(afterWorkbox)
     }),
   )
 })

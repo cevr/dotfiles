@@ -241,4 +241,50 @@ describe("Antigravity reading store", () => {
   test("the backoff doubles from five minutes to an hour", () => {
     expect([1, 2, 3, 4, 5, 9].map(backoffMs)).toEqual([10, 20, 40, 60, 60, 60].map((minutes) => minutes * MINUTE))
   })
+
+  test("replayed scrollback frame with same key (Error ID or reset time) never re-arms a limit, even after reset or clear", () => {
+    const first = evolve(
+      EMPTY,
+      Event.cases.LimitSeen.make({
+        limit: { group: "gemini", seenAt: START, resetAt: START + HOUR, host: "mac", key: "id:err-1" },
+      }),
+    )
+    expect(answerAt(first, START + 10 * MINUTE, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + HOUR, by: "limit" }))
+    // After the reset has passed, replaying the same Error ID with a newly-computed future resetAt MUST NOT re-arm!
+    const replayedAfterReset = evolve(
+      first,
+      Event.cases.LimitSeen.make({
+        limit: { group: "gemini", seenAt: START + 2 * HOUR, resetAt: START + 3 * HOUR, host: "mac", key: "id:err-1" },
+      }),
+    )
+    expect(answerAt(replayedAfterReset, START + 2 * HOUR, "gemini")._tag).toBe("Unmeasured")
+
+    // After explicit clear, replaying the same key MUST NOT re-arm either!
+    const cleared = evolve(first, Event.cases.LimitCleared.make({ group: "gemini" }))
+    const replayedAfterClear = evolve(
+      cleared,
+      Event.cases.LimitSeen.make({
+        limit: { group: "gemini", seenAt: START + 20 * MINUTE, resetAt: START + 80 * MINUTE, host: "mac", key: "id:err-1" },
+      }),
+    )
+    expect(answerAt(replayedAfterClear, START + 20 * MINUTE, "gemini")._tag).toBe("Unmeasured")
+
+    // A genuinely NEW frame (new Error ID) DOES arm!
+    const newFrame = evolve(
+      replayedAfterReset,
+      Event.cases.LimitSeen.make({
+        limit: { group: "gemini", seenAt: START + 2 * HOUR, resetAt: START + 3 * HOUR, host: "workbox", key: "id:err-2" },
+      }),
+    )
+    expect(answerAt(newFrame, START + 2 * HOUR, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + 3 * HOUR, by: "limit" }))
+
+    // Frame older than its own reset is ignored
+    const expired = evolve(
+      EMPTY,
+      Event.cases.LimitSeen.make({
+        limit: { group: "claude-gpt", seenAt: START + HOUR, resetAt: START, host: "mac", key: "id:old" },
+      }),
+    )
+    expect(expired.limits).toBeUndefined()
+  })
 })

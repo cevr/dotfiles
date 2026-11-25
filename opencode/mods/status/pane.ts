@@ -194,6 +194,22 @@ export type PaneLimits = typeof PaneLimits.Type
 export const PaneAntigravity = Schema.Struct({ lines: Schema.Array(Schema.String) })
 export type PaneAntigravity = typeof PaneAntigravity.Type
 
+export interface AntigravityRow {
+  /** Limited group, stale peer, or unavailable reader: highlighted in warning color. */
+  readonly warn: boolean
+  /** Indented detail line under a group header (windows, read age, stale peer, limits). */
+  readonly detail: boolean
+  readonly text: string
+}
+
+/** Antigravity's merged per-group rows as the pool pane draws them beside Claude and OpenAI. */
+export const antigravityRows = (read: PaneAntigravity): ReadonlyArray<AntigravityRow> =>
+  read.lines.map((text) => ({
+    warn: /· (?:limited|stale|unavailable)|stale \(/.test(text),
+    detail: text.startsWith("  "),
+    text,
+  }))
+
 /** The provider each pool's resets are known by. */
 const RESET_NAMES: Readonly<Record<string, string>> = { anthropic: "Claude", openai: "Codex" }
 

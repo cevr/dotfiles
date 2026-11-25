@@ -10,10 +10,11 @@
 import { readableStreamToText, spawn } from "bun"
 import { Clock, Effect, FileSystem, Match, Option, Path, Random, Redacted, Schedule, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
+import { DEFAULT_GEMINI_CAP, type GeminiCap } from "./gate.ts"
 import { envFileText, type ManagedProfile, signInLine, type UserLink } from "./profile.ts"
 import { type AuthMethod, AuthMethod as AuthMethodSchema, GOOGLE, userAgent } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
-import { make, type Source, type Store, StoreFailed } from "./source.ts"
+import { type FleetContext, make, type Source, type Store, StoreFailed } from "./source.ts"
 import { EMPTY, State, unreadable } from "./state.ts"
 
 /** How long the keychain read may take: long enough for the owner to answer macOS's dialog once. */
@@ -311,6 +312,8 @@ export interface LiveConfig {
   readonly profile: string
   readonly stateFile: string
   readonly auth: AuthMethod
+  readonly fleet?: FleetContext
+  readonly geminiCap?: GeminiCap
 }
 
 /** The pool's `antigravity` option: `false` reads nothing; else where to read, all defaulted. */
@@ -323,6 +326,13 @@ export const PoolOption = Schema.Union([
     stateFile: Schema.optionalKey(Schema.String),
     /** `personal` (the daily host first, the default) or `business` (production first). */
     auth: Schema.optionalKey(AuthMethodSchema),
+    /** Concurrent Gemini agent cap: default 4 per agent and 4 fleet total across hosts. */
+    geminiCap: Schema.optionalKey(
+      Schema.Struct({
+        perAgent: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+        fleet: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
+      }),
+    ),
   }),
 ])
 export type PoolOption = typeof PoolOption.Type
@@ -346,6 +356,8 @@ export const liveSource = Effect.fn("Antigravity.liveSource")(function* (config:
     auth: config.auth,
     endpoints: GOOGLE,
     agent: Effect.map(host, (kind) => userAgent(kind.platform, kind.arch)),
+    ...Option.match(Option.fromUndefinedOr(config.fleet), { onNone: () => ({}), onSome: (fleet) => ({ fleet }) }),
+    ...Option.match(Option.fromUndefinedOr(config.geminiCap), { onNone: () => ({}), onSome: (geminiCap) => ({ geminiCap }) }),
   })
 })
 
@@ -360,16 +372,22 @@ registry[KEY] ??= new Map()
  * tui-dirs): one per state file in the process, whatever builds it; none when
  * the option is `false`. It does no I/O and starts nothing.
  */
-export const poolSource = Effect.fn("Antigravity.poolSource")(function* (option: PoolOption) {
+export const poolSource = Effect.fn("Antigravity.poolSource")(function* (option: PoolOption, fleet?: FleetContext) {
   if (option === false) return Option.none<Source>()
   const stateFile = Option.getOrElse(Option.fromUndefinedOr(option.stateFile), defaultStateFile)
   const authorities = Option.getOrElse(Option.fromUndefinedOr(registry[KEY]), () => new Map<string, Source>())
   const existing = Option.fromUndefinedOr(authorities.get(stateFile))
   if (Option.isSome(existing)) return existing
+  const cap: GeminiCap = {
+    perAgent: Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(option.geminiCap), (c) => Option.fromUndefinedOr(c.perAgent)), () => DEFAULT_GEMINI_CAP.perAgent),
+    fleet: Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(option.geminiCap), (c) => Option.fromUndefinedOr(c.fleet)), () => DEFAULT_GEMINI_CAP.fleet),
+  }
   const source = yield* liveSource({
     profile: Option.getOrElse(Option.fromUndefinedOr(option.profile), () => defaultProfile(TuiDirs.dirs().state)),
     stateFile,
     auth: Option.getOrElse(Option.fromUndefinedOr(option.auth), (): AuthMethod => "personal"),
+    geminiCap: cap,
+    ...Option.match(Option.fromUndefinedOr(fleet), { onNone: () => ({}), onSome: (ctx) => ({ fleet: ctx }) }),
   })
   authorities.set(stateFile, source)
   registry[KEY] = authorities

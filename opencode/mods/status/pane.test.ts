@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, antigravityRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -296,5 +296,24 @@ describe("unavailable", () => {
     expect(unavailable(false, false)).toEqual([])
     expect(unavailable(true, false)).toEqual(["Pool unavailable; keeping last reading"])
     expect(unavailable(true, true)).toEqual(["Pool unavailable; keeping last reading", "Agents and runs unavailable; keeping last reading"])
+  })
+})
+
+describe("antigravityRows", () => {
+  test("projects merged per-group Antigravity rows and flags limited, stale or unavailable rows", () => {
+    const read = Schema.decodeUnknownSync(PaneAntigravity)({
+      lines: [
+        "antigravity / Gemini · open",
+        "  5h 12% used of 100% · reset Nov 25, 2026, 1:00:00 AM EST",
+        "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 10:05:00 PM EST (a pane's limit)",
+        "  peer workbox · stale (12 min ago): ssh timed out",
+      ],
+    })
+    expect(antigravityRows(read)).toEqual([
+      { warn: false, detail: false, text: "antigravity / Gemini · open" },
+      { warn: false, detail: true, text: "  5h 12% used of 100% · reset Nov 25, 2026, 1:00:00 AM EST" },
+      { warn: true, detail: false, text: "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 10:05:00 PM EST (a pane's limit)" },
+      { warn: true, detail: true, text: "  peer workbox · stale (12 min ago): ssh timed out" },
+    ])
   })
 })

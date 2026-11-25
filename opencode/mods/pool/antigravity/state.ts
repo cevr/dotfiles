@@ -53,6 +53,8 @@ export const Why = Schema.TaggedUnion({
   WindowUnknown: { group: Schema.String, span: Span },
   /** A full window with no reset time. */
   FullWithoutReset: { group: Schema.String, span: Span },
+  /** A fleet peer could not be read: shown stale with its age, never as open. */
+  PeerStale: { peer: Schema.String, ageMs: Schema.Finite },
 })
 export type Why = typeof Why.Type
 
@@ -61,11 +63,19 @@ export const SeenLimit = Schema.Struct({
   seenAt: Schema.Finite,
   resetAt: Schema.optionalKey(Schema.Finite),
   group: Schema.optionalKey(Schema.String),
+  host: Schema.optionalKey(Schema.String),
+  key: Schema.optionalKey(Schema.String),
 })
 export type SeenLimit = typeof SeenLimit.Type
 
 /** The newest limit a pane printed on one group. */
-export const GroupLimit = Schema.Struct({ group: Schema.String, seenAt: Schema.Finite, resetAt: Schema.optionalKey(Schema.Finite) })
+export const GroupLimit = Schema.Struct({
+  group: Schema.String,
+  seenAt: Schema.Finite,
+  resetAt: Schema.optionalKey(Schema.Finite),
+  host: Schema.optionalKey(Schema.String),
+  key: Schema.optionalKey(Schema.String),
+})
 export type GroupLimit = typeof GroupLimit.Type
 
 export const Reading = Schema.Struct({ at: Schema.Finite, windows: Schema.Array(Window) })
@@ -86,6 +96,8 @@ export const State = Schema.Struct({
   attempt: Schema.optionalKey(Attempt),
   /** Each group's newest pane limit; a limit naming no group is kept on every group. */
   limits: Schema.optionalKey(Schema.Array(GroupLimit)),
+  /** Dedup keys of pane limit frames already recorded (Error ID or reset time), so replayed scrollback never re-arms. */
+  seenLimitKeys: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The last keychain attempt and what it came to (`started` until it answers). */
   keychain: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, outcome: KeychainOutcome })),
   /** The owner's consent to one keychain attempt, not yet used: the attempt that uses it clears it. */
@@ -149,6 +161,34 @@ const attempted = (state: State, id: string, at: number, keychain: boolean): Sta
 }
 
 const limitsOf = (state: State): ReadonlyArray<GroupLimit> => Option.getOrElse(Option.fromUndefinedOr(state.limits), () => [])
+const seenKeysOf = (state: State): ReadonlyArray<string> => Option.getOrElse(Option.fromUndefinedOr(state.seenLimitKeys), () => [])
+const MAX_SEEN_KEYS = 200
+
+const recordSeenKey = (existing: ReadonlyArray<string>, key: Option.Option<string>): Option.Option<ReadonlyArray<string>> =>
+  Option.match(key, {
+    onNone: () => Option.liftPredicate(existing, Arr.isReadonlyArrayNonEmpty),
+    onSome: (value) =>
+      Option.some(
+        Match.value(existing.includes(value)).pipe(
+          Match.when(true, () => existing),
+          Match.orElse(() => [...existing, value].slice(-MAX_SEEN_KEYS)),
+        ),
+      ),
+  })
+
+const buildGroupLimit = (group: string, limit: SeenLimit, previous: Option.Option<GroupLimit>): GroupLimit => {
+  // Never move a live reset earlier when recording a keyed frame on the same group.
+  const nextReset = Option.flatMap(Option.fromUndefinedOr(limit.resetAt), (at) =>
+    Option.match(
+      Option.flatMap(previous, (prev) => Option.filter(Option.fromUndefinedOr(prev.resetAt), (prevAt) => prevAt > limit.seenAt)),
+      { onNone: () => Option.some(at), onSome: (prevAt) => Option.some(Math.max(prevAt, at)) },
+    ),
+  )
+  const base: GroupLimit = { group, seenAt: limit.seenAt }
+  const withReset = Option.match(nextReset, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
+  const withHost = Option.match(Option.fromUndefinedOr(limit.host), { onNone: () => withReset, onSome: (host) => ({ ...withReset, host }) })
+  return Option.match(Option.fromUndefinedOr(limit.key), { onNone: () => withHost, onSome: (key) => ({ ...withHost, key }) })
+}
 
 /** The group ids a name means (a group's id or label, any case), every group when none is named; an unknown name as given. */
 const namedGroups = (state: State, name: Option.Option<string>): ReadonlyArray<string> =>
@@ -172,20 +212,25 @@ export const evolve = (state: State, event: Event): State =>
     Failed: ({ attempt, at, why }) =>
       ifCurrent(state, attempt, () => ({ ...state, failure: { at, why }, failures: state.failures + 1, nextReadAt: attemptAt(state) + backoffMs(state.failures + 1) })),
     Unavailable: ({ at, why }) => ({ ...state, failure: { at, why } }),
-    LimitSeen: ({ limit }) =>
-      ({
-        ...state,
-        limits: namedGroups(state, Option.fromUndefinedOr(limit.group)).reduce((limits, group) => {
-          const seen = Option.match(Option.fromUndefinedOr(limit.resetAt), {
-            onNone: (): GroupLimit => ({ group, seenAt: limit.seenAt }),
-            onSome: (resetAt): GroupLimit => ({ group, seenAt: limit.seenAt, resetAt }),
-          })
-          return Match.value(limits.some((before) => before.group === group && before.seenAt > limit.seenAt)).pipe(
-            Match.when(true, () => limits),
-            Match.orElse(() => [...limits.filter((before) => before.group !== group), seen]),
-          )
-        }, limitsOf(state)),
-      }),
+    LimitSeen: ({ limit }) => {
+      const key = Option.fromUndefinedOr(limit.key)
+      // Keyed pane frames: ignore frames older than their own reset, and never re-arm a replayed frame.
+      if (Option.isSome(key)) {
+        if (Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= limit.seenAt)) return state
+        if (seenKeysOf(state).includes(key.value)) return state
+      }
+      const nextLimits = namedGroups(state, Option.fromUndefinedOr(limit.group)).reduce((limits, group) => {
+        const prev = Arr.findFirst(limits, (before) => before.group === group)
+        if (Option.exists(prev, (before) => before.seenAt > limit.seenAt)) return limits
+        const seen = buildGroupLimit(group, limit, Option.filter(prev, () => Option.isSome(key)))
+        return [...limits.filter((before) => before.group !== group), seen]
+      }, limitsOf(state))
+      const nextKeys = recordSeenKey(seenKeysOf(state), key)
+      return Option.match(nextKeys, {
+        onNone: () => ({ ...state, limits: nextLimits }),
+        onSome: (seenLimitKeys) => ({ ...state, limits: nextLimits, seenLimitKeys }),
+      })
+    },
     LimitCleared: ({ group }) => {
       const cleared = namedGroups(state, Option.fromUndefinedOr(group))
       return { ...state, limits: limitsOf(state).filter((seen) => !cleared.includes(seen.group)) }

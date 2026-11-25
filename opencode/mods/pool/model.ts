@@ -39,7 +39,7 @@ import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
-import { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
+import { AntigravityReporter, FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
 import * as PushModel from "./push.ts"
 import { used as usedOf } from "./usage-text.ts"
 import type { PushAnswer, PushRequest } from "./push.ts"
@@ -320,6 +320,8 @@ export const layer = (config: Config) =>
       const pushLock = yield* Semaphore.make(1)
       // What the host is doing: optional, a plan goes without its load and runs.
       const workload = Option.getOrUndefined(yield* Effect.serviceOption(Workload))
+      // Antigravity's own report for peers: optional, contained so a failure never breaks the fleet report.
+      const antigravity = yield* Effect.serviceOption(AntigravityReporter)
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -1467,7 +1469,19 @@ export const layer = (config: Config) =>
           }
         }
         const now = yield* Clock.currentTimeMillis
-        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, now, fleetConfig.settleMs, readings, busyNow(now))
+        const agyReport = yield* Option.match(antigravity, {
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: (reporter) => reporter.report.pipe(Effect.catchCause(() => Effect.succeed(Option.none()))),
+        })
+        const answer = FleetModel.report(
+          yield* fleetStore.read,
+          fleetConfig.host,
+          now,
+          fleetConfig.settleMs,
+          readings,
+          busyNow(now),
+          Option.getOrUndefined(agyReport),
+        )
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))

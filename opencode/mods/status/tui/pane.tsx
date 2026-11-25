@@ -7,10 +7,10 @@
 // does a pool that has worked no reset or tallied no limit yet. cmd/status/tui.tsx
 // registers it.
 import type { Plugin } from "@opencode/plugin/tui"
-import { Option, Schema } from "effect"
+import { Match, Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, type AntigravityRow, antigravityRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
@@ -38,7 +38,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const [fleet, setFleet] = createSignal<PaneFleet>()
   const [claims, setClaims] = createSignal<PaneResets>()
   const [limits, setLimits] = createSignal<string>()
-  const [antigravity, setAntigravity] = createSignal<ReadonlyArray<string>>([])
+  const [antigravity, setAntigravity] = createSignal<ReadonlyArray<AntigravityRow>>([])
   const [errors, setErrors] = createSignal<ReadonlyArray<string>>([])
   const [at, setAt] = createSignal<number>()
   const abort = new AbortController()
@@ -64,7 +64,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     setFleet(Option.getOrUndefined(answer(fleetResult, decodeFleet)))
     setClaims(Option.getOrUndefined(answer(resetsResult, decodeResets)))
     setLimits(Option.getOrUndefined(answer(limitsResult, decodeLimits))?.line)
-    setAntigravity(Option.match(answer(antigravityResult, decodeAntigravity), { onNone: () => [], onSome: (read) => read.lines }))
+    setAntigravity(Option.match(answer(antigravityResult, decodeAntigravity), { onNone: () => [], onSome: antigravityRows }))
     setErrors(unavailable(Option.isNone(pools), Option.isNone(status)))
     setAt(Date.now())
     pending = false
@@ -105,6 +105,12 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const theme = () => ctx.theme
   const heading = (label: string) => <text fg={theme().text.base} attributes={1} marginTop={1}>{label}</text>
   const muted = (text: string) => <text fg={theme().text.muted}>{text}</text>
+  const antigravityColor = (row: AntigravityRow) =>
+    Match.value(row).pipe(
+      Match.when({ warn: true }, () => theme().text.feedback.warning.base),
+      Match.when({ detail: true }, () => theme().text.muted),
+      Match.orElse(() => theme().text.base),
+    )
   return (
     <scrollbox flexGrow={1}>
       <box flexDirection="column" paddingLeft={1} paddingRight={1}>
@@ -115,7 +121,9 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
         {heading("Accounts")}
         <Show when={resets()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
         <Show when={limits()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
-        <For each={antigravity()}>{(line) => <text fg={theme().text.base}>{line}</text>}</For>
+        <For each={antigravity()}>
+          {(row) => <text fg={antigravityColor(row)}>{row.text}</text>}
+        </For>
         <Show when={accounts()} fallback={muted("Loading accounts…")}>
           {(rows) => (
             <For each={rows()} fallback={muted("No pool accounts.")}>

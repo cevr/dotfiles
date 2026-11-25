@@ -11,8 +11,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Stream } from "effect"
+import { GateDecision } from "@dotfiles/opencode-pool/antigravity/gate"
 import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
 import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
+import { Answer as AgyAnswer } from "@dotfiles/opencode-pool/antigravity/state"
 import { TestClock } from "effect/testing"
 import { PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { CACHE_LIFE_MS, WINDOW_MS } from "@dotfiles/opencode-pool/accounts"
@@ -2240,10 +2242,12 @@ const AGY_ROWS = ["antigravity / Gemini · open", "  read Nov 24, 2026, 8:00:00 
 /** An Antigravity source that answers its rows and reads nothing. */
 const agySource: AgySource.Source = {
   lines: Effect.succeed(AGY_ROWS),
+  report: Effect.succeed({ host: "mac", at: 0, readableSignIn: true, limits: [] }),
   open: () => Effect.succeed([]),
   record: () => Effect.succeed(Option.none()),
   clear: () => Effect.void,
   read: () => Effect.succeed({ note: "Read now.", lines: AGY_ROWS }),
+  gate: () => Effect.succeed(GateDecision.cases.Admitted.make({ group: "gemini", measured: true, answer: AgyAnswer.cases.Open.make({}), geminiFleetCount: 0, geminiAgentCount: 0 })),
 }
 
 /** The `antigravity` tool's text for `action`, through the tool the plugin registered. */
@@ -2276,6 +2280,13 @@ describe("Antigravity, composed as OpenCode composes the pool", () => {
         expect(yield* agyTool(plugin, "read")).toBe(["Read now.", ...AGY_ROWS].join("\n"))
         const method = yield* Effect.flatMap(registered(plugin.rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, "antigravity"))
         expect(yield* method({})).toEqual({ lines: AGY_ROWS })
+        const gate = yield* method({ action: "gate", model: "gemini-3-pro" })
+        expect(gate).toEqual({
+          gate: { allowed: true, group: "gemini", measured: true, geminiFleetCount: 0, geminiAgentCount: 0, text: expect.stringContaining("admitted (gemini)") },
+          lines: AGY_ROWS,
+        })
+        const reportMethod = yield* Effect.flatMap(registered(plugin.rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, "report"))
+        expect(yield* reportMethod({})).toMatchObject({ antigravity: { host: "mac", readableSignIn: true, limits: [] } })
       }).pipe(Effect.provide(HOST_FILES)),
     ))
 

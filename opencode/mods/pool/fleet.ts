@@ -13,6 +13,7 @@
 // the host's whole.
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import type { AntigravityReport } from "./antigravity/fleet.ts"
 import { type PeerStatus, Report, type SharedReading, Start } from "./status.ts"
 
 /** How long a start is kept at all; it counts on the pace only for the settle time. */
@@ -179,7 +180,11 @@ export const report = (
   settleMs: number,
   readings: ReadonlyArray<SharedReading>,
   busy: ReadonlyArray<string>,
-): Report => ({ host, at: now, starts: ownStarts(state, now, settleMs), busy, readings })
+  antigravity?: AntigravityReport,
+): Report => {
+  const base: Report = { host, at: now, starts: ownStarts(state, now, settleMs), busy, readings }
+  return Option.match(Option.fromUndefinedOr(antigravity), { onNone: () => base, onSome: (record) => ({ ...base, antigravity: record }) })
+}
 
 /** A peer's busy sessions count while its last report came within this long: a peer that stops answering runs nothing known. */
 export const BUSY_FRESH_MS = 10 * 60_000

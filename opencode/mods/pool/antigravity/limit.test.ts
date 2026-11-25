@@ -4,7 +4,7 @@
 // quota refusal.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { durationMs, isLimit, parseLimit } from "./limit.ts"
+import { durationMs, isLimit, parseLimit, parsePaneLimits } from "./limit.ts"
 
 const NOW = Date.parse("2026-11-25T00:37:00Z")
 
@@ -27,6 +27,52 @@ describe("Antigravity limit messages", () => {
 
   test("text that is no quota refusal is none", () => {
     for (const text of ["", "Resets in 4m", "Done. The tests pass.", "error: code 500", "quota", "the quota was fine (code 200)"]) expect(parseLimit(text, NOW)).toEqual(Option.none())
+  })
+
+  test("parsePaneLimits classifies Individual (gemini) and Third-party (claude-gpt), ignores expired frames, and keys by Error ID else reset time", () => {
+    const scrollback = [
+      "Working on task...",
+      "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.",
+      "Error ID: err-gemini-001",
+      "",
+      "Later on another model:",
+      "Third-party quota reached. Please upgrade your subscription to increase your limits. Resets in 45m.",
+      "Error ID: err-3p-002",
+      "",
+      // An older frame whose absolute reset timestamp is already in the past -> MUST BE IGNORED
+      "Error 429, Status: RESOURCE_EXHAUSTED [reason:QUOTA_EXHAUSTED quotaResetTimeStamp:2026-11-24T23:00:00Z]",
+      "Error ID: err-expired-003",
+    ].join("\n")
+
+    const parsed = parsePaneLimits(scrollback, NOW)
+    expect(parsed.length).toBe(2)
+    expect(parsed[0]).toEqual({
+      class: "usage_limit",
+      group: Option.some("gemini"),
+      seenAt: NOW,
+      resetAt: Option.some(NOW + (3600 + 8 * 60 + 38) * 1000),
+      errorId: Option.some("err-gemini-001"),
+      key: "id:err-gemini-001",
+    })
+    expect(parsed[1]).toEqual({
+      class: "usage_limit",
+      group: Option.some("claude-gpt"),
+      seenAt: NOW,
+      resetAt: Option.some(NOW + 45 * 60_000),
+      errorId: Option.some("err-3p-002"),
+      key: "id:err-3p-002",
+    })
+
+    // Frame with relative duration whose frameAt + dur <= now (older than its own reset) -> ignored
+    const staleFrame = "Individual quota reached. Resets in 10m."
+    expect(parsePaneLimits(staleFrame, NOW, NOW - 15 * 60_000)).toEqual([])
+
+    // Frame without Error ID is keyed by its reset time
+    const noId = parsePaneLimits("Third-party quota reached. Resets in 30m.", NOW)
+    expect(noId.length).toBe(1)
+    expect(noId[0]?.group).toEqual(Option.some("claude-gpt"))
+    expect(noId[0]?.errorId).toEqual(Option.none())
+    expect(noId[0]?.key).toBe(`reset:${NOW + 30 * 60_000}`)
   })
 })
 

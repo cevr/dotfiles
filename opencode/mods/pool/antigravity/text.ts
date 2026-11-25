@@ -5,6 +5,7 @@
 import { Array as Arr, Match, Option } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { used } from "../usage-text.ts"
+import { type MergedRecord, mergedAnswerAt, mergedGroupsOf, mergedNextReadAt, mergedWindowAt, OpenStatus, staleAgeMs, stalePeersOf } from "./fleet.ts"
 import type { Span } from "./quota.ts"
 import { Answer, answerAt, groupsOf, type Shown, type State, type Why, windowAt } from "./state.ts"
 
@@ -36,6 +37,7 @@ export const whyText = (why: Why): string =>
       HostRefused: ({ host }) => `a request to ${host} was refused: not a Google host`,
       WindowUnknown: ({ span }) => `the ${SPAN_NAME[span]} window is unknown`,
       FullWithoutReset: ({ span }) => `the ${SPAN_NAME[span]} window is full, its reset unknown`,
+      PeerStale: ({ peer, ageMs }) => `stale: peer ${peer} unreadable (${ageText(ageMs)})`,
     }),
   )
 
@@ -66,6 +68,17 @@ export const openText = (answer: Answer): string =>
     LimitedResetUnknown: () => answerText(answer),
     Unmeasured: ({ since }) => `usable: yes, unmeasured (${sinceText(Option.fromUndefinedOr(since))})`,
     Unknown: () => answerText(answer),
+  })
+
+/** The answer to "open now, else when" from an OpenStatus: always names a finite time when not now. */
+export const openDecisionText = (status: OpenStatus): string =>
+  OpenStatus.match(status, {
+    Now: ({ answer }) => openText(answer),
+    NotNow: ({ until, why, answer }) =>
+      Match.value(why).pipe(
+        Match.when("limit-reset-unknown", () => `${answerText(answer)}; retry at ${formatNotificationTime(until)}`),
+        Match.orElse(() => answerText(answer)),
+      ),
   })
 
 /** One window's row: `  5h 23% used of 100% · reset <time>`, or `  7d unknown: <why>`. */
@@ -140,3 +153,46 @@ export const statusLines = (state: State, now: number): ReadonlyArray<string> =>
   ...reportedLine(state),
   ...limitLine(state),
 ]
+
+/** Merged fleet status rows at `now`: each group's merged answer and windows, stale peers with age, last read and limits. */
+export const mergedStatusLines = (merged: MergedRecord, now: number): ReadonlyArray<string> => {
+  const groups = mergedGroupsOf(merged)
+  const latestReading = Arr.last([...merged.readings].toSorted((a, b) => a.at - b.at))
+  const latestFailure = Arr.last([...merged.failures].toSorted((a, b) => a.at - b.at))
+  const nextReadAt = mergedNextReadAt(merged)
+  const readPart = Option.map(latestReading, (reading) => `read ${formatNotificationTime(reading.at)} (${ageText(now - reading.at)}, ${reading.host})`)
+  const failPart = Option.map(latestFailure, (failure) => `last attempt ${formatNotificationTime(failure.at)} (${failure.host}): ${whyText(failure.why)}`)
+  const parts = [...Option.toArray(readPart), ...Option.toArray(failPart)]
+  const next = Match.value(nextReadAt > now).pipe(
+    Match.when(true, () => `next read possible ${formatNotificationTime(nextReadAt)}`),
+    Match.orElse(() => "a read is possible now (antigravity read)"),
+  )
+  const readRow = `  ${parts.join(" · ") || "not read yet"} · ${next}`
+  const staleRows = stalePeersOf(merged).map((peer) => {
+    const age = ageText(staleAgeMs(peer, now))
+    return `  peer ${peer.host} · stale (${age}): ${peer.message}`
+  })
+  const limitRows = merged.limits.map((limit) => {
+    const reset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => "no reset given", onSome: (at) => `resets ${formatNotificationTime(at)}` })
+    const label = Option.getOrElse(
+      Option.map(Arr.findFirst(groups, (group) => group.id === limit.group), (group) => group.label),
+      () => limit.group,
+    )
+    return `  last limit seen ${formatNotificationTime(limit.seenAt)} on ${label} (${limit.host}), ${reset}`
+  })
+  return [
+    ...groups.flatMap((group) => {
+      const spans: ReadonlyArray<Span> = ["5h", "7d"]
+      const quota = mergedWindowAt(merged, now, group.id, "quota")
+      const extra = Match.value(quota).pipe(Match.tag("Known", () => [windowText("quota", quota)]), Match.orElse(() => []))
+      return [
+        `antigravity / ${group.label} · ${answerText(mergedAnswerAt(merged, now, group.id))}`,
+        ...spans.map((span) => windowText(span, mergedWindowAt(merged, now, group.id, span))),
+        ...extra,
+      ]
+    }),
+    ...staleRows,
+    readRow,
+    ...limitRows,
+  ]
+}

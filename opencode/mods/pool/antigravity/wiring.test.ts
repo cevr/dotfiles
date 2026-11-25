@@ -4,28 +4,56 @@
 // fails or dies: the pool's own answer always comes, Antigravity's rows after
 // it, or one typed "unknown" row in their place.
 import { describe } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect, Match, Option } from "effect"
 import { expect, it } from "effect-bun-test"
+import { OpenStatus } from "./fleet.ts"
+import { GateDecision } from "./gate.ts"
 import type { Source } from "./source.ts"
+import { Answer } from "./state.ts"
 import { Availability, availability, containedLine, failedLine, wire } from "./wiring.ts"
 
 const ROWS = ["antigravity / Gemini · open", "  read Nov 24, 2026, 8:00:00 PM EST (now) · next read possible Nov 24, 2026, 8:05:00 PM EST"]
+const RESET = Date.parse("2026-11-25T03:00:00Z")
 
 const present: Source = {
   lines: Effect.succeed(ROWS),
-  open: () => Effect.succeed([]),
+  report: Effect.succeed({ host: "mac", at: RESET - 60_000, readableSignIn: true, limits: [] }),
+  open: (target) =>
+    Effect.succeed(
+      Match.value(Option.contains(target, "claude-opus-4-6")).pipe(
+        Match.when(true, () => [
+          {
+            group: "claude-gpt",
+            label: "Claude & GPT (shared)",
+            answer: Answer.cases.Limited.make({ until: RESET, by: "limit" }),
+            open: OpenStatus.cases.NotNow.make({ until: RESET, why: "limit", answer: Answer.cases.Limited.make({ until: RESET, by: "limit" }) }),
+          },
+        ]),
+        Match.orElse(() => [
+          {
+            group: "gemini",
+            label: "Gemini",
+            answer: Answer.cases.Open.make({}),
+            open: OpenStatus.cases.Now.make({ measured: true, answer: Answer.cases.Open.make({}) }),
+          },
+        ]),
+      ),
+    ),
   record: () => Effect.succeed(Option.none()),
   clear: () => Effect.void,
   read: () => Effect.succeed({ note: "Read now.", lines: ROWS }),
+  gate: () => Effect.succeed(GateDecision.cases.Admitted.make({ group: "gemini", measured: true, answer: Answer.cases.Open.make({}), geminiFleetCount: 1, geminiAgentCount: 1 })),
 }
 
 /** Every method a defect, as a thrown exception in Antigravity's code would be. */
 const dying: Source = {
   lines: Effect.die(new TypeError("lines threw")),
+  report: Effect.die(new TypeError("report threw")),
   open: () => Effect.die(new TypeError("open threw")),
   record: () => Effect.die(new TypeError("record threw")),
   clear: () => Effect.die(new TypeError("clear threw")),
   read: () => Effect.die(new TypeError("read threw")),
+  gate: () => Effect.die(new TypeError("gate threw")),
 }
 
 const toolText = (agy: Availability, action: "status" | "read") =>
@@ -38,6 +66,19 @@ describe("the pool's Antigravity wiring", () => {
       expect(yield* agy.pushText("status", "pool: 2 sources")).toBe(["pool: 2 sources", ...ROWS].join("\n"))
       expect(yield* agy.pushText("start", "started")).toBe("started")
       expect(yield* agy.rpc()).toEqual({ lines: ROWS })
+      expect(yield* agy.rpc({ action: "open", model: "claude-opus-4-6" })).toEqual({
+        groups: [
+          {
+            group: "claude-gpt",
+            label: "Claude & GPT (shared)",
+            open: false,
+            measured: true,
+            until: RESET,
+            text: expect.stringContaining("limited until"),
+          },
+        ],
+        lines: ROWS,
+      })
       expect(yield* toolText(Availability.Present({ source: present }), "read")).toContain("Read now.")
       expect(yield* toolText(Availability.Present({ source: present }), "status")).toContain("antigravity / Gemini · open")
     }),
