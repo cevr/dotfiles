@@ -23,8 +23,20 @@ export interface Volume {
   readonly diskFloorBytes: number
 }
 
+/** What a Linux host's cgroup tree proves. `enforced`: the workload slice
+ * and its protected siblings carry every required limit. `unattested`: one
+ * of them is missing, named by `file` and `why`; heavy commands then run
+ * under the fixed concurrency cap (`POLICY.unattestedSlots`) in the guard's
+ * nice + user scope launcher. `io` says whether this kernel weighs IO
+ * (any cgroup has `io.weight`); without it admission rests on CPU and memory. */
+export type Attestation =
+  | { readonly controller: "enforced"; readonly io: "weighted" | "unavailable" }
+  | { readonly controller: "unattested"; readonly io: "weighted" | "unavailable"; readonly file: string; readonly why: string }
+
 /** A quiet-host witness, independent of ticks, PSI and free memory/disk.
- * These are ceilings of the currently attested configuration, not claims. */
+ * These are ceilings of the currently attested configuration, not claims.
+ * No `attestation` (the Mac, and every enforced host before it was read)
+ * is the measured, attested path. */
 export interface HostEnvelope {
   readonly cpuMilli: number
   readonly memoryBytes: number
@@ -33,7 +45,10 @@ export interface HostEnvelope {
   readonly volumes: Readonly<Record<string, number>>
   readonly keys: ReadonlyArray<string>
   readonly purposes: ReadonlyArray<Purpose>
+  readonly attestation?: Attestation
 }
+
+export const unattested = (envelope?: HostEnvelope) => envelope?.attestation?.controller === "unattested"
 
 export interface Supply {
   readonly id: string
@@ -44,7 +59,7 @@ export interface Supply {
   readonly protectedCpuMilli: number
   readonly memoryBytes: number
   readonly pressure: "clear" | "degraded" | "hold"
-  readonly qualification: "enforced" | "advisory" | "unqualified"
+  readonly qualification: "enforced" | "advisory" | "unattested" | "unqualified"
   readonly runnable: number
   readonly managed: ReadonlyArray<ManagedUse>
   readonly volumes: Readonly<Record<string, Volume>>
@@ -72,6 +87,7 @@ export interface Measurements {
   readonly protectedLowerBoundMilli: number
   readonly volumes: Supply["volumes"]
   readonly keys: Supply["keys"]
+  readonly attestation?: Attestation
 }
 
 export const POLICY = {
@@ -93,6 +109,9 @@ export const POLICY = {
   // busy; starting a whole-host check would only add contention.
   wholePoolFreeFraction: 0.5,
   maxRequestMemoryBytes: 12 * 2 ** 30,
+  // An unattested Linux host runs heavy leases in FIFO order, at most this
+  // many at a time, whatever the measured load: no controller proves more.
+  unattestedSlots: 3,
 } as const
 
 const GiB = 2 ** 30
@@ -105,23 +124,29 @@ export const CHECK_PROFILE = {
 } as const
 const purposes: ReadonlyArray<Purpose> = ["check", "land-check", "vm", "inventory", "exclusive-check"]
 type EnvelopeMeasurements = Pick<Measurements, "platform" | "effectiveCpuMilli" | "containedCpuMilli" |
-  "totalMemoryBytes" | "containedMemoryBytes" | "controllerAvailable" | "keys"> & {
+  "totalMemoryBytes" | "containedMemoryBytes" | "controllerAvailable" | "keys" | "attestation"> & {
   readonly volumes: Readonly<Record<string, Pick<Volume, "capacityBytes" | "diskFloorBytes">>>
 }
 
 export const hostEnvelope = (raw: EnvelopeMeasurements): HostEnvelope => {
   const cpu = Math.max(0, raw.effectiveCpuMilli - POLICY.reserveCpuMilli)
-  const envelope = {
+  // A missing controller is a degraded mode, not a refusal: an unattested
+  // host still offers every class, under the fixed cap.
+  const offered = raw.controllerAvailable || raw.attestation?.controller === "unattested"
+  const envelope: HostEnvelope = {
     cpuMilli: Math.min(cpu, raw.containedCpuMilli ?? cpu),
     memoryBytes: Math.max(0, raw.totalMemoryBytes - POLICY.reserveMemoryBytes),
     needsMemoryReservation: raw.platform === "linux",
     volumes: Object.fromEntries(Object.entries(raw.volumes).map(([id, volume]) =>
       [id, volume.capacityBytes - Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes)])),
     keys: raw.keys,
-    purposes: purposes.filter(() => raw.controllerAvailable && cpu > 0),
+    purposes: purposes.filter(() => offered && cpu > 0),
   }
-  if (Predicate.isNumber(raw.containedMemoryBytes)) return { ...envelope, containedMemoryBytes: raw.containedMemoryBytes }
-  return envelope
+  const attested = Option.match(Option.fromNullishOr(raw.attestation), {
+    onNone: () => envelope, onSome: (attestation) => ({ ...envelope, attestation }),
+  })
+  if (Predicate.isNumber(raw.containedMemoryBytes)) return { ...attested, containedMemoryBytes: raw.containedMemoryBytes }
+  return attested
 }
 
 export const maximumRequestMemory = (envelope: HostEnvelope) =>
@@ -133,6 +158,10 @@ const managedValid = ({ measuredCpuMilli, enforcedCpuMilli }: ManagedUse) =>
   [measuredCpuMilli, enforcedCpuMilli].every(nonnegative) && measuredCpuMilli <= enforcedCpuMilli
 
 const activeQualification = { darwin: "advisory", linux: "enforced" } as const
+const qualificationOf = (raw: Measurements, credit: Option.Option<number>): Supply["qualification"] => {
+  if (raw.attestation?.controller === "unattested") return "unattested"
+  return Option.match(credit, { onNone: () => "unqualified", onSome: () => activeQualification[raw.platform] })
+}
 export const measureSupply = (raw: Measurements, envelope = hostEnvelope(raw)): Option.Option<Supply> => {
   const { before, after } = raw
   const total = after.total - before.total
@@ -156,7 +185,7 @@ export const measureSupply = (raw: Measurements, envelope = hostEnvelope(raw)): 
     protectedCpuMilli: POLICY.reserveCpuMilli,
     memoryBytes: raw.memoryBytes,
     pressure: raw.pressure,
-    qualification: Option.match(credit, { onNone: () => "unqualified", onSome: () => activeQualification[raw.platform] }),
+    qualification: qualificationOf(raw, credit),
     runnable: raw.runnable,
     managed: Option.match(credit, { onNone: () => [], onSome: () => raw.managed }),
     volumes: raw.volumes,

@@ -95,6 +95,38 @@ weights (linux/hetzner-workbox/README.md, Run families, says why). `--check`
 warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an
 installed one.
 
+### The guard's slices (host admission)
+
+The OpenCode guard runs every heavy command through `host-admit`
+(`opencode/mods/guard/host-resources-v1.md`). It admits by measurement only on a
+host whose cgroup tree attests its workload controller: `agentwork.slice` and
+`opencodecontrol.slice` (`slices.conf`, active from boot through
+`opencode.service`'s `Wants=`) and `bite.slice` at `CPUWeight=1000`. A host
+that does not attest is `unattested`, not refused: `host-admit host status
+--json` names the missing file, and heavy commands run three at a time in FIFO
+order under the guard's nice + user scope launcher. The 6.12 kernel here weighs
+no IO (no `io.cost` or BFQ), so admission rests on CPU and memory
+(`capabilities.io: "unavailable"`). Laying the slices down needs root, so the
+owner does it, in this order; nothing here restarts a service:
+
+1. `sudo sh ~/.local/share/opencode-prime/current.plugins/workbox/system-tools.sh slices`
+   (writes `/etc/systemd/user/agentwork.slice` and `opencodecontrol.slice`, then
+   `systemctl daemon-reload`).
+2. `sudo install -m 0644 <workbox>/systemd/system/bite.slice /etc/systemd/system/ && sudo systemctl daemon-reload`
+   (the live `bite.slice` still reads `cpu.weight` 100).
+3. `systemctl --user daemon-reload && systemctl --user start agentwork.slice opencodecontrol.slice`
+   (starts two empty slices; restarts nothing).
+4. `host-admit host status --json` then names `controller` `enforced`, or the
+   next missing file.
+
+`cpuset` and `io` are not delegated to the live user manager (`user@1000.service`
+lists `cpu memory pids`); the guard needs neither. The installed delegation
+drop-in (`systemd/slices/system/user@.service.d/40-workbox-delegate.conf`)
+takes effect only when `user@1000.service` next starts, which stops every user
+service including OpenCode: a boot, the owner's call. The service places itself
+in `app.slice` (`opencode/mods/update/placement.ts`), so `opencodecontrol.slice`'s
+floors cover it only once it places itself there.
+
 Use `workbox-run bite-work -- bun test` (or another family or `default`) for
 bounded tests. Each call opens a new user scope with its own hard cap
 (`--memory-max SIZE`, default 12 GiB), no swap and whole-run OOM handling.

@@ -1,6 +1,6 @@
 import { Context, Effect, Option, Predicate, Result, Schema } from "effect"
 import { Counter, Demand, normalizeRequest, OpaqueId, Phase, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
-import { capacityOf, freeHostCpu, type HostEnvelope, POLICY, runnableLimit, type Supply, usableVolume } from "./host-supply.ts"
+import { capacityOf, freeHostCpu, type HostEnvelope, POLICY, runnableLimit, type Supply, unattested, usableVolume } from "./host-supply.ts"
 
 export const Lease = Schema.Struct({
   id: OpaqueId,
@@ -220,14 +220,31 @@ export const cpuDemand = (demand: Demand, maximum: number) => {
   return Math.min(maximum, Math.max(demand.cpuMilli, demand.width * 1000))
 }
 
-const checkedDemand = (entry: Lease, sample: Supply): Demand => {
+const demandWithin = (entry: Lease, envelope: HostEnvelope): Demand => {
   const { demand } = entry.request
-  const cpuMilli = cpuDemand(demand, sample.envelope.cpuMilli)
+  const cpuMilli = cpuDemand(demand, envelope.cpuMilli)
   // Once a whole-pool claim starts it stays exclusive until drain, even
   // if the pool later expands. Keep the literal model in request.demand.
-  if (cpuMilli === sample.envelope.cpuMilli) return { ...demand, width: "full" as const, cpuMilli }
+  if (cpuMilli === envelope.cpuMilli) return { ...demand, width: "full" as const, cpuMilli }
   return { ...demand, cpuMilli }
 }
+const checkedDemand = (entry: Lease, sample: Supply): Demand => demandWithin(entry, sample.envelope)
+
+/** An unattested host (no workload controller to measure against) admits
+ * by a fixed rule instead: at most `POLICY.unattestedSlots` held leases,
+ * exclusive and whole-pool checks alone, each resource key once, and the
+ * envelope's CPU and memory as reservations. No sample is needed. */
+const fixedCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, limit: HostEnvelope) => {
+  const alone = holds.length > 0 && (exclusive(entry) || demand.width === "full" ||
+    holds.some((row) => exclusive(row) || Option.exists(row.admittedDemand, (held) => held.width === "full")))
+  return [
+    ceiling(POLICY.unattestedSlots, 1, "capacity", holds.length),
+    ceiling(0, Number(alone), "capacity"),
+    ...staticCeilings(demand, limit, holds, "memory"),
+  ]
+}
+const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
+const fixedLimit = (observation: Observation) => Option.filter(Option.fromNullishOr(envelopeOf(observation)), unattested)
 
 const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {
   const { demand } = request
@@ -307,8 +324,35 @@ const atFrontier = (row: Lease, older: ReadonlyArray<Lease>, holds: ReadonlyArra
   return budgetReason(row, checkedDemand(row, sample), holds, sample)
 }
 
+const grant = (tx: Transaction, row: Lease, demand: Demand, sampleId: Lease["sampleId"], now: number) => tx.update(row, {
+  state: "granted", generation: row.generation + 1, reason: "granted", sampleId,
+  admittedDemand: Option.some(demand),
+  expiresBootMs: Option.some(Math.min(row.request.deadlineBootMs, now + POLICY.launchMs)),
+})
+
+/** Strict FIFO under the fixed cap: once one queued lease waits, every
+ * later one waits behind it, so none starves. */
+const allocateFixed = (tx: Transaction, now: number, limit: HostEnvelope) => {
+  let waiting = false
+  for (const row of tx.rows().filter((entry) => entry.state === "queued")) {
+    if (waiting) {
+      queuedFor(tx, row, "fifo", Option.none())
+      continue
+    }
+    const demand = demandWithin(row, limit)
+    const reason = fits(fixedCeilings(row, demand, tx.rows().filter(held), limit))
+    if (Option.isSome(reason)) {
+      waiting = true
+      queuedFor(tx, row, reason.value, Option.none())
+    } else grant(tx, row, demand, Option.none(), now)
+  }
+  return 0
+}
+
 const allocate = (tx: Transaction, observation: Observation, landBurst: number) => {
   const { sample, now } = observation
+  const fixed = fixedLimit(observation)
+  if (Option.isSome(fixed)) return allocateFixed(tx, now, fixed.value)
   const available = fresh(observation)
   const queue = tx.rows().filter((row) => row.state === "queued")
   if (Result.isFailure(available)) {
@@ -333,24 +377,32 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
     }
     if (prioritized.includes(row)) burst += 1
     else if (row.request.purpose !== "land-check") burst = 0
-    tx.update(row, {
-      state: "granted", generation: row.generation + 1, reason: "granted", sampleId: Option.some(supply.id),
-      admittedDemand: Option.some(checkedDemand(row, supply)),
-      expiresBootMs: Option.some(Math.min(row.request.deadlineBootMs, now + POLICY.launchMs)),
-    })
+    grant(tx, row, checkedDemand(row, supply), Option.some(supply.id), now)
   }
   return burst
 }
 
-const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => Result.flatMap(fresh(observation), (sample) => {
-  const demand = checkedDemand(row, sample)
-  if (!Option.exists(row.admittedDemand, (granted) => granted.cpuMilli === demand.cpuMilli && granted.width === demand.width))
-    return Result.fail("capacity" as const)
-  const other = tx.rows().filter((r) => r.id !== row.id && held(r))
-  const reason = budgetReason(row, demand, other, sample)
+const sameGrant = (row: Lease, demand: Demand) =>
+  Option.exists(row.admittedDemand, (granted) => granted.cpuMilli === demand.cpuMilli && granted.width === demand.width)
+const approveFixed = (tx: Transaction, row: Lease, limit: HostEnvelope): Result.Result<{ demand: Demand; sampleId: Lease["sampleId"] }, Reason> => {
+  const demand = demandWithin(row, limit)
+  if (!sameGrant(row, demand)) return Result.fail("capacity")
+  const reason = fits(fixedCeilings(row, demand, tx.rows().filter((r) => r.id !== row.id && held(r)), limit))
   if (Option.isSome(reason)) return Result.fail(reason.value)
-  return Result.succeed({ demand, sampleId: sample.id })
-})
+  return Result.succeed({ demand, sampleId: Option.none() })
+}
+const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => {
+  const fixed = fixedLimit(observation)
+  if (Option.isSome(fixed)) return approveFixed(tx, row, fixed.value)
+  return Result.flatMap(fresh(observation), (sample) => {
+    const demand = checkedDemand(row, sample)
+    if (!sameGrant(row, demand)) return Result.fail("capacity" as const)
+    const other = tx.rows().filter((r) => r.id !== row.id && held(r))
+    const reason = budgetReason(row, demand, other, sample)
+    if (Option.isSome(reason)) return Result.fail(reason.value)
+    return Result.succeed({ demand, sampleId: Option.some(sample.id) })
+  })
+}
 
 const claim = (tx: Transaction, row: Lease, input: Extract<Input, { op: "claim" }>, observation: Observation): Option.Option<Reason> => {
   if (row.generation !== input.generation || row.state !== "granted") return Option.some("stale")
@@ -364,7 +416,7 @@ const claim = (tx: Transaction, row: Lease, input: Extract<Input, { op: "claim" 
   } else {
     const { demand, sampleId } = decision.success
     tx.update(row, {
-      state: "running", reason: "running", binding: Option.some(input.binding), admittedDemand: Option.some(demand), sampleId: Option.some(sampleId),
+      state: "running", reason: "running", binding: Option.some(input.binding), admittedDemand: Option.some(demand), sampleId,
       expiresBootMs: Option.some(observation.now + POLICY.supervisionMs), hardDeadline: Option.some(observation.now + POLICY.maxRunningMs),
     })
   }
@@ -484,7 +536,10 @@ export const transition = (state: Admission, input: Input, observation: Observat
   requalify(tx, observation)
   const result = apply(tx, state.bootId, input, observation)
   let landBurst = state.landBurst
-  if (observation.sample || input.op === "request" || input.op === "advance") landBurst = allocate(tx, observation, landBurst)
+  // Under the fixed cap any observation with its envelope decides: a lease
+  // waits on the ledger alone, never on a sample.
+  if (observation.sample || input.op === "request" || input.op === "advance" || Option.isSome(fixedLimit(observation)))
+    landBurst = allocate(tx, observation, landBurst)
   const next = { ...state, revision, landBurst, leases: Object.fromEntries(leases) }
   return { state: next, reply: respond(tx, next, result), changes }
 }

@@ -636,6 +636,8 @@ describe("unit files", () => {
       "After=network-online.target",
       "Wants=network-online.target",
       "WantedBy=default.target",
+      // The guard's slices are active from boot, so it can read their cgroups (workbox/slices.conf).
+      "Wants=agentwork.slice opencodecontrol.slice",
     ])
       expect(keys).toContain(key)
   })

@@ -57,7 +57,7 @@ export const qualifiedForm = (reason: Reason, storeVersion?: { readonly found: n
     case "disk-limit": return "Request fewer bytes on a registered volume; leave its permanent disk floor unreserved."
     case "unknown-volume": return "Run host status --json from the executing volume and use its defaultVolume."
     case "unknown-key": return "Use only resource keys offered by host status --json."
-    case "unsupported-class": return "Use an offered class from host status --json; Linux requires the attested workload controller."
+    case "unsupported-class": return "Use an offered class from host status --json."
     case "invalid-width": return "Use a positive integer, full, or unknown for width."
     case "unavailable": return "Retry submission when host status --json can attest the managed pool and volume."
     default: return "Use host-admit --help and host status --json for a qualified request."
