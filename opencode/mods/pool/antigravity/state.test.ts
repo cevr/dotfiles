@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { Array as Arr, Match, Option, Schema } from "effect"
 import type { Span, Window } from "./quota.ts"
 import { Answer, answerAt, backoffMs, due, EMPTY, Event, evolve, keychainAllowed, READ_EVERY_MS, type State, Why } from "./state.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { openText, statusLines } from "./text.ts"
 
 const MINUTE = 60_000
@@ -187,7 +188,7 @@ describe("Antigravity reading store", () => {
         check(world)
       }
     }
-  })
+  }, hangGuard("in-memory"))
 
   test("three states: limited until T, measured open, not measured; a limit with no reset holds until a reading with room or a clear", () => {
     const gemini = (state: State, now: number) => answerAt(state, now, "gemini")._tag
