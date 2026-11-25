@@ -421,6 +421,8 @@ export const RecordStep = Schema.TaggedStruct("RecordStep", {
   cost: Schema.Number,
   /** The assistant message the step wrote, as the host's event names it. */
   messageID: Schema.optionalKey(Schema.String),
+  /** The concrete account of a provider whose host chooses the login. */
+  credentialID: Schema.optionalKey(Schema.String),
 })
 export interface RecordStep extends Schema.Schema.Type<typeof RecordStep> {}
 
@@ -446,7 +448,7 @@ const recordStep = (
   now: number,
 ): Effect.Effect<ReadonlyArray<StepRecorded>> => {
   const { sessionID, cost, messageID } = command
-  const credentialID = placedOn(state, sessionID, "primary") ?? state.runs[sessionID]?.credentialID
+  const credentialID = Option.getOrUndefined(Option.filter(Option.orElse(Option.fromUndefinedOr(command.credentialID), () => Option.fromUndefinedOr(placedOn(state, sessionID, "primary") ?? state.runs[sessionID]?.credentialID)), (id) => state.credentials.includes(id)))
   if (credentialID === undefined || !Number.isFinite(cost) || cost < 0) return Effect.succeed([])
   const recent = state.recent[sessionID]
   return Effect.succeed([

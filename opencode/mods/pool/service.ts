@@ -12,13 +12,15 @@ import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
-import type { Hold, Report, SourceStatus } from "./status.ts"
+import type { Hold, Report, SourceStatus, Start } from "./status.ts"
 
 export class HoldStoreUnavailable extends Schema.TaggedError<HoldStoreUnavailable>()("HoldStoreUnavailable", {
   retryAt: Schema.Finite,
 }) {}
 
 export type Holds = Readonly<Record<string, Hold>>
+
+export class LaunchStoreUnavailable extends Schema.TaggedError<LaunchStoreUnavailable>()("LaunchStoreUnavailable", { message: Schema.String }) {}
 
 /**
  * Where a pool keeps what the next process needs: its holds, readings,
@@ -268,6 +270,12 @@ export class Owner extends Context.Service<
 export class FleetStore extends Context.Service<
   FleetStore,
   {
+    /** Serialize the host's read/decide/write facts across directory instances. */
+    readonly withState: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+    /** Spending authority reads fail closed; the display's best-effort read is not admission evidence. */
+    readonly starts: Effect.Effect<ReadonlyArray<Start>, LaunchStoreUnavailable>
+    /** Write and confirm a frozen reservation under its stable launch id. */
+    readonly reserve: (start: Start) => Effect.Effect<Start, LaunchStoreUnavailable>
     readonly read: Effect.Effect<FleetState>
     /** Write what `events` change; `state` is the fleet with them folded in. */
     readonly record: (events: ReadonlyArray<FleetEvent>, state: FleetState) => Effect.Effect<void>

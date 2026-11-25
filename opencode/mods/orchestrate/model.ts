@@ -215,6 +215,27 @@ export const layer = (config: Config) =>
       const sessions = yield* Sessions
       const models = yield* Models
       const pool = yield* PoolPace
+      const launchIds = new Map<string, string>()
+      const launchCallKey = (call: ToolCallId) => `${call.sessionID}/${call.callID}`
+      const negotiate = Effect.fn("Orchestrate.negotiateLaunch")(function* (
+        events: ReadonlyArray<Event>, call: ToolCallId, fresh: boolean, base: Option.Option<ModelRef>,
+      ) {
+        const begun = events.find((event) => event._tag === "SubagentStarted")
+        if (!fresh || begun === undefined || begun._tag !== "SubagentStarted") return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const ref = Option.orElse(Option.fromUndefinedOr(parseModel(begun.model)), () => base)
+        if (Option.isNone(ref)) return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const launchID = `${launchCallKey(call)}/${yield* Clock.currentTimeMillis}`
+        const reply = yield* pool.reserveLaunch(ref.value.providerID, ref.value.id, call.sessionID, launchID)
+        if (reply._tag === "Answered" && !reply.pace.ok) return Option.some({
+          model: formatRef(ref.value), reply,
+          hold: Option.some<PaceHold>({ whose: "pool", reason: reply.pace.reason, ...Option.match(Option.fromUndefinedOr(reply.pace.retryAt), { onNone: () => ({}), onSome: (retryAt) => ({ retryAt }) }) }),
+        })
+        if (reply._tag !== "Answered" || !reply.pace.measured) return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const child = Option.fromUndefinedOr(begun.child)
+        if (Option.isSome(child)) yield* pool.bindLaunch(launchID, child.value)
+        else launchIds.set(launchCallKey(call), launchID)
+        return Option.some({ model: formatRef(ref.value), reply, hold: Option.none<PaceHold>() })
+      })
       const codex = yield* CodexAdmission
       const latches = yield* Latches
       const units = yield* UnitLogs
@@ -610,7 +631,7 @@ export const layer = (config: Config) =>
           hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent) : undefined
         const fallback = offered?.fallback
         // What each pace asked said, for the line.
-        const asked: Asked = { ...paced?.asked, ...Option.match(followed, { onNone: () => ({}), onSome: (each) => each.asked }), ...offered?.asked }
+        let asked: Asked = { ...paced?.asked, ...Option.match(followed, { onNone: () => ({}), onSome: (each) => each.asked }), ...offered?.asked }
         // The model it runs on, as this start asked (`asAsked`): its pace and latch were decided on the model it
         // resolved, as any start's. One that names no model takes the one it would run on: a new start's (a new
         // worker's inherited one, so the host never falls back to a fast parent's), or a follow-up's child's.
@@ -629,7 +650,7 @@ export const layer = (config: Config) =>
         const unasked = yield* unaskedFast(call.sessionID, wouldRun, fastAsk.fast, fresh)
         const runsFirst = Option.getOrUndefined(yield* asAsked(call.sessionID, Option.fromUndefinedOr(primary), fastAsk.fast, fresh))
         const runsFallback = yield* fastFallback(call.sessionID, Option.fromUndefinedOr(fallback), fastAsk.fast, fresh)
-        const command = StartSubagent.make({
+        let command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
           ...(runsFallback !== undefined && runsFirst !== undefined ? { model: runsFirst, fallback: runsFallback } : runs === undefined ? {} : { model: runs }),
@@ -639,6 +660,14 @@ export const layer = (config: Config) =>
           ...(childLatched === undefined ? {} : { childLatched }),
           ...Option.match(off.refused, { onNone: () => ({}), onSome: (codex) => ({ codex }) }),
         })
+        const agreement = yield* negotiate(yield* ToolCall.decide(ToolCall.initial, command, now), call, fresh, Option.fromUndefinedOr(paced?.ref))
+        if (Option.isSome(agreement)) {
+          asked = { ...asked, pace: agreement.value.reply }
+          if (Option.isSome(agreement.value.hold)) {
+            const { fallback: _fallback, ...selected } = command
+            command = StartSubagent.make({ ...selected, model: agreement.value.model, hold: agreement.value.hold.value })
+          }
+        }
         const first = onFirst?.first
         const events = yield* decide(command, now, SUBAGENT, asked, first, fastAsk.fast, unasked)
         const latched = events.find((event) => event._tag === "SubagentLatched")
@@ -692,8 +721,6 @@ export const layer = (config: Config) =>
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
         // A new agent counts on the pace of the provider it started on, here and on the owner's other hosts, until its spend shows.
-        const ran = started === undefined || paced === undefined ? undefined : (parseModel(started.model) ?? paced.ref)
-        if (ran !== undefined) yield* pool.started(ran.providerID)
         if (started !== undefined) yield* moveOnStart(started, fields.prompt)
         return Option.fromNullishOr(started)
       })
@@ -739,7 +766,7 @@ export const layer = (config: Config) =>
         const fallbackAt = parseModel(kept?.fallback)
         const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent, latch.parent) : undefined
         const fallbackHold = fallbackPaced?.hold
-        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
+        let asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
         const fallback: Fallback | undefined =
           offered?.fallback ??
           (kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) })
@@ -751,9 +778,7 @@ export const layer = (config: Config) =>
         const opensOn = Option.getOrUndefined(yield* asAsked(latch.parent, Option.fromUndefinedOr(primary), fast, fresh))
         const opensFallback = yield* fastFallback(latch.parent, Option.fromUndefinedOr(fallback), fast, fresh)
         const unasked = yield* unaskedFast(latch.parent, Option.fromUndefinedOr(primary), fast, fresh)
-        const events = yield* ToolCall.decide(
-          ToolCall.initial,
-          OpenLatch.make({
+        let command = OpenLatch.make({
             call,
             from: latch.from,
             agent,
@@ -765,9 +790,16 @@ export const layer = (config: Config) =>
             ...(paced?.hold === undefined ? {} : { hold: paced.hold }),
             ...(opensFallback === undefined ? {} : { fallback: opensFallback }),
             started: ran,
-          }),
-          now,
-        ).pipe(
+          })
+        const agreement = yield* negotiate(yield* ToolCall.decide(ToolCall.initial, command, now).pipe(Effect.orDie), call, fresh, Option.fromUndefinedOr(paced?.ref))
+        if (Option.isSome(agreement)) {
+          asked = { ...asked, pace: agreement.value.reply }
+          if (Option.isSome(agreement.value.hold)) {
+            const { fallback: _fallback, ...selected } = command
+            command = OpenLatch.make({ ...selected, model: agreement.value.model, hold: agreement.value.hold.value })
+          }
+        }
+        const events = yield* ToolCall.decide(ToolCall.initial, command, now).pipe(
           Effect.orDie, // The model has already been checked; the open latches again or starts.
           Effect.flatMap((decided) => Effect.forEach(decided, (event) => saidFast(latch.parent, event, fast, unasked))),
         )
@@ -781,8 +813,6 @@ export const layer = (config: Config) =>
         if (started === undefined) return { outcome: "opened" }
         yield* log.append(CallLine.started(started, yield* at, asked, first))
         const on = started.model ?? latch.model
-        const opened = parseModel(on) ?? paced?.ref
-        if (opened !== undefined) yield* pool.started(opened.providerID)
         const failed = yield* latches
           .start({
             parent: latch.parent,
@@ -826,6 +856,10 @@ export const layer = (config: Config) =>
       }) {
         // A finish is only recorded, never refused.
         const now = yield* sabbathNow
+        const key = launchCallKey(input.call)
+        const launchID = Option.fromUndefinedOr(launchIds.get(key))
+        if (Option.isSome(launchID) && input.child !== undefined) yield* pool.bindLaunch(launchID.value, input.child)
+        launchIds.delete(key)
         yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.orDie)
       })
 

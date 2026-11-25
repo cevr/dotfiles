@@ -452,6 +452,8 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
     PoolPaceLive.layer(
       (input) => ctx.rpc(POOL_STATUS).pace(input),
       (input) => ctx.rpc(POOL_STATUS).started(input),
+      Option.some((input) => ctx.rpc(POOL_STATUS).reserveLaunch(input)),
+      Option.some((input) => ctx.rpc(POOL_STATUS).bindLaunch(input)),
     ),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
     RunsLive.layer(() => ctx.rpc(STATUS).status({})),

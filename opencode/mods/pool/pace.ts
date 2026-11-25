@@ -101,6 +101,7 @@ export type Admission = typeof Admission.Type
 export const HoldReason = Schema.Literals([
   "store-unavailable", "logins-unavailable", "usage-unread", "model-unreported", "record-unreadable", "account-held", "model-limit", "quota-limit",
   "even-line", "reset-room", "auxiliary", "placement-changed",
+  "fleet-busy", "fleet-unavailable",
 ])
 export type HoldReason = typeof HoldReason.Type
 /** The holds a REPORTED window makes: a person is told of these before an unread login's. */
@@ -109,6 +110,7 @@ const REPORTED_LIMITS: ReadonlyArray<HoldReason> = ["model-limit", "quota-limit"
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 export const NoPoolLogin = Schema.Literal("not-tracked-no-pool-login")
 const paceFields = {
+  forecast: Schema.optionalKey(Schema.Struct({ cost: Schema.Finite, samples: Schema.Int, source: Schema.Literals(["hour", "day", "floor"]) })),
   measured: Schema.Boolean,
   reason: Schema.String,
   tracking: Schema.optionalKey(NoPoolLogin),
@@ -228,6 +230,10 @@ export interface Inflight {
   readonly starts: ReadonlyArray<number>
   readonly cost: number
   readonly settleMs: number
+  /** Frozen per-start estimates; absent entries retain the configured floor. */
+  readonly costs?: ReadonlyArray<number>
+  /** A new launch must fit its own estimate as well as starts already admitted. */
+  readonly nextCost?: number
 }
 
 export const NO_INFLIGHT: Inflight = { starts: [], cost: 0, settleMs: 0 }
@@ -427,7 +433,9 @@ function budgetPace(
   })
   if (!known.length) return admitUnpaced(absentWeek, shortOnly, unmeasured, failedRead, now)
   const read = known.reduce((n, a) => n + a.used, 0)
-  const charged = inflight.starts.length * inflight.cost
+  const pending = inflight.starts.reduce((sum, _at, index) => sum + Option.getOrElse(Option.fromUndefinedOr(inflight.costs?.[index]), () => inflight.cost), 0)
+  const nextCost = Option.getOrElse(Option.fromUndefinedOr(inflight.nextCost), () => 0)
+  const charged = pending + nextCost
   const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
   const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, ordinaryPlan(a.plan)), 0)
   const weekly = weeklyPace(known, now, charged)
@@ -456,14 +464,17 @@ function budgetPace(
   // Pool-wide figures read per account, on average, so each stays out of 100%.
   const n = known.length
   const starting = inflight.starts.length
-    ? `, plus ${tenth(charged / n)} of the week counted for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
+    ? `, plus ${tenth(pending / n)} of the week counted for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
     : ""
+  const candidate = Option.match(Option.filter(Option.some(nextCost), (cost) => cost > 0), {
+    onNone: () => "", onSome: (cost) => `, plus ${tenth(cost / n)} of the week reserved for the next agent`,
+  })
   return {
     ok: false,
     measured: true,
     soft: true,
     reason:
-      `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}; ` +
+      `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}${candidate}; ` +
       `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
     retryAt: nextRetryAt(now, [...Option.toArray(weekly.retryAt), ...settles, ...known.map((a) => a.resetAt)]),
     reasonCode: "even-line",
@@ -650,6 +661,8 @@ const gapText = (gap: Gap) => Match.value(gap).pipe(Match.tagsExhaustive({
 const alternate = "Use another model or login; time alone will not clear this hold. The retry time is the next usage refresh, not an opening time."
 
 export interface DispatchPolicy {
+  /** Trusted root primary/compaction traffic may spend the worker safety margin while real quota remains. */
+  readonly priority?: boolean
   readonly auxiliary?: Exclude<RequestKind, "primary" | "compaction">
   readonly liftEvenLine?: boolean
   /** Fleet starts not yet visible in the readings, when quoting a new start; an existing request already counted its launch. */
@@ -754,6 +767,16 @@ export function dispatchPace(
   const inflight = Option.getOrElse(Option.fromUndefinedOr(policy.inflight), () => NO_INFLIGHT)
   const answer = budgetPace(fresh, now, inflight, model, plans)
   const open = eligibleFor(fresh, now, model)
+  if (policy.priority === true && Option.isNone(Option.fromUndefinedOr(policy.auxiliary))) {
+    const priority = fresh.filter((account) =>
+      Option.isNone(Option.fromUndefinedOr(blockedUntil(account, now, model))) &&
+      !TRACKED_WINDOWS.some((name) => accountWindow(account, name)._tag === "Reported" &&
+        Option.exists(windowOf(account, name), (window) => window.utilization >= 1)))
+    if (priority.length > 0) return {
+      ok: true, measured: true, admission: "ordinary", eligible: priority.map((account) => account.credentialID),
+      reason: "orchestrator priority: provider quota remains; worker weekly pace does not hold this request",
+    }
+  }
   // The pace may name fewer accounts than are open: past the even line, only those with no week to pace.
   const eligible = open.map((a) => a.credentialID).filter((id) =>
     Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) }))

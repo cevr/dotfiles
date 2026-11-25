@@ -68,7 +68,8 @@ export const boot = (seed: number, initial: FakeQuota, grants: ReadonlyArray<Fak
       directory: WORK,
       options: { sweepMinutes: 0.1, limitsFile: "/nonexistent/loop-probe-x/limits.json" },
     })
-    const session = yield* world.session(WORK, { id: SESSION })
+    const parent = yield* world.session(WORK, { id: "ses_reset_parent", model: { providerID: "fixture-parent", id: "parent" } })
+    const session = yield* world.session(WORK, { id: SESSION, parentID: parent })
     yield* world.advance(7_000)
     const pace = world.rpc(POOL, "pace", { providerID: "anthropic", model: "claude-opus-5-5", sessionID: session })
     return { world, session, pace, setQuota: (next: FakeQuota) => { reading = next } }
@@ -211,9 +212,10 @@ export const fleet = (made: Fixture, options: { readonly beside?: World.World; r
       yield* world.load(pool, { directory: WORK, options: config })
     }
     yield* world.advance(7_000)
+    const parent = yield* world.session(sessionDirectory, { id: "ses_dispatch_parent", model: { providerID: "fixture-parent", id: "parent" } })
     return {
       world,
-      session: (id: string) => world.session(sessionDirectory, { id: `ses_${id}` }),
+      session: (id: string) => world.session(sessionDirectory, { id: `ses_${id}`, parentID: parent }),
       pace: (sessionID: string) => Effect.map(world.rpc(POOL, "pace", { providerID: "anthropic", model: "claude-opus-5-5", sessionID }), decodePace),
       primary: () => world.provider().received().filter((request) => request.path === "/v1/messages" && request.tools > 0),
       claims: () => world.provider().claims().map((claim) => claim.result),
