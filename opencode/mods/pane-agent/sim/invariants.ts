@@ -1,7 +1,7 @@
 import { Option } from "effect"
 import type { PaneWorker } from "../worker.ts"
 import { DEADLINES_MS } from "./doubles.ts"
-import { type CommandName, TICK_MS, type ToolCall, type Trace } from "./driver.ts"
+import { type CommandName, LATE_START_MS, TICK_MS, type ToolCall, type Trace } from "./driver.ts"
 import type { EffectRecord } from "./faults.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn, type RefWorker } from "./reference.ts"
 import { answerOf, goneAt, LIMIT_MS, OWNER_BLOCK, PLACEHOLDER, PROMPT_SCREENS, type Run, STALE_CONTENT, TOKEN, type WakeRecord, type WorldState } from "./world.ts"
@@ -290,6 +290,13 @@ const frameUntil = (trace: Trace, run: Run): number => {
  */
 export const OBSERVE_GAP_MS = DEADLINES_MS.readDeadline + SETTLE_WINDOW_MS
 
+/**
+ * The trace's recovery bound for a dead watcher (review r6 N1): one tick to detect the death, a late process start
+ * (50 ms) and one bounded reattach (store + ask + slack). If no replacement reattaches within this bound, the dead
+ * watcher's excuse ends here.
+ */
+export const RECOVERY_BOUND_MS = TICK_MS + LATE_START_MS + BOUND_MS.reattach + SLACK_MS
+
 /** The calls by which a shell observes a pane's turn end: its liveness, its quiet wait and its reads. */
 const OBSERVING: ReadonlyArray<string> = ["pane.read", "pane.readTail", "pane.alive", "pane.waitForQuiet"]
 
@@ -297,6 +304,14 @@ const OBSERVING: ReadonlyArray<string> = ["pane.read", "pane.readTail", "pane.al
 const LASTING: ReadonlyArray<string> = ["hang", "timeout", "late", "crash"]
 
 const observes = (e: EffectRecord, blockId: string): boolean => OBSERVING.includes(e.boundary) && e.detail.startsWith(`${blockId}:`)
+
+/**
+ * Observing calls whose fault blocks a read of the pane (review r6 N2): any non-ok fault on pane.read/readTail,
+ * or a lasting fault (hang/timeout/late/crash) on pane.alive/waitForQuiet. A non-lasting fault on alive or
+ * waitForQuiet does not stop a read and does not extend the excuse.
+ */
+const blocksObserve = (e: EffectRecord, blockId: string): boolean =>
+  observes(e, blockId) && e.fault !== "ok" && (READS.includes(e.boundary) || LASTING.includes(e.fault))
 
 /** The processes watching a run's pane: the last to observe it by the run's end, and every one observing it after. */
 const watchersOf = (trace: Trace, blockId: string, end: number): ReadonlySet<number> => {
@@ -317,41 +332,69 @@ const deathOf = (trace: Trace, proc: number): Option.Option<number> => {
   return Option.map(Option.fromUndefinedOr(trace.effects.find((e) => e.boundary === "process.start" && e.at >= last && e.proc !== proc)), (e) => e.at)
 }
 
+/**
+ * When a dead watcher's replacement finished reattaching (and so is watching the pane again), if any replacement
+ * reattached within RECOVERY_BOUND_MS of the crash. Killed or hanging reattaches have no endedAt and do not count.
+ */
+const reattachAfter = (trace: Trace, proc: number, crashAt: number): Option.Option<number> => {
+  const ended = trace.calls
+    .filter((call) => call.command === "reattach" && call.proc !== proc && call.startedAt >= crashAt && call.outcome !== "defect")
+    .flatMap((call) => Option.toArray(call.endedAt))
+    .filter((at) => at <= crashAt + RECOVERY_BOUND_MS)
+    .sort((a, b) => a - b)
+  return Option.fromUndefinedOr(ended[0])
+}
+
 interface Disruption {
   readonly at: number
+  /** End of the excuse window granted by this disruption: at + OBSERVE_GAP_MS for a call fault; reattachEnd + OBSERVE_GAP_MS for a dead watcher whose replacement reattached in time, else at + RECOVERY_BOUND_MS. */
+  readonly excuseUntil: number
   readonly lasting: boolean
 }
 
+const deathDisruption = (trace: Trace, proc: number): Option.Option<Disruption> =>
+  Option.map(deathOf(trace, proc), (at) => ({
+    at,
+    excuseUntil: Option.match(reattachAfter(trace, proc, at), {
+      onNone: () => at + RECOVERY_BOUND_MS,
+      onSome: (reattachedAt) => reattachedAt + OBSERVE_GAP_MS,
+    }),
+    lasting: true,
+  }))
+
 /**
- * Adjudication 4a/4b/4c, scoped (review r5 B1): the disruptions that can keep THIS run's end from being observed are a
- * fault on an observing call of its pane and a crash of a process watching it, while its frame showed. A fault on
- * another worker, another pane or the store is none of them.
+ * Adjudication 4a/4b/4c, scoped (review r5 B1, r6 N1/N2): the disruptions that can keep THIS run's end from being
+ * observed are a read-blocking fault on an observing call of its pane and a crash of a process watching it, while
+ * its frame showed. A dead watcher's excuse runs from its replacement's reattach end plus OBSERVE_GAP_MS, bounded
+ * by RECOVERY_BOUND_MS when no replacement reattaches. A fault on another worker, another pane or the store is none
+ * of them.
  */
 const disruptionsOf = (trace: Trace, run: Run, end: number, frameEnd: number): ReadonlyArray<Disruption> => {
-  const faults = trace.effects.filter((e) => observes(e, run.blockId) && e.fault !== "ok").map((e) => ({ at: e.at, lasting: LASTING.includes(e.fault) }))
-  const deaths = [...watchersOf(trace, run.blockId, end)].flatMap((proc) => Option.toArray(deathOf(trace, proc))).map((at) => ({ at, lasting: true }))
+  const faults: ReadonlyArray<Disruption> = trace.effects.flatMap((e) => {
+    if (!blocksObserve(e, run.blockId)) return []
+    return [{ at: e.at, excuseUntil: e.at + OBSERVE_GAP_MS, lasting: LASTING.includes(e.fault) }]
+  })
+  const deaths = [...watchersOf(trace, run.blockId, end)].flatMap((proc) => Option.toArray(deathDisruption(trace, proc)))
   return [...faults, ...deaths].filter((d) => d.at <= frameEnd).sort((a, b) => a.at - b.at)
 }
 
 /**
- * The last disruption of the excuse chain that starts at the run's end, if one starts there. It starts with a
- * lasting disruption still holding at the end (from a read deadline before), or with one within the settle window
- * after it (a fault-free run settles in that window); each next one follows the last within OBSERVE_GAP_MS. The
- * first fault-free gap longer than that ends the chain: a correct shell has read by then.
+ * The end of the excuse chain that starts at the run's end, if one starts there. It starts with a lasting
+ * disruption still holding at the end (whose excuse reaches end + SETTLE_WINDOW_MS), or with one within the settle
+ * window after it (a fault-free run settles in that window); each next disruption must begin by the chain's current
+ * end. The first fault-free gap past that end breaks the chain: a correct shell has read by then.
  */
 const excuseEnd = (disruptions: ReadonlyArray<Disruption>, end: number): Option.Option<number> => {
-  const holding = disruptions.flatMap((d) => [d.at].filter(() => d.lasting && d.at >= end - DEADLINES_MS.readDeadline && d.at < end))
-  let last = Math.max(...holding, -Infinity)
-  if (holding.length === 0) last = end
-  let gap = [SETTLE_WINDOW_MS, OBSERVE_GAP_MS][Number(holding.length > 0)] ?? SETTLE_WINDOW_MS
+  const holding = disruptions.flatMap((d) => [d.excuseUntil].filter(() => d.lasting && d.at < end && d.excuseUntil >= end + SETTLE_WINDOW_MS))
+  let until = Math.max(...holding, -Infinity)
+  if (holding.length === 0) until = end + SETTLE_WINDOW_MS
   let linked = holding.length > 0
   for (const d of disruptions.filter((item) => item.at >= end)) {
-    if (d.at - last > gap) break
-    last = d.at
-    gap = OBSERVE_GAP_MS
+    if (d.at > until) break
+    until = Math.max(until, d.excuseUntil)
     linked = true
   }
-  return Option.filter(Option.some(last), () => linked)
+  return Option.filter(Option.some(until), () => linked)
 }
 
 export interface Observability {
@@ -362,13 +405,12 @@ export interface Observability {
 }
 
 /**
- * Was this turn's end unobservable to a correct shell? The ONE answer 4a, 4b and 4c use (review r5 B1). An excuse is
- * a bounded, causally connected interval, never a flag: the chain of this pane's disruptions from the run's end
- * (`excuseEnd`). The end was unobservable only when no ok read saw the done frame and the chain lasted until the
- * frame was gone (the pane's death or its next run), with no gap longer than OBSERVE_GAP_MS before that. A frame
- * still showing is never unobservable: faults stop and a correct shell reads it. A stop, steer or restart races the
- * settle until the chain's last disruption plus OBSERVE_GAP_MS (or an ok read plus the settle window, if earlier);
- * with no chain the window stays the fault-free 60 ms.
+ * Was this turn's end unobservable to a correct shell? The ONE answer 4a, 4b and 4c use (review r5 B1, r6 N1). An
+ * excuse is a bounded, causally connected interval, never a flag: the chain of this pane's disruptions from the
+ * run's end (`excuseEnd`). The end was unobservable only when no ok read saw the done frame and the chain lasted
+ * until the frame was gone (the pane's death or its next run). A frame still showing is never unobservable: faults
+ * stop and a correct shell reads it. A stop, steer or restart races the settle until the chain's end (or an ok read
+ * plus the settle window, if earlier); with no chain the window stays the fault-free 60 ms.
  */
 export const observability = (trace: Trace, run: Run): Observability => {
   const end = Option.getOrElse(run.endedAt, () => 0)
@@ -378,9 +420,9 @@ export const observability = (trace: Trace, run: Run): Observability => {
   const readSettle = Option.match(firstLiveRead, { onNone: () => Infinity, onSome: (e) => Math.max(e.at, end) + SETTLE_WINDOW_MS })
   return Option.match(excuseEnd(disruptionsOf(trace, run, end, frameEnd), end), {
     onNone: () => ({ unobservable: false, settleBy: end + SETTLE_WINDOW_MS }),
-    onSome: (last) => ({
-      unobservable: !seen && frameEnd - last <= OBSERVE_GAP_MS,
-      settleBy: Math.max(end + SETTLE_WINDOW_MS, Math.min(last + OBSERVE_GAP_MS, readSettle)),
+    onSome: (until) => ({
+      unobservable: !seen && frameEnd <= until,
+      settleBy: Math.max(end + SETTLE_WINDOW_MS, Math.min(until, readSettle)),
     }),
   })
 }
