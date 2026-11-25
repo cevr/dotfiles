@@ -395,7 +395,7 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     const control = settings("opencodecontrol.slice")
     expect(Number(control.CPUWeight)).toBeGreaterThanOrEqual(1000)
     expect([control.MemoryMin, control.MemoryLow].every((value) => /^[1-9]\d*[KMGT]?$/.test(value ?? ""))).toBe(true)
-  })
+  }, hangGuard("process-fixture"))
 
   test("a CPU share of the threads scales with the host: 62.5%threads is 1000% on 16 threads, 2000% on 32, 125% on 2", () => {
     for (const [threads, want] of [[16, "1000%"], [32, "2000%"], [2, "125%"]] as const) {
