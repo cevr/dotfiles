@@ -11,16 +11,19 @@
 // the owner's consent to ONE keychain attempt, used by this read when no token
 // file reads (on macOS it may show the keychain's dialog once).
 //
-// `bun cmd/pool/antigravity-read.ts --profile-env [<dir>] [--business]` reads
-// nothing: it makes the managed profile (0700) as T3 Code makes one, writes the
-// environment agy runs with there to `<dir>.env` (0600, no secret) and prints
-// that path and the one line that signs agy in on it.
+// `bun cmd/pool/antigravity-read.ts --profile-env [<dir>]` reads nothing: it
+// makes the managed profile for a personal sign-in as T3 Code makes one
+// (profile.ts: 0700 directories, settings.json, links into ~/.gemini), writes
+// the environment agy runs with there to `<dir>.env` (0600, no secret) and
+// prints that path, the one line that signs agy in on it, and how an agy pane
+// runs on it.
 import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { argv } from "bun"
 import { Array as Arr, Config, Console, Effect, Layer, Match, Option } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { defaultProfile, liveSource, prepareProfile } from "@dotfiles/opencode-pool/antigravity/live"
+import { managedProfile, PaneLaunch, paneLaunch } from "@dotfiles/opencode-pool/antigravity/profile"
 import type { AuthMethod } from "@dotfiles/opencode-pool/antigravity/reader"
 
 const flag = (name: string) => argv.includes(name)
@@ -35,9 +38,20 @@ BunRuntime.runMain(
     const named = Option.orElse(valueOf("--profile-env"), () => valueOf("--profile"))
     const profile = Option.getOrElse(named, () => defaultProfile(state))
     if (flag("--profile-env")) {
-      const ssh = yield* Config.option(Config.String("SSH_CONNECTION"))
-      const prepared = yield* prepareProfile(profile, auth, ssh)
-      yield* Console.log([`Wrote ${prepared.envFile}`, "Sign in on the managed profile with:", `  ${prepared.signIn}`].join("\n"))
+      // T3 signs only a personal account in with `--login` (Drivers/AntigravityDriver.ts 427); a business one reads the keychain.
+      if (auth === "business") return yield* Console.error("--profile-env makes a profile for a personal sign-in only, as T3 does; a business sign-in is read from the keychain (--consent).")
+      const managed = managedProfile(profile, home)
+      const prepared = yield* prepareProfile(managed)
+      const pane = PaneLaunch.match(paneLaunch(managed, "tui"), { Acp: ({ line }) => line, TokenPathUnknown: ({ why }) => why })
+      yield* Console.log(
+        [
+          `Wrote ${prepared.envFile} and the profile ${managed.root}`,
+          ...prepared.links.map(([link, outcome]) => `  ${link}: ${outcome}`),
+          "Sign in on the managed profile with:",
+          `  ${prepared.signIn}`,
+          `agy panes: ${pane}`,
+        ].join("\n"),
+      )
       return
     }
     const source = yield* liveSource({ profile, stateFile: `${state}/opencode-pool/antigravity.json`, auth })

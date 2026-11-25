@@ -9,6 +9,7 @@
 // error or answer, and is unwrapped only to set a request's header or body.
 import { Effect, Option, Redacted, Result, Schema } from "effect"
 import { Base64, Hex } from "effect/encoding"
+import { tokenFilesOf } from "./profile.ts"
 import { Why } from "./state.ts"
 
 /** A sign-in, its secrets redacted: one this can refresh, or a bare access token with its expiry. */
@@ -104,12 +105,6 @@ const refreshableOf = (text: string): Option.Option<SignIn> =>
     })
   })
 
-/** The profile's two token files, as T3 names them. */
-export const tokenFiles = (profile: string) => ({
-  acp: `${profile}/antigravity-acp/acp_token.json`,
-  cli: `${profile}/antigravity-acp/antigravity-oauth-token`,
-})
-
 const refused = (outcome: "denied" | "failed" | "timed-out") =>
   Lookup.cases.Missing.make({ why: Why.cases.KeychainRefused.make({ outcome }), keychain: outcome })
 
@@ -129,7 +124,7 @@ export const fromKeychain = (read: KeychainRead): Lookup =>
 
 /** The sign-in the profile's token files give, in T3's order: the refreshable `acp_token.json`, then the CLI's token; none when neither reads. */
 export const fromFiles = Effect.fn("Antigravity.fromFiles")(function* (places: Places, profile: string) {
-  const files = tokenFiles(profile)
+  const files = tokenFilesOf(profile)
   const acp = Option.flatMap(yield* places.read(files.acp), refreshableOf)
   if (Option.isSome(acp)) return acp
   return Option.flatMap(yield* places.read(files.cli), (text) => accessOf(text, "file"))

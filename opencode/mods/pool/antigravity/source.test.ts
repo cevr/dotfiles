@@ -21,6 +21,7 @@ import { Base64 } from "effect/encoding"
 import { expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { fileStore, places as livePlaces, prepareProfile } from "./live.ts"
+import { envFileText, managedProfile, signInLine } from "./profile.ts"
 import { GOOGLE, TOKEN_HEADERS, userAgent, type Endpoints } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
 import { make, type Options, type Source, type Store } from "./source.ts"
@@ -378,20 +379,45 @@ describe("Antigravity read authority on a fake Google", () => {
   )
 
   live(
-    "the managed profile is made as T3 makes it: 0700 directories, a 0600 env file beside it, and the sign-in line",
+    "the managed profile is made from its description as T3 makes it, and a sign-in that lands where it says is what the reader reads",
     Effect.gen(function* () {
       const setup = yield* scratch
-      const profile = `${setup.root}/profiles/default`
-      const prepared = yield* prepareProfile(profile, "personal", Option.none())
-      expect(prepared.envFile).toBe(`${profile}.env`)
-      expect(prepared.signIn).toBe(`. '${profile}.env' && env -u DISPLAY -u WAYLAND_DISPLAY agy acp --login`)
-      for (const directory of [profile, `${profile}/antigravity-acp`]) expect((yield* setup.fs.stat(directory)).mode & 0o777).toBe(0o700)
-      expect((yield* setup.fs.stat(prepared.envFile)).mode & 0o777).toBe(0o600)
-      const text = yield* setup.fs.readFileString(prepared.envFile)
-      expect(text).toContain(`export GEMINI_HOME='${profile}'`)
-      expect(text).toContain("export AGY_ACP_FORCE_FILE_STORAGE='1'")
-      // Again over what is there: the same file, no failure.
-      expect((yield* prepareProfile(profile, "personal", Option.none())).envFile).toBe(prepared.envFile)
+      const home = `${setup.root}/home`
+      yield* setup.fs.makeDirectory(`${home}/.gemini/config/skills`, { recursive: true })
+      yield* setup.fs.writeFileString(`${home}/.gemini/GEMINI.md`, "rules")
+      const managed = managedProfile(`${setup.root}/profiles/default`, home)
+      // Left from before: a dangling link where T3 makes none, an empty placeholder, and a real file T3 keeps.
+      yield* setup.fs.makeDirectory(managed.root, { recursive: true })
+      yield* setup.fs.symlink(`${home}/.gemini/AGENTS.md`, `${managed.root}/AGENTS.md`)
+      yield* setup.fs.makeDirectory(`${managed.root}/config/skills`, { recursive: true })
+      yield* setup.fs.writeFileString(`${managed.root}/config/skills.json`, "{}")
+      const prepared = yield* prepareProfile(managed)
+      expect(prepared.envFile).toBe(managed.envFile)
+      expect(prepared.signIn).toBe(signInLine(managed))
+      expect(prepared.links).toEqual([
+        [`${managed.root}/config/skills`, "linked"],
+        [`${managed.root}/antigravity-cli/skills`, "no target"],
+        [`${managed.root}/AGENTS.md`, "no target"],
+        [`${managed.root}/GEMINI.md`, "linked"],
+        [`${managed.root}/config/skills.json`, "no target"],
+      ])
+      expect(yield* setup.fs.readLink(`${managed.root}/GEMINI.md`)).toBe(`${home}/.gemini/GEMINI.md`)
+      expect(yield* setup.fs.readLink(`${managed.root}/config/skills`)).toBe(`${home}/.gemini/config/skills`)
+      expect(yield* setup.fs.exists(`${managed.root}/AGENTS.md`)).toBe(false)
+      expect(yield* setup.fs.readFileString(`${managed.root}/config/skills.json`)).toBe("{}")
+      for (const directory of managed.directories) expect((yield* setup.fs.stat(directory)).mode & 0o777).toBe(0o700)
+      expect(yield* setup.fs.readFileString(managed.settings.path)).toBe('{"auth":{"type":"oauth-personal"}}\n')
+      expect((yield* setup.fs.stat(managed.envFile)).mode & 0o777).toBe(0o600)
+      expect(yield* setup.fs.readFileString(managed.envFile)).toBe(envFileText(managed))
+      // Again over what is there: the same outcome, no failure.
+      expect((yield* prepareProfile(managed)).links).toEqual(prepared.links)
+      // A sign-in on the profile lands at its token file; the reader on that profile reads it.
+      const google = yield* fakeGoogle(ok)
+      yield* setup.fs.writeFileString(managed.tokenFiles.cli, yield* cliToken(60))
+      const source = yield* make({ profile: managed.root, places: setup.places, store: setup.store, auth: "personal", endpoints: GOOGLE, agent: Effect.succeed(AGENT) }).pipe(
+        Effect.provideService(HttpClient.HttpClient, yield* toFake(google.base)),
+      )
+      expect((yield* source.read(false)).note).toBe("Read now.")
     }),
   )
 

@@ -10,7 +10,7 @@
 import { readableStreamToText, spawn } from "bun"
 import { Clock, Effect, FileSystem, Match, Option, Path, Redacted, Schedule, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { envFileText, managedEnvironment, signInCommand } from "./profile.ts"
+import { envFileText, type ManagedProfile, signInLine, type UserLink } from "./profile.ts"
 import { type AuthMethod, AuthMethod as AuthMethodSchema, GOOGLE, userAgent } from "./reader.ts"
 import { KeychainRead, type Places } from "./signin.ts"
 import { make, type Source, type Store, StoreFailed } from "./source.ts"
@@ -193,22 +193,56 @@ export const fileStore = Effect.fn("Antigravity.fileStore")(function* (file: str
   return { load, transact } satisfies Store
 })
 
+/** What became of one of T3's links into the user's ~/.gemini. */
+export type LinkOutcome = "linked" | "no target" | "kept: not a link"
+
 /**
- * The managed profile `profile` made ready for agy's sign-in, as T3 makes it:
- * the profile and its `antigravity-acp/` directory, 0700, and beside them the
- * file of the environment (profile.ts) agy runs with there, 0600 (it holds no
- * secret); the env file's path and the one line that signs in.
+ * One of T3's links into ~/.gemini, made as T3 makes it
+ * (antigravityAuthSupport.ts 263-330): none, and a dangling one removed, where
+ * the target is absent; else a link to it, replacing a link elsewhere or an
+ * empty placeholder directory. Anything else there is kept as it is.
  */
-export const prepareProfile = Effect.fn("Antigravity.prepareProfile")(function* (profile: string, auth: AuthMethod, ssh: Option.Option<string>) {
+const linkUser = Effect.fn("Antigravity.linkUser")(function* (link: UserLink) {
   const fs = yield* FileSystem.FileSystem
-  for (const directory of [profile, `${profile}/antigravity-acp`]) {
-    yield* fs.makeDirectory(directory, { recursive: true })
+  const path = yield* Path.Path
+  const pointsTo = yield* fs.readLink(link.link).pipe(
+    Effect.map((value) => Option.some(path.resolve(path.dirname(link.link), value))),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  )
+  if (!(yield* fs.exists(link.target))) {
+    if (Option.isSome(pointsTo)) yield* fs.remove(link.link)
+    return "no target" satisfies LinkOutcome
+  }
+  if (Option.contains(pointsTo, link.target)) return "linked" satisfies LinkOutcome
+  if (Option.isSome(pointsTo)) yield* fs.remove(link.link)
+  else if (yield* fs.exists(link.link)) {
+    const info = yield* fs.stat(link.link)
+    const empty = info.type === "Directory" && (yield* fs.readDirectory(link.link)).length === 0
+    if (!empty) return "kept: not a link" satisfies LinkOutcome
+    yield* fs.remove(link.link, { recursive: true })
+  }
+  yield* fs.makeDirectory(path.dirname(link.link), { recursive: true })
+  yield* fs.symlink(link.target, link.link)
+  return "linked" satisfies LinkOutcome
+})
+
+/**
+ * The managed profile made as T3 makes it (profile.ts): its two directories
+ * 0700, its `settings.json`, its links into the user's ~/.gemini; then, beside
+ * it, the env file (0600, no secret). The env file's path, the sign-in line
+ * and each link's outcome.
+ */
+export const prepareProfile = Effect.fn("Antigravity.prepareProfile")(function* (profile: ManagedProfile) {
+  const fs = yield* FileSystem.FileSystem
+  for (const directory of profile.directories) {
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 })
     yield* fs.chmod(directory, 0o700)
   }
-  const envFile = `${profile}.env`
-  yield* fs.writeFileString(envFile, envFileText(managedEnvironment(profile, auth, ssh)), { mode: 0o600 })
-  yield* fs.chmod(envFile, 0o600)
-  return { envFile, signIn: signInCommand(envFile) }
+  yield* fs.writeFileString(profile.settings.path, profile.settings.text)
+  const links = yield* Effect.forEach(profile.links, (link) => Effect.map(linkUser(link), (outcome) => [link.link, outcome] as const))
+  yield* fs.writeFileString(profile.envFile, envFileText(profile), { mode: 0o600 })
+  yield* fs.chmod(profile.envFile, 0o600)
+  return { envFile: profile.envFile, signIn: signInLine(profile), links }
 })
 
 /** Where a host's source reads and keeps its state. */
