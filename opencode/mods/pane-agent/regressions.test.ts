@@ -14,7 +14,7 @@ import {
 } from "./memory/doubles.ts"
 import * as Model from "./model.ts"
 import { RexCallFailed, RexClient, StoreFailed, WorkerStore } from "./service.ts"
-import { outboxOf, type PaneWorker, type StoreSnapshot } from "./worker.ts"
+import { ClosePaneIntent, outboxOf, type PaneWorker, type StoreSnapshot } from "./worker.ts"
 
 const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
   Effect.gen(function* () {
@@ -1125,6 +1125,177 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
           expect(finalPane?.closed).toBe(true)
         }).pipe(Effect.scoped, Effect.provideService(Clock.Clock, clock))
       }
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "N1 (same-worker other pane): ClosePane for an old block behind a pending TypeTurn runs once during store outage while head result waits to be stored",
+    Effect.gen(function* () {
+      const N1_CONFIG: Model.ModelConfig = {
+        quietFor: Duration.millis(5),
+        pollTimeout: Duration.millis(15),
+        pasteQuiet: Duration.zero,
+        retryDelay: Duration.millis(5),
+        storeDeadline: Duration.millis(100),
+        askDeadline: Duration.millis(200),
+        tailDeadline: Duration.millis(50),
+        maxStartupChecks: 5,
+        maxTransientErrors: 4,
+      }
+      const clock = yield* TestClock.make({ warningDelay: "10 minutes" })
+      const clockLayer = Layer.succeed(Clock.Clock, clock)
+
+      const oldBlockId = "block:old-pane"
+      const promptTag = "SAME-WORKER-RESTART-OUTAGE"
+
+      const baseStore = yield* makeMemoryStore()
+      const baseRex = yield* makeMemoryRex({
+        ...emptyRexState,
+        defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME],
+        panes: [
+          {
+            sessionId: "session:root",
+            blockId: oldBlockId,
+            label: "agy:old",
+            command: ["agy"],
+            cwd: "/nonexistent/repo",
+            alive: true,
+            closed: false,
+            screens: [WORKING_FRAME],
+            screenIndex: 0,
+            writes: [],
+          },
+        ],
+      })
+      const results = yield* makeMemoryResults()
+      const notifier = yield* makeMemoryNotifier()
+
+      const targetWorkerId = yield* Ref.make(Option.none<string>())
+      const injectedClose = yield* Ref.make(false)
+      const remainingFails = yield* Ref.make(0)
+      const armed = yield* Ref.make(false)
+      const oldCloseCount = yield* Ref.make(0)
+      const closedDuringOutage = yield* Ref.make(false)
+
+      const rawStore = Context.get(yield* Layer.build(baseStore.layer), WorkerStore)
+      const rawRex = Context.get(yield* Layer.build(baseRex.layer), RexClient)
+
+      const flakyStoreLayer = Layer.succeed(
+        WorkerStore,
+        WorkerStore.of({
+          ...rawStore,
+          upsertWorker: (worker, expectedRevision) =>
+            Effect.gen(function* () {
+              const target = yield* Ref.get(targetWorkerId)
+              const left = yield* Ref.get(remainingFails)
+              if (Option.contains(target, worker.id) && left > 0) {
+                yield* Ref.set(remainingFails, left - 1)
+                return yield* new StoreFailed({ operation: "upsertWorker", message: `store down (${left} left)` })
+              }
+              const alreadyInjected = yield* Ref.get(injectedClose)
+              const head = outboxOf(worker)[0]
+              let toSave = worker
+              if (!alreadyInjected && Option.contains(target, worker.id) && head?._tag === "TypeTurn") {
+                yield* Ref.set(injectedClose, true)
+                const oldClose = ClosePaneIntent.make({
+                  intentId: "cl_n1_old",
+                  ownerProc: head.ownerProc,
+                  sessionId: "session:root",
+                  blockId: oldBlockId,
+                  interruptFirst: false,
+                  closeBlock: true,
+                  createdAt: worker.updatedAt,
+                })
+                toSave = { ...worker, outbox: [...outboxOf(worker), oldClose] }
+              }
+              return yield* rawStore.upsertWorker(toSave, expectedRevision)
+            }),
+        }),
+      )
+
+      const triggerRexLayer = Layer.succeed(
+        RexClient,
+        RexClient.of({
+          ...rawRex,
+          write: (target, data) =>
+            Effect.gen(function* () {
+              yield* rawRex.write(target, data)
+              if (data === "\r" && target.blockId !== oldBlockId) {
+                const wasArmed = yield* Ref.get(armed)
+                if (!wasArmed) {
+                  yield* Ref.set(armed, true)
+                  yield* Ref.set(remainingFails, 15)
+                }
+              }
+            }),
+          close: (target) =>
+            Effect.gen(function* () {
+              if (target.blockId === oldBlockId) {
+                yield* Ref.update(oldCloseCount, (c) => c + 1)
+                const left = yield* Ref.get(remainingFails)
+                if (left > 0) {
+                  yield* Ref.set(closedDuringOutage, true)
+                }
+              }
+              return yield* rawRex.close(target)
+            }),
+        }),
+      )
+
+      const stepUntil = (check: Effect.Effect<boolean>, maxTicks = 2000) =>
+        Effect.gen(function* () {
+          for (let tick = 0; tick < maxTicks; tick++) {
+            if (yield* check) return true
+            yield* clock.adjust(Duration.millis(10))
+          }
+          return yield* check
+        })
+
+      yield* Effect.gen(function* () {
+        const services = yield* Layer.build(
+          Model.layer(N1_CONFIG).pipe(
+            Layer.provide(Layer.mergeAll(flakyStoreLayer, triggerRexLayer, results.layer, notifier.layer, clockLayer)),
+          ),
+        )
+        const model = Context.get(services, Model.PaneAgentModel)
+        yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+
+        const w1 = yield* model.start({
+          ...BASE,
+          description: "n1-same-worker",
+          prompt: promptTag,
+          resultFile: "/nonexistent/run/n1-same.md",
+        })
+        yield* Ref.set(targetWorkerId, Option.some(w1.id))
+
+        const sawArmed = yield* stepUntil(Ref.get(armed), 500)
+        expect(sawArmed).toBe(true)
+
+        // Old pane MUST close DURING the store outage (while TypeTurnSucceeded is still waiting to be stored).
+        const sawClosedDuringOutage = yield* stepUntil(Ref.get(closedDuringOutage), 500)
+        expect(sawClosedDuringOutage).toBe(true)
+
+        // After the 15 store failures drain, BOTH TypeTurnSucceeded and CloseCompleted commit and outbox is empty.
+        const drained = yield* stepUntil(
+          Ref.get(baseStore.state).pipe(
+            Effect.map((s) =>
+              s.workers.some((w) => w.id === w1.id && w.state === "working" && outboxOf(w).length === 0),
+            ),
+          ),
+          3000,
+        )
+        expect(drained).toBe(true)
+        expect(yield* Ref.get(remainingFails)).toBe(0)
+        expect(yield* Ref.get(oldCloseCount)).toBe(1)
+
+        const rexSnap = yield* Ref.get(baseRex.state)
+        const oldPane = rexSnap.panes.find((p) => p.blockId === oldBlockId)
+        const newPane = rexSnap.panes.find((p) => p.blockId !== oldBlockId)
+        expect(oldPane?.closed).toBe(true)
+        const typedCount = (newPane?.writes.join("") ?? "").split(promptTag).length - 1
+        expect(typedCount).toBe(1)
+      }).pipe(Effect.scoped, Effect.provideService(Clock.Clock, clock))
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )

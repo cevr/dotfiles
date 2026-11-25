@@ -449,7 +449,7 @@ const drainLiveness = (sim: SimContext) => {
   if (sim.state.worker.state === "pane_gone") {
     stepPaneRestart(sim)
   }
-  for (let guard = 0; guard < 160; guard++) {
+  for (let guard = 0; guard < 120; guard++) {
     sim.now += 10
     if (pendingWakesOf(sim.state.worker).length > 0) {
       sim.state = transition(
