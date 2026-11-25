@@ -252,7 +252,7 @@ const upsert = (state: WorldState, given: PaneWorker, expected: Option.Option<nu
     return [conflict, state] as const
   }
   const stamped: PaneWorker = { ...worker, revision: actual + 1 }
-  const store: StoreSnapshot = { ...state.store, workers: [...state.store.workers.filter((w) => w.id !== worker.id), stamped] }
+  const store: StoreSnapshot = { ...state.store, workers: [...keptRows(state, proc).filter((w) => w.id !== worker.id), stamped] }
   const next: WorldState = { ...state, store, storeWrites: [...state.storeWrites, { at: state.now, proc, worker: stamped }] }
   return [Option.none<number>(), next] as const
 }
@@ -264,6 +264,23 @@ const upsert = (state: WorldState, given: PaneWorker, expected: Option.Option<nu
  */
 export const quarantined = (store: StoreSnapshot): StoreSnapshot => ({ ...store, workers: store.workers.slice(1) })
 
+/** Records which rows a process's read saw (only the broken "save-last-read" store uses it). */
+const remember = (state: WorldState, proc: number, snapshot: StoreSnapshot): WorldState => ({
+  ...state,
+  lastReads: new Map([...state.lastReads, [proc, snapshot.workers.map((w) => w.id)]]),
+})
+
+/**
+ * The rows an upsert keeps beside the one it writes. The correct per-row store keeps every row; the broken
+ * "save-last-read" store (the old whole-snapshot store) writes back only what its process last read, so a
+ * sibling row its read could not see (the corrupt-row fault) is lost (I7; non-vacuity only).
+ */
+const keptRows = (state: WorldState, proc: number): ReadonlyArray<PaneWorker> => {
+  const seen = Option.fromUndefinedOr(state.lastReads.get(proc))
+  if (!broken(state, "save-last-read") || Option.isNone(seen)) return state.store.workers
+  return state.store.workers.filter((w) => seen.value.includes(w.id))
+}
+
 const storeLayer = (env: ProcEnv) =>
   Layer.succeed(
     Service.WorkerStore,
@@ -272,9 +289,12 @@ const storeLayer = (env: ProcEnv) =>
         guarded(env, {
           boundary: "store.read",
           detail: "read",
-          apply: Effect.andThen(lateHang(env), Effect.map(env.world.get, (state) => state.store)),
+          apply: Effect.andThen(
+            lateHang(env),
+            env.world.modify((state) => [state.store, remember(state, env.proc, state.store)] as const),
+          ),
           fail: (fault) => {
-            if (fault === "corrupt") return Effect.map(env.world.get, (state) => quarantined(state.store))
+            if (fault === "corrupt") return env.world.modify((state) => [quarantined(state.store), remember(state, env.proc, quarantined(state.store))] as const)
             return Effect.fail(new Service.StoreFailed({ operation: "read", message: `simulated store ${fault}` }))
           },
           lands: false,

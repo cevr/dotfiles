@@ -10,7 +10,9 @@ import { LATE_LAND_MS, type ProcEnv, servicesLayer, TIMEOUT_MS } from "./doubles
 import { defaultConfig, runScript, type ToolCall, type Trace } from "./driver.ts"
 import { makeGate, makeInjector, type PlannedFault } from "./faults.ts"
 import { CORE } from "./generator.ts"
-import { checkAll, type InvariantId, referenceOfTrace, type Violation } from "./invariants.ts"
+import { checkAll, type InvariantId, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
+import { classOf, pinDiff, pinnedRed } from "./known-red.ts"
+import { PINS } from "./pins.ts"
 import { runOne } from "./property.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn } from "./reference.ts"
 import { configOf, HAPPY, type Scenario, SCENARIOS } from "./scenarios.ts"
@@ -66,9 +68,9 @@ const typed = (state: WorldState, blockId: string, text: string): WorldState => 
 
 const scenario = (name: string): Scenario => Option.getOrThrow(Option.fromUndefinedOr(SCENARIOS.find((item) => item.name === name)))
 
-const doublesEnv = Effect.fn("SimTest.doublesEnv")(function* (faults: ReadonlyArray<PlannedFault>) {
+const doublesEnv = Effect.fn("SimTest.doublesEnv")(function* (faults: ReadonlyArray<PlannedFault>, breaks: ReadonlyArray<Break> = []) {
   const clock = yield* TestClock.make()
-  const world = yield* makeWorld(DEFAULT_WORLD)
+  const world = yield* makeWorld({ ...DEFAULT_WORLD, breaks })
   const injector = yield* makeInjector(Option.none())
   yield* injector.plan(faults)
   const env: ProcEnv = { world, injector, clock, worldScope: yield* Effect.scope, proc: 1 }
@@ -257,6 +259,59 @@ describe("pane-agent-sim world doubles", () => {
     }).pipe(Effect.scoped),
     hangGuard("unit-law"),
   )
+
+  effectTest(
+    "I7's sibling clause fires with the corrupt-row fault through a store that saves its whole last read; the per-row store, or a clean read, keeps the sibling",
+    Effect.gen(function* () {
+      const lost = (corrupt: boolean, breaks: ReadonlyArray<Break>) =>
+        Effect.gen(function* () {
+          const faults: ReadonlyArray<PlannedFault> = [{ boundary: "store.read", nth: 0, fault: "corrupt" } as const].filter(() => corrupt)
+          const { env, store } = yield* doublesEnv(faults, breaks)
+          const sibling = { ...SAMPLE_WORKER, id: "pa_2", blockId: "block:sim-2" }
+          yield* store.upsertWorker(SAMPLE_WORKER, 0)
+          yield* store.upsertWorker(sibling, 0)
+          yield* store.read()
+          yield* store.upsertWorker({ ...sibling, turn: 2 }, 1)
+          const trace: Trace = { name: "i7", seed: 1, calls: [], world: yield* env.world.get, effects: [], fired: [], coverage: new Map(), boundMs: 400, workerIds: new Map(), restarts: 0 }
+          return of(checkAll(trace), 7)
+        }).pipe(Effect.scoped)
+      expect((yield* lost(true, ["save-last-read"])).map((item) => item.detail)).toEqual(["worker row pa_1 was written and later lost from the store"])
+      expect(yield* lost(false, ["save-last-read"])).toEqual([])
+      expect(yield* lost(true, [])).toEqual([])
+    }),
+    hangGuard("unit-law"),
+  )
+})
+
+describe("pane-agent-sim pins are per violation signature (SPEC v2 ruling 7, widened)", () => {
+  const WEDGE = "w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged"
+
+  effectTest(
+    "in a job pinned for the StoreConflict wedge alone, a wedged w2 or a queued turn never typed each fail the check; the pinned set passes",
+    Effect.sync(() => {
+      const wedge = signatureOf({ invariant: 8, detail: WEDGE })
+      const pinned = Object.entries(PINS).flatMap(([check, jobs]) =>
+        Object.entries(jobs).filter(([, signatures]) => signatures.length === 1 && signatures[0] === wedge).map(([job]) => [check, job] as const),
+      )
+      expect(pinned.length).toBeGreaterThan(0)
+      const [check, job] = pinned[0] ?? ["", ""]
+      const pin = pinnedRed(check)
+      expect(pinDiff(pin, { [job]: [wedge] })).toEqual([])
+      expect(pinDiff(pin, { [job]: [wedge, signatureOf({ invariant: 8, detail: WEDGE.replace("w1:", "w2:") })] }).length).toBeGreaterThan(0)
+      expect(pinDiff(pin, { [job]: [wedge, signatureOf({ invariant: 8, detail: "w1: 1 queued turn(s) never typed though the pane is idle" })] }).length).toBeGreaterThan(0)
+      expect(pinDiff(pin, {}).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "every pinned signature belongs to a named signature class in known-red.ts",
+    Effect.sync(() => {
+      const unclassed = Object.values(PINS).flatMap((jobs) => Object.values(jobs).flatMap((signatures) => signatures.filter((signature) => Option.isNone(classOf(signature)))))
+      expect([...new Set(unclassed)]).toEqual([])
+    }),
+    hangGuard("unit-law"),
+  )
 })
 
 describe("pane-agent-sim usage limit in the world (SPEC v2 ruling 5)", () => {
@@ -365,7 +420,7 @@ const phantomTurn = (ref: Reference): Reference => ({
   workers: new Map([...ref.workers].map(([key, worker]) => [key, { ...worker, turns: [...worker.turns, { ...phantom, index: worker.turns.length + 1 }] }])),
 })
 
-type LimitVariant = "correct" | "no-resume" | "two-resumes" | "early-resume" | "lost-token" | "unreported"
+type LimitVariant = "correct" | "no-resume" | "two-resumes" | "early-resume" | "lost-token" | "unreported" | "resumed-and-not-typed"
 
 const limitWake = (at: number, id: string, state: string, text: string): WakeRecord => ({
   at,
@@ -384,6 +439,7 @@ const CONTINUES: Readonly<Record<LimitVariant, ReadonlyArray<number>>> = {
   "early-resume": [500],
   "lost-token": [1_060],
   unreported: [1_060],
+  "resumed-and-not-typed": [1_060],
 }
 
 const ROW_STATES = ["working", "done"] as const
@@ -402,7 +458,12 @@ const limitTrace = (variant: LimitVariant): Trace => {
   const resumedOnce = CONTINUES[variant].length > 0 && variant !== "early-resume"
   const limitedWake = limitWake(65, "msg_limited_1", "limited", `<pane-agent-result state="limited" turn="1" reset="1970-01-01T00:00:01.060Z">\nTurn 1 hit the usage limit.\n</pane-agent-result>`)
   const doneWake = limitWake(1_135, "msg_done_1", "done", `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)
-  const wakes = [...[limitedWake].filter(() => variant !== "unreported"), ...[doneWake].filter(() => resumedOnce)]
+  const notTypedWake = limitWake(1_140, "msg_not_typed_1", "not_typed", `<pane-agent-result state="not_typed" turn="1">\nTurn 1 was not typed: the resume failed\n</pane-agent-result>`)
+  const wakes = [
+    ...[limitedWake].filter(() => variant !== "unreported"),
+    ...[doneWake].filter(() => resumedOnce),
+    ...[notTypedWake].filter(() => variant === "resumed-and-not-typed"),
+  ]
   const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: ROW_STATES[Number(resumedOnce)], notifiedTurn: Number(resumedOnce) }
   const world: WorldState = { ...ended, now: 1_200, wakes, store: { version: 2, workers: [row], anchors: {} } }
   const startCall: ToolCall = {
@@ -460,10 +521,12 @@ describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant
     "invariant 9 (ruling 5): a correct limit trace (limit, one limited wake, one continue at the reset, the same turn's done) holds every invariant; each wrong variant fails I9 or I6",
     Effect.sync(() => {
       expect(checkAll(limitTrace("correct"))).toEqual([])
-      for (const variant of ["no-resume", "two-resumes", "early-resume", "lost-token", "unreported"] as const) {
+      for (const variant of ["no-resume", "two-resumes", "early-resume", "lost-token", "unreported", "resumed-and-not-typed"] as const) {
         const broke = checkAll(limitTrace(variant)).filter((item) => item.invariant === 9 || item.invariant === 6)
         expect(broke.length, variant).toBeGreaterThan(0)
       }
+      expect(of(checkAll(limitTrace("resumed-and-not-typed")), 9).map((item) => item.detail).join()).toMatch(/resumed after its reset and also reported "not typed"/)
+      expect(of(checkAll(limitTrace("resumed-and-not-typed")), 3)).toEqual([])
       expect(of(checkAll(limitTrace("lost-token")), 6).length).toBeGreaterThan(0)
       expect(of(checkAll(limitTrace("two-resumes")), 9).map((item) => item.detail).join()).toMatch(/resumed 2 times/)
       expect(of(checkAll(limitTrace("early-resume")), 9).map((item) => item.detail).join()).toMatch(/before its reset/)

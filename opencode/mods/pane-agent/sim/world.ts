@@ -110,6 +110,7 @@ export type Break =
   | "echo-writes"
   | "late-stamp-first-paste"
   | "continue-loses-token"
+  | "save-last-read"
 
 /** How long the quota frame says the limit lasts ("Resets in 0h0m1s"). */
 export const LIMIT_MS = 1_000
@@ -154,6 +155,8 @@ export interface WorldState {
   readonly deaths: ReadonlyArray<{ readonly blockId: string; readonly at: number }>
   /** Every pane shares one sign-in: until this moment its quota is spent, and every run ends at the limit. */
   readonly limitUntil: number
+  /** The row ids each process's last store read saw (the broken "save-last-read" store writes back only those). */
+  readonly lastReads: ReadonlyMap<number, ReadonlyArray<string>>
 }
 
 export const ANCHOR = { session: "session:root", block: "block:anchor" } as const
@@ -194,6 +197,7 @@ export const initialWorld = (config: WorldConfig): WorldState => ({
   splitCount: 0,
   deaths: [],
   limitUntil: 0,
+  lastReads: new Map(),
 })
 
 const hasBreak = (state: WorldState, name: Break): boolean => state.config.breaks.includes(name)

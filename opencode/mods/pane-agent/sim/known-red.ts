@@ -1,6 +1,6 @@
 import { Option } from "effect"
 import { PINS } from "./pins.ts"
-import { type Fingerprint, formatInvariants } from "./property.ts"
+import { type Fingerprint } from "./property.ts"
 
 /**
  * The acceptance checks red at this lane's base, 44f5ed09, pinned (SPEC v2 ruling 7). Each pin in `pins.ts`
@@ -28,21 +28,31 @@ const REASONS: ReadonlyArray<readonly [string, string]> = [
 
 export const reasonOf = (key: string): string => Option.getOrElse(Option.fromUndefinedOr(REASONS.find(([prefix]) => key.startsWith(prefix))?.[1]), () => "red at the base")
 
+/**
+ * The named signature classes (ruling 7, widened): one real fault, with its diagnosis or review reference, and the
+ * signatures it shows as. Every pinned signature must belong to one (a unit test checks it).
+ */
+export const CLASSES: ReadonlyArray<{ readonly name: string; readonly reference: string; readonly pattern: RegExp }> = []
+
+export const classOf = (signature: string): Option.Option<string> =>
+  Option.map(Option.fromUndefinedOr(CLASSES.find((item) => item.pattern.test(signature))), (item) => item.name)
+
 /** The pinned red set of a check (empty when the check must be green). */
 export const pinnedRed = (key: string): Fingerprint => Option.getOrElse(Option.fromUndefinedOr(PINS[key]), () => ({}))
 
 export const isPinned = (key: string): boolean => Object.keys(pinnedRed(key)).length > 0
 
-/** How an observed red set differs from its pin: new reds, changed invariants, pinned jobs now green. */
+/** How an observed red set differs from its pin, per job and violation signature: new, missing, or a job turned green. */
 export const pinDiff = (pinned: Fingerprint, observed: Fingerprint): ReadonlyArray<string> => {
   const out: Array<string> = []
-  for (const [job, ids] of Object.entries(observed)) {
-    const want = Option.fromUndefinedOr(pinned[job])
-    if (Option.isNone(want)) out.push(`new red: ${job} ${formatInvariants(ids)} (not in the pin)`)
-    if (Option.exists(want, (w) => formatInvariants(w) !== formatInvariants(ids))) out.push(`changed: ${job} pinned ${formatInvariants(Option.getOrElse(want, () => []))}, now ${formatInvariants(ids)}`)
+  for (const [job, signatures] of Object.entries(observed)) {
+    const want = new Set(Option.getOrElse(Option.fromUndefinedOr(pinned[job]), () => []))
+    for (const signature of signatures) if (!want.has(signature)) out.push(`new violation: ${job}: ${signature} (not in the pin)`)
+    const seen = new Set(signatures)
+    for (const signature of want) if (!seen.has(signature)) out.push(`missing: ${job}: ${signature} (pinned, not seen): shrink its pin in sim/pins.ts`)
   }
-  for (const [job, ids] of Object.entries(pinned)) {
-    if (!(job in observed)) out.push(`turned green: ${job} (pinned ${formatInvariants(ids)}): shrink its pin in sim/pins.ts`)
+  for (const job of Object.keys(pinned)) {
+    if (!(job in observed)) out.push(`turned green: ${job} (pinned with ${(pinned[job] ?? []).length} signature(s)): shrink its pin in sim/pins.ts`)
   }
   return out
 }

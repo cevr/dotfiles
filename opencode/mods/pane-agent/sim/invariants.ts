@@ -447,6 +447,7 @@ const limitedRun = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): R
   const what = `${worker.key} turn ${turn.index} (${turn.token}) hit the usage limit at t=${end}`
   const out: Array<Violation> = []
   if (early > 0) out.push(v(9, `${what}; "continue" was typed ${early} time(s) before its reset at t=${resetAt}`))
+  if (resumes > 0 && notTypedReports(trace, worker, turn) > 0) out.push(v(9, `${what}; it was resumed after its reset and also reported "not typed" (ruling 8)`))
   if (worker.supersedes.some((command) => command.at >= turn.acceptedAt && command.issuedAt <= resetAt)) return out
   if (limitReports(trace, worker, turn) === 0) out.push(v(9, `${what}, but no "limited" wake reported it`))
   if (resumes > 1) out.push(v(9, `${what}; resumed ${resumes} times after its reset at t=${resetAt} (once is the rule)`))
@@ -478,3 +479,15 @@ export const checkAll = (trace: Trace, ref: Reference = referenceOfTrace(trace))
 
 export const formatViolations = (violations: ReadonlyArray<Violation>): string =>
   violations.map((item) => `  [I${item.invariant} ${INVARIANTS[item.invariant]}] ${item.detail}`).join("\n")
+
+/** A detail with its numbers, tokens and ids stripped; worker keys (w1, named1) stay, so a fault on another worker differs. */
+export const shapeOf = (detail: string): string =>
+  detail
+    .replace(/\bmsg_[A-Za-z0-9_]+/g, "<msg>")
+    .replace(/\bpa_[A-Za-z0-9_]+/g, "<id>")
+    .replace(/\bblock:[A-Za-z-]+\d*/g, "<block>")
+    .replace(/\bTK-[a-z0-9]+-\d+\b/g, "<tok>")
+    .replace(/(?<![A-Za-z])\d+/g, "N")
+
+/** A violation's signature (SPEC v2 ruling 7, widened): its invariant and its shaped detail (the worker is in the detail). */
+export const signatureOf = (violation: Violation): string => `I${violation.invariant} ${shapeOf(violation.detail)}`

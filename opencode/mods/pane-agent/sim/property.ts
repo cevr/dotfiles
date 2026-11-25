@@ -2,7 +2,7 @@ import { Effect, Option } from "effect"
 import { defaultConfig, runScript, type SimConfig, type Step, type Trace } from "./driver.ts"
 import { mergeCoverage, type PlannedFault } from "./faults.ts"
 import { CORE, INJECTED, PAIR_SCRIPT, pairConfigs, randomConfig } from "./generator.ts"
-import { checkAll, formatViolations, type Violation } from "./invariants.ts"
+import { checkAll, formatViolations, signatureOf, type Violation } from "./invariants.ts"
 import { configOf, HAPPY, type Scenario } from "./scenarios.ts"
 
 export interface RunResult {
@@ -57,10 +57,16 @@ export const report = (result: RunResult, minimal: ReadonlyArray<PlannedFault>, 
     formatViolations(violations.slice(0, 6)),
   ].join("\n")
 
-/** A check's red set: each red job (scenario or batch run) by name, with the invariants it broke (sorted). */
-export type Fingerprint = Readonly<Record<string, ReadonlyArray<number>>>
+/** A check's red set: each red job (scenario or batch run) by name, with the exact set of its violation signatures (sorted). */
+export type Fingerprint = Readonly<Record<string, ReadonlyArray<string>>>
 
 export const invariantsOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<number> => [...new Set(violations.map((item) => item.invariant))].sort((a, b) => a - b)
+
+export const signaturesOf = (violations: ReadonlyArray<Violation>): ReadonlyArray<string> => [...new Set(violations.map(signatureOf))].sort()
+
+/** The invariant ids a signature set names (each signature starts with "I<n> "). */
+export const invariantsOfSignatures = (signatures: ReadonlyArray<string>): ReadonlyArray<number> =>
+  [...new Set(signatures.map((signature) => Number(signature.slice(1, signature.indexOf(" ")))))].sort((a, b) => a - b)
 
 export const formatInvariants = (ids: ReadonlyArray<number>): string => `[${ids.map((id) => `I${id}`).join(" ")}]`
 
@@ -86,7 +92,7 @@ export const runBatch = Effect.fn("Sim.runBatch")(function* (
     mergeCoverage(coverage, result.trace.coverage)
     if (result.violations.length > 0) red.push(result)
   }
-  const fingerprint: Fingerprint = Object.fromEntries(red.map((result) => [result.name, invariantsOf(result.violations)]))
+  const fingerprint: Fingerprint = Object.fromEntries(red.map((result) => [result.name, signaturesOf(result.violations)]))
   const lines = [`SIM-BATCH ${label}: ${red.length} red of ${jobs.length} runs`, ...red.map((result) => `SIM-JOB ${result.name} ${formatInvariants(invariantsOf(result.violations))}`)]
   for (const result of red.slice(0, shrinkFirst)) {
     const minimal = yield* shrink(result)

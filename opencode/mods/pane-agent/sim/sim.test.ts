@@ -8,7 +8,7 @@ import { mergeCoverage, type PlannedFault, unhitPairs } from "./faults.ts"
 import { CORE, INJECTED } from "./generator.ts"
 import { formatViolations } from "./invariants.ts"
 import { isPinned, reasonOf } from "./known-red.ts"
-import { awaitJobs, crashJobs, invariantsOf, pairJobs, randomJobs, report, runBatch, runOne, runScenario, SEEDS, shrink, slice } from "./property.ts"
+import { awaitJobs, crashJobs, pairJobs, randomJobs, report, runBatch, runOne, runScenario, SEEDS, shrink, signaturesOf, slice } from "./property.ts"
 import { type CheckResult, pinnedRunner } from "./register.ts"
 import { type Scenario, SCENARIOS } from "./scenarios.ts"
 import { type Break, DEFAULT_WORLD } from "./world.ts"
@@ -22,7 +22,7 @@ const scenarioCheck = (scenario: Scenario): Effect.Effect<CheckResult> =>
   Effect.map(runScenario(scenario), (result) => {
     if (result.violations.length === 0) return { fingerprint: {}, report: "" }
     return {
-      fingerprint: { [scenario.name]: invariantsOf(result.violations) },
+      fingerprint: { [scenario.name]: signaturesOf(result.violations) },
       report: `${report(result, result.trace.fired, result.violations)}\n  claims: ${claims(scenario) || "none (a regression net)"}`,
     }
   })
