@@ -13,6 +13,7 @@ import {
   AccountPool,
   AccountsHeld,
   ClearHold,
+  FailUsageRead,
   ListLogins,
   PlaceRequest,
   PruneLedger,
@@ -29,16 +30,17 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
+import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
-import { USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow } from "./quota.ts"
+import { asReading, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow } from "./quota.ts"
 import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
-import { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
+import { AntigravityReporter, FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
 import * as PushModel from "./push.ts"
 import { used as usedOf } from "./usage-text.ts"
 import type { PushAnswer, PushRequest } from "./push.ts"
@@ -234,6 +236,8 @@ export class Pool extends Context.Service<
     readonly started: (providerID: string) => Effect.Effect<void>
     /** A step of a session started on the provider: the session is busy, an agent running, until it goes idle (`release`). */
     readonly stepStarted: (sessionID: string, providerID: string) => Effect.Effect<void>
+    /** Providers of sessions currently busy on this host (used by fleet reports and Antigravity's concurrency gate). */
+    readonly busy: Effect.Effect<ReadonlyArray<string>>
     /** What this host tells a peer: its starts that still count, its busy sessions' providers and its readings. */
     readonly report: Effect.Effect<Report>
     /**
@@ -319,6 +323,8 @@ export const layer = (config: Config) =>
       const pushLock = yield* Semaphore.make(1)
       // What the host is doing: optional, a plan goes without its load and runs.
       const workload = Option.getOrUndefined(yield* Effect.serviceOption(Workload))
+      // Antigravity's own report for peers: optional, contained so a failure never breaks the fleet report.
+      const antigravity = yield* Effect.serviceOption(AntigravityReporter)
 
       /**
        * Have the aggregate decide a command against the pool's state, fold
@@ -399,7 +405,15 @@ export const layer = (config: Config) =>
             )
 
       const readUsage = (where: Pooled, credentialID: string, recovery: boolean, signIn = Option.none<true>()) => {
-        if (!recovery) return quota.usage(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading, true)))
+        if (!recovery)
+          return quota.usage(where.id, credentialID).pipe(
+            Effect.flatMap((reading) =>
+              Option.match(Option.fromUndefinedOr(reading), {
+                onNone: () => apply(where.pool, where.id, FailUsageRead.make({ credentialID })).pipe(Effect.asVoid),
+                onSome: (value) => take(where, credentialID, value, true),
+              }),
+            ),
+          )
         return Effect.gen(function* () {
           // Reserve the appointment in the shared ledger before leaving its lock for provider I/O.
           const input = Option.match(signIn, { onNone: () => ({ credentialID }), onSome: (signIn) => ({ credentialID, signIn }) })
@@ -1384,6 +1398,19 @@ export const layer = (config: Config) =>
         }
       })
 
+      const recordTimedOutReads = (paced: Pooled, unread: ReadonlyArray<AccountStatus>, before: number) =>
+        Effect.gen(function* () {
+          const after = yield* SynchronizedRef.get(paced.pool)
+          for (const account of unread) {
+            if (account.hold?.kind === "record-unreadable" || account.hold?.kind === "signin") continue
+            const refreshed = Option.exists(
+              Option.flatMap(Option.fromUndefinedOr(after.readings[account.credentialID]), (r) => Option.fromUndefinedOr(r.usage)),
+              (sample) => sample.at >= before,
+            )
+            if (!refreshed) yield* apply(paced.pool, paced.id, FailUsageRead.make({ credentialID: account.credentialID }))
+          }
+        })
+
       /**
        * The pace on the readings now. Both ways of quoting new work count the same fleet starts not yet in the readings.
        * Placement of an existing request does not charge its launch again: it was charged when it was admitted.
@@ -1409,14 +1436,17 @@ export const layer = (config: Config) =>
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
             onSome: (hold) => (hold.kind === "record-unreadable" || (dispatches && hold.kind === "signin")) && holdRecheckAt(hold) <= before,
-            onNone: () => dispatches && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+            onNone: () => dispatches && needsUsageRefresh(account, before, required),
           }))
           const read = Effect.forEach(unread, (account) => readUsage(paced, account.credentialID, account.hold?.kind === "record-unreadable"),
             { discard: true, concurrency: unread.length })
           // A quote leaves time for the caller's RPC. Dispatch has its own
           // overall deadline; it decides on all the outcomes in by that time.
           const deadline = Option.getOrElse(Option.filter(Option.some(DISPATCH_EVIDENCE_MS), () => work === "existing-request"), () => QUOTE_EVIDENCE_MS)
-          if (unread.length > 0) yield* read.pipe(Effect.timeoutOption(deadline))
+          if (unread.length > 0) {
+            const completed = yield* read.pipe(Effect.timeoutOption(deadline))
+            if (Option.isNone(completed)) yield* recordTimedOutReads(paced, unread, before)
+          }
         }
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
@@ -1442,7 +1472,19 @@ export const layer = (config: Config) =>
           }
         }
         const now = yield* Clock.currentTimeMillis
-        const answer = FleetModel.report(yield* fleetStore.read, fleetConfig.host, now, fleetConfig.settleMs, readings, busyNow(now))
+        const agyReport = yield* Option.match(antigravity, {
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: (reporter) => reporter.report.pipe(Effect.catchCause(() => Effect.succeed(Option.none()))),
+        })
+        const answer = FleetModel.report(
+          yield* fleetStore.read,
+          fleetConfig.host,
+          now,
+          fleetConfig.settleMs,
+          readings,
+          busyNow(now),
+          Option.getOrUndefined(agyReport),
+        )
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
@@ -1460,8 +1502,10 @@ export const layer = (config: Config) =>
         if (!state.credentials.includes(shared.credentialID)) return
         const held = state.readings[shared.credentialID]
         if (held !== undefined && held.at >= shared.reading.at) return
-        yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: shared.reading }))
-        if (limits !== undefined) yield* limits.observe(target.id, shared.credentialID, shared.reading)
+        const reading = Option.fromUndefinedOr(asReading(shared.reading))
+        if (Option.isNone(reading)) return
+        yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: reading.value }))
+        if (limits !== undefined) yield* limits.observe(target.id, shared.credentialID, reading.value)
       })
 
       const mergeReports = (fleet: FleetModel.FleetState) =>
@@ -1484,7 +1528,17 @@ export const layer = (config: Config) =>
             onSuccess: (answer) =>
               Effect.gen(function* () {
                 const missed = (yield* fleetStore.read).peers[peer]?.missed
-                yield* sendFleet(FleetModel.TakeReport.make({ peer, report: answer }))
+                // Normalize a peer's Antigravity timestamps onto this host's clock ONCE at arrival (Rule A),
+                // leaving undecodable/garbage payloads untouched so the peer's pool data is never dropped (B5).
+                const receivedAt = yield* Clock.currentTimeMillis
+                const normalizedReport = Option.match(
+                  Option.flatMap(Option.fromUndefinedOr(answer.antigravity), (raw) => decodeAntigravityReport(raw)),
+                  {
+                    onNone: () => answer,
+                    onSome: (agyReport) => ({ ...answer, antigravity: normalizeAntigravityReport(agyReport, receivedAt) }),
+                  },
+                )
+                yield* sendFleet(FleetModel.TakeReport.make({ peer, report: normalizedReport }))
                 if (missed !== undefined) yield* Effect.logInfo(`pool fleet: ${peer} answers again`)
                 yield* Effect.forEach(answer.readings, merge, { discard: true })
                 if (limits !== undefined && answer.limits !== undefined) yield* limits.takePeer(peer, answer.limits)
@@ -1518,12 +1572,16 @@ export const layer = (config: Config) =>
           const { id, pool } = where
           const pacedOnly = !placedPools.has(id)
           if (pacedOnly) yield* refresh(where, false).pipe(Effect.ignore)
-          const snapshot = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
+          const now = yield* Clock.currentTimeMillis
+          const snapshot = status(yield* SynchronizedRef.get(pool), now, rules)
           const accounts = yield* Match.value(pacedOnly).pipe(
             Match.when(false, () => Effect.succeed(snapshot)),
             Match.orElse(() => Effect.forEach(snapshot, (account) => Effect.gen(function* () {
-              if (Option.isSome(Option.fromUndefinedOr(account.reading))) return { ...account, measurement: "measured" as const }
-              const failed = yield* ledger.firstReadingFailure(id, account.credentialID)
+              if (Option.isSome(Option.fromUndefinedOr(account.reading)) && !staleTracked(account, now)) return { ...account, measurement: "measured" as const }
+              const failed = yield* Option.match(Option.fromUndefinedOr(account.usageReadFailure), {
+                onSome: (failure) => Effect.succeed(Option.some(failure)),
+                onNone: () => ledger.firstReadingFailure(id, account.credentialID),
+              })
               return { ...account, measurement: "unmeasured" as const, ...Option.match(failed, {
                 onNone: () => ({}), onSome: (usageReadFailure) => ({ usageReadFailure }),
               }) }
@@ -1567,6 +1625,7 @@ export const layer = (config: Config) =>
         logins: sessionLogins,
         started,
         stepStarted,
+        busy: Effect.map(Clock.currentTimeMillis, busyNow),
         report,
         poll,
         fleet: fleetStatus,

@@ -1,5 +1,5 @@
 import { Pace } from "@dotfiles/opencode-pool/pace"
-import { Array as Arr, Effect, Exit, Option, Schema, Scope } from "effect"
+import { Array as Arr, Effect, Exit, Match, Option, Schema, Scope } from "effect"
 import { claimEffect, type FakeClaimResult, type FakeGrant, type FakeQuota } from "../../tests/fake-anthropic.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
@@ -82,15 +82,64 @@ export interface Fixture {
   used: boolean
   /** The usage endpoint answers 429 (a read that fails). */
   unavailable: boolean
-  /** The usage endpoint explicitly reports removal of the account's five-hour limit. */
-  fiveHourRemoved: boolean
+  /** How the usage endpoint answers each account's tracked fields; an account not named answers both as windows. */
+  readonly layouts: Record<string, UsageLayout>
   /** What a claim does to the readings, and the outcome the provider answers. */
   readonly onClaim: (account: string) => FakeClaimResult
 }
 
+/**
+ * A tracked usage field as the endpoint answers it: a `window`, `absent` (an
+ * explicit `null`: the account has no such limit), `missing` (no key), or
+ * `unrecognised` (a shape the reader does not know).
+ */
+export type Field = "window" | "absent" | "missing" | "unrecognised"
+export interface UsageLayout {
+  readonly five_hour: Field
+  readonly seven_day: Field
+  /** A window field the pool does not know, spent: shown, never binding. */
+  readonly extra: boolean
+}
+/** An account whose five-hour limit Anthropic removed (Ultra, 2026-11-24): `five_hour: null`. */
+export const ULTRA: UsageLayout = { five_hour: "absent", seven_day: "window", extra: false }
+
 export const fixture = (reading: Record<string, FakeQuota>, onClaim: (fixture: Fixture, account: string) => FakeClaimResult, credit: Option.Option<string> = Option.none()): Fixture => {
-  const made: Fixture = { reading, credit, used: false, unavailable: false, fiveHourRemoved: false, onClaim: (account) => onClaim(made, account) }
+  const made: Fixture = { reading, credit, used: false, unavailable: false, layouts: {}, onClaim: (account) => onClaim(made, account) }
   return made
+}
+
+const NULL = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null")
+const JsonEntry = Schema.Record(Schema.String, Schema.Json)
+const decodeBody = Schema.decodeUnknownSync(JsonEntry)
+const decodeEntries = Schema.decodeUnknownOption(Schema.Array(JsonEntry))
+/** A field's value in that layout, or none for a missing key. */
+const fieldOf = (field: Field, window: Option.Option<Schema.Json>): Option.Option<Schema.Json> =>
+  Match.value(field).pipe(
+    Match.when("window", () => window),
+    Match.when("absent", () => Option.some<Schema.Json>(NULL)),
+    Match.when("missing", () => Option.none()),
+    Match.orElse(() => Option.some<Schema.Json>({ used: "40%" })),
+  )
+
+/** A usage body as `layout` answers it: each tracked field in its state, a removed five-hour limit gone from `limits` too. */
+const laidOut = (body: typeof JsonEntry.Type, layout: UsageLayout) => {
+  const { five_hour, seven_day, ...rest } = body
+  const limits = Option.filter(decodeEntries(body.limits), () => layout.five_hour !== "window")
+  return {
+    ...rest,
+    ...Option.match(fieldOf(layout.five_hour, Option.fromUndefinedOr(five_hour)), { onNone: () => ({}), onSome: (value) => ({ five_hour: value }) }),
+    ...Option.match(fieldOf(layout.seven_day, Option.fromUndefinedOr(seven_day)), { onNone: () => ({}), onSome: (value) => ({ seven_day: value }) }),
+    ...Option.match(limits, {
+      onNone: () => ({}),
+      onSome: (limits) => ({
+        limits: limits.filter((limit) => limit.group !== "session"),
+        weekly_scoped_shares: Option.getOrElse(decodeEntries(body.weekly_scoped_shares), () => []).map((share) => ({ ...share, limit_index: Number(share.limit_index) - 1 })),
+      }),
+    }),
+    ...Arr.match(Arr.filter([{ seven_day_newcomer: { utilization: 100, resets_at: "2099-01-01T00:00:00Z" } }], () => layout.extra), {
+      onEmpty: () => ({}), onNonEmpty: ([extra]) => extra,
+    }),
+  }
 }
 
 /** The claim goes through and gives back what the grant does. */
@@ -105,6 +154,13 @@ export const readOf = (made: Fixture, account: string): FakeQuota => Option.getO
 
 const OTHER = "/scratch/reset-backed-pace-other"
 
+/** The unified windows `account`'s shape says it has none of, read at each answer (a test may change the shape meanwhile). */
+const withoutOf = (made: Fixture, account: string): ReadonlyArray<"5h" | "7d"> =>
+  Option.match(Option.fromUndefinedOr(made.layouts[account]), {
+    onNone: () => [],
+    onSome: (layout) => Arr.filter(["5h", "7d"] as const, (name) => Match.value(name).pipe(Match.when("5h", () => layout.five_hour), Match.orElse(() => layout.seven_day)) === "absent"),
+  })
+
 export const fleet = (made: Fixture, options: { readonly beside?: World.World; readonly model?: string; readonly anotherDirectory?: boolean; readonly sweepMinutes?: number } = {}) =>
   Effect.gen(function* () {
     const names = Object.keys(made.reading)
@@ -116,7 +172,7 @@ export const fleet = (made: Fixture, options: { readonly beside?: World.World; r
       script: () => World.say(""),
       anthropic: {
         accounts,
-        quota: (account) => readOf(made, account),
+        quota: (account) => ({ ...readOf(made, account), without: withoutOf(made, account) }),
         grants: (account) => Option.toArray(Option.filter(made.credit, (holder) => holder === account && !made.used)).map(() => fable),
         claim: (account) => {
           made.used = true
@@ -132,18 +188,14 @@ export const fleet = (made: Fixture, options: { readonly beside?: World.World; r
     const fetch: typeof provider.fetch = (url, init) => {
       const target = new URL(String(url))
       if (made.unavailable && target.pathname === "/api/oauth/usage") target.pathname = "/nonexistent/loop-probe-x"
+      // The account a request is for, by its bearer token; its layout, read when the answer comes (a test may change it meanwhile).
+      // A model response's headers leave out the windows the account has none of (`quota` below).
+      const bearer = new Headers(init?.headers).get("authorization")
+      const account = Arr.findFirst(names, (name) => Option.exists(Option.fromUndefinedOr(accounts[name]), (tokens) => bearer === `Bearer ${tokens.access}`))
       return provider.fetch(target, init).then((response) => {
-        if (!made.fiveHourRemoved || !response.ok) return response
-        if (target.pathname === "/api/oauth/usage") return response.json().then((body) => Response.json({
-          ...body,
-          five_hour: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))("null"),
-          limits: body.limits?.filter((limit: { group: string }) => limit.group !== "session"),
-          weekly_scoped_shares: body.weekly_scoped_shares?.map((share: { limit_index: number }) => ({ ...share, limit_index: share.limit_index - 1 })),
-        }))
-        const headers = new Headers(response.headers)
-        headers.delete("anthropic-ratelimit-unified-5h-utilization")
-        headers.delete("anthropic-ratelimit-unified-5h-reset")
-        return new Response(response.body, { status: response.status, headers })
+        const layout = Option.flatMap(account, (name) => Option.fromUndefinedOr(made.layouts[name]))
+        if (Option.isNone(layout) || !response.ok || target.pathname !== "/api/oauth/usage") return response
+        return response.json().then((body) => Response.json(laidOut(decodeBody(body), layout.value)))
       })
     }
     const sessionDirectory = Option.getOrElse(Option.filter(Option.some(OTHER), () => options.anotherDirectory === true), () => WORK)

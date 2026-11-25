@@ -5,6 +5,7 @@
 import { Context, type Effect, type Option, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
+import type { AntigravityReport } from "./antigravity-report.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
@@ -268,3 +269,15 @@ export class FleetStore extends Context.Service<
     readonly record: (events: ReadonlyArray<FleetEvent>, state: FleetState) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/FleetStore") {}
+
+/**
+ * Optional Antigravity report provider for the fleet's `report` RPC: carries
+ * this host's own limit events, reading, attempt floor and readableSignIn flag
+ * (never a token). Absent or failing leaves the fleet report without it.
+ */
+export class AntigravityReporter extends Context.Service<
+  AntigravityReporter,
+  {
+    readonly report: Effect.Effect<Option.Option<AntigravityReport>>
+  }
+>()("dotfiles-opencode/pool/AntigravityReporter") {}

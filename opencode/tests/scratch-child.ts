@@ -1,6 +1,7 @@
 import { gunzipSync, spawn, spawnSync } from "bun"
 import { Data, Option, Predicate } from "effect"
 import { ChildProcess } from "effect/process"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { cloneGitArgv, initGitArgv, QUIET_GIT, type GitEnv } from "./git-repo.ts"
 import { checkoutRoot as ROOT, externalInput, matchingInput, scratchInput } from "./read-path.ts"
 import { localTestPaths, localTestProcess, scratchRoot } from "./scratch.ts"
@@ -213,7 +214,7 @@ const servicePathVariables = new Set([
 ])
 const serviceValues = new Set([
   "TERM", "HERDR_ENV", "OPENCODE_PASSWORD", "OPENCODE_DISABLE_FREE_MODELS", "OPENCODE_DISABLE_MODELS_FETCH",
-  "OPENCODE_DISABLE_FILEWATCHER", "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
+  ...Object.keys(testHostEnv()), "OPENCODE_FLAGS", "BUN_OPTIONS", "OPENCODE_PRINT_LOGS", "ANTHROPIC_BASE_URL",
   "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "OPENCODE_CLI_CONFIG_CONTENT",
 ])
 const exactArgs = (given: ReadonlyArray<string>, ...expected: ReadonlyArray<string>) =>

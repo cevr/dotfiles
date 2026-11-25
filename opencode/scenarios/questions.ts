@@ -28,7 +28,7 @@
 // model request, by the session it came from) and `-transcripts.json`.
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"

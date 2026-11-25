@@ -3,7 +3,7 @@
 // weekly and 5-hour use with when each resets, each model's own week (Fable's),
 // and how alarming each line is.
 // tui/sidebar.tsx reads the answer and draws these lines.
-import { Schema } from "effect"
+import { Match, Option, Schema } from "effect"
 import { stamp, usedShort } from "./pane.ts"
 
 /**
@@ -22,6 +22,8 @@ export const SidebarAnswer = Schema.Struct({
           windows: Schema.Array(
             Schema.Struct({ name: Schema.String, utilization: Schema.Number, resetAt: Schema.optionalKey(Schema.Number) }),
           ),
+          /** The windows the account's usage says it has none of. */
+          absent: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.String }))),
         }),
       ),
     }),
@@ -129,5 +131,11 @@ export const sidebarLines = (answer: SidebarAnswer, now: number): ReadonlyArray<
     const percent = `${shown} ${usedShort(utilization)}`
     return [{ text: reset === undefined ? percent : fitted(percent, reset, now), tone: toneOf(utilization) }]
   })
-  return [title, ...hold, ...(windows.length === 0 ? [{ text: "no reading yet", tone: "muted" as const }] : windows)]
+  // An account whose usage reports no window at all has a reading: it says so, not that none came yet.
+  const reported = Option.exists(Option.fromUndefinedOr(account.reading), (reading) => {
+    const absent = Option.getOrElse(Option.fromUndefinedOr(reading.absent), () => []).map((window) => window.name)
+    return WINDOWS.every(([name]) => absent.includes(name))
+  })
+  const empty = Match.value(reported).pipe(Match.when(true, () => "no usage windows reported"), Match.orElse(() => "no reading yet"))
+  return [title, ...hold, ...(windows.length === 0 ? [{ text: empty, tone: "muted" as const }] : windows)]
 }

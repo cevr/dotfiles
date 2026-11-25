@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process"
 import { appendFileSync, copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { stamp, watchdog } from "../tests/hang-guard.ts"
 
 const root = process.cwd()

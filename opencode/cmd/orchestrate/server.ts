@@ -177,6 +177,7 @@ import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import * as PoolStatus from "@dotfiles/opencode-orchestrate/pool-status"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
 import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
@@ -1000,7 +1001,28 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           )
           return answer
         })
-      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane and the next call. */
+      /** Pool quota rows (Claude, OpenAI and Antigravity per group) for status and land; bounded to 500 ms so a pool restart never stalls status, empty when absent or unreadable. */
+      const poolQuotaRows = Effect.gen(function* () {
+        const client = ctx.rpc(POOL_STATUS)
+        const [pools, agy] = yield* Effect.all(
+          [
+            Effect.suspend(() => client.status({})).pipe(
+              Effect.timeoutOption("500 millis"),
+              Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodePools)),
+              Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.PoolSnapshot>())),
+            ),
+            Effect.suspend(() => client.antigravity({})).pipe(
+              Effect.timeoutOption("500 millis"),
+              Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodeAntigravity)),
+              Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.AntigravitySnapshot>())),
+            ),
+          ],
+          { concurrency: 2 },
+        )
+        return PoolStatus.poolStatusRows(pools, agy)
+      })
+
+      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane, commitments and pool rows. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
@@ -1013,7 +1035,8 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
             Match.orElse(() => Tools.statusAnswer([], [], false, since, now)),
           )
           const section = yield* recordSection(sessionID, true)
-          return [...lost, answer, ...section.lines].join("\n")
+          const quota = yield* poolQuotaRows
+          return [...lost, answer, ...section.lines, ...quota].join("\n")
         })
 
       // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's
@@ -1474,7 +1497,8 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           // source of what landed); a land that did not push names none.
           yield* landRecorded(sessionID, ORCHESTRATE_LAND, landed.landed ?? [])
           const section = yield* recordSection(sessionID, false)
-          return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines].join("\n")
+          const quota = yield* poolQuotaRows
+          return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines, ...quota].join("\n")
         })
 
       /** Who calls the record: the root, or a subagent's session as a worker. */

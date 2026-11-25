@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { scratchExistsSync, scratchInput } from "./read-path.ts"
 import { dirname, join } from "node:path"
 import { ORCHESTRATOR, orchestrator } from "../mods/orchestrate/role.ts"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
 import { ready as composerReady } from "../testbeds/gamut/startup/tui.ts"
 import {
@@ -327,7 +328,7 @@ describe("the run's environment", () => {
     // OpenCode's free hosted models stay hidden, live preset or sim.
     expect(env.OPENCODE_DISABLE_FREE_MODELS).toBe("1")
     // Its startup does not wait on the host's file-event daemon: no watch on any plugin module.
-    expect(env.OPENCODE_DISABLE_FILEWATCHER).toBe("1")
+    expect(env).toMatchObject(testHostEnv())
     expect(runEnv(caller, paths, launch, false).OPENCODE_DISABLE_MODELS_FETCH).toBeUndefined()
   })
 

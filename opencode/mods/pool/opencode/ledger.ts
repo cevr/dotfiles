@@ -9,12 +9,12 @@
 // process may have kept a step per key, `<pool>/step/<at, 15 digits>/<sessionID>`:
 // those are read too, and folded into chunks. A ledger from before caches were
 // kept has no cache key and restores none.
-import { Clock, Deferred, Effect, Exit, Fiber, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
+import { Clock, Deferred, Effect, Exit, Fiber, Function as Fn, Layer, Option, Predicate, Result, Schema, Semaphore } from "effect"
 import { cacheMark, type Event, type LedgerState, type PoolId } from "../account-pool.ts"
 import { Mark, Step, WINDOW_MS } from "../accounts.ts"
 import { HOLD_STORE_RETRY_MS } from "../handoff.ts"
 import { clampHoldEnd, Hold, HoldTime, recoveryDelay, UNREADABLE_HOLD_MS } from "../hold.ts"
-import { FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS, QuotaReading, RefusalKind, type UsageReadFailure } from "../quota.ts"
+import { asReading, FIRST_USAGE_RETRY_MS, FIRST_USAGE_WAIT_MS, type QuotaReading, RefusalKind, type UsageReadFailure } from "../quota.ts"
 import { HoldStoreUnavailable, Ledger } from "../service.ts"
 import * as Chunks from "./chunks.ts"
 export { UNREADABLE_HOLD_MS } from "../hold.ts"
@@ -114,6 +114,7 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
       return [remove(holdKey(event.credentialID))]
     case "LoginsListed":
     case "RunReleased":
+    case "UsageReadFailed":
       return []
   }
 }
@@ -132,7 +133,7 @@ const stepsWrite = (store: Chunks.Store<Step>, event: Event): Effect.Effect<void
 }
 
 const decodeHold = Schema.decodeUnknownOption(Hold)
-const decodeReading = Schema.decodeUnknownOption(QuotaReading)
+const decodeReading = Fn.flow(asReading, Option.fromUndefinedOr)
 const decodeMark = Schema.decodeUnknownOption(Mark)
 const recoveryFields = Schema.decodeUnknownOption(Schema.Struct({
   kind: Schema.optionalKey(Schema.Unknown), rawKind: Schema.optionalKey(Schema.Unknown),

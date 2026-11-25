@@ -2,7 +2,7 @@
 // @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 import { Effect, Option } from "effect"
 import { claimEffect, type FakeClaimResult } from "../../tests/fake-anthropic.ts"
-import { boot, DAY, decodePace, fable, fleet, fixture, HOUR, POOL, quota, readOf, refunds, WORK, type Fixture } from "./pool-reset-backed-pace.fixture.ts"
+import { boot, DAY, decodePace, fable, fleet, fixture, HOUR, POOL, quota, readOf, refunds, ULTRA, WORK, type Fixture } from "./pool-reset-backed-pace.fixture.ts"
 import * as World from "../../sim/world.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 
@@ -11,7 +11,7 @@ const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace-readings.si
 seeded("a weekly-only account spends its observed reset recovery on an Opus request", ({ expect }) =>
   Effect.gen(function* () {
     const made = fixture({ a: quota(1, 0.68) }, refunds, Option.some("a"))
-    made.fiveHourRemoved = true
+    made.layouts.a = ULTRA
     const { world, session, pace, primary, claims } = yield* fleet(made)
     const id = yield* session("weekly_only")
     yield* pace(id)
@@ -27,7 +27,7 @@ seeded("a weekly-only account spends its observed reset recovery on an Opus requ
 seeded("weekly-only Fable requests continue through response headers that omit the removed limit", ({ expect }) =>
   Effect.gen(function* () {
     const made = fixture({ a: quota(0.2, 0.1) }, refunds)
-    made.fiveHourRemoved = true
+    made.layouts.a = ULTRA
     const { world, session, primary } = yield* fleet(made, { model: "claude-fable-5-2", sweepMinutes: 0 })
     const id = yield* session("weekly_only_fable")
     yield* world.prompt(id, "start on a weekly-only account")

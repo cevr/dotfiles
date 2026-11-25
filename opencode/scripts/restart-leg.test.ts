@@ -33,6 +33,7 @@ import {
   unitsOf,
   updateOptions,
 } from "./restart-leg.ts"
+import { testHostEnv } from "./test-host.ts"
 
 const FLAGS: Flags = {
   root: "/dev/shm",
@@ -207,7 +208,7 @@ describe("the scratch service", () => {
       expect(config.plugins.map((entry) => entry.package)).toEqual(["/home/exedev/.local/share/opencode-prime/current.plugins/entries/server/update"])
       const env = serviceEnv(paths, { PATH: "/usr/bin", XDG_RUNTIME_DIR: "/run/user/1000", HOME: "/home/exedev", XDG_STATE_HOME: "/home/exedev/.local/state", ANTHROPIC_API_KEY: "k" })
       expect(Object.keys(env)).not.toContain("ANTHROPIC_API_KEY")
-      const outside = Object.entries(env).filter(([key, value]) => !["PATH", "XDG_RUNTIME_DIR", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_FILEWATCHER"].includes(key) && !value.startsWith(RUN))
+      const outside = Object.entries(env).filter(([key, value]) => !["PATH", "XDG_RUNTIME_DIR", "OPENCODE_DISABLE_MODELS_FETCH", ...Object.keys(testHostEnv())].includes(key) && !value.startsWith(RUN))
       expect(outside).toEqual([])
     }),
   )

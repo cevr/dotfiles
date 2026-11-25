@@ -133,13 +133,17 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
+import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
+import * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
+import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
+import * as AgyWiring from "@dotfiles/opencode-pool/antigravity/wiring"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
 import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -159,7 +163,7 @@ import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
-import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload } from "@dotfiles/opencode-pool/service"
+import { AntigravityReporter, FleetStore, type Ledger, type Limits, type Logins, type Owner, type Peers, type PushStore, type Quota, type ResetsStore, type Workload } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
@@ -230,6 +234,7 @@ export const Options = Schema.Struct({
   ),
   limitsFile: Schema.optional(Schema.String),
   unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  antigravity: AgyLive.PoolOption.pipe(withDefault<AgyLive.PoolOption>({})),
 })
 export type Options = typeof Options.Type
 
@@ -330,6 +335,24 @@ export interface StoreHost {
 }
 
 export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCredentialSource }
+
+/**
+ * Antigravity's quota source for the `antigravity` option (`@dotfiles/opencode-pool/antigravity/live`):
+ * in OpenCode, one authority per state file in the process, built with no I/O, which reads only when asked
+ * (the keychain only with a consent, once); none in a
+ * test's pool, so no test reads a real profile or keychain. Its files and paths are the host's: the fork's plugin
+ * host gives a server plugin FileSystem and Path (`@opencode/plugin/effect` `Plugin.Environment`), so the pool
+ * imports no platform implementation.
+ */
+export type AntigravityRoot<R = never> = (option: AgyLive.PoolOption, fleet?: AgySource.FleetContext) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | R>
+export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
+
+/** What the live Antigravity root needs of the host: its files and paths, as the fork's plugin host provides them. */
+export type AntigravityHost = FileSystem.FileSystem | Path.Path
+
+/** The live root: one authority per state file in the process (`AgyLive.poolSource`), Google over fetch. */
+export const liveAntigravity: AntigravityRoot<AntigravityHost> = (option, fleet) =>
+  AgyLive.poolSource(option, fleet).pipe(Effect.provide(FetchHttpClient.layer))
 
 /**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
@@ -435,7 +458,7 @@ const FIRST_SWEEP = "1 second"
  * seam tests. `externals` gets the store sources the options name, so the
  * plugin registers with the auth plugin exactly the sources the pool lists.
  */
-export const make = (
+export const make = <R = never,>(
   externals: (
     ctx: Plugin.Context,
     options: Options,
@@ -444,6 +467,7 @@ export const make = (
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
   sendRecords = LedgerLive.holdAuthority().lock,
+  antigravity: AntigravityRoot<R> = NO_ANTIGRAVITY,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -478,17 +502,58 @@ export const make = (
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
       // serves no provider or model until all have, so the model builds off that path: the plugin's hooks, tools and
       // RPCs are in place at once and each waits for the model, a request's placement too. A model that cannot be
       // built fails every one of them.
       const ready = yield* Deferred.make<Model.Pool["Service"]>()
+      // One FleetStore shared between the pool model and Antigravity's merged fleet view: resolves as soon as
+      // `externals` builds, before the ledger scan finishes, so Antigravity reads do not wait on the ledger.
+      const fleetReady = yield* Deferred.make<FleetStore["Service"]>()
       let active = true
       yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+
+      // Antigravity's quota: built with no I/O, read only when asked; its rows come from the merged fleet record, and no
+      // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
+      // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
+      const agyFleet: AgySource.FleetContext = {
+        host: options.fleet.host,
+        read: Effect.gen(function* () {
+          const fleetStore = yield* Deferred.await(fleetReady)
+          const state = yield* fleetStore.read
+          const polled = yield* Deferred.poll(ready)
+          const ownBusy = yield* Option.match(polled, {
+            onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
+            onSome: (done) =>
+              done.pipe(
+                Effect.flatMap((pool) => pool.busy),
+                Effect.catchCause(() => Effect.succeed<ReadonlyArray<string>>([])),
+              ),
+          })
+          const peerBusy = Object.entries(state.peers).flatMap(([name, peer]) =>
+            Option.toArray(
+              Option.map(Option.fromUndefinedOr(peer.seenAt), (seenAt) => ({
+                host: Option.getOrElse(Option.map(Option.fromUndefinedOr(peer.report), (r) => r.host), () => name),
+                busy: Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(peer.report), (r) => Option.fromUndefinedOr(r.busy)), () => []),
+                seenAt,
+              })),
+            ),
+          )
+          return {
+            host: options.fleet.host,
+            peers: state.peers,
+            peerNames: options.fleet.peers.map((peer) => peer.name),
+            ownBusy,
+            peerBusy,
+          }
+        }),
+        recordBusy: (paneId, providerID) => withPool((pool) => pool.stepStarted(paneId, providerID)).pipe(Effect.ignoreCause),
+        releaseBusy: (paneId) => withPool((pool) => pool.release(paneId)).pipe(Effect.ignoreCause),
+      }
+      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity, agyFleet)))
       const routeTracking = (integration: string, input: Model.PlaceInput) => Effect.gen(function* () {
         const login = yield* loginOf(integration)
         if (login.active) return Option.none<Pace>()
@@ -549,6 +614,7 @@ export const make = (
       }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
+          const captureFleet = Layer.effectDiscard(Effect.flatMap(FleetStore, (store) => Deferred.succeed(fleetReady, store)))
           const services = yield* Layer.build(
             Model.layer({
               providers: options.providers,
@@ -564,7 +630,11 @@ export const make = (
               resets: resetsOf(options),
               autoClaims: typeof options.resets === "boolean" || options.resets.auto,
               ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
-            }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
+            }).pipe(
+              Layer.merge(captureFleet),
+              Layer.provideMerge(externals(ctx, options, sources, chatgpt)),
+              Layer.provideMerge(Layer.succeed(AntigravityReporter, AntigravityReporter.of({ report: agy.report }))),
+            ),
           )
           const pool = Context.get(services, Model.Pool)
           yield* Deferred.succeed(ready, pool)
@@ -593,6 +663,7 @@ export const make = (
               // A start the plugin's end interrupted is no failure to report; its waiters end all the same.
               onFailure: (cause) =>
                 Effect.when(Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`), Effect.sync(() => !Cause.hasInterruptsOnly(cause))).pipe(
+                  Effect.andThen(Deferred.die(fleetReady, Cause.squash(cause))),
                   Effect.andThen(Deferred.die(ready, Cause.squash(cause))),
                 ),
             }),
@@ -828,6 +899,8 @@ export const make = (
           options: { codemode: false },
           execute: (input, context) =>
             withPool((pool) => pool.push({ ...input, sessionID: context.sessionID })).pipe(
+              // A status names Antigravity's quota too, as last read.
+              Effect.flatMap((answer) => Effect.map(agy.pushText(input.action, answer.text), (text) => ({ ...answer, text }))),
               Effect.flatMap((answer) =>
                 answer.ok
                   ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
@@ -835,6 +908,7 @@ export const make = (
               ),
             ),
         })
+        editor.add({ ...agy.tool, name: AgyWiring.TOOL_NAME })
       })
 
       // The pool's own RPC has no error to answer with: a pool whose logins
@@ -942,6 +1016,7 @@ export const make = (
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
               onSome: (request) => withPool((pool) => pool.push(request)),
             }),
+          antigravity: (input) => agy.rpc(Option.getOrUndefined(decodeAgyRpc(input))),
         })
         .pipe(Effect.orDie)
     }),
@@ -952,6 +1027,7 @@ const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
 const decodeLease = Schema.decodeUnknownOption(LeaseMessage)
 const decodePush = Schema.decodeUnknownOption(PushRequest)
+const decodeAgyRpc = Schema.decodeUnknownOption(AgyWiring.RpcInput)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
@@ -969,4 +1045,4 @@ const sessionOf = (input: unknown) =>
     ? input.sessionID
     : undefined
 
-export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, liveAntigravity)

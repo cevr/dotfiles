@@ -5,7 +5,7 @@
 // cannot be read; and the rate-limit resets the pool works: a question waiting
 // on the owner, a claim under way, the claims made. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
-import { Schema } from "effect"
+import { Array as Arr, Match, Option, Schema } from "effect"
 import type { AgentCall, Run, Unit } from "./status.ts"
 
 /**
@@ -22,6 +22,10 @@ export const PaneAccount = Schema.Struct({
       windows: Schema.Array(
         Schema.Struct({ name: Schema.String, utilization: Schema.Number, resetAt: Schema.optionalKey(Schema.Number) }),
       ),
+      /** The 5-hour or weekly windows the account's usage says it has none of (the pool's `AbsentWindow`). */
+      absent: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.String }))),
+      /** The usage answer's fields in a shape the pool could not read. */
+      unrecognised: Schema.optionalKey(Schema.Array(Schema.String)),
       resets: Schema.optionalKey(
         Schema.Struct({
           available: Schema.Number,
@@ -112,6 +116,38 @@ export interface AccountRow {
 /** `YYYY-MM-DD` of an epoch-ms time. */
 const day = (at: number) => stamp(at).slice(0, 10)
 
+
+/**
+ * The account's 5-hour and weekly windows, each in its state: REPORTED
+ * (`  5h 23%/100% used · reset <time>`), ABSENT (`  5h none: not on this
+ * account`), UNKNOWN (`  5h unknown · reset unknown`); then `no usage windows
+ * reported` when both are absent, each window the pool does not pace by, and
+ * the usage fields that did not read, so a person sees the shape changed.
+ */
+const windowLines = (account: Pick<PaneAccount, "reading">): ReadonlyArray<string> =>
+  Option.match(Option.fromUndefinedOr(account.reading), {
+    onNone: () => WINDOWS.map((name) => `  ${name} unknown · reset unknown`),
+    onSome: (reading) => {
+      const absent = new Set(Option.getOrElse(Option.fromUndefinedOr(reading.absent), () => []).map((window) => window.name))
+      const lines = WINDOWS.map((name) =>
+        Option.match(Arr.findFirst(reading.windows, (item) => item.name === name), {
+          onSome: (window) => `  ${name} ${usedShort(window.utilization)} · reset ${stamp(window.resetAt)}`,
+          onNone: () => Match.value(absent.has(name)).pipe(
+            Match.when(true, () => `  ${name} none: not on this account`),
+            Match.orElse(() => `  ${name} unknown · reset unknown`),
+          ),
+        }),
+      )
+      const none = Arr.filter(["  no usage windows reported"], () => WINDOWS.every((name) => absent.has(name) && !reading.windows.some((item) => item.name === name)))
+      const other = reading.windows
+        .filter((window) => !window.name.includes(":") && !WINDOWS.some((name) => name === window.name))
+        .map((window) => `  ${window.name} ${usedShort(window.utilization)} · not a window the pool paces by`)
+      const fields: ReadonlyArray<string> = Option.getOrElse(Option.fromUndefinedOr(reading.unrecognised), () => [])
+      const unread = Arr.filter([`  usage fields not read: ${fields.join(", ")}`], () => fields.length > 0)
+      return [...lines, ...none, ...other, ...unread]
+    },
+  })
+
 /** Every pool's accounts, in the order the pool lists them; `now` leaves out a reset already expired. */
 export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<AccountRow> =>
   Object.entries(pools).flatMap(([pool, entry]) =>
@@ -125,10 +161,7 @@ export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<A
         held: account.hold !== undefined,
         title: `${pool} / ${account.credentialID} · ${account.hold ? `held (${account.hold.kind}) until ${stamp(account.hold.until)}` : "available"}`,
         windows: [
-          ...WINDOWS.map((name) => {
-            const window = account.reading?.windows.find((item) => item.name === name)
-            return `  ${name} ${window ? usedShort(window.utilization) : "unknown"} · reset ${stamp(window?.resetAt)}`
-          }),
+          ...windowLines(account),
           ...(account.reading?.windows ?? []).flatMap((window) => {
             const at = window.name.indexOf(":")
             if (at < 0) return []
@@ -152,6 +185,30 @@ export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<A
  */
 export const PaneLimits = Schema.Struct({ line: Schema.optionalKey(Schema.String) })
 export type PaneLimits = typeof PaneLimits.Type
+
+/**
+ * The pool's antigravity answer as the pane reads it: Antigravity's quota rows
+ * as last read (the pool's antigravity/text.ts `statusLines`), none when the
+ * host does not read it.
+ */
+export const PaneAntigravity = Schema.Struct({ lines: Schema.Array(Schema.String) })
+export type PaneAntigravity = typeof PaneAntigravity.Type
+
+export interface AntigravityRow {
+  /** Limited group, stale peer, or unavailable reader: highlighted in warning color. */
+  readonly warn: boolean
+  /** Indented detail line under a group header (windows, read age, stale peer, limits). */
+  readonly detail: boolean
+  readonly text: string
+}
+
+/** Antigravity's merged per-group rows as the pool pane draws them beside Claude and OpenAI. */
+export const antigravityRows = (read: PaneAntigravity): ReadonlyArray<AntigravityRow> =>
+  read.lines.map((text) => ({
+    warn: ["· limited", "· stale", "· unavailable", "stale ("].some((token) => text.includes(token)),
+    detail: text.startsWith("  "),
+    text,
+  }))
 
 /** The provider each pool's resets are known by. */
 const RESET_NAMES: Readonly<Record<string, string>> = { anthropic: "Claude", openai: "Codex" }

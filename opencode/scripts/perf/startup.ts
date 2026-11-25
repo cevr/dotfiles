@@ -24,6 +24,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { createServer } from "node:net"
 import { join } from "node:path"
 import { spawn as spawnPty } from "zigpty"
+import { testHostEnv } from "../test-host.ts"
 
 const args = process.argv.slice(2)
 const opt = (name: string, fallback?: string) => {
@@ -73,6 +74,7 @@ const env: Record<string, string> = {
   OPENCODE_PASSWORD: crypto.randomUUID(),
   // `OPENCODE_LOG_LEVEL=DEBUG` adds the TUI's plugin trace spans to its log.
   ...(process.env.OPENCODE_LOG_LEVEL ? { OPENCODE_LOG_LEVEL: process.env.OPENCODE_LOG_LEVEL } : {}),
+  ...testHostEnv(),
 }
 const entry = bin
   ? [bin]

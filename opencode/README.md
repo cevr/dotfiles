@@ -1537,13 +1537,31 @@ readings decide which windows exist: the 5-hour one is optional (on
 2026-11-15 four of the seven Claude logins read none), and the forecast
 stands on the weekly window and Fable's own week alone.
 
-Admission also accepts an account whose usage endpoint explicitly returns
-`five_hour: null` (verified accounts during Anthropic's quota transition).
-That absence is recorded with its own reading time (`fiveHourAbsentAt`) and
-must be refreshed within 30 minutes. Partial response headers preserve its
-original time; an omitted or malformed field proves no removal, and a
-five-hour limit reported again applies immediately. The weekly pace and the
-model's own limits still apply.
+Each usage window, the 5-hour and the weekly one on either provider, is in
+one of three states (`mods/pool/quota.ts` `WindowReading`):
+
+- **Reported**: its use and reset were read. Only a reported window holds an
+  account or paces it, until its own reset.
+- **Absent**: the provider's successful usage answer says the account has no
+  such window: Anthropic's `five_hour: null` or `seven_day: null` (Ultra
+  accounts lost their 5-hour limit on 2026-11-24), a ChatGPT answer whose
+  two window slots hold no window of that length (a weekly-only plan). It
+  imposes nothing; it is read again within 30 minutes like any window. A
+  weekly-only account is paced on its week; an account with no week has
+  nothing to pace against and takes a start past the others' even line; one
+  with neither is admitted, its status saying it reports no usage windows.
+- **Unknown**: not read yet, a failed read, a missing field, or a shape the
+  reader does not know (named in the reading's `unrecognised` and the
+  status). It is never absent and never room by itself: a login waits for
+  one successful usage read in the last 30 minutes, then what that read
+  reported binds and the unknown window holds nothing more. A window a
+  response's headers leave out keeps its last reported reading until its
+  reset. An answer with no tracked window read either way is a failed read,
+  logged with its key names only.
+
+A window that goes from reported to absent ends its hold at that read; one
+reported again binds at that read. Windows the pool does not know are shown,
+never binding; a refusal (a 429) holds whatever the readings say.
 
 Capacity is taken in this order:
 
@@ -1582,6 +1600,107 @@ be reached it is recorded unsent (`not sent: no agreement, <peer>
 unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
 its properties over generated weeks of steady burn, and against the same
 weeks with no reset spent.
+
+### Antigravity quota
+
+`mods/pool/antigravity` tracks Antigravity's (agy's) quota groups, Gemini and the
+Claude & GPT quota they share, each with its 5-hour and weekly window. It reads
+the same way T3 Code does (`antigravityUsageLimits.ts` at 55085df2).
+
+A read happens only when asked: the tool's `read` action or
+`bun cmd/pool/antigravity-read.ts`. Plugin start, `pool_push` status and the
+`/pool` pane only show the stored reading and its age; no timer reads. All
+plugin instances and processes on a host share one state file
+(`$XDG_STATE_HOME/opencode-pool/antigravity.json`, no token in it) under a lock.
+No read is made within 5 minutes of the last attempt, whoever made it, and
+failures back that off further. The lock names its owner, so a holder that
+stalled past a takeover saves nothing. A state file that does not decode counts
+as an attempt just made and is kept beside it as `.undecodable`. A failure anywhere in this code shows as an
+"unknown" row and never stops or delays the pool.
+
+A personal sign-in is read only from the token files of a managed profile, made
+as T3 makes one (default
+`$XDG_STATE_HOME/opencode-pool/antigravity/profiles/default`; `~/.gemini` is not
+read by default). One description in `mods/pool/antigravity/profile.ts` gives
+all of it: the layout, `antigravity-acp/settings.json`, the links into
+`~/.gemini`, the environment, and the launch `agy acp --gemini-dir <profile>
+--app-data-dir antigravity-acp`, with `--login` added for the sign-in.
+`bun cmd/pool/antigravity-read.ts --profile-env` makes the profile and prints the
+one line that signs agy in on it. T3's BROWSER helper and its TMPDIR are left
+out: both are local only and change nothing Google sees, but without the helper
+the sign-in may open the default browser. Every agy pane must start on this
+profile's launch line, or the token file expires about an hour after sign-in:
+nothing refreshes it, and T3 keeps it fresh by running every session on the
+profile. agy's interactive TUI, which the orchestrator's panes run, lists
+neither flag in `agy --help`. So for it the answer is "pane mode: token path
+unknown: reads unavailable", and a read needs a fresh sign-in. A personal
+sign-in never reads the keychain. For a business sign-in, the macOS keychain is read
+only with the owner's consent (`read` with `consent: true`, or `--consent`), and
+one consent buys exactly one attempt, whatever its outcome. The token it gives
+is held in memory only, so a restart, an expiry or a 401 means a new consent.
+
+The read itself is `v1internal:retrieveUserQuotaSummary`, then
+`fetchAvailableModels`, on Google's daily and production Code Assist hosts.
+One header rule covers every request: it sets exactly the header names T3's code
+sets (the bearer and Antigravity's user agent on the quota calls, none on the
+token refresh), and the runtime adds its own defaults. No request follows a
+redirect or sends a trace header (`source.test.ts` pins every request). It runs
+on Bun's fetch where T3 runs on Node's, so the TLS handshake and the runtime's
+default headers (user agent on the refresh, accept-encoding, connection) can
+differ.
+
+A group answers in one of these states:
+
+- limited until a time, from a limit an agy pane printed (recorded with the tool's
+  `limit` action, on every group when the pane names none) or from a full window;
+- limited, reset unknown, when the limit came with no reset time;
+- open, only from a reading with room;
+- not measured, when there is no reading and no live limit: usable, but never
+  called open;
+- unknown, when the reading leaves a window out.
+
+The `antigravity` tool answers `status`, `open`, `record` (alias `limit`), `gate`, `heartbeat`, `release`, `clear` and `read`. The
+same rows appear in `pool_push` status, in `orchestrate status` and `land`, in the `/pool` pane (the pool's
+`antigravity` RPC method) and from `bun cmd/pool/antigravity-read.ts`. The pool
+option `antigravity: false` turns all of this off.
+
+Across a fleet, each host includes its Antigravity record (limit events, latest
+reading, attempt floor, readable-sign-in bit and wire-safe reason kind — never a
+token, profile path or home directory) in its fleet report, decoded tolerantly
+on its own so an unknown future reason, field or garbage payload never drops a
+peer's Claude or OpenAI pool data. Every peer report is normalized ONCE at
+arrival onto this host's clock (`offset = receivedAt - report.at`, cancelling
+peer clock skew of any magnitude or sign; transit delay up to `TRANSIT_BOUND_MS`
+= 15 s only shifts normalized times slightly late, erring toward limited) and
+clamped ONCE against `receivedAt + MAX_RESET_HORIZON_MS` (7 days + 5 minutes) so
+nothing ever re-clamps against rolling `now`. Normalized reports merge as a
+commutative, associative, idempotent join-semilattice: the worse live reading
+wins, keyed limits take the latest reset (erring toward limited and letting a
+newer episode supersede an expired one), Error IDs (`id:*`) stay bounded in
+`seenLimitKeys`, and content-hash episode keys (`text:*`) suppress repeats only
+while live and are pruned once spent (past reset, cleared, or lifted by a later
+reading with room beyond `CLOCK_SKEW_BOUND_MS` = 5 min). When recording a pane
+frame that was not printed just now, callers pass `at` (epoch ms on the
+recording host's clock; future `at` values are refused) so frames older than
+their own reset are ignored.
+
+Only one host in the fleet makes active Google reads: the lowest fresh host id
+with a readable sign-in, obeying the 5-minute floor across all hosts' merged
+attempts. During a network partition where hosts cannot reach each other, each
+side sees the other as stale and elects its own reading host (one reader per
+side, matching two independent T3 instances); right after the partition heals,
+at most one extra read can land within a single fleet poll interval before the
+merged floor converges.
+
+Before starting or resuming an agy pane or worker, the start gate (`gate`) holds
+any limited group until its finite reset time (leaving unknown/absent windows
+and stale peers without limits unblocked) and enforces a cross-host Gemini
+concurrency cap counted from the fleet's live busy set (default 4 per agent and
+8 across the fleet, configurable via `antigravity.geminiCap`; a stale peer's
+last reported running agents count until its report ages past `BUSY_FRESH_MS`).
+A running external agy pane refreshes its busy slot with `heartbeat` (keeping it
+counted past `BUSY_MS` = 60 min while still running) and frees it on exit with
+`release`.
 
 ## Status
 
