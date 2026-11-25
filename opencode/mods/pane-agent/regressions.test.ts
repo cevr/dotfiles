@@ -1374,4 +1374,21 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
+
+  effectTest(
+    "status nudge probe transitions an idle done worker to pane_gone when its pane closes externally",
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME] })
+      const started = yield* h.model.start(BASE)
+      const settled = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "done" && w.blockId.length > 0)
+      expect(settled?.state).toBe("done")
+
+      // Close pane externally while worker is idle/done (actor evicted), then poll status.
+      yield* h.rex.setAlive(settled?.blockId ?? "", false)
+      yield* h.model.status("ses_p", started.id)
+      const gone = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone", 400)
+      expect(gone?.state).toBe("pane_gone")
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
 })

@@ -1488,10 +1488,17 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* launchPaneIo(rt, (gen) => runTypeResumeIntent(rt, gen, intent, worker, adapter))
     })
 
+    const needsConfirmGone = (rt: ActorRuntime): boolean =>
+      rt.nextPaneIo === "confirm_gone" &&
+      rt.state.worker.blockId.length > 0 &&
+      rt.state.worker.state !== "pane_gone" &&
+      rt.state.worker.state !== "stopped" &&
+      rt.state.worker.state !== "failed"
+
     const schedulePaneIo = Effect.fn("PaneAgent.schedulePaneIo")(function* (rt: ActorRuntime) {
       if (rt.paneIoRunning) return
       const worker = rt.state.worker
-      if (!needsPaneWork(worker)) return
+      if (!needsPaneWork(worker) && !needsConfirmGone(rt)) return
       const adapter = adapterFor(worker.harness)
       const headIntent = Arr.head(outboxOf(worker))
 
@@ -2342,6 +2349,7 @@ const makeModel = (config: ModelConfig = {}) =>
 
     const isQuiescent = (rt: ActorRuntime): boolean =>
       !needsPaneWork(rt.state.worker) &&
+      !needsConfirmGone(rt) &&
       Option.isNone(nextRetryableWake(rt.state.worker)) &&
       rt.pendingCommits.size === 0 &&
       rt.pendingWakeCommits.size === 0 &&
