@@ -105,7 +105,9 @@ const linuxManager = Effect.fn("LaunchScope.manager")(function* () {
   const fs = yield* FileSystem.FileSystem
   const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(unqualified))
   return {
-    workloadRoot: linuxBudget().pipe(Effect.map(({ control }) => control)),
+    workloadRoot: linuxBudget().pipe(Effect.flatMap(({ budget }) => Option.match(budget, {
+      onNone: () => Effect.fail(unqualified()), onSome: ({ control }) => Effect.succeed(control),
+    }))),
     currentGroup: read("/proc/self/cgroup"),
     read,
     exists: (file) => fs.exists(file).pipe(Effect.mapError(unqualified)),

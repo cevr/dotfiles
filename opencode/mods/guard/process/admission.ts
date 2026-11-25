@@ -2,7 +2,8 @@ import { CryptoHasher, env, readableStreamToText, spawn } from "bun"
 import { dlopen, FFIType } from "bun:ffi"
 import { Array as Arr, Effect, FileSystem, Option, Predicate } from "effect"
 import { AdmissionUnavailable, type Observation } from "../admission.ts"
-import { hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
+import { availableParallelism, totalmem } from "node:os"
+import { type Attestation, hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
 import { type Actuation, issue } from "./actuation.ts"
 
 const absent = () => new AdmissionUnavailable({ reason: "unavailable" })
@@ -220,6 +221,8 @@ const memField = (out: string, field: string) => scalar(out.split("\n").find((li
 const cpuField = (text: string, key: string) => scalar(text.split("\n").find((line) => line.startsWith(`${key} `))?.trim().split(/\s+/u)[1])
 
 export const WORKLOAD_SLICE = "agentwork.slice"
+export const CONTROL_SLICE = "opencodecontrol.slice"
+export const SYSTEM_SLICE = "bite.slice"
 interface LinuxBudget {
   readonly control: string
   readonly parent: string
@@ -228,74 +231,164 @@ interface LinuxBudget {
   readonly protected: ReadonlyArray<string>
 }
 
-const controllerMemory = (max: string, high: string, swap: string, used: string) => {
-  const limits = Option.all({ max: scalar(max.trim()), high: scalar(high.trim()), swap: scalar(swap.trim()), used: scalar(used.trim()) })
-  return Option.exists(limits, ({ max, high, used }) => high > 0 && high <= max && used <= max)
-}
 const ioWeight = (text: string) => scalar(text.trim().split(/\s+/u)[1])
-const protectedWeights = (cpu: string, io: string, minimum: string, low: string) =>
-  Option.exists(scalar(cpu.trim()), (weight) => weight >= 1000) &&
-  Option.exists(ioWeight(io), (weight) => weight >= 1000) &&
-  Option.exists(scalar(minimum.trim()), positive) && Option.exists(scalar(low.trim()), positive)
 const qualifiedMeters = (cpu: string, events: string, pressures: ReadonlyArray<string>) =>
   [cpuField(cpu, "usage_usec"), cpuField(cpu, "throttled_usec"), cpuField(events, "oom"),
     ...pressures.map((text) => psi(text, "some"))].every(Option.isSome)
 
-export const linuxBudget = Effect.fn("HostSupply.linuxBudget")(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(absent))
-  const relative = yield* readProcess(["/usr/bin/systemctl", "--user", "show", WORKLOAD_SLICE, "-p", "ControlGroup", "--value"])
-  if (!relative.startsWith("/") || relative.split("/").includes("..") || !relative.endsWith(`/${WORKLOAD_SLICE}`)) return yield* absent()
-  const control = `/sys/fs/cgroup${relative}`
-  const parent = control.slice(0, control.lastIndexOf("/"))
-  const protectedScopes = [`${parent}/opencodecontrol.slice`, "/sys/fs/cgroup/bite.slice"]
-  const [quota, cpu, io, max, high, swap, current, tasks, stat, pressure, memPressure, ioPressure, events,
-    resident, residentIO, residentMin, residentLow, systemCPU, systemIO, systemMin, systemLow] = yield* Effect.all([
-    read(`${control}/cpu.max`), read(`${control}/cpu.weight`), read(`${control}/io.weight`),
-    read(`${control}/memory.max`), read(`${control}/memory.high`), read(`${control}/memory.swap.max`),
-    read(`${control}/memory.current`), read(`${control}/pids.max`), read(`${control}/cpu.stat`), read(`${control}/cpu.pressure`),
-    read(`${control}/memory.pressure`), read(`${control}/io.pressure`), read(`${control}/memory.events`),
-    read(`${parent}/opencodecontrol.slice/cpu.weight`), read(`${parent}/opencodecontrol.slice/io.weight`),
-    read(`${parent}/opencodecontrol.slice/memory.min`), read(`${parent}/opencodecontrol.slice/memory.low`),
-    read("/sys/fs/cgroup/bite.slice/cpu.weight"), read("/sys/fs/cgroup/bite.slice/io.weight"),
-    read("/sys/fs/cgroup/bite.slice/memory.min"), read("/sys/fs/cgroup/bite.slice/memory.low"),
-  ], { concurrency: 4 })
-  const cap = cpuMax(quota)
-  const memoryCap = scalar(max.trim())
-  if (Option.isNone(cap) || cap.value === Number.MAX_SAFE_INTEGER || cap.value < 1000 ||
-    !Option.exists(scalar(cpu.trim()), (weight) => weight === 20) || !Option.exists(ioWeight(io), (weight) => weight <= 100) ||
-    Option.isNone(memoryCap) || !controllerMemory(max, high, swap, current) || !Option.exists(scalar(tasks.trim()), positive) ||
-    !qualifiedMeters(stat, events, [pressure, memPressure, ioPressure]) ||
-    !protectedWeights(resident, residentIO, residentMin, residentLow) || !protectedWeights(systemCPU, systemIO, systemMin, systemLow))
-    return yield* new AdmissionUnavailable({ reason: "unqualified" })
-  return { control, cap: cap.value, memoryCap: memoryCap.value, parent, protected: protectedScopes } satisfies LinuxBudget
+/** Where the Linux reads look: the cgroup mount, /proc, the online CPU list,
+ * the user manager's slice lookup and the host's own processor count and
+ * memory (the last resort when no file says), so a test runs them on a
+ * fixture tree. */
+export interface LinuxSources {
+  readonly cgroupRoot: string
+  readonly proc: string
+  readonly cpuOnline: string
+  readonly processors: number
+  readonly memoryBytes: number
+  readonly slice: (unit: string) => Effect.Effect<Option.Option<string>, never, FileSystem.FileSystem>
+}
+export const hostSources = (): LinuxSources => ({
+  cgroupRoot: "/sys/fs/cgroup", proc: "/proc", cpuOnline: "/sys/devices/system/cpu/online",
+  processors: availableParallelism(), memoryBytes: totalmem(),
+  slice: (unit) => readProcess(["/usr/bin/systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value"]).pipe(
+    Effect.map((text) => Option.liftPredicate(text, (value) => value.length > 0)),
+    Effect.orElseSucceed(() => Option.none<string>()),
+  ),
 })
 
-const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (budget: Option.Option<LinuxBudget>) {
+const textOf = Effect.fn("HostSupply.text")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
-  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(absent))
-  const online = cpuList(yield* read("/sys/devices/system/cpu/online"))
-  const cgroup = cgroupOf(yield* read("/proc/self/cgroup"))
-  const at = Option.orElse(Option.map(budget, ({ control }) => control),
-    () => Option.map(cgroup, (relative) => `/sys/fs/cgroup${relative}`))
-  if (Option.isNone(online) || Option.isNone(at)) return yield* absent()
-  const slots = cpuList(yield* read(`${at.value}/cpuset.cpus.effective`))
-  if (Option.isNone(slots) || slots.value === 0) return yield* absent()
-  const base = "/sys/fs/cgroup"
-  const ancestor = Option.match(budget, { onSome: ({ parent }) => parent, onNone: () => at.value })
-  const paths = ancestor.slice(base.length).split("/").filter(Boolean).map((_, i, names) => `${base}/${names.slice(0, i + 1).join("/")}`)
-  const caps = Option.all(yield* Effect.forEach(paths, (path) => read(`${path}/cpu.max`).pipe(Effect.map(cpuMax)), { concurrency: 4 }))
-  if (Option.isNone(caps)) return yield* absent()
-  const limits = { hostCpuMilli: online.value * 1000, effectiveCpuMilli: Math.min(online.value * 1000, slots.value * 1000, ...caps.value) }
-  if (Option.isSome(budget)) {
-    const memory = Option.all(yield* Effect.forEach(paths, (path) => read(`${path}/memory.max`).pipe(
-      Effect.map(memoryMax),
-    ), { concurrency: 4 }))
-    if (Option.isNone(memory)) return yield* absent()
-    return { ...limits, containedCpuMilli: budget.value.cap,
-      containedMemoryBytes: Math.min(budget.value.memoryCap, ...memory.value) }
+  return yield* fs.readFileString(file).pipe(Effect.option)
+})
+const number = (text: string) => scalar(text.trim())
+/** Each directory from `path` up to the cgroup root, nearest first. */
+const chainOf = (root: string, path: string) => {
+  const names = path.slice(root.length).split("/").filter(Boolean)
+  return [...names.map((_, i) => `${root}/${names.slice(0, names.length - i).join("/")}`), root]
+}
+
+/** Whether this kernel weighs IO at all: a weight policy (io.cost or BFQ)
+ * gives every cgroup with the io controller an `io.weight`; none has one
+ * without it (the workbox's 6.12 kernel). */
+const ioOf = Effect.fn("HostSupply.ioWeights")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem
+  const entries = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+  const found = yield* Effect.forEach(entries.slice(0, 256), (entry) =>
+    fs.exists(`${root}/${entry}/io.weight`).pipe(Effect.orElseSucceed(() => false)), { concurrency: 4 })
+  if (found.some(Boolean)) return "weighted" as const
+  return "unavailable" as const
+})
+
+interface Requirement {
+  readonly file: string
+  readonly needs: string
+  readonly holds: (text: string) => boolean
+}
+const requirement = (file: string, needs: string, holds: Requirement["holds"]): Requirement => ({ file, needs, holds })
+const atLeast = (minimum: number) => (text: string) => Option.exists(number(text), (value) => value >= minimum)
+
+/** What an enforced host carries, in the order a shortfall is named: the
+ * workload slice's caps and meters, then each protected sibling's floors.
+ * The IO weights count only on a kernel that weighs IO. */
+const requirements = (control: string, protectedScopes: ReadonlyArray<string>, io: Attestation["io"],
+  value: (file: string) => Option.Option<string>): ReadonlyArray<Requirement> => {
+  const weighted = io === "weighted"
+  const memoryCap = Option.flatMap(value(`${control}/memory.max`), number)
+  const withinCap = (text: string, above: number) =>
+    Option.exists(Option.all([number(text), memoryCap]), ([used, cap]) => used >= above && used <= cap)
+  const pressures = ["cpu.pressure", "memory.pressure", ...["io.pressure"].filter(() => weighted)]
+  return [
+    requirement(`${control}/cpu.max`, "a finite CPU cap of at least one core (CPUQuota=)",
+      (text) => Option.exists(cpuMax(text), (cap) => cap !== Number.MAX_SAFE_INTEGER && cap >= 1000)),
+    requirement(`${control}/cpu.weight`, "CPU weight 20 (CPUWeight=20)", (text) => Option.exists(number(text), (weight) => weight === 20)),
+    ...[requirement(`${control}/io.weight`, "IO weight at most 100 (IOWeight=)",
+      (text) => Option.exists(ioWeight(text), (weight) => weight <= 100))].filter(() => weighted),
+    requirement(`${control}/memory.max`, "a finite memory cap (MemoryMax=)", (text) => Option.isSome(number(text))),
+    requirement(`${control}/memory.high`, "a memory high mark above 0, at most memory.max (MemoryHigh=)", (text) => withinCap(text, 1)),
+    requirement(`${control}/memory.swap.max`, "a swap cap (MemorySwapMax=)", (text) => Option.isSome(number(text))),
+    requirement(`${control}/memory.current`, "memory use within memory.max", (text) => withinCap(text, 0)),
+    requirement(`${control}/pids.max`, "a finite task cap (TasksMax=)", atLeast(1)),
+    requirement(`${control}/cpu.stat`, "usage_usec and throttled_usec counters",
+      (text) => Option.isSome(cpuField(text, "usage_usec")) && Option.isSome(cpuField(text, "throttled_usec"))),
+    requirement(`${control}/memory.events`, "an oom counter", (text) => Option.isSome(cpuField(text, "oom"))),
+    ...pressures.map((name) => requirement(`${control}/${name}`, "a pressure reading (some avg10=)", (text) => Option.isSome(psi(text, "some")))),
+    ...protectedScopes.flatMap((scope) => [
+      requirement(`${scope}/cpu.weight`, "CPU weight at least 1000 (CPUWeight=1000)", atLeast(1000)),
+      ...[requirement(`${scope}/io.weight`, "IO weight at least 1000 (IOWeight=1000)",
+        (text) => Option.exists(ioWeight(text), (weight) => weight >= 1000))].filter(() => weighted),
+      requirement(`${scope}/memory.min`, "a memory floor above 0 (MemoryMin=)", atLeast(1)),
+      requirement(`${scope}/memory.low`, "a memory low mark above 0 (MemoryLow=)", atLeast(1)),
+    ]),
+  ]
+}
+
+/** The workload controller as the tree proves it. Never a failure: a
+ * missing or wrong file makes the host `unattested`, naming that file. */
+export const linuxBudget = Effect.fn("HostSupply.linuxBudget")(function* (sources: LinuxSources = hostSources()) {
+  const root = sources.cgroupRoot
+  const io = yield* ioOf(root)
+  const relative = Option.filter(yield* sources.slice(WORKLOAD_SLICE), (path) =>
+    path.startsWith("/") && !path.split("/").includes("..") && path.endsWith(`/${WORKLOAD_SLICE}`))
+  if (Option.isNone(relative)) return {
+    budget: Option.none<LinuxBudget>(),
+    attestation: { controller: "unattested", io, file: WORKLOAD_SLICE,
+      why: `the user manager has no active ${WORKLOAD_SLICE} (systemctl --user show ${WORKLOAD_SLICE} -p ControlGroup is empty)` },
+  } satisfies { readonly budget: Option.Option<LinuxBudget>; readonly attestation: Attestation }
+  const control = `${root}${relative.value}`
+  const parent = control.slice(0, control.lastIndexOf("/"))
+  const protectedScopes = [`${parent}/${CONTROL_SLICE}`, `${root}/${SYSTEM_SLICE}`]
+  const files = new Map<string, Option.Option<string>>()
+  const value = (file: string) => files.get(file) ?? Option.none()
+  const wanted = requirements(control, protectedScopes, io, () => Option.none()).map(({ file }) => file)
+  const texts = yield* Effect.forEach(wanted, textOf, { concurrency: 4 })
+  wanted.forEach((file, i) => files.set(file, texts[i] ?? Option.none()))
+  const shortfall = requirements(control, protectedScopes, io, value).find(({ file, holds }) => !Option.exists(value(file), holds))
+  if (shortfall) return {
+    budget: Option.none<LinuxBudget>(),
+    attestation: { controller: "unattested", io, file: shortfall.file,
+      why: `${Option.match(value(shortfall.file), { onNone: () => "missing", onSome: () => "out of range" })}: needs ${shortfall.needs}` },
+  } satisfies { readonly budget: Option.Option<LinuxBudget>; readonly attestation: Attestation }
+  const cap = Option.getOrElse(Option.flatMap(value(`${control}/cpu.max`), cpuMax), () => 0)
+  const memoryCap = Option.getOrElse(Option.flatMap(value(`${control}/memory.max`), number), () => 0)
+  return {
+    budget: Option.some<LinuxBudget>({ control, cap, memoryCap, parent, protected: protectedScopes }),
+    attestation: { controller: "enforced", io },
+  } satisfies { readonly budget: Option.Option<LinuxBudget>; readonly attestation: Attestation }
+})
+export type LinuxAttestation = Effect.Success<ReturnType<typeof linuxBudget>>
+
+/** CPU from the nearest cpuset.cpus.effective up the tree, else the online
+ * CPUs, else the processor count; every ancestor's cpu.max and memory.max
+ * bound it. Each limit is optional data: an absent file is no limit. */
+const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (sources: LinuxSources, budget: Option.Option<LinuxBudget>) {
+  const root = sources.cgroupRoot
+  const online = Option.flatMap(yield* textOf(sources.cpuOnline), cpuList).pipe(Option.filter(positive))
+  const hostCpus = Option.getOrElse(online, () => Math.max(1, sources.processors))
+  const own = Option.flatMap(yield* textOf(`${sources.proc}/self/cgroup`), cgroupOf)
+  const at = Option.match(budget, {
+    onSome: ({ control }) => control,
+    onNone: () => Option.match(own, { onSome: (relative) => `${root}${relative}`, onNone: () => root }),
+  })
+  const cpusets = yield* Effect.forEach(chainOf(root, at), (path) => textOf(`${path}/cpuset.cpus.effective`), { concurrency: 4 })
+  const slots = Option.getOrElse(Arr.findFirst(cpusets, (text) => Option.exists(Option.flatMap(text, cpuList), positive)).pipe(
+    Option.flatMap((text) => Option.flatMap(text, cpuList))), () => hostCpus)
+  const bounded = chainOf(root, Option.match(budget, { onSome: ({ parent }) => parent, onNone: () => at }))
+  const [caps, memories] = yield* Effect.all([
+    Effect.forEach(bounded, (path) => textOf(`${path}/cpu.max`).pipe(Effect.map(Option.flatMap(cpuMax))), { concurrency: 4 }),
+    Effect.forEach(bounded, (path) => textOf(`${path}/memory.max`).pipe(Effect.map(Option.flatMap(memoryMax))), { concurrency: 4 }),
+  ], { concurrency: 2 })
+  const memoryLimit = Option.filter(Option.some(Math.min(...Arr.getSomes(memories))),
+    (bytes) => Number.isSafeInteger(bytes) && bytes < Number.MAX_SAFE_INTEGER)
+  const limits = {
+    hostCpuMilli: hostCpus * 1000,
+    effectiveCpuMilli: Math.min(hostCpus * 1000, slots * 1000, ...Arr.getSomes(caps)),
   }
-  return limits
+  return Option.match(budget, {
+    onNone: () => ({ ...limits, memoryLimit }),
+    onSome: ({ cap, memoryCap }) => ({ ...limits, memoryLimit: Option.none<number>(), containedCpuMilli: cap,
+      containedMemoryBytes: Math.min(memoryCap, ...Arr.getSomes(memories)) }),
+  })
 })
 
 const memoryMax = (text: string) => {
@@ -342,8 +435,8 @@ const swapPages = (text: string) => Option.map(Option.all([cpuField(text, "pswpi
 const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, scopes: ReadonlyArray<MeteredScope>) {
   const fs = yield* FileSystem.FileSystem
   const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(absent))
-  const budget = yield* linuxBudget().pipe(Effect.option)
-  const limits = yield* linuxEffective(budget)
+  const { budget, attestation } = yield* linuxBudget(hostSources())
+  const { memoryLimit, ...limits } = yield* linuxEffective(hostSources(), budget)
   const metered = Option.match(budget, {
     onNone: () => [],
     onSome: ({ control }) => scopes.filter((scope) => scope.path.startsWith(`${control}/host-admit-`)),
@@ -379,9 +472,10 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
   const countProtected = bareProtected.length
   const protectedLowerBoundMilli = usage.slice(0, countProtected).reduce((sum, use) => sum + Math.max(0, Math.floor(use)), 0)
   const managed = metered.map((scope, i) => ({ binding: scope.binding, measuredCpuMilli: Math.ceil(usage[i + countProtected] ?? -1), enforcedCpuMilli: scope.cpuMilli }))
+  const bound = (bytes: number) => Option.match(memoryLimit, { onNone: () => bytes, onSome: (limit) => Math.min(bytes, limit) })
   return {
-    ...limits, before, after, runnable, memoryBytes: memKB * 1024, totalMemoryBytes: totalKB * 1024,
-    controllerAvailable: Option.isSome(budget),
+    ...limits, before, after, runnable, memoryBytes: bound(memKB * 1024), totalMemoryBytes: bound(totalKB * 1024),
+    controllerAvailable: Option.isSome(budget), attestation,
     pressure: linuxPressure({ cpu: cpuPSI, memory: memPSI, io: ioPSI, swap }),
     qualified: Option.isSome(budget) && usage.every((value) => value >= 0) && metered.length === scopes.length,
     managed, protectedLowerBoundMilli,
@@ -438,14 +532,24 @@ const darwinLimits = Effect.fn("HostSupply.darwinLimits")(function* () {
   return { effectiveCpuMilli: cores * 1000, totalMemoryBytes, controllerAvailable: true }
 })
 
-const linuxLimits = Effect.fn("HostSupply.linuxLimits")(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const budget = yield* linuxBudget().pipe(Effect.option)
-  const limits = yield* linuxEffective(budget)
-  const memory = memField(yield* fs.readFileString("/proc/meminfo").pipe(Effect.mapError(absent)), "MemTotal")
-  if (Option.isNone(memory)) return yield* absent()
-  return { ...limits, totalMemoryBytes: memory.value * 1024, controllerAvailable: Option.isSome(budget) }
+/** Never a failure: each limit it cannot read is no limit, and the host's
+ * own processor count and memory stand in for /proc. */
+export const linuxLimits = Effect.fn("HostSupply.linuxLimits")(function* (sources: LinuxSources = hostSources()) {
+  const { budget, attestation } = yield* linuxBudget(sources)
+  const { memoryLimit, ...limits } = yield* linuxEffective(sources, budget)
+  const total = Option.flatMap(yield* textOf(`${sources.proc}/meminfo`), (text) => memField(text, "MemTotal")).pipe(
+    Option.filter(positive), Option.map((kb) => kb * 1024))
+  const memory = Option.getOrElse(total, () => sources.memoryBytes)
+  return {
+    ...limits, totalMemoryBytes: Option.match(memoryLimit, { onNone: () => memory, onSome: (limit) => Math.min(memory, limit) }),
+    controllerAvailable: Option.isSome(budget), attestation,
+  }
 })
+
+/** The Linux envelope from `sources` alone, no volumes: what the fixture tests read. */
+export const linuxEnvelope = (sources: LinuxSources) => linuxLimits(sources).pipe(
+  Effect.map((capacity) => hostEnvelope({ ...capacity, platform: "linux", volumes: {}, keys: CORE_KEYS })),
+)
 
 export const envelopeOf = Effect.fn("HostSupply.envelope")(function* (host: BootHost, targets: ReadonlyArray<string>) {
   const limits = { darwin: darwinLimits, linux: linuxLimits }
