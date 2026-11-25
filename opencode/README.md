@@ -1587,15 +1587,34 @@ weeks with no reset spent.
 
 `mods/pool/antigravity` tracks Antigravity's (agy's) quota groups, Gemini and the
 Claude & GPT quota they share, each with its 5-hour and weekly window. It reads
-the same way T3 Code does (`antigravityUsageLimits.ts` at 55085df2). The sign-in
-comes from the CLI profile's token files. The macOS keychain is read only after
-the owner asks through the tool's `read` action, and it is tried once; the
-outcome is remembered. The read itself is `v1internal:retrieveUserQuotaSummary`,
-then `fetchAvailableModels`, on Google's daily and production Code Assist hosts.
-It happens at most every 5 minutes and backs off on failure. Each request carries
-only the bearer and Antigravity's user agent, follows no redirect and sends no
-trace header (`source.test.ts` pins every request). The state file
-`$XDG_STATE_HOME/opencode-pool/antigravity.json` holds no token.
+the same way T3 Code does (`antigravityUsageLimits.ts` at 55085df2).
+
+A read happens only when asked: the tool's `read` action or
+`bun cmd/pool/antigravity-read.ts`. Plugin start, `pool_push` status and the
+`/pool` pane only show the stored reading and its age; no timer reads. All
+plugin instances and processes on a host share one state file
+(`$XDG_STATE_HOME/opencode-pool/antigravity.json`, no token in it) under a lock.
+No read is made within 5 minutes of the last attempt, whoever made it, and
+failures back that off further. A failure anywhere in this code shows as an
+"unknown" row and never stops or delays the pool.
+
+A personal sign-in is read only from the token files of a managed profile, as
+T3 makes one (default
+`$XDG_STATE_HOME/opencode-pool/antigravity/profiles/default`; `~/.gemini` is not
+read by default). `bun cmd/pool/antigravity-read.ts --profile-env` makes that
+profile and prints the one line that signs agy in on it. A personal sign-in
+never reads the keychain. For a business sign-in, the macOS keychain is read
+only with the owner's consent (`read` with `consent: true`, or `--consent`), and
+one consent buys exactly one attempt, whatever its outcome. The token it gives
+is held in memory only, so a restart, an expiry or a 401 means a new consent.
+
+The read itself is `v1internal:retrieveUserQuotaSummary`, then
+`fetchAvailableModels`, on Google's daily and production Code Assist hosts.
+Each request carries only the bearer and Antigravity's user agent, follows no
+redirect and sends no trace header (`source.test.ts` pins every request). It
+runs on Bun's fetch where T3 runs on Node's, so the TLS handshake and the
+transport's own headers (accept-encoding, connection) can differ, and the token
+refresh sets Node fetch's user agent and fetch headers itself to match T3's.
 
 A group answers in one of these states:
 
