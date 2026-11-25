@@ -106,19 +106,27 @@ const replay = Effect.fn("PoolProof.replay")(function* (evidence: string) {
       const state = yield* Schema.decodeUnknownEffect(State)(raw[key.value])
       const charged = number(state.charged)
       const starts = Arr.filter([NOW - 1], () => charged > 0)
-      const answer = dispatchPace([snapshotAccount("0", state.a), snapshotAccount("1", state.b)], NOW, { "0": snapshotPlan(state.a), "1": snapshotPlan(state.b) }, 0.005, "claude-fable-5-2", {
-        inflight: { starts, cost: charged / 16800, settleMs: 600_000 },
-      })
-      const expected = state.eligible["#set"].map((id) => String(number(id))).toSorted()
-      const actual = Match.value(answer).pipe(
-        Match.when({ ok: true }, (answer) => [...Option.getOrElse(Option.fromUndefinedOr(answer.eligible), () => [])].toSorted()),
-        Match.orElse((): string[] => []),
-      )
-      if (answer.ok !== (expected.length > 0) || actual.join(",") !== expected.join(","))
-        return yield* new VerificationFailed({ message: `${name} snapshot ${snapshots}: Quint eligible [${expected}], TypeScript [${actual}], ok=${answer.ok}: ${answer.reason}` })
-      snapshots++
-      if (answer.ok) admitted++
-      else held++
+      const candidate = Math.floor(charged / 3)
+      const earlier = Math.floor((charged - candidate) / 2)
+      const charges = [
+        { starts, cost: charged / 16800, settleMs: 600_000 },
+        { starts: [NOW - 1, NOW - 2], costs: [earlier / 16800, (charged - candidate - earlier) / 16800], nextCost: candidate / 16800, cost: 0.005, settleMs: 600_000 },
+      ]
+      for (const inflight of charges) {
+        const answer = dispatchPace([snapshotAccount("0", state.a), snapshotAccount("1", state.b)], NOW, { "0": snapshotPlan(state.a), "1": snapshotPlan(state.b) }, 0.005, "claude-fable-5-2", {
+          inflight,
+        })
+        const expected = state.eligible["#set"].map((id) => String(number(id))).toSorted()
+        const actual = Match.value(answer).pipe(
+          Match.when({ ok: true }, (answer) => [...Option.getOrElse(Option.fromUndefinedOr(answer.eligible), () => [])].toSorted()),
+          Match.orElse((): string[] => []),
+        )
+        if (answer.ok !== (expected.length > 0) || actual.join(",") !== expected.join(","))
+          return yield* new VerificationFailed({ message: `${name} snapshot ${snapshots}: Quint eligible [${expected}], TypeScript [${actual}], ok=${answer.ok}: ${answer.reason}` })
+        snapshots++
+        if (answer.ok) admitted++
+        else held++
+      }
     }
   }
   if (admitted === 0 || held === 0) return yield* new VerificationFailed({ message: "trace replay must exercise admissions and holds" })
