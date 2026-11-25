@@ -1535,6 +1535,9 @@ export const PINS: PinTable = {
       "I1 stop_close#N (w2) did not answer within N ms",
       "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
+    "seed:51": [
+      "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+    ],
     "seed:57": [
       "I6 w1: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
       "I6 w1: status#N says done at t=N, but turn N (<tok>) has not ended in the pane",
