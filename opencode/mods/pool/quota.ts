@@ -9,7 +9,7 @@ export const USAGE_TIMEOUT_MS = 10_000
 export const FIRST_USAGE_WAIT_MS = 3_000
 export const FIRST_USAGE_RETRY_MS = 60_000
 
-/** An unmeasured login last failed to return a reading in time for its send. */
+/** A login last failed to return a usage reading; `nextTryAt` bounds when the next read is tried. */
 export const UsageReadFailure = Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })
 export type UsageReadFailure = typeof UsageReadFailure.Type
 
@@ -41,9 +41,9 @@ export const QuotaWindow = Schema.Struct({
   weeklyUsed: Schema.optionalKey(Schema.Number),
   /**
    * When this window (its use, reset and shares) was read, when not with the
-   * reading that holds it: a window carried over from an older reading
-   * (`carryOver`) keeps the older's time, so a fresh reading never makes it
-   * look fresh (resets.ts `freshView`).
+   * reading that holds it: set only by `carryOver` when carrying a window from
+   * an older reading so a fresh reading never makes it look fresh (resets.ts
+   * `freshView`). Fresh header or usage readers must leave `at` unset.
    */
   at: Schema.optionalKey(Schema.Number),
 })

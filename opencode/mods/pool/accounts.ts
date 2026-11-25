@@ -315,6 +315,10 @@ export const status = (state: AccountPoolState, now: number, rules: Rules): Read
       credentialID,
       ...(hold !== undefined && liveHold(hold, now) ? { hold } : {}),
       ...(reading === undefined ? {} : { reading }),
+      ...Option.match(Option.fromUndefinedOr(state.usageReadFailures[credentialID]), {
+        onNone: () => ({}),
+        onSome: (usageReadFailure) => ({ usageReadFailure }),
+      }),
       load: state.steps
         .filter((step) => step.credentialID === credentialID && now - step.at < WINDOW_MS)
         .reduce((total, step) => total + step.cost, 0),
