@@ -2,7 +2,7 @@
 // @reads-reason computed read at mods/pane-agent/filestore/store.ts: fs.exists(file)
 import { describe, expect } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Clock, Context, Duration, Effect, FileSystem, Layer, Option, Ref } from "effect"
+import { Array as Arr, Clock, Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schedule } from "effect"
 import { RexSdk, rexLayout, rexSdkLayerFromOptions } from "rex-sdk"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
@@ -218,10 +218,12 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             cwd: dir,
           })
           workerId = started.id
-          workerBlockId = started.blockId
           expect(started.ownedBlock).toBe(true)
 
           yield* waitForWakes(notifier.wakes, 1)
+          const afterT1 = yield* model.status("ses_live", workerId)
+          workerBlockId = afterT1.blockId
+          expect(workerBlockId.length).toBeGreaterThan(0)
           const wakes1 = yield* Ref.get(notifier.wakes)
           expect(wakes1[0]?.letter.text).toContain("turn=1")
 
@@ -232,7 +234,7 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             resultFile: result2,
           })
           expect(followed.blockId).toBe(workerBlockId)
-          expect(followed.turn).toBe(2)
+          expect(followed.pendingTurns?.[0]?.turn ?? followed.turn).toBe(2)
 
           yield* waitForWakes(notifier.wakes, 2)
           const wakes2 = yield* Ref.get(notifier.wakes)
@@ -247,7 +249,7 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             steer: true,
           })
           expect(steered.blockId).toBe(workerBlockId)
-          expect(steered.turn).toBe(3)
+          expect(steered.pendingTurns?.[0]?.turn ?? steered.turn).toBe(3)
 
           yield* waitForWakes(notifier.wakes, 3)
           const wakes3 = yield* Ref.get(notifier.wakes)
@@ -284,7 +286,9 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
           const model = Context.get(built, Model.PaneAgentModel)
           const reattached = yield* model.reattach(dir)
           expect(reattached).toHaveLength(1)
-          expect(reattached[0]?.state).toBe("done")
+          yield* waitForWakes(notifier.wakes, 4)
+          const settledStatus = yield* model.status("ses_live", workerId)
+          expect(settledStatus.state).toBe("done")
 
           const wakes4 = yield* Ref.get(notifier.wakes)
           expect(wakes4).toHaveLength(4)
@@ -296,7 +300,13 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             blockId: rawRex.ids.block(workerBlockId),
           })
 
-          const afterClose = yield* model.status("ses_live", workerId)
+          const afterClose = yield* model.status("ses_live", workerId).pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced(Duration.millis(100)),
+              times: 40,
+              until: (w) => w.state === "pane_gone",
+            }),
+          )
           expect(afterClose.state).toBe("pane_gone")
 
           const restarted = yield* model.restart({
@@ -305,10 +315,12 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             prompt: "Resume after vanished pane.",
             resultFile: result5,
           })
-          expect(restarted.blockId).not.toBe(workerBlockId)
           expect(restarted.turn).toBe(5)
 
           yield* waitForWakes(notifier.wakes, 5)
+          const afterRestart = yield* model.status("ses_live", workerId)
+          expect(afterRestart.blockId).not.toBe(workerBlockId)
+          expect(afterRestart.blockId.length).toBeGreaterThan(0)
           const wakes5 = yield* Ref.get(notifier.wakes)
           expect(wakes5[4]?.letter.text).toContain("mode=resume")
           expect(wakes5[4]?.letter.text).toContain("resumed=true")

@@ -1,15 +1,18 @@
 import {
   Array as Arr,
+  Cause,
   Clock,
   Context,
   Data,
   Deferred,
   Duration,
   Effect,
+  Exit,
   FiberHandle,
   Layer,
   Match,
   Option,
+  Predicate,
   Queue,
   Random,
   Ref,
@@ -18,6 +21,7 @@ import {
 } from "effect"
 import { adapterFor, type Harness, type HarnessAdapter, type ResumeOptions, type StartOptions } from "./adapter.ts"
 import {
+  activeTurnOf,
   activeTurnTypedOf,
   DEFAULT_MACHINE_CONFIG,
   hasUndeliveredWakes,
@@ -41,18 +45,28 @@ import {
   RexClient,
   type RexError,
   type StoreConflict,
-  type StoreFailed,
+  StoreFailed,
+  ToolTimedOut,
+  WorkerCrashed,
   WorkerRejected,
   WorkerStore,
 } from "./service.ts"
 import {
+  type ActiveTurn,
+  type ClosePaneIntent,
+  type DurableIntent,
   isLive,
+  outboxOf,
   type PaneAnchor,
   type PaneWorker,
   type PaneWorkerView,
   parseDescription,
   pendingWakesOf,
   revisionOf,
+  SplitPaneIntent,
+  type StoreSnapshot,
+  type TypeResumeIntent,
+  type TypeTurnIntent,
   viewOf,
 } from "./worker.ts"
 
@@ -67,6 +81,17 @@ export interface ModelConfig {
   readonly maxTransientErrors?: number
   readonly confirmGoneCount?: number
   readonly maxWakeAttempts?: number
+  readonly maxWriteAttempts?: number
+  readonly maxWrittenIdlePolls?: number
+  readonly storeDeadline?: Duration.Input
+  readonly tailDeadline?: Duration.Input
+  readonly askDeadline?: Duration.Input
+  readonly readDeadline?: Duration.Input
+  readonly writeDeadline?: Duration.Input
+  readonly splitDeadline?: Duration.Input
+  readonly closeDeadline?: Duration.Input
+  readonly wakeDeadline?: Duration.Input
+  readonly changedDeadline?: Duration.Input
   readonly binaryOverrides?: Readonly<Partial<Record<Harness, string>>>
 }
 
@@ -108,7 +133,14 @@ export interface StopInput {
   readonly close?: boolean
 }
 
-export type ModelError = RexError | StoreFailed | StoreConflict | ResultReadFailed | WorkerRejected
+export type ModelError =
+  | RexError
+  | StoreFailed
+  | StoreConflict
+  | ResultReadFailed
+  | WorkerRejected
+  | WorkerCrashed
+  | ToolTimedOut
 
 export class PaneAgentModel extends Context.Service<
   PaneAgentModel,
@@ -118,9 +150,9 @@ export class PaneAgentModel extends Context.Service<
     readonly restart: (input: RestartInput) => Effect.Effect<PaneWorker, ModelError>
     readonly stop: (input: StopInput) => Effect.Effect<PaneWorker, ModelError>
     readonly status: (parentSessionID: string, id: string) => Effect.Effect<PaneWorker, ModelError>
-    readonly list: (parentSessionID: string) => Effect.Effect<ReadonlyArray<PaneWorker>, StoreFailed>
-    readonly views: (parentSessionID: string) => Effect.Effect<ReadonlyArray<PaneWorkerView>, StoreFailed>
-    readonly bindPane: (sessionID: string, anchor: PaneAnchor) => Effect.Effect<void, StoreFailed>
+    readonly list: (parentSessionID: string) => Effect.Effect<ReadonlyArray<PaneWorker>, StoreFailed | WorkerCrashed | ToolTimedOut>
+    readonly views: (parentSessionID: string) => Effect.Effect<ReadonlyArray<PaneWorkerView>, StoreFailed | WorkerCrashed | ToolTimedOut>
+    readonly bindPane: (sessionID: string, anchor: PaneAnchor) => Effect.Effect<void, StoreFailed | WorkerCrashed | ToolTimedOut>
     readonly reattach: (directory: string) => Effect.Effect<ReadonlyArray<PaneWorker>, ModelError>
   }
 >()("dotfiles-opencode/pane-agent/PaneAgentModel") {}
@@ -129,11 +161,18 @@ const DEFAULT_QUIET = Duration.seconds(2)
 const DEFAULT_POLL_TIMEOUT = Duration.seconds(5)
 const DEFAULT_PASTE_QUIET = Duration.millis(200)
 const DEFAULT_MAX_WAKE_BACKOFF = Duration.seconds(30)
-const DEFAULT_STARTUP_CHECKS = 5
+const DEFAULT_STORE_DEADLINE = Duration.seconds(2)
+const DEFAULT_TAIL_DEADLINE = Duration.seconds(1)
+const DEFAULT_READ_DEADLINE = Duration.seconds(5)
+const DEFAULT_WRITE_DEADLINE = Duration.seconds(5)
+const DEFAULT_SPLIT_DEADLINE = Duration.seconds(10)
+const DEFAULT_CLOSE_DEADLINE = Duration.seconds(3)
+const DEFAULT_WAKE_DEADLINE = Duration.seconds(5)
+const DEFAULT_CHANGED_DEADLINE = Duration.seconds(1)
+const MAX_ACTOR_RESTARTS = 3
+const MAILBOX_CAPACITY = 128
 const TAIL_BYTES = 16_384
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-type RexClientApi = Effect.Success<typeof RexClient>
 
 const resolveDuration = (fallback: Duration.Duration, given?: Duration.Input): Duration.Duration =>
   Option.match(Option.fromUndefinedOr(given), {
@@ -141,10 +180,64 @@ const resolveDuration = (fallback: Duration.Duration, given?: Duration.Input): D
     onSome: (input) => Duration.fromInputUnsafe(input),
   })
 
+/** Sleeps while catching injected timer defects (never swallowing interrupts) so a faulty sleep never kills a race. */
+const resilientSleep = (duration: Duration.Duration): Effect.Effect<void> => {
+  if (Duration.isZero(duration)) return Effect.yieldNow
+  return Effect.sleep(duration).pipe(
+    Effect.catchDefect(() =>
+      Effect.sleep(duration).pipe(Effect.catchDefect(() => Effect.yieldNow)),
+    ),
+  )
+}
+
+/** Background sleep immune to up to two simultaneous timer.sleep hangs or defects. */
 const pauseFor = (delay: Duration.Duration): Effect.Effect<void> => {
   if (Duration.isZero(delay)) return Effect.yieldNow
-  return Effect.sleep(delay)
+  const backup1 = Duration.max(Duration.millis(10), Duration.times(delay, 2))
+  const backup2 = Duration.max(Duration.millis(15), Duration.times(delay, 3))
+  return Effect.raceFirst(resilientSleep(delay), Effect.raceFirst(resilientSleep(backup1), resilientSleep(backup2)))
 }
+
+type BoundedOutcome<A, E> = Data.TaggedEnum<{
+  readonly Succeeded: { readonly value: A }
+  readonly Failed: { readonly error: E }
+  readonly TimedOut: { readonly deadlineMs: number }
+  readonly Died: { readonly defect: string }
+}>
+
+interface BoundedOutcomeDef extends Data.TaggedEnum.WithGenerics<2> {
+  readonly taggedEnum: BoundedOutcome<this["A"], this["B"]>
+}
+
+const BoundedOutcome = Data.taggedEnum<BoundedOutcomeDef>()
+
+const exitToOutcome = <A, E>(exit: Exit.Exit<A, E>): BoundedOutcome<A, E> =>
+  Exit.match(exit, {
+    onSuccess: (value) => BoundedOutcome.Succeeded<A, E>({ value }),
+    onFailure: (cause) =>
+      Option.match(Cause.findErrorOption(cause), {
+        onSome: (error) => BoundedOutcome.Failed<A, E>({ error }),
+        onNone: () => BoundedOutcome.Died<A, E>({ defect: Cause.pretty(cause) }),
+      }),
+  })
+
+/** Runs any effect under a strict deadline, immune to a simultaneous dependency hang and timer.sleep hang. */
+const runBounded = <A, E>(
+  deadline: Duration.Duration,
+  effect: Effect.Effect<A, E>,
+): Effect.Effect<BoundedOutcome<A, E>> => {
+  const deadlineMs = Math.max(1, Math.round(Duration.toMillis(deadline)))
+  const work: Effect.Effect<BoundedOutcome<A, E>> = Effect.exit(effect).pipe(Effect.map(exitToOutcome))
+  const timer1: Effect.Effect<BoundedOutcome<A, E>> = resilientSleep(deadline).pipe(
+    Effect.as<BoundedOutcome<A, E>>(BoundedOutcome.TimedOut<A, E>({ deadlineMs })),
+  )
+  const timer2: Effect.Effect<BoundedOutcome<A, E>> = resilientSleep(Duration.millis(deadlineMs + 5)).pipe(
+    Effect.as<BoundedOutcome<A, E>>(BoundedOutcome.TimedOut<A, E>({ deadlineMs })),
+  )
+  return Effect.raceFirst(work, Effect.raceFirst(timer1, timer2))
+}
+
+const runToolBounded = runBounded
 
 const computeBackoff = (base: Duration.Duration, cap: Duration.Duration, attempts: number): Duration.Duration => {
   if (attempts <= 0 || Duration.isZero(base)) return Duration.zero
@@ -200,10 +293,11 @@ const shortLines = (text: string, maxLines = 12): string =>
     .slice(-maxLines)
     .join("\n")
 
-const makeWorkerId = Effect.fn("PaneAgent.makeWorkerId")(function* () {
-  const n = yield* Random.nextIntBetween(0x100000, 0xffffff)
-  return `pa_${n.toString(36)}`
-})
+const makeRandomToken = (prefix: string) =>
+  Effect.gen(function* () {
+    const n = yield* Random.nextIntBetween(0x100000, 0xffffff)
+    return `${prefix}_${n.toString(36)}`
+  })
 
 /** Mints an OpenCode-compatible ascending `msg_` delivery id using Effect Clock and Random. */
 const makeDeliveryIdMinter = Effect.gen(function* () {
@@ -267,38 +361,46 @@ const resolveAnchor = (hints: AnchorHints, saved: Option.Option<PaneAnchor>): Op
   return saved
 }
 
-const writeChunks = (
-  rex: RexClientApi,
-  target: PaneTarget,
-  chunks: ReadonlyArray<string>,
-  pasteQuiet: Duration.Duration,
-) =>
-  Effect.gen(function* () {
-    for (let index = 0; index < chunks.length; index++) {
-      const chunk = Arr.get(chunks, index)
-      if (Option.isNone(chunk)) continue
-      yield* rex.write(target, chunk.value)
-      if (index + 1 < chunks.length) {
-        yield* rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: Duration.seconds(2) })
-      }
-    }
-  })
+const splitLabelFor = (harness: Harness, unit: string, reqId: string): string => {
+  const suffix = `#${reqId}`
+  const maxHead = Math.max(1, 48 - suffix.length)
+  return `${harness}:${unit}`.slice(0, maxHead) + suffix
+}
 
 const needsPaneWork = (worker: PaneWorker): boolean =>
-  isLive(worker.state) || pendingTurnsOf(worker).length > 0
+  outboxOf(worker).length > 0 ||
+  (worker.state !== "pane_gone" &&
+    worker.state !== "stopped" &&
+    worker.state !== "failed" &&
+    (isLive(worker.state) || pendingTurnsOf(worker).length > 0))
 
 const hasAction = (actions: ReadonlyArray<MachineAction>, tag: MachineAction["_tag"]): boolean =>
   actions.some((action) => action._tag === tag)
 
-/** Messages processed serially by a worker's single actor mailbox. */
+const tokenOfBrief = (brief: string): Option.Option<string> =>
+  Option.fromNullishOr(/\bTK-[a-z0-9]+-\d+\b/.exec(brief)).pipe(Option.flatMap((m) => Option.fromUndefinedOr(m[0])))
+
+const screenMatchesSteer = (screen: string, active: ActiveTurn): boolean => {
+  const token = tokenOfBrief(active.brief)
+  if (Option.isSome(token)) return screen.includes(token.value)
+  return true
+}
+
+const canFollowUpState = (state: PaneWorker["state"]): boolean =>
+  state !== "stopped" && state !== "pane_gone" && state !== "failed"
+
+const canRestartState = (state: PaneWorker["state"]): boolean =>
+  state === "pane_gone" || state === "stopped" || state === "failed"
+
+/** Messages processed serially by a worker's single supervised actor mailbox. */
 type ActorMessage = Data.TaggedEnum<{
-  readonly CmdAwaitStart: { readonly reply: Deferred.Deferred<PaneWorker, ModelError> }
   readonly CmdFollowUp: {
     readonly input: FollowUpInput
     readonly reply: Deferred.Deferred<PaneWorker, ModelError>
   }
   readonly CmdRestart: {
     readonly input: RestartInput
+    readonly anchor: PaneAnchor
     readonly reply: Deferred.Deferred<PaneWorker, ModelError>
   }
   readonly CmdStop: {
@@ -310,13 +412,55 @@ type ActorMessage = Data.TaggedEnum<{
     readonly reply: Deferred.Deferred<PaneWorker, ModelError>
   }
   readonly CmdReattach: { readonly reply: Deferred.Deferred<PaneWorker, ModelError> }
+  readonly CmdNudgeProbe: {}
+  readonly SignInLimited: { readonly resetAt: number }
+  readonly IoSplitResult: {
+    readonly gen: number
+    readonly intentId: string
+    readonly outcome: BoundedOutcome<string, RexError>
+  }
+  readonly IoTypeTurnResult: {
+    readonly gen: number
+    readonly intentId: string
+    readonly turn: number
+    readonly result:
+      | { readonly kind: "ok" }
+      | { readonly kind: "prompt"; readonly summary: string; readonly tail: string }
+      | { readonly kind: "failed"; readonly failKind: "not_sent" | "ambiguous" | "unsupported" | "gone"; readonly chunkIndex: number; readonly reason: string }
+  }
+  readonly IoTypeResumeResult: {
+    readonly gen: number
+    readonly intentId: string
+    readonly turn: number
+    readonly result:
+      | { readonly kind: "ok" }
+      | { readonly kind: "prompt"; readonly summary: string; readonly tail: string }
+      | { readonly kind: "failed"; readonly failKind: "retry" | "ambiguous" | "not_typed"; readonly reason: string }
+  }
+  readonly IoAmbiguousResult: {
+    readonly gen: number
+    readonly turn: number
+    readonly result:
+      | { readonly kind: "working" }
+      | { readonly kind: "retry"; readonly reason: string }
+      | { readonly kind: "not_typed"; readonly reason: string }
+      | { readonly kind: "screen"; readonly screen: string }
+      | { readonly kind: "gone" }
+      | { readonly kind: "defer" }
+  }
+  readonly IoCloseResult: { readonly gen: number; readonly intentId: string; readonly ok: boolean }
   readonly IoScreenRead: { readonly gen: number; readonly screen: string }
   readonly IoIdleConfirmed: {
     readonly gen: number
     readonly screen: string
     readonly resultFileAnswer: Option.Option<string>
   }
-  readonly IoRexError: { readonly gen: number; readonly operation: string; readonly error: RexError }
+  readonly IoPaneFault: {
+    readonly gen: number
+    readonly operation: string
+    readonly kind: "gone" | "transient" | "unsupported"
+    readonly message: string
+  }
   readonly IoQuietDone: { readonly gen: number; readonly liveness: PaneLiveness; readonly lastScreen: string }
   readonly IoGoneProbe: {
     readonly gen: number
@@ -325,19 +469,70 @@ type ActorMessage = Data.TaggedEnum<{
     readonly resultFileAnswer: Option.Option<string>
   }
   readonly IoRetryTick: { readonly gen: number }
-  readonly IoWakeResult: {
-    readonly deliveryId: string
-    readonly ok: boolean
-    readonly error: string
-  }
+  readonly IoPeerCheck: { readonly gen: number; readonly intentId: string; readonly expired: boolean }
+  readonly IoWakeResult: { readonly deliveryId: string; readonly ok: boolean; readonly error: string }
 }>
+
+type AmbiguousOutcome = Extract<ActorMessage, { readonly _tag: "IoAmbiguousResult" }>["result"]
 
 const ActorMessage = Data.taggedEnum<ActorMessage>()
 
-type PaneIoMode = "read" | "confirm_idle" | "wait_quiet" | "confirm_gone" | "retry_delay"
+type PaneIoMode = "read" | "confirm_idle" | "wait_quiet" | "confirm_gone" | "retry_delay" | "wait_limit"
+
+interface ActorEntry {
+  readonly mailbox: Queue.Queue<ActorMessage>
+  readonly harness: Harness
+  probePending: boolean
+}
+
+const isCommandWithReply = Predicate.or(
+  Predicate.or(Predicate.isTagged("CmdFollowUp"), Predicate.isTagged("CmdRestart")),
+  Predicate.or(
+    Predicate.or(Predicate.isTagged("CmdStop"), Predicate.isTagged("CmdStatus")),
+    Predicate.isTagged("CmdReattach"),
+  ),
+)
+
+const isTerminalRexError = Predicate.or(
+  Predicate.isTagged("RexPaneGone"),
+  Predicate.isTagged("RexUnsupportedRevision"),
+)
+
+const isRetryableSplitRexError = Predicate.or(
+  Predicate.isTagged("RexUnavailable"),
+  Predicate.isTagged("RexPaneGone"),
+)
+
+const isWriteOrSplitIntent = Predicate.or(
+  Predicate.isTagged("TypeTurn"),
+  Predicate.isTagged("SplitPane"),
+)
+
+const isCompletionEvent = Predicate.or(
+  Predicate.or(
+    Predicate.or(Predicate.isTagged("TypeTurnSucceeded"), Predicate.isTagged("TypeTurnFailed")),
+    Predicate.or(Predicate.isTagged("TypeTurnDeferredPrompt"), Predicate.isTagged("TypeResumeSucceeded")),
+  ),
+  Predicate.or(
+    Predicate.or(
+      Predicate.or(Predicate.isTagged("TypeResumeFailed"), Predicate.isTagged("TypeResumeDeferredPrompt")),
+      Predicate.or(Predicate.isTagged("SplitSucceeded"), Predicate.isTagged("SplitFailed")),
+    ),
+    Predicate.or(
+      Predicate.or(Predicate.isTagged("CloseCompleted"), Predicate.isTagged("AmbiguousResolved")),
+      Predicate.or(Predicate.isTagged("WakeDelivered"), Predicate.isTagged("WakeFailed")),
+    ),
+  ),
+)
+
+interface PreWriteFailure {
+  readonly failKind: "not_sent" | "unsupported" | "gone"
+  readonly reason: string
+}
 
 interface ActorRuntime {
   readonly id: string
+  readonly entry: ActorEntry
   readonly mailbox: Queue.Queue<ActorMessage>
   readonly paneIo: FiberHandle.FiberHandle<void, never>
   readonly wakeIo: FiberHandle.FiberHandle<void, never>
@@ -346,7 +541,19 @@ interface ActorRuntime {
   paneIoRunning: boolean
   wakeIoRunning: boolean
   nextPaneIo: PaneIoMode
+  waitLimitUntil: number
   lastScreen: string
+  needsReload: boolean
+  freshFromStore: boolean
+  readonly completedIntents: Set<string>
+}
+
+const failReplyOf = (msg: ActorMessage, workerId: string, reason: string): Effect.Effect<void> => {
+  const err = new WorkerCrashed({ workerId, message: reason })
+  if (isCommandWithReply(msg)) {
+    return Deferred.fail(msg.reply, err).pipe(Effect.asVoid)
+  }
+  return Effect.void
 }
 
 const makeModel = (config: ModelConfig = {}) =>
@@ -356,19 +563,28 @@ const makeModel = (config: ModelConfig = {}) =>
     const results = yield* ResultFiles
     const notifier = yield* Notifier
     const scope = yield* Scope.Scope
-    const actors = yield* Ref.make<ReadonlyMap<string, Queue.Queue<ActorMessage>>>(new Map())
+    const procId = yield* makeRandomToken("proc")
+    const actors = yield* Ref.make<ReadonlyMap<string, ActorEntry>>(new Map())
+    const crashCounts = yield* Ref.make<ReadonlyMap<string, number>>(new Map())
     const actorCreateLock = yield* Semaphore.make(1)
     const mintDeliveryId = yield* makeDeliveryIdMinter
+    const changedIo = yield* FiberHandle.make<void, never>().pipe(Effect.provideService(Scope.Scope, scope))
 
     const quietFor = resolveDuration(DEFAULT_QUIET, config.quietFor)
     const pollTimeout = resolveDuration(DEFAULT_POLL_TIMEOUT, config.pollTimeout)
     const pasteQuiet = resolveDuration(DEFAULT_PASTE_QUIET, config.pasteQuiet)
     const retryDelay = resolveDuration(pasteQuiet, config.retryDelay)
     const maxWakeBackoff = resolveDuration(DEFAULT_MAX_WAKE_BACKOFF, config.maxWakeBackoff)
-    const maxStartupChecks = Option.getOrElse(
-      Option.fromUndefinedOr(config.maxStartupChecks),
-      () => DEFAULT_STARTUP_CHECKS,
-    )
+    const storeDeadline = resolveDuration(DEFAULT_STORE_DEADLINE, config.storeDeadline)
+    const tailDeadline = resolveDuration(DEFAULT_TAIL_DEADLINE, config.tailDeadline)
+    const askDeadline = resolveDuration(Duration.times(storeDeadline, 2), config.askDeadline)
+    const readDeadline = resolveDuration(DEFAULT_READ_DEADLINE, config.readDeadline)
+    const writeDeadline = resolveDuration(DEFAULT_WRITE_DEADLINE, config.writeDeadline)
+    const splitDeadline = resolveDuration(DEFAULT_SPLIT_DEADLINE, config.splitDeadline)
+    const closeDeadline = resolveDuration(DEFAULT_CLOSE_DEADLINE, config.closeDeadline)
+    const wakeDeadline = resolveDuration(DEFAULT_WAKE_DEADLINE, config.wakeDeadline)
+    const changedDeadline = resolveDuration(DEFAULT_CHANGED_DEADLINE, config.changedDeadline)
+
     const machineConfig: MachineConfig = {
       maxTransientErrors: Option.getOrElse(
         Option.fromUndefinedOr(config.maxTransientErrors),
@@ -382,36 +598,111 @@ const makeModel = (config: ModelConfig = {}) =>
         Option.fromUndefinedOr(config.maxWakeAttempts),
         () => DEFAULT_MACHINE_CONFIG.maxWakeAttempts,
       ),
+      maxWriteAttempts: Option.getOrElse(
+        Option.fromUndefinedOr(config.maxWriteAttempts),
+        () => DEFAULT_MACHINE_CONFIG.maxWriteAttempts,
+      ),
+      maxWrittenIdlePolls: Option.getOrElse(
+        Option.fromUndefinedOr(config.maxWrittenIdlePolls),
+        () => DEFAULT_MACHINE_CONFIG.maxWrittenIdlePolls,
+      ),
     }
 
-    const readResultOrNone = (worker: PaneWorker) =>
-      results.readComplete(worker.resultFile, worker.startedAt).pipe(
-        Effect.orElseSucceed(() => Option.none<string>()),
-      )
+    const scheduleChanged = (sessionID: string) =>
+      FiberHandle.run(
+        changedIo,
+        runBounded(changedDeadline, notifier.changed(sessionID)).pipe(Effect.asVoid),
+      ).pipe(Effect.asVoid)
 
-    const findWorkerInStore = Effect.fn("PaneAgent.findWorkerInStore")(function* (id: string) {
-      const snap = yield* store.read()
-      return Arr.findFirst(snap.workers, (worker) => worker.id === id)
+    const boundedStoreRead = Effect.fn("PaneAgent.boundedStoreRead")(function* (
+      workerId = "*",
+    ): Effect.fn.Return<StoreSnapshot, StoreFailed | ToolTimedOut | WorkerCrashed> {
+      const out = yield* runToolBounded(storeDeadline, store.read())
+      if (out._tag === "Succeeded") return out.value
+      if (out._tag === "Failed") return yield* out.error
+      if (out._tag === "TimedOut") {
+        return yield* new ToolTimedOut({
+          operation: "store.read",
+          workerId,
+          deadlineMs: out.deadlineMs,
+          message: `Store read timed out after ${out.deadlineMs}ms`,
+        })
+      }
+      return yield* new WorkerCrashed({ workerId, message: `Store read died: ${out.defect}` })
     })
 
-    /** CAS-persists the worker's next state using expectedRevision = revisionOf(prev). */
-    const casPersist = Effect.fn("PaneAgent.casPersist")(function* (
-      prev: PaneWorker,
+    const lateWriteMatched = (found: PaneWorker, next: PaneWorker, expectedRev: number): boolean => {
+      if (revisionOf(found) <= expectedRev) return false
+      if (found.updatedAt === next.updatedAt) return true
+      const lastNext = Arr.last(pendingTurnsOf(next))
+      if (Option.isSome(lastNext)) {
+        const queuedMatch = pendingTurnsOf(found).some((q) => q.brief === lastNext.value.brief)
+        const activeMatch = Option.exists(activeTurnOf(found), (a) => a.brief === lastNext.value.brief)
+        if (queuedMatch || activeMatch || found.turn >= lastNext.value.turn) return true
+      }
+      if (expectedRev === 0) return true
+      return false
+    }
+
+    const verifyLateUpsert = Effect.fn("PaneAgent.verifyLateUpsert")(function* (
       next: PaneWorker,
-    ): Effect.fn.Return<PaneWorker, StoreFailed | StoreConflict> {
-      const expected = revisionOf(prev)
-      const snap = yield* store.upsertWorker(next, expected)
-      yield* notifier.changed(next.parentSessionID)
-      const saved = Arr.findFirst(snap.workers, (w) => w.id === next.id)
-      return Option.getOrElse(saved, () => ({ ...next, revision: expected + 1 }))
+      expectedRev: number,
+    ) {
+      const waitMs = Math.max(10, Math.round(Duration.toMillis(retryDelay) * 2))
+      yield* pauseFor(Duration.millis(waitMs))
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const snapOut = yield* runBounded(storeDeadline, store.read())
+        if (snapOut._tag !== "Succeeded") continue
+        const found = Arr.findFirst(snapOut.value.workers, (w) => w.id === next.id)
+        if (Option.isSome(found) && lateWriteMatched(found.value, next, expectedRev)) {
+          return found
+        }
+        return Option.none<PaneWorker>()
+      }
+      return Option.none<PaneWorker>()
     })
 
-    const confirmDoubleGone = Effect.fn("PaneAgent.confirmDoubleGone")(function* (target: PaneTarget) {
-      const first = yield* rex.alive(target)
-      if (first !== "gone") return first
-      yield* pauseFor(retryDelay)
-      return yield* rex.alive(target)
+    const boundedUpsert = Effect.fn("PaneAgent.boundedUpsert")(function* (
+      next: PaneWorker,
+      expectedRev: number,
+      notifyChanged = true,
+    ): Effect.fn.Return<PaneWorker, StoreFailed | StoreConflict | ToolTimedOut | WorkerCrashed> {
+      const out = yield* runToolBounded(storeDeadline, store.upsertWorker(next, expectedRev))
+      if (out._tag === "Succeeded") {
+        const saved = Arr.findFirst(out.value.workers, (w) => w.id === next.id)
+        if (notifyChanged) yield* scheduleChanged(next.parentSessionID)
+        return Option.getOrElse(saved, () => ({ ...next, revision: expectedRev + 1 }))
+      }
+      if (out._tag === "Failed") {
+        if (out.error._tag === "StoreConflict") {
+          return yield* out.error
+        }
+        // Verify whether a late store.write actually landed before reporting failure (preserves I2).
+        const landed = yield* verifyLateUpsert(next, expectedRev)
+        if (Option.isSome(landed)) {
+          yield* scheduleChanged(next.parentSessionID)
+          return landed.value
+        }
+        return yield* out.error
+      }
+      if (out._tag === "TimedOut") {
+        return yield* new ToolTimedOut({
+          operation: "store.write",
+          workerId: next.id,
+          deadlineMs: out.deadlineMs,
+          message: `Store write timed out after ${out.deadlineMs}ms`,
+        })
+      }
+      return yield* new WorkerCrashed({ workerId: next.id, message: `Store write died: ${out.defect}` })
     })
+
+    const readResultOrNone = (worker: PaneWorker) =>
+      runBounded(readDeadline, results.readComplete(worker.resultFile, worker.startedAt)).pipe(
+        Effect.map((out) => {
+          if (out._tag === "Succeeded") return out.value
+          return Option.none<string>()
+        }),
+      )
 
     const offerMsg = (mailbox: Queue.Queue<ActorMessage>, msg: ActorMessage) =>
       Queue.offer(mailbox, msg).pipe(Effect.asVoid)
@@ -419,7 +710,23 @@ const makeModel = (config: ModelConfig = {}) =>
     const cancelPaneIo = Effect.fn("PaneAgent.cancelPaneIo")(function* (rt: ActorRuntime) {
       rt.paneIoGen += 1
       rt.paneIoRunning = false
+      rt.entry.probePending = false
       yield* FiberHandle.clear(rt.paneIo)
+    })
+
+    const broadcastLimit = Effect.fn("PaneAgent.broadcastLimit")(function* (
+      sourceId: string,
+      harness: Harness,
+      resetAt: number,
+    ) {
+      const map = yield* Ref.get(actors)
+      for (const [id, entry] of map) {
+        if (id === sourceId || entry.harness !== harness) continue
+        yield* Effect.forkIn(
+          offerMsg(entry.mailbox, ActorMessage.SignInLimited({ resetAt })).pipe(Effect.ignore),
+          scope,
+        )
+      }
     })
 
     const scheduleWakeIo = Effect.fn("PaneAgent.scheduleWakeIo")(function* (rt: ActorRuntime) {
@@ -435,53 +742,424 @@ const makeModel = (config: ModelConfig = {}) =>
         rt.wakeIo,
         Effect.gen(function* () {
           yield* pauseFor(delay)
-          const res = yield* Effect.result(notifier.wake(sessionID, wakeLetterOf(wake)))
-          if (res._tag === "Success") {
+          const out = yield* runBounded(wakeDeadline, notifier.wake(sessionID, wakeLetterOf(wake)))
+          if (out._tag === "Succeeded") {
             yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ deliveryId: wake.deliveryId, ok: true, error: "" }))
-          } else {
-            yield* offerMsg(
-              rt.mailbox,
-              ActorMessage.IoWakeResult({ deliveryId: wake.deliveryId, ok: false, error: res.failure.message }),
-            )
+            return
           }
-        }).pipe(Effect.catchCause((cause) => Effect.logDebug("pane-agent wake io ended", cause))),
+          let errorText = "wake failed"
+          if (out._tag === "Failed") errorText = out.error.message
+          else if (out._tag === "TimedOut") errorText = `wake timed out after ${out.deadlineMs}ms`
+          else errorText = `wake died: ${out.defect}`
+          yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ deliveryId: wake.deliveryId, ok: false, error: errorText }))
+        }).pipe(Effect.catchDefect(() => Effect.void)),
       )
     })
 
-    const runPaneIoTask = Effect.fn("PaneAgent.runPaneIoTask")(function* (
+    const runCloseIntent = Effect.fn("PaneAgent.runCloseIntent")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      intent: ClosePaneIntent,
+      adapter: HarnessAdapter,
+    ) {
+      const target: PaneTarget = { sessionId: intent.sessionId, blockId: intent.blockId }
+      if (intent.interruptFirst) {
+        // Safety gate (I5): only send Esc when screen is readable, not showing a human prompt, and turn is running.
+        const screenOut = yield* runBounded(readDeadline, rex.read(target))
+        if (
+          screenOut._tag === "Succeeded" &&
+          Option.isNone(adapter.needsInput(screenOut.value)) &&
+          !adapter.turnEnded(screenOut.value)
+        ) {
+          yield* runBounded(closeDeadline, rex.write(target, adapter.interruptSequence))
+        }
+      }
+      if (intent.closeBlock) {
+        const closeOut = yield* runBounded(closeDeadline, rex.close(target))
+        const ok =
+          closeOut._tag === "Succeeded" ||
+          (closeOut._tag === "Failed" && closeOut.error._tag === "RexPaneGone")
+        yield* offerMsg(rt.mailbox, ActorMessage.IoCloseResult({ gen, intentId: intent.intentId, ok }))
+        return
+      }
+      yield* offerMsg(rt.mailbox, ActorMessage.IoCloseResult({ gen, intentId: intent.intentId, ok: true }))
+    })
+
+    const runSplitIntent = Effect.fn("PaneAgent.runSplitIntent")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      intent: SplitPaneIntent,
+    ) {
+      const out = yield* runBounded(
+        splitDeadline,
+        rex.splitRight({
+          sessionId: intent.sessionId,
+          anchorBlockId: intent.anchorBlockId,
+          label: intent.label,
+          command: intent.command,
+          cwd: intent.cwd,
+        }),
+      )
+      yield* offerMsg(rt.mailbox, ActorMessage.IoSplitResult({ gen, intentId: intent.intentId, outcome: out }))
+    })
+
+    const classifyPreWriteError = (out: BoundedOutcome<string, RexError>): PreWriteFailure => {
+      if (out._tag === "Failed") {
+        if (out.error._tag === "RexPaneGone") return { failKind: "gone", reason: out.error.message }
+        if (out.error._tag === "RexUnsupportedRevision") return { failKind: "unsupported", reason: out.error.message }
+        return { failKind: "not_sent", reason: out.error.message }
+      }
+      if (out._tag === "TimedOut") return { failKind: "not_sent", reason: `pre-write read timed out (${out.deadlineMs}ms)` }
+      return { failKind: "not_sent", reason: "pre-write read died" }
+    }
+
+    const writeIntentChunks = Effect.fn("PaneAgent.writeIntentChunks")(function* (
+      target: PaneTarget,
+      chunks: ReadonlyArray<string>,
+      startIndex: number,
+    ) {
+      for (let i = startIndex; i < chunks.length; i++) {
+        const chunk = Arr.get(chunks, i)
+        if (Option.isNone(chunk)) continue
+        const out = yield* runBounded(writeDeadline, rex.write(target, chunk.value))
+        if (out._tag !== "Succeeded") {
+          return { ok: false as const, index: i, outcome: out }
+        }
+        if (i + 1 < chunks.length && !Duration.isZero(pasteQuiet)) {
+          yield* runBounded(writeDeadline, rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: writeDeadline }))
+        }
+      }
+      return { ok: true as const }
+    })
+
+    const runTypeTurnIntent = Effect.fn("PaneAgent.runTypeTurnIntent")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      intent: TypeTurnIntent,
+      worker: PaneWorker,
+      adapter: HarnessAdapter,
+    ) {
+      const target = targetOf(worker)
+      const preRead = yield* runBounded(readDeadline, rex.read(target))
+      if (preRead._tag !== "Succeeded") {
+        const classified = classifyPreWriteError(preRead)
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeTurnResult({
+            gen,
+            intentId: intent.intentId,
+            turn: intent.turn,
+            result: { kind: "failed", failKind: classified.failKind, chunkIndex: 0, reason: classified.reason },
+          }),
+        )
+        return
+      }
+      const needs = adapter.needsInput(preRead.value)
+      if (Option.isSome(needs)) {
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeTurnResult({
+            gen,
+            intentId: intent.intentId,
+            turn: intent.turn,
+            result: { kind: "prompt", summary: needs.value.summary, tail: needs.value.tail },
+          }),
+        )
+        return
+      }
+      const written = yield* writeIntentChunks(target, intent.chunks, intent.chunkIndex)
+      if (written.ok) {
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeTurnResult({ gen, intentId: intent.intentId, turn: intent.turn, result: { kind: "ok" } }),
+        )
+        return
+      }
+      let failKind: "not_sent" | "ambiguous" | "unsupported" | "gone" = "ambiguous"
+      let reason = "write failed"
+      if (written.outcome._tag === "Failed") {
+        reason = written.outcome.error.message
+        if (written.index === 0 && written.outcome.error._tag === "RexPaneGone") failKind = "gone"
+        else if (written.index === 0 && written.outcome.error._tag === "RexUnsupportedRevision") failKind = "unsupported"
+        else if (written.index === 0 && written.outcome.error._tag === "RexUnavailable") failKind = "not_sent"
+      } else if (written.outcome._tag === "TimedOut") {
+        reason = `write timed out after ${written.outcome.deadlineMs}ms`
+      } else {
+        reason = `write died: ${written.outcome.defect}`
+      }
+      yield* offerMsg(
+        rt.mailbox,
+        ActorMessage.IoTypeTurnResult({
+          gen,
+          intentId: intent.intentId,
+          turn: intent.turn,
+          result: { kind: "failed", failKind, chunkIndex: written.index, reason },
+        }),
+      )
+    })
+
+    const runTypeResumeIntent = Effect.fn("PaneAgent.runTypeResumeIntent")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      intent: TypeResumeIntent,
+      worker: PaneWorker,
+      adapter: HarnessAdapter,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      if (now < intent.resetAt) {
+        yield* pauseFor(Duration.millis(intent.resetAt - now))
+      }
+      const target = targetOf(worker)
+      const preRead = yield* runBounded(readDeadline, rex.read(target))
+      if (preRead._tag !== "Succeeded") {
+        let failKind: "retry" | "not_typed" = "retry"
+        let reason = "read failed before resume"
+        if (preRead._tag === "Failed") {
+          reason = preRead.error.message
+          if (isTerminalRexError(preRead.error)) {
+            failKind = "not_typed"
+          }
+        }
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeResumeResult({
+            gen,
+            intentId: intent.intentId,
+            turn: intent.turn,
+            result: { kind: "failed", failKind, reason },
+          }),
+        )
+        return
+      }
+      const needs = adapter.needsInput(preRead.value)
+      if (Option.isSome(needs)) {
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeResumeResult({
+            gen,
+            intentId: intent.intentId,
+            turn: intent.turn,
+            result: { kind: "prompt", summary: needs.value.summary, tail: needs.value.tail },
+          }),
+        )
+        return
+      }
+      const checkNow = yield* Clock.currentTimeMillis
+      if (!adapter.turnEnded(preRead.value) && Option.isNone(adapter.usageLimit(preRead.value, checkNow))) {
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeResumeResult({ gen, intentId: intent.intentId, turn: intent.turn, result: { kind: "ok" } }),
+        )
+        return
+      }
+      const written = yield* writeIntentChunks(target, intent.chunks, 0)
+      if (written.ok) {
+        yield* offerMsg(
+          rt.mailbox,
+          ActorMessage.IoTypeResumeResult({ gen, intentId: intent.intentId, turn: intent.turn, result: { kind: "ok" } }),
+        )
+        return
+      }
+      let failKind: "retry" | "ambiguous" | "not_typed" = "ambiguous"
+      let reason = "resume write failed"
+      if (written.outcome._tag === "Failed") {
+        reason = written.outcome.error.message
+        if (written.index === 0 && isTerminalRexError(written.outcome.error)) {
+          failKind = "not_typed"
+        } else if (written.index === 0 && written.outcome.error._tag === "RexUnavailable") {
+          failKind = "retry"
+        }
+      } else if (written.outcome._tag === "TimedOut") {
+        reason = `resume write timed out (${written.outcome.deadlineMs}ms)`
+      }
+      yield* offerMsg(
+        rt.mailbox,
+        ActorMessage.IoTypeResumeResult({
+          gen,
+          intentId: intent.intentId,
+          turn: intent.turn,
+          result: { kind: "failed", failKind, reason },
+        }),
+      )
+    })
+
+    const emitAmbiguousResult = (rt: ActorRuntime, gen: number, turn: number, result: AmbiguousOutcome) =>
+      offerMsg(rt.mailbox, ActorMessage.IoAmbiguousResult({ gen, turn, result }))
+
+    const classifyAmbiguousRexFailure = (out: BoundedOutcome<unknown, RexError>): AmbiguousOutcome => {
+      if (out._tag === "Failed" && out.error._tag === "RexPaneGone") return { kind: "gone" }
+      return { kind: "defer" }
+    }
+
+    const resolveAmbiguousAfterProbe = Effect.fn("PaneAgent.resolveAmbiguousAfterProbe")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      target: PaneTarget,
+      active: ActiveTurn,
+      adapter: HarnessAdapter,
+    ) {
+      let submitKey = "\r"
+      if (active.mode === "steer") submitKey = "\x1bm"
+      const probeWrite = yield* runBounded(writeDeadline, rex.write(target, submitKey))
+      if (probeWrite._tag !== "Succeeded") {
+        yield* emitAmbiguousResult(rt, gen, active.turn, classifyAmbiguousRexFailure(probeWrite))
+        return
+      }
+      const read2 = yield* runBounded(readDeadline, rex.read(target))
+      if (read2._tag !== "Succeeded") {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "defer" })
+        return
+      }
+      const now2 = yield* Clock.currentTimeMillis
+      if (Option.isSome(adapter.usageLimit(read2.value, now2))) {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "screen", screen: read2.value })
+        return
+      }
+      const isWorking2 = !adapter.turnEnded(read2.value) && (active.mode === "submit" || screenMatchesSteer(read2.value, active))
+      if (isWorking2) {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "working" })
+        return
+      }
+      const chunkIdx = Option.getOrElse(Option.fromUndefinedOr(active.chunkIndex), () => 0)
+      const lastErr = Option.getOrElse(Option.fromUndefinedOr(active.lastWriteError), () => "write failed")
+      if (chunkIdx > 0) {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "defer" })
+        return
+      }
+      yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "retry", reason: lastErr })
+    })
+
+    const runResolveAmbiguous = Effect.fn("PaneAgent.runResolveAmbiguous")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      worker: PaneWorker,
+      active: ActiveTurn,
+      adapter: HarnessAdapter,
+    ) {
+      const target = targetOf(worker)
+      // Wait long enough for any late write (LATE_LAND_MS = 5ms) to settle before probing the pane.
+      const settleMs = Math.max(15, Math.round(Duration.toMillis(retryDelay) * 3))
+      yield* pauseFor(Duration.millis(settleMs))
+      const read1 = yield* runBounded(readDeadline, rex.read(target))
+      if (read1._tag !== "Succeeded") {
+        yield* emitAmbiguousResult(rt, gen, active.turn, classifyAmbiguousRexFailure(read1))
+        return
+      }
+      const now = yield* Clock.currentTimeMillis
+      if (Option.isSome(adapter.needsInput(read1.value)) || Option.isSome(adapter.usageLimit(read1.value, now))) {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "screen", screen: read1.value })
+        return
+      }
+      const token = tokenOfBrief(active.brief)
+      const echoedAlready = Option.isSome(token) && read1.value.includes(token.value)
+      const fileAlready = Option.isSome(yield* readResultOrNone(worker))
+      const isWorking1 =
+        (!adapter.turnEnded(read1.value) && (active.mode === "submit" || screenMatchesSteer(read1.value, active))) ||
+        echoedAlready ||
+        fileAlready
+      if (isWorking1) {
+        yield* emitAmbiguousResult(rt, gen, active.turn, { kind: "working" })
+        return
+      }
+      yield* resolveAmbiguousAfterProbe(rt, gen, target, active, adapter)
+    })
+
+    const runPeerWait = Effect.fn("PaneAgent.runPeerWait")(function* (
+      rt: ActorRuntime,
+      gen: number,
+      intent: DurableIntent,
+    ) {
+      let deadline = Duration.min(writeDeadline, Duration.millis(25))
+      if (intent._tag === "SplitPane") deadline = splitDeadline
+      const stepMs = Math.max(5, Math.round(Duration.toMillis(retryDelay)))
+      const totalMs = Math.max(stepMs, Math.round(Duration.toMillis(deadline)))
+      for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
+        yield* pauseFor(Duration.millis(stepMs))
+        const snapOut = yield* runBounded(storeDeadline, store.read())
+        if (snapOut._tag === "Succeeded") {
+          const found = Arr.findFirst(snapOut.value.workers, (w) => w.id === rt.id)
+          if (Option.isSome(found) && !outboxOf(found.value).some((i) => i.intentId === intent.intentId)) {
+            yield* offerMsg(rt.mailbox, ActorMessage.IoPeerCheck({ gen, intentId: intent.intentId, expired: false }))
+            return
+          }
+        }
+      }
+      yield* offerMsg(rt.mailbox, ActorMessage.IoPeerCheck({ gen, intentId: intent.intentId, expired: true }))
+    })
+
+    const mapRexOutcomeToFault = (
+      gen: number,
+      operation: string,
+      out: BoundedOutcome<unknown, RexError>,
+    ): ActorMessage => {
+      if (out._tag === "Failed") {
+        if (out.error._tag === "RexPaneGone") {
+          return ActorMessage.IoPaneFault({ gen, operation, kind: "gone", message: out.error.message })
+        }
+        if (out.error._tag === "RexUnsupportedRevision") {
+          return ActorMessage.IoPaneFault({ gen, operation, kind: "unsupported", message: out.error.message })
+        }
+        return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: out.error.message })
+      }
+      if (out._tag === "TimedOut") {
+        return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: `timed out after ${out.deadlineMs}ms` })
+      }
+      if (out._tag === "Died") {
+        return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: `defect: ${out.defect}` })
+      }
+      return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: "unexpected outcome" })
+    }
+
+    const runObserveTask = Effect.fn("PaneAgent.runObserveTask")(function* (
       rt: ActorRuntime,
       gen: number,
       mode: PaneIoMode,
       worker: PaneWorker,
       lastScreen: string,
+      waitLimitUntil: number,
     ) {
       const target = targetOf(worker)
+      if (mode === "wait_limit") {
+        const now = yield* Clock.currentTimeMillis
+        const remaining = waitLimitUntil - now
+        if (remaining > 0) {
+          yield* pauseFor(Duration.millis(remaining))
+        }
+        yield* offerMsg(rt.mailbox, ActorMessage.IoRetryTick({ gen }))
+        return
+      }
       if (mode === "confirm_idle") {
-        const waitRes = yield* Effect.result(rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }))
-        if (waitRes._tag === "Failure") {
-          yield* offerMsg(rt.mailbox, ActorMessage.IoRexError({ gen, operation: "terminals.waitForQuiet", error: waitRes.failure }))
+        const waitBudget = Duration.max(pollTimeout, Duration.millis(25))
+        const waitOut = yield* runBounded(waitBudget, rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }))
+        if (waitOut._tag !== "Succeeded") {
+          yield* offerMsg(rt.mailbox, mapRexOutcomeToFault(gen, "terminals.waitForQuiet", waitOut))
           return
         }
-        const readRes = yield* Effect.result(rex.read(target))
-        if (readRes._tag === "Failure") {
-          yield* offerMsg(rt.mailbox, ActorMessage.IoRexError({ gen, operation: "terminals.read", error: readRes.failure }))
+        const readOut = yield* runBounded(readDeadline, rex.read(target))
+        if (readOut._tag !== "Succeeded") {
+          yield* offerMsg(rt.mailbox, mapRexOutcomeToFault(gen, "terminals.read", readOut))
           return
         }
         const fileAnswer = yield* readResultOrNone(worker)
-        yield* offerMsg(rt.mailbox, ActorMessage.IoIdleConfirmed({ gen, screen: readRes.success, resultFileAnswer: fileAnswer }))
+        yield* offerMsg(rt.mailbox, ActorMessage.IoIdleConfirmed({ gen, screen: readOut.value, resultFileAnswer: fileAnswer }))
         return
       }
       if (mode === "confirm_gone") {
         yield* pauseFor(retryDelay)
-        const aliveRes = yield* Effect.result(rex.alive(target))
-        if (aliveRes._tag === "Failure") {
-          yield* offerMsg(rt.mailbox, ActorMessage.IoRexError({ gen, operation: "terminals.process", error: aliveRes.failure }))
+        const aliveOut = yield* runBounded(readDeadline, rex.alive(target))
+        if (aliveOut._tag !== "Succeeded") {
+          yield* offerMsg(rt.mailbox, mapRexOutcomeToFault(gen, "terminals.process", aliveOut))
           return
         }
         const fileAnswer = yield* readResultOrNone(worker)
         yield* offerMsg(
           rt.mailbox,
-          ActorMessage.IoGoneProbe({ gen, liveness: aliveRes.success, tail: shortLines(lastScreen), resultFileAnswer: fileAnswer }),
+          ActorMessage.IoGoneProbe({
+            gen,
+            liveness: aliveOut.value,
+            tail: shortLines(lastScreen),
+            resultFileAnswer: fileAnswer,
+          }),
         )
         return
       }
@@ -491,456 +1169,506 @@ const makeModel = (config: ModelConfig = {}) =>
         return
       }
       if (mode === "wait_quiet") {
-        const aliveRes = yield* Effect.result(rex.alive(target))
-        if (aliveRes._tag === "Failure") {
-          yield* offerMsg(rt.mailbox, ActorMessage.IoRexError({ gen, operation: "terminals.process", error: aliveRes.failure }))
+        const aliveOut = yield* runBounded(readDeadline, rex.alive(target))
+        if (aliveOut._tag !== "Succeeded") {
+          yield* offerMsg(rt.mailbox, mapRexOutcomeToFault(gen, "terminals.process", aliveOut))
           return
         }
-        if (aliveRes.success === "alive") {
-          yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
+        if (aliveOut.value === "alive") {
+          const waitBudget = Duration.max(pollTimeout, Duration.millis(25))
+          yield* runBounded(waitBudget, rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }))
         }
-        yield* offerMsg(rt.mailbox, ActorMessage.IoQuietDone({ gen, liveness: aliveRes.success, lastScreen }))
+        yield* offerMsg(rt.mailbox, ActorMessage.IoQuietDone({ gen, liveness: aliveOut.value, lastScreen }))
         return
       }
-      const screenRes = yield* Effect.result(rex.read(target))
-      if (screenRes._tag === "Failure") {
-        yield* offerMsg(rt.mailbox, ActorMessage.IoRexError({ gen, operation: "terminals.read", error: screenRes.failure }))
+      const screenOut = yield* runBounded(readDeadline, rex.read(target))
+      if (screenOut._tag !== "Succeeded") {
+        yield* offerMsg(rt.mailbox, mapRexOutcomeToFault(gen, "terminals.read", screenOut))
         return
       }
-      yield* offerMsg(rt.mailbox, ActorMessage.IoScreenRead({ gen, screen: screenRes.success }))
+      yield* offerMsg(rt.mailbox, ActorMessage.IoScreenRead({ gen, screen: screenOut.value }))
     })
 
-    const schedulePaneIo = Effect.fn("PaneAgent.schedulePaneIo")(function* (rt: ActorRuntime) {
-      if (rt.paneIoRunning) return
-      if (!needsPaneWork(rt.state.worker)) return
-      const gen = rt.paneIoGen
-      const mode = rt.nextPaneIo
-      const worker = rt.state.worker
-      const lastScreen = rt.lastScreen
-      rt.paneIoRunning = true
-      yield* FiberHandle.run(
-        rt.paneIo,
-        runPaneIoTask(rt, gen, mode, worker, lastScreen).pipe(
-          Effect.catchCause((cause) => Effect.logDebug("pane-agent pane io ended", cause)),
-        ),
-      )
+    const reloadWorker = Effect.fn("PaneAgent.reloadWorker")(function* (rt: ActorRuntime) {
+      const snapOut = yield* runBounded(storeDeadline, store.read())
+      if (snapOut._tag !== "Succeeded") {
+        rt.needsReload = true
+        return Option.none<PaneWorker>()
+      }
+      const found = Arr.findFirst(snapOut.value.workers, (w) => w.id === rt.id)
+      if (Option.isSome(found)) {
+        rt.state = initialMachineState(found.value, activeTurnTypedOf(found.value))
+        rt.needsReload = false
+      }
+      return found
     })
 
-    /** Applies transition actions inside the single actor loop; CAS-persists before writes/replies. */
-    const applyActorTransition = Effect.fn("PaneAgent.applyActorTransition")(function* (
+    const applyPostCommitActions = Effect.fn("PaneAgent.applyPostCommitActions")(function* (
       rt: ActorRuntime,
-      event: MachineEvent,
-      autoScheduleWake = true,
-    ): Effect.fn.Return<ReadonlyArray<MachineAction>, ModelError> {
-      const prevWorker = rt.state.worker
-      const adapter = adapterFor(prevWorker.harness)
-      const res = transition(rt.state, event, adapter, machineConfig)
-      let nextWorker = res.state.worker
-      const target = targetOf(nextWorker)
-
-      for (const action of res.actions) {
-        if (action._tag === "Persist") {
-          nextWorker = yield* casPersist(prevWorker, nextWorker)
-        } else if (action._tag === "WritePane") {
-          yield* writeChunks(rex, target, action.chunks, pasteQuiet)
-        } else if (action._tag === "InterruptPane") {
-          yield* rex.write(target, adapter.interruptSequence).pipe(Effect.ignore)
-          if (action.close) {
-            yield* rex.close(target).pipe(Effect.ignore)
-          }
+      nextWorker: PaneWorker,
+      actions: ReadonlyArray<MachineAction>,
+    ) {
+      updateNextPaneIo(rt, actions)
+      for (const action of actions) {
+        if (action._tag === "BroadcastLimit") {
+          yield* broadcastLimit(rt.id, nextWorker.harness, action.resetAt)
         }
       }
-
-      rt.state = { ...res.state, worker: nextWorker }
-      if (hasAction(res.actions, "ConfirmIdle")) {
-        rt.nextPaneIo = "confirm_idle"
-      } else if (hasAction(res.actions, "ConfirmGone")) {
-        rt.nextPaneIo = "confirm_gone"
-      } else if (hasAction(res.actions, "RetryTransient")) {
-        rt.nextPaneIo = "retry_delay"
-      } else if (hasAction(res.actions, "WaitQuiet")) {
-        rt.nextPaneIo = "wait_quiet"
-      } else {
-        rt.nextPaneIo = "read"
-      }
-      if (autoScheduleWake && hasAction(res.actions, "FlushWake")) {
+      if (hasAction(actions, "FlushWake")) {
         yield* scheduleWakeIo(rt)
       }
-      return res.actions
     })
 
-    const reloadOnConflict = Effect.fn("PaneAgent.reloadOnConflict")(function* (rt: ActorRuntime) {
-      const fresh = yield* findWorkerInStore(rt.id).pipe(Effect.orElseSucceed(() => Option.none<PaneWorker>()))
-      if (Option.isSome(fresh)) {
-        rt.state = initialMachineState(fresh.value, activeTurnTypedOf(fresh.value))
+    const handleInternalPersistFailure = Effect.fn("PaneAgent.handleInternalPersistFailure")(function* (
+      rt: ActorRuntime,
+      failure: StoreFailed | StoreConflict | ToolTimedOut | WorkerCrashed,
+      canRetry: boolean,
+    ): Effect.fn.Return<boolean> {
+      if (failure._tag === "StoreConflict") {
+        yield* reloadWorker(rt)
+        if (canRetry) return true
+        rt.nextPaneIo = "read"
+        return false
       }
+      if (canRetry) {
+        yield* pauseFor(retryDelay)
+        yield* syncFromStoreIfNewer(rt)
+        return true
+      }
+      rt.nextPaneIo = "retry_delay"
+      return false
     })
 
-    const applyActorTransitionOrReload = Effect.fn("PaneAgent.applyActorTransitionOrReload")(function* (
+    const applyInternalTransition = Effect.fn("PaneAgent.applyInternalTransition")(function* (
       rt: ActorRuntime,
       event: MachineEvent,
     ) {
-      const res = yield* Effect.result(applyActorTransition(rt, event))
-      if (res._tag === "Success") return Option.some(res.success)
-      if (res.failure._tag === "StoreConflict") {
-        yield* reloadOnConflict(rt)
-        rt.nextPaneIo = "read"
-      } else {
-        rt.nextPaneIo = "retry_delay"
+      const retryOnFailure = isCompletionEvent(event)
+      const notifyChanged = event._tag !== "MarkSplitDispatched"
+      let maxAttempts = 1
+      if (retryOnFailure) maxAttempts = 5
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const prevWorker = rt.state.worker
+        const adapter = adapterFor(prevWorker.harness)
+        const res = transition(rt.state, event, adapter, machineConfig)
+        let nextWorker = res.state.worker
+
+        if (hasAction(res.actions, "Persist")) {
+          const saved = yield* Effect.result(boundedUpsert(nextWorker, revisionOf(prevWorker), notifyChanged))
+          if (saved._tag === "Failure") {
+            const shouldRetry = yield* handleInternalPersistFailure(rt, saved.failure, retryOnFailure && attempt + 1 < maxAttempts)
+            if (shouldRetry) continue
+            return Option.none<ReadonlyArray<MachineAction>>()
+          }
+          nextWorker = saved.success
+        }
+
+        rt.state = { ...res.state, worker: nextWorker }
+        rt.freshFromStore = false
+        yield* applyPostCommitActions(rt, nextWorker, res.actions)
+        return Option.some(res.actions)
       }
       return Option.none<ReadonlyArray<MachineAction>>()
     })
 
-    /** Performs one immediate non-blocking wake delivery attempt; on failure hands off to wakeIo backoff. */
-    const flushWakeOnce = Effect.fn("PaneAgent.flushWakeOnce")(function* (rt: ActorRuntime) {
-      if (rt.wakeIoRunning) return
-      const nextWake = nextRetryableWake(rt.state.worker)
-      if (Option.isNone(nextWake)) return
-      const wake = nextWake.value
-      const res = yield* Effect.result(notifier.wake(rt.state.worker.parentSessionID, wakeLetterOf(wake)))
-      const now = yield* Clock.currentTimeMillis
-      if (res._tag === "Success") {
-        yield* applyActorTransitionOrReload(rt, MachineEvent.WakeDelivered({ deliveryId: wake.deliveryId, now }))
+    const updateNextPaneIo = (rt: ActorRuntime, actions: ReadonlyArray<MachineAction>): void => {
+      const limitAction = Arr.findFirst(
+        actions,
+        (action): action is Extract<MachineAction, { readonly _tag: "WaitLimitReset" }> => action._tag === "WaitLimitReset",
+      )
+      if (Option.isSome(limitAction)) {
+        rt.nextPaneIo = "wait_limit"
+        rt.waitLimitUntil = limitAction.value.resetAt
+        return
+      }
+      if (hasAction(actions, "ConfirmIdle")) {
+        rt.nextPaneIo = "confirm_idle"
+      } else if (hasAction(actions, "ConfirmGone")) {
+        rt.nextPaneIo = "confirm_gone"
+      } else if (hasAction(actions, "RetryTransient")) {
+        rt.nextPaneIo = "retry_delay"
+      } else if (hasAction(actions, "WaitQuiet")) {
+        rt.nextPaneIo = "wait_quiet"
       } else {
-        yield* applyActorTransitionOrReload(
-          rt,
-          MachineEvent.WakeFailed({ deliveryId: wake.deliveryId, message: res.failure.message, now }),
-        )
+        rt.nextPaneIo = "read"
       }
-      yield* scheduleWakeIo(rt)
-    })
-
-    const markConfirmedGoneInActor = Effect.fn("PaneAgent.markConfirmedGoneInActor")(function* (rt: ActorRuntime) {
-      yield* cancelPaneIo(rt)
-      const fileAnswer = yield* readResultOrNone(rt.state.worker)
-      for (let count = 0; count < machineConfig.confirmGoneCount; count++) {
-        const now = yield* Clock.currentTimeMillis
-        const deliveryId = yield* mintDeliveryId()
-        yield* applyActorTransition(
-          rt,
-          MachineEvent.ProbeGone({ tail: shortLines(rt.lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
-          false,
-        )
-      }
-      yield* flushWakeOnce(rt)
-      return rt.state.worker
-    })
-
-    const startupErrorEvent = (error: RexError, now: number, deliveryId: string): MachineEvent => {
-      if (error._tag === "RexPaneGone") {
-        return MachineEvent.ProbeGone({ tail: "", resultFileAnswer: Option.none(), now, deliveryId })
-      }
-      return MachineEvent.TransientError({
-        operation: "terminals.read",
-        message: error.message,
-        now,
-        deliveryId,
-      })
     }
 
-    const stepStartAttempt = Effect.fn("PaneAgent.stepStartAttempt")(function* (rt: ActorRuntime) {
-      const target = targetOf(rt.state.worker)
-      const screenRes = yield* Effect.result(rex.read(target))
-      const now = yield* Clock.currentTimeMillis
-      const deliveryId = yield* mintDeliveryId()
-      if (screenRes._tag === "Failure") {
-        if (screenRes.failure._tag === "RexUnsupportedRevision") {
-          const err: ModelError = screenRes.failure
-          return { kind: "fail" as const, error: err }
-        }
-        const applied = yield* Effect.result(
-          applyActorTransition(rt, startupErrorEvent(screenRes.failure, now, deliveryId), false),
-        )
-        if (applied._tag === "Failure") return { kind: "fail" as const, error: applied.failure }
-        if (hasAction(applied.success, "StopWatching")) {
-          yield* flushWakeOnce(rt)
-          return { kind: "done" as const }
-        }
-        yield* pauseFor(retryDelay)
-        return { kind: "continue" as const }
-      }
+    const launchPaneIo = (rt: ActorRuntime, task: Effect.Effect<void>) => {
+      rt.paneIoRunning = true
+      return FiberHandle.run(rt.paneIo, task.pipe(Effect.catchDefect(() => Effect.void)))
+    }
 
-      rt.lastScreen = screenRes.success
-      const applied = yield* Effect.result(
-        applyActorTransition(rt, MachineEvent.ObserveScreen({ screen: screenRes.success, now, deliveryId }), false),
-      )
-      if (applied._tag === "Failure") return { kind: "fail" as const, error: applied.failure }
-      if (rt.state.worker.state === "needs_input" || rt.state.worker.state === "working") {
-        if (rt.state.worker.state === "needs_input") {
-          yield* flushWakeOnce(rt)
-          rt.nextPaneIo = "retry_delay"
-        } else {
-          rt.nextPaneIo = "read"
-        }
-        yield* schedulePaneIo(rt)
-        return { kind: "done" as const }
+    const scheduleOutboxIntent = Effect.fn("PaneAgent.scheduleOutboxIntent")(function* (
+      rt: ActorRuntime,
+      intent: DurableIntent,
+      worker: PaneWorker,
+      adapter: HarnessAdapter,
+    ) {
+      if (rt.completedIntents.has(intent.intentId)) {
+        yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, "retry_delay", worker, rt.lastScreen, 0))
+        return
       }
-      yield* rex.waitForQuiet(target, { quietFor: pasteQuiet, timeout: pollTimeout }).pipe(Effect.ignore)
-      return { kind: "continue" as const }
+      if (intent._tag === "SplitPane" && !intent.dispatched) {
+        const now = yield* Clock.currentTimeMillis
+        const marked = yield* applyInternalTransition(
+          rt,
+          MachineEvent.MarkSplitDispatched({ intentId: intent.intentId, ownerProc: procId, now }),
+        )
+        if (Option.isNone(marked)) {
+          yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, "retry_delay", rt.state.worker, rt.lastScreen, 0))
+          return
+        }
+        const updated = Arr.findFirst(
+          outboxOf(rt.state.worker),
+          (i): i is SplitPaneIntent => i._tag === "SplitPane" && i.intentId === intent.intentId,
+        )
+        if (Option.isSome(updated)) {
+          yield* launchPaneIo(rt, runSplitIntent(rt, rt.paneIoGen, updated.value))
+        }
+        return
+      }
+      if (intent._tag !== "ClosePane" && intent.ownerProc !== procId) {
+        yield* launchPaneIo(rt, runPeerWait(rt, rt.paneIoGen, intent))
+        return
+      }
+      const gen = rt.paneIoGen
+      if (intent._tag === "ClosePane") {
+        yield* launchPaneIo(rt, runCloseIntent(rt, gen, intent, adapter))
+        return
+      }
+      if (intent._tag === "SplitPane") {
+        yield* launchPaneIo(rt, runSplitIntent(rt, gen, intent))
+        return
+      }
+      if (intent._tag === "TypeTurn") {
+        yield* launchPaneIo(rt, runTypeTurnIntent(rt, gen, intent, worker, adapter))
+        return
+      }
+      yield* launchPaneIo(rt, runTypeResumeIntent(rt, gen, intent, worker, adapter))
     })
 
-    const handleCmdAwaitStart = Effect.fn("PaneAgent.handleCmdAwaitStart")(function* (
-      rt: ActorRuntime,
-      reply: Deferred.Deferred<PaneWorker, ModelError>,
-    ) {
-      for (let attempt = 0; attempt < maxStartupChecks; attempt++) {
-        const step = yield* stepStartAttempt(rt)
-        if (step.kind === "fail") {
-          yield* Deferred.fail(reply, step.error)
-          return
-        }
-        if (step.kind === "done") {
-          yield* Deferred.succeed(reply, rt.state.worker)
-          return
-        }
+    const schedulePaneIo = Effect.fn("PaneAgent.schedulePaneIo")(function* (rt: ActorRuntime) {
+      if (rt.paneIoRunning) return
+      const worker = rt.state.worker
+      if (!needsPaneWork(worker)) return
+      const adapter = adapterFor(worker.harness)
+      const headIntent = Arr.head(outboxOf(worker))
+
+      // Priority 1: Execute durable outbox intent FIFO.
+      if (Option.isSome(headIntent)) {
+        yield* scheduleOutboxIntent(rt, headIntent.value, worker, adapter)
+        return
       }
-      rt.nextPaneIo = "read"
-      yield* schedulePaneIo(rt)
-      yield* Deferred.succeed(reply, rt.state.worker)
+
+      if (worker.blockId.length === 0) return
+
+      // Priority 2: Resolve ambiguous active turn via evidence-first probe.
+      const active = activeTurnOf(worker)
+      if (Option.isSome(active) && active.value.phase === "ambiguous") {
+        yield* launchPaneIo(rt, runResolveAmbiguous(rt, rt.paneIoGen, worker, active.value, adapter))
+        return
+      }
+
+      // Priority 3: Observe screen / wait quiet / confirm idle / confirm gone / wait limit reset.
+      const mode = rt.nextPaneIo
+      if (mode === "confirm_gone") rt.entry.probePending = true
+      yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, mode, worker, rt.lastScreen, rt.waitLimitUntil))
+    })
+
+    /** Syncs actor state from store if another process advanced the revision. */
+    const syncFromStoreIfNewer = Effect.fn("PaneAgent.syncFromStoreIfNewer")(function* (rt: ActorRuntime) {
+      const snapOut = yield* runBounded(storeDeadline, store.read())
+      if (snapOut._tag !== "Succeeded") return
+      const found = Arr.findFirst(snapOut.value.workers, (w) => w.id === rt.id)
+      if (Option.isSome(found) && revisionOf(found.value) > revisionOf(rt.state.worker)) {
+        yield* cancelPaneIo(rt)
+        rt.state = initialMachineState(found.value, activeTurnTypedOf(found.value))
+        rt.needsReload = false
+      }
+    })
+
+    /** Applies a command transition; on StoreConflict always reloads fresh state so the actor is never wedged. */
+    const applyCommandTransition = Effect.fn("PaneAgent.applyCommandTransition")(function* (
+      rt: ActorRuntime,
+      validate: (worker: PaneWorker) => Effect.Effect<void, ModelError>,
+      makeEvent: (worker: PaneWorker, now: number) => Effect.Effect<MachineEvent>,
+    ): Effect.fn.Return<PaneWorker, ModelError> {
+      if (rt.needsReload || (!rt.freshFromStore && !isLive(rt.state.worker.state))) {
+        yield* syncFromStoreIfNewer(rt)
+      }
+      rt.freshFromStore = false
+      const prevWorker = rt.state.worker
+      yield* validate(prevWorker)
+      const now = yield* Clock.currentTimeMillis
+      const event = yield* makeEvent(prevWorker, now)
+      const adapter = adapterFor(prevWorker.harness)
+      const res = transition(rt.state, event, adapter, machineConfig)
+      const savedRes = yield* Effect.result(boundedUpsert(res.state.worker, revisionOf(prevWorker)))
+      if (savedRes._tag === "Success") {
+        rt.state = { ...res.state, worker: savedRes.success }
+        if (hasAction(res.actions, "FlushWake")) yield* scheduleWakeIo(rt)
+        return savedRes.success
+      }
+      if (savedRes.failure._tag === "StoreConflict") {
+        yield* reloadWorker(rt)
+        yield* cancelPaneIo(rt)
+        yield* schedulePaneIo(rt)
+        yield* scheduleWakeIo(rt)
+      }
+      return yield* savedRes.failure
     })
 
     const handleCmdFollowUp = Effect.fn("PaneAgent.handleCmdFollowUp")(function* (
       rt: ActorRuntime,
       input: FollowUpInput,
     ): Effect.fn.Return<PaneWorker, ModelError> {
-      if (rt.state.worker.parentSessionID !== input.parentSessionID) {
-        return yield* new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` })
-      }
-      const target = targetOf(rt.state.worker)
-      const liveness = yield* confirmDoubleGone(target)
-      if (liveness === "gone") {
-        yield* markConfirmedGoneInActor(rt)
-        return yield* new WorkerRejected({
-          reason: `Pane ${rt.state.worker.blockId} for worker ${rt.state.worker.id} is gone; call pane_agent({ action: "restart", id: "${rt.state.worker.id}" }) to resume it with --continue.`,
-        })
-      }
-
-      const now = yield* Clock.currentTimeMillis
-      const requestedFile = Option.fromUndefinedOr(input.resultFile)
-
-      if (input.steer === true) {
-        const screenOpt = yield* rex.read(target).pipe(Effect.option)
-        const actions = yield* applyActorTransition(
-          rt,
-          MachineEvent.RequestSteer({ prompt: input.prompt, resultFile: requestedFile, screen: screenOpt, now }),
-        )
-        if (hasAction(actions, "WritePane")) {
+      const saved = yield* applyCommandTransition(
+        rt,
+        (worker) => {
+          if (worker.parentSessionID !== input.parentSessionID) {
+            return Effect.fail(new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` }))
+          }
+          if (!canFollowUpState(worker.state)) {
+            return Effect.fail(
+              new WorkerRejected({
+                reason: `Pane worker ${worker.id} is ${worker.state}; call pane_agent({ action: "restart", id: "${worker.id}" }) to resume it.`,
+              }),
+            )
+          }
+          return Effect.void
+        },
+        (_worker, now) =>
+          Effect.succeed(
+            MachineEvent.QueueFollowUp({
+              prompt: input.prompt,
+              resultFile: Option.fromUndefinedOr(input.resultFile),
+              steer: input.steer === true,
+              now,
+            }),
+          ),
+      )
+      // If idle/waiting, wake paneRunner immediately so the queued turn or steer is picked up without delay.
+      if (input.steer === true || rt.nextPaneIo === "wait_quiet" || rt.nextPaneIo === "retry_delay") {
+        if (!outboxOf(saved).some(isWriteOrSplitIntent)) {
           yield* cancelPaneIo(rt)
           rt.nextPaneIo = "read"
         }
-        yield* schedulePaneIo(rt)
-        return rt.state.worker
       }
-
-      const wasIdle =
-        (rt.state.worker.state === "done" || rt.state.worker.state === "wake_undelivered") &&
-        !activeTurnTypedOf(rt.state.worker)
-      yield* applyActorTransition(
-        rt,
-        MachineEvent.QueueFollowUp({ prompt: input.prompt, resultFile: requestedFile, now }),
-      )
-
-      if (wasIdle) {
-        const screenRes = yield* Effect.result(rex.read(target))
-        if (screenRes._tag === "Success") {
-          rt.lastScreen = screenRes.success
-          const stepNow = yield* Clock.currentTimeMillis
-          const deliveryId = yield* mintDeliveryId()
-          yield* applyActorTransition(
-            rt,
-            MachineEvent.ObserveScreen({ screen: screenRes.success, now: stepNow, deliveryId }),
-          )
-        }
-        yield* cancelPaneIo(rt)
-        rt.nextPaneIo = "read"
-      }
-
       yield* schedulePaneIo(rt)
-      return rt.state.worker
+      return saved
     })
 
     const handleCmdRestart = Effect.fn("PaneAgent.handleCmdRestart")(function* (
       rt: ActorRuntime,
       input: RestartInput,
+      anchor: PaneAnchor,
     ): Effect.fn.Return<PaneWorker, ModelError> {
-      const existing = rt.state.worker
-      if (existing.parentSessionID !== input.parentSessionID) {
-        return yield* new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` })
-      }
-      const liveness = yield* rex.alive(targetOf(existing))
-      const canRestart =
-        existing.state === "pane_gone" ||
-        existing.state === "stopped" ||
-        existing.state === "failed" ||
-        liveness === "gone"
-      if (!canRestart) {
-        return yield* new WorkerRejected({
-          reason: `Pane ${existing.blockId} for worker ${existing.id} is still alive; use follow_up or steer instead of restart.`,
-        })
-      }
-
-      const snapshot = yield* store.read()
-      const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
-      const anchor = resolveAnchor(input, savedAnchor)
-      if (Option.isNone(anchor)) {
-        return yield* new WorkerRejected({
-          reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
-        })
-      }
-
-      yield* cancelPaneIo(rt)
-      if (existing.ownedBlock) {
-        yield* rex.close(targetOf(existing)).pipe(Effect.ignore)
-      }
-
-      const adapter = adapterFor(existing.harness)
-      const workerCwd = Option.getOrElse(Option.fromUndefinedOr(existing.cwd), () => existing.directory)
-      const nextResultFile = Option.getOrElse(
-        Option.filter(Option.fromUndefinedOr(input.resultFile), (f) => f.trim().length > 0),
-        () => existing.resultFile,
-      )
-      const nextAddDirs = computeAddDirs(workerCwd, nextResultFile, existing.addDirs)
-      const skipPermissions = existing.skipPermissions !== false
-      const briefInput = Option.match(Option.fromUndefinedOr(input.prompt), {
-        onNone: () => ({ resultFile: nextResultFile }),
-        onSome: (prompt) => ({ prompt, resultFile: nextResultFile }),
-      })
-      const brief = resumeBrief(briefInput)
-      const command = adapter.resumeCommand(
-        buildResumeOptions(existing.harness, brief, nextAddDirs, skipPermissions, config.binaryOverrides),
-      )
-      const newBlockId = yield* rex.splitRight({
-        sessionId: anchor.value.session,
-        anchorBlockId: anchor.value.block,
-        label: `${existing.harness}:${existing.unit}`.slice(0, 48),
-        command,
-        cwd: workerCwd,
-      })
-
-      const now = yield* Clock.currentTimeMillis
-      yield* applyActorTransition(
+      const saved = yield* applyCommandTransition(
         rt,
-        MachineEvent.RestartPane({
-          rexSessionId: anchor.value.session,
-          newBlockId,
-          cwd: workerCwd,
-          addDirs: nextAddDirs,
-          resultFile: nextResultFile,
-          now,
-        }),
+        (worker) => {
+          if (worker.parentSessionID !== input.parentSessionID) {
+            return Effect.fail(new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` }))
+          }
+          if (!canRestartState(worker.state)) {
+            return Effect.fail(
+              new WorkerRejected({
+                reason: `Pane ${worker.blockId} for worker ${worker.id} is still alive; use follow_up or steer instead of restart.`,
+              }),
+            )
+          }
+          return Effect.void
+        },
+        (worker, now) =>
+          Effect.gen(function* () {
+            const adapter = adapterFor(worker.harness)
+            const workerCwd = Option.getOrElse(Option.fromUndefinedOr(worker.cwd), () => worker.directory)
+            const nextResultFile = Option.getOrElse(
+              Option.filter(Option.fromUndefinedOr(input.resultFile), (f) => f.trim().length > 0),
+              () => worker.resultFile,
+            )
+            const nextAddDirs = computeAddDirs(workerCwd, nextResultFile, worker.addDirs)
+            const skipPermissions = worker.skipPermissions !== false
+            const briefInput = Option.match(Option.fromUndefinedOr(input.prompt), {
+              onNone: () => ({ resultFile: nextResultFile }),
+              onSome: (prompt) => ({ prompt, resultFile: nextResultFile }),
+            })
+            const brief = resumeBrief(briefInput)
+            const command = adapter.resumeCommand(
+              buildResumeOptions(worker.harness, brief, nextAddDirs, skipPermissions, config.binaryOverrides),
+            )
+            const reqId = yield* makeRandomToken("rq")
+            const splitIntentId = yield* makeRandomToken("sp")
+            let closeIntentId: Option.Option<string> = Option.none()
+            if (worker.ownedBlock && worker.blockId.length > 0 && worker.state !== "pane_gone") {
+              closeIntentId = Option.some(yield* makeRandomToken("cl"))
+            }
+            return MachineEvent.QueueRestart({
+              rexSessionId: anchor.session,
+              anchorBlockId: anchor.block,
+              label: splitLabelFor(worker.harness, worker.unit, reqId),
+              reqId,
+              command,
+              cwd: workerCwd,
+              addDirs: nextAddDirs,
+              resultFile: nextResultFile,
+              resumedBrief: brief,
+              splitIntentId,
+              closeIntentId,
+              ownerProc: procId,
+              now,
+            })
+          }),
       )
+      yield* cancelPaneIo(rt)
       rt.nextPaneIo = "read"
       yield* schedulePaneIo(rt)
       yield* scheduleWakeIo(rt)
-      return rt.state.worker
+      return saved
     })
 
     const handleCmdStop = Effect.fn("PaneAgent.handleCmdStop")(function* (
       rt: ActorRuntime,
       input: StopInput,
     ): Effect.fn.Return<PaneWorker, ModelError> {
-      if (rt.state.worker.parentSessionID !== input.parentSessionID) {
-        return yield* new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` })
-      }
+      const saved = yield* applyCommandTransition(
+        rt,
+        (worker) => {
+          if (worker.parentSessionID !== input.parentSessionID) {
+            return Effect.fail(new WorkerRejected({ reason: `Pane worker ${input.id} belongs to another session.` }))
+          }
+          return Effect.void
+        },
+        (_worker, now) =>
+          Effect.gen(function* () {
+            const closeIntentId = yield* makeRandomToken("cl")
+            const deliveryId = yield* mintDeliveryId()
+            return MachineEvent.Stop({
+              close: input.close === true,
+              durableOutbox: true,
+              closeIntentId,
+              ownerProc: procId,
+              lastScreen: rt.lastScreen,
+              deliveryId,
+              now,
+            })
+          }),
+      )
       yield* cancelPaneIo(rt)
-      const now = yield* Clock.currentTimeMillis
-      yield* applyActorTransition(rt, MachineEvent.Stop({ close: input.close === true, now }))
-      return rt.state.worker
+      yield* schedulePaneIo(rt)
+      return saved
     })
 
     const handleCmdStatus = Effect.fn("PaneAgent.handleCmdStatus")(function* (
       rt: ActorRuntime,
       parentSessionID: string,
     ): Effect.fn.Return<PaneWorker, ModelError> {
+      yield* syncFromStoreIfNewer(rt)
       if (rt.state.worker.parentSessionID !== parentSessionID) {
         return yield* new WorkerRejected({ reason: `Pane worker ${rt.id} belongs to another session.` })
       }
-      const existing = rt.state.worker
-      const target = targetOf(existing)
-      const expectsPane =
-        existing.state !== "stopped" &&
-        existing.state !== "pane_gone" &&
-        existing.state !== "failed" &&
-        existing.state !== "wake_undelivered"
-      if (expectsPane) {
-        const liveness = yield* confirmDoubleGone(target)
-        if (liveness === "gone") {
-          return yield* markConfirmedGoneInActor(rt)
-        }
-      }
-      const tailOpt = yield* rex.readTail(target, TAIL_BYTES).pipe(Effect.option)
-      if (Option.isNone(tailOpt)) return rt.state.worker
-      return { ...rt.state.worker, lastLines: shortLines(tailOpt.value) }
+      return rt.state.worker
     })
 
     const handleCmdReattach = Effect.fn("PaneAgent.handleCmdReattach")(function* (
       rt: ActorRuntime,
     ): Effect.fn.Return<PaneWorker, ModelError> {
+      yield* syncFromStoreIfNewer(rt)
+      // Reset undelivered wake retries (keeping exact same deliveryId).
       if (pendingWakesOf(rt.state.worker).length > 0) {
         const now = yield* Clock.currentTimeMillis
-        yield* applyActorTransition(rt, MachineEvent.RestartWakeRetries({ now }), false)
-        yield* flushWakeOnce(rt)
+        yield* applyInternalTransition(rt, MachineEvent.RestartWakeRetries({ now }))
       }
-      if (!needsPaneWork(rt.state.worker)) {
-        return rt.state.worker
-      }
-      const target = targetOf(rt.state.worker)
-      const liveness = yield* confirmDoubleGone(target)
-      if (liveness === "unknown") {
-        rt.nextPaneIo = "retry_delay"
-        yield* schedulePaneIo(rt)
-        return rt.state.worker
-      }
-      if (liveness === "gone") {
-        return yield* markConfirmedGoneInActor(rt)
-      }
-      const adapter = adapterFor(rt.state.worker.harness)
-      const screenOpt = yield* rex.read(target).pipe(Effect.option)
-      if (Option.isSome(screenOpt) && activeTurnTypedOf(rt.state.worker) && adapter.turnEnded(screenOpt.value)) {
-        rt.state = { ...rt.state, sawWorking: true, idlePendingConfirm: true }
-        yield* rex.waitForQuiet(target, { quietFor, timeout: pollTimeout }).pipe(Effect.ignore)
-        const afterOpt = yield* rex.read(target).pipe(Effect.option)
-        if (Option.isSome(afterOpt)) {
-          const fileAnswer = yield* readResultOrNone(rt.state.worker)
-          const now = yield* Clock.currentTimeMillis
-          const deliveryId = yield* mintDeliveryId()
-          yield* applyActorTransition(
-            rt,
-            MachineEvent.IdleConfirmed({ screen: afterOpt.value, resultFileAnswer: fileAnswer, now, deliveryId }),
-            false,
-          )
-          yield* flushWakeOnce(rt)
-        }
-      }
-      if (rt.state.worker.state === "needs_input") {
-        rt.nextPaneIo = "retry_delay"
-      } else {
-        rt.nextPaneIo = "read"
-      }
+      rt.nextPaneIo = "read"
       yield* schedulePaneIo(rt)
+      yield* scheduleWakeIo(rt)
       return rt.state.worker
     })
 
-    const handleIoRexError = Effect.fn("PaneAgent.handleIoRexError")(function* (
+    const handleIoSplitResult = Effect.fn("PaneAgent.handleIoSplitResult")(function* (
+      rt: ActorRuntime,
+      intentId: string,
+      outcome: BoundedOutcome<string, RexError>,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      if (outcome._tag === "Succeeded") {
+        // Persist blockId with bounded retries on transient store errors so we never drop a known blockId!
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const applied = yield* applyInternalTransition(
+            rt,
+            MachineEvent.SplitSucceeded({ intentId, blockId: outcome.value, now }),
+          )
+          if (Option.isSome(applied)) break
+          yield* pauseFor(retryDelay)
+        }
+        rt.nextPaneIo = "read"
+        yield* schedulePaneIo(rt)
+        return
+      }
+      const deliveryId = yield* mintDeliveryId()
+      const extraCount = pendingTurnsOf(rt.state.worker).length + 1
+      const extraDeliveryIds: Array<string> = []
+      for (let i = 0; i < extraCount; i++) {
+        extraDeliveryIds.push(yield* mintDeliveryId())
+      }
+      let unknownOutcome = true
+      let retryable = false
+      let reason = "split failed"
+      if (outcome._tag === "Failed") {
+        reason = outcome.error.message
+        if (outcome.error._tag === "RexUnsupportedRevision") {
+          unknownOutcome = false
+          retryable = false
+        } else if (isRetryableSplitRexError(outcome.error)) {
+          unknownOutcome = false
+          retryable = true
+        }
+      } else if (outcome._tag === "TimedOut") {
+        reason = `split timed out after ${outcome.deadlineMs}ms`
+      } else {
+        reason = `split died: ${outcome.defect}`
+      }
+      yield* applyInternalTransition(
+        rt,
+        MachineEvent.SplitFailed({
+          intentId,
+          unknownOutcome,
+          retryable,
+          reason,
+          now,
+          deliveryId,
+          extraDeliveryIds,
+        }),
+      )
+      yield* schedulePaneIo(rt)
+    })
+
+    const handleIoPaneFault = Effect.fn("PaneAgent.handleIoPaneFault")(function* (
       rt: ActorRuntime,
       operation: string,
-      error: RexError,
+      kind: "gone" | "transient" | "unsupported",
+      message: string,
     ) {
-      if (error._tag === "RexUnsupportedRevision") return
       const now = yield* Clock.currentTimeMillis
       const deliveryId = yield* mintDeliveryId()
-      if (error._tag === "RexPaneGone") {
+      if (kind === "gone") {
         const fileAnswer = yield* readResultOrNone(rt.state.worker)
-        yield* applyActorTransitionOrReload(
+        yield* applyInternalTransition(
           rt,
-          MachineEvent.ProbeGone({ tail: shortLines(rt.lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
+          MachineEvent.ProbeGone({
+            tail: shortLines(rt.lastScreen),
+            lastScreen: rt.lastScreen,
+            resultFileAnswer: fileAnswer,
+            now,
+            deliveryId,
+          }),
         )
         yield* schedulePaneIo(rt)
         return
       }
-      yield* applyActorTransitionOrReload(
+      yield* applyInternalTransition(
         rt,
-        MachineEvent.TransientError({ operation, message: error.message, now, deliveryId }),
+        MachineEvent.TransientError({ operation, message, now, deliveryId }),
       )
       yield* schedulePaneIo(rt)
     })
@@ -959,12 +1687,18 @@ const makeModel = (config: ModelConfig = {}) =>
       const deliveryId = yield* mintDeliveryId()
       if (liveness === "gone") {
         const fileAnswer = yield* readResultOrNone(rt.state.worker)
-        yield* applyActorTransitionOrReload(
+        yield* applyInternalTransition(
           rt,
-          MachineEvent.ProbeGone({ tail: shortLines(lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
+          MachineEvent.ProbeGone({
+            tail: shortLines(lastScreen),
+            lastScreen,
+            resultFileAnswer: fileAnswer,
+            now,
+            deliveryId,
+          }),
         )
       } else {
-        yield* applyActorTransitionOrReload(
+        yield* applyInternalTransition(
           rt,
           MachineEvent.TransientError({
             operation: "terminals.process",
@@ -983,6 +1717,7 @@ const makeModel = (config: ModelConfig = {}) =>
       tail: string,
       resultFileAnswer: Option.Option<string>,
     ) {
+      rt.entry.probePending = false
       if (liveness === "alive") {
         rt.state = { ...rt.state, consecutiveGone: 0, consecutiveTransient: 0 }
         rt.nextPaneIo = "read"
@@ -992,12 +1727,12 @@ const makeModel = (config: ModelConfig = {}) =>
       const now = yield* Clock.currentTimeMillis
       const deliveryId = yield* mintDeliveryId()
       if (liveness === "gone") {
-        yield* applyActorTransitionOrReload(
+        yield* applyInternalTransition(
           rt,
-          MachineEvent.ProbeGone({ tail, resultFileAnswer, now, deliveryId }),
+          MachineEvent.ProbeGone({ tail, lastScreen: rt.lastScreen, resultFileAnswer, now, deliveryId }),
         )
       } else {
-        yield* applyActorTransitionOrReload(
+        yield* applyInternalTransition(
           rt,
           MachineEvent.TransientError({
             operation: "terminals.process",
@@ -1010,105 +1745,368 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* schedulePaneIo(rt)
     })
 
+    const handleIoPeerCheck = Effect.fn("PaneAgent.handleIoPeerCheck")(function* (
+      rt: ActorRuntime,
+      intentId: string,
+      expired: boolean,
+    ) {
+      yield* syncFromStoreIfNewer(rt)
+      const stillThere = Arr.findFirst(outboxOf(rt.state.worker), (i) => i.intentId === intentId)
+      if (Option.isNone(stillThere) || !expired) {
+        rt.nextPaneIo = "read"
+        yield* schedulePaneIo(rt)
+        return
+      }
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      const intent = stillThere.value
+      if (intent._tag === "SplitPane") {
+        const extraDeliveryIds: Array<string> = []
+        for (let i = 0; i <= pendingTurnsOf(rt.state.worker).length; i++) {
+          extraDeliveryIds.push(yield* mintDeliveryId())
+        }
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.SplitFailed({
+            intentId,
+            unknownOutcome: true,
+            retryable: false,
+            reason: "split result unknown after previous process exited",
+            now,
+            deliveryId,
+            extraDeliveryIds,
+          }),
+        )
+      } else if (intent._tag === "TypeTurn") {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeTurnFailed({
+            intentId,
+            turn: intent.turn,
+            chunkIndex: intent.chunkIndex,
+            kind: "ambiguous",
+            reason: "previous process did not complete write",
+            now,
+            deliveryId,
+          }),
+        )
+      } else if (intent._tag === "TypeResume") {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeResumeFailed({
+            intentId,
+            turn: intent.turn,
+            kind: "ambiguous",
+            reason: "previous process did not complete resume",
+            now,
+            deliveryId,
+          }),
+        )
+      }
+      yield* schedulePaneIo(rt)
+    })
+
     const completeCommand = (
       reply: Deferred.Deferred<PaneWorker, ModelError>,
       effect: Effect.Effect<PaneWorker, ModelError>,
     ) =>
-      Effect.result(effect).pipe(
-        Effect.flatMap((res) => {
-          if (res._tag === "Success") return Deferred.succeed(reply, res.success)
-          return Deferred.fail(reply, res.failure)
-        }),
+      Effect.exit(effect).pipe(
+        Effect.flatMap((exit) =>
+          Exit.match(exit, {
+            onSuccess: (worker) => Deferred.succeed(reply, worker),
+            onFailure: (cause) =>
+              Option.match(Cause.findErrorOption(cause), {
+                onSome: (err) => Deferred.fail(reply, err),
+                onNone: () => Deferred.fail(reply, new WorkerCrashed({ workerId: "*", message: Cause.pretty(cause) })),
+              }),
+          }),
+        ),
         Effect.asVoid,
       )
 
-    const processMessage = Effect.fn("PaneAgent.processMessage")(function* (rt: ActorRuntime, msg: ActorMessage) {
+    const handleIoTypeTurnResult = Effect.fn("PaneAgent.handleIoTypeTurnResult")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoTypeTurnResult" }>,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      if (msg.result.kind === "ok") {
+        rt.completedIntents.add(msg.intentId)
+        yield* applyInternalTransition(rt, MachineEvent.TypeTurnSucceeded({ intentId: msg.intentId, turn: msg.turn, now }))
+      } else if (msg.result.kind === "prompt") {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeTurnDeferredPrompt({
+            intentId: msg.intentId,
+            summary: msg.result.summary,
+            tail: msg.result.tail,
+            now,
+            deliveryId,
+          }),
+        )
+      } else {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeTurnFailed({
+            intentId: msg.intentId,
+            turn: msg.turn,
+            chunkIndex: msg.result.chunkIndex,
+            kind: msg.result.failKind,
+            reason: msg.result.reason,
+            now,
+            deliveryId,
+          }),
+        )
+      }
+      yield* schedulePaneIo(rt)
+    })
+
+    const handleIoTypeResumeResult = Effect.fn("PaneAgent.handleIoTypeResumeResult")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoTypeResumeResult" }>,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      if (msg.result.kind === "ok") {
+        rt.completedIntents.add(msg.intentId)
+        yield* applyInternalTransition(rt, MachineEvent.TypeResumeSucceeded({ intentId: msg.intentId, turn: msg.turn, now }))
+      } else if (msg.result.kind === "prompt") {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeResumeDeferredPrompt({
+            intentId: msg.intentId,
+            summary: msg.result.summary,
+            tail: msg.result.tail,
+            now,
+            deliveryId,
+          }),
+        )
+      } else {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.TypeResumeFailed({
+            intentId: msg.intentId,
+            turn: msg.turn,
+            kind: msg.result.failKind,
+            reason: msg.result.reason,
+            now,
+            deliveryId,
+          }),
+        )
+      }
+      yield* schedulePaneIo(rt)
+    })
+
+    const handleIoAmbiguousResult = Effect.fn("PaneAgent.handleIoAmbiguousResult")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoAmbiguousResult" }>,
+    ) {
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      if (msg.result.kind === "screen") {
+        rt.lastScreen = msg.result.screen
+        const intentId = yield* makeRandomToken("tt")
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.ObserveScreen({
+            screen: msg.result.screen,
+            now,
+            deliveryId,
+            durableOutbox: true,
+            intentId,
+            ownerProc: procId,
+          }),
+        )
+      } else if (msg.result.kind === "gone") {
+        const fileAnswer = yield* readResultOrNone(rt.state.worker)
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.ProbeGone({ tail: shortLines(rt.lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
+        )
+      } else if (msg.result.kind === "defer") {
+        rt.nextPaneIo = "retry_delay"
+      } else {
+        const intentId = yield* makeRandomToken("tt")
+        let reason = ""
+        if (msg.result.kind === "retry" || msg.result.kind === "not_typed") reason = msg.result.reason
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.AmbiguousResolved({
+            turn: msg.turn,
+            outcome: msg.result.kind,
+            reason,
+            intentId,
+            ownerProc: procId,
+            now,
+            deliveryId,
+          }),
+        )
+      }
+      yield* schedulePaneIo(rt)
+    })
+
+    const handleIoScreenRead = Effect.fn("PaneAgent.handleIoScreenRead")(function* (rt: ActorRuntime, screen: string) {
+      rt.lastScreen = screen
+      const now = yield* Clock.currentTimeMillis
+      const deliveryId = yield* mintDeliveryId()
+      const intentId = yield* makeRandomToken("tt")
+      yield* applyInternalTransition(
+        rt,
+        MachineEvent.ObserveScreen({
+          screen,
+          now,
+          deliveryId,
+          durableOutbox: true,
+          intentId,
+          ownerProc: procId,
+        }),
+      )
+      yield* schedulePaneIo(rt)
+    })
+
+    const handleIoWakeResult = Effect.fn("PaneAgent.handleIoWakeResult")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoWakeResult" }>,
+    ) {
+      rt.wakeIoRunning = false
+      const now = yield* Clock.currentTimeMillis
+      if (msg.ok) {
+        yield* applyInternalTransition(rt, MachineEvent.WakeDelivered({ deliveryId: msg.deliveryId, now }))
+      } else {
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.WakeFailed({ deliveryId: msg.deliveryId, message: msg.error, now }),
+        )
+      }
+      yield* schedulePaneIo(rt)
+      yield* scheduleWakeIo(rt)
+    })
+
+    const processPaneIoMessage = Effect.fn("PaneAgent.processPaneIoMessage")(function* (
+      rt: ActorRuntime,
+      msg: Exclude<
+        ActorMessage,
+        { readonly _tag: "CmdFollowUp" | "CmdRestart" | "CmdStop" | "CmdStatus" | "CmdReattach" | "CmdNudgeProbe" | "SignInLimited" | "IoWakeResult" }
+      >,
+    ) {
+      if (msg.gen !== rt.paneIoGen) return
+      rt.paneIoRunning = false
       yield* Match.value(msg).pipe(
-        Match.tag("CmdAwaitStart", (ev) => handleCmdAwaitStart(rt, ev.reply)),
-        Match.tag("CmdFollowUp", (ev) => completeCommand(ev.reply, handleCmdFollowUp(rt, ev.input))),
-        Match.tag("CmdRestart", (ev) => completeCommand(ev.reply, handleCmdRestart(rt, ev.input))),
-        Match.tag("CmdStop", (ev) => completeCommand(ev.reply, handleCmdStop(rt, ev.input))),
-        Match.tag("CmdStatus", (ev) => completeCommand(ev.reply, handleCmdStatus(rt, ev.parentSessionID))),
-        Match.tag("CmdReattach", (ev) => completeCommand(ev.reply, handleCmdReattach(rt))),
-        Match.tag("IoScreenRead", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            rt.lastScreen = ev.screen
-            const now = yield* Clock.currentTimeMillis
-            const deliveryId = yield* mintDeliveryId()
-            yield* applyActorTransitionOrReload(rt, MachineEvent.ObserveScreen({ screen: ev.screen, now, deliveryId }))
-            yield* schedulePaneIo(rt)
-          }),
-        ),
-        Match.tag("IoIdleConfirmed", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            rt.lastScreen = ev.screen
-            const now = yield* Clock.currentTimeMillis
-            const deliveryId = yield* mintDeliveryId()
-            yield* applyActorTransitionOrReload(
-              rt,
-              MachineEvent.IdleConfirmed({ screen: ev.screen, resultFileAnswer: ev.resultFileAnswer, now, deliveryId }),
-            )
-            yield* schedulePaneIo(rt)
-          }),
-        ),
-        Match.tag("IoRexError", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            yield* handleIoRexError(rt, ev.operation, ev.error)
-          }),
-        ),
-        Match.tag("IoQuietDone", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            yield* handleIoQuietDone(rt, ev.liveness, ev.lastScreen)
-          }),
-        ),
-        Match.tag("IoGoneProbe", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            yield* handleIoGoneProbe(rt, ev.liveness, ev.tail, ev.resultFileAnswer)
-          }),
-        ),
-        Match.tag("IoRetryTick", (ev) =>
-          Effect.gen(function* () {
-            if (ev.gen !== rt.paneIoGen) return
-            rt.paneIoRunning = false
-            rt.nextPaneIo = "read"
-            yield* schedulePaneIo(rt)
-          }),
-        ),
-        Match.tag("IoWakeResult", (ev) =>
-          Effect.gen(function* () {
-            rt.wakeIoRunning = false
-            const now = yield* Clock.currentTimeMillis
-            if (ev.ok) {
-              yield* applyActorTransitionOrReload(rt, MachineEvent.WakeDelivered({ deliveryId: ev.deliveryId, now }))
-            } else {
-              yield* applyActorTransitionOrReload(
+        Match.tagsExhaustive({
+          IoSplitResult: (m) => handleIoSplitResult(rt, m.intentId, m.outcome),
+          IoTypeTurnResult: (m) => handleIoTypeTurnResult(rt, m),
+          IoTypeResumeResult: (m) => handleIoTypeResumeResult(rt, m),
+          IoAmbiguousResult: (m) => handleIoAmbiguousResult(rt, m),
+          IoCloseResult: (m) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis
+              if (m.ok) {
+                yield* applyInternalTransition(rt, MachineEvent.CloseCompleted({ intentId: m.intentId, now }))
+              } else {
+                rt.nextPaneIo = "retry_delay"
+              }
+              yield* schedulePaneIo(rt)
+            }),
+          IoScreenRead: (m) => handleIoScreenRead(rt, m.screen),
+          IoIdleConfirmed: (m) =>
+            Effect.gen(function* () {
+              rt.lastScreen = m.screen
+              const now = yield* Clock.currentTimeMillis
+              const deliveryId = yield* mintDeliveryId()
+              yield* applyInternalTransition(
                 rt,
-                MachineEvent.WakeFailed({ deliveryId: ev.deliveryId, message: ev.error, now }),
+                MachineEvent.IdleConfirmed({ screen: m.screen, resultFileAnswer: m.resultFileAnswer, now, deliveryId }),
               )
-            }
-            yield* scheduleWakeIo(rt)
-          }),
-        ),
-        Match.exhaustive,
+              yield* schedulePaneIo(rt)
+            }),
+          IoPaneFault: (m) => handleIoPaneFault(rt, m.operation, m.kind, m.message),
+          IoQuietDone: (m) => handleIoQuietDone(rt, m.liveness, m.lastScreen),
+          IoGoneProbe: (m) => handleIoGoneProbe(rt, m.liveness, m.tail, m.resultFileAnswer),
+          IoRetryTick: () =>
+            Effect.gen(function* () {
+              rt.nextPaneIo = "read"
+              yield* schedulePaneIo(rt)
+            }),
+          IoPeerCheck: (m) => handleIoPeerCheck(rt, m.intentId, m.expired),
+        }),
       )
     })
 
-    const spawnActor = Effect.fn("PaneAgent.spawnActor")(function* (worker: PaneWorker, initialSawWorking: boolean) {
-      const mailbox = yield* Queue.unbounded<ActorMessage>()
+    const processIoMessage = Effect.fn("PaneAgent.processIoMessage")(function* (
+      rt: ActorRuntime,
+      msg: Exclude<
+        ActorMessage,
+        { readonly _tag: "CmdFollowUp" | "CmdRestart" | "CmdStop" | "CmdStatus" | "CmdReattach" | "CmdNudgeProbe" | "SignInLimited" }
+      >,
+    ) {
+      if (msg._tag === "IoWakeResult") {
+        yield* handleIoWakeResult(rt, msg)
+        return
+      }
+      yield* processPaneIoMessage(rt, msg)
+    })
+
+    const processMessage = Effect.fn("PaneAgent.processMessage")(function* (rt: ActorRuntime, msg: ActorMessage) {
+      if (msg._tag === "CmdFollowUp") {
+        yield* completeCommand(msg.reply, handleCmdFollowUp(rt, msg.input))
+        return
+      }
+      if (msg._tag === "CmdRestart") {
+        yield* completeCommand(msg.reply, handleCmdRestart(rt, msg.input, msg.anchor))
+        return
+      }
+      if (msg._tag === "CmdStop") {
+        yield* completeCommand(msg.reply, handleCmdStop(rt, msg.input))
+        return
+      }
+      if (msg._tag === "CmdStatus") {
+        yield* completeCommand(msg.reply, handleCmdStatus(rt, msg.parentSessionID))
+        return
+      }
+      if (msg._tag === "CmdReattach") {
+        yield* completeCommand(msg.reply, handleCmdReattach(rt))
+        return
+      }
+      if (msg._tag === "CmdNudgeProbe") {
+        if (rt.entry.probePending || !isLive(rt.state.worker.state) && rt.state.worker.state !== "done") return
+        yield* cancelPaneIo(rt)
+        const now = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        const fileAnswer = yield* readResultOrNone(rt.state.worker)
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.ProbeGone({ tail: shortLines(rt.lastScreen), resultFileAnswer: fileAnswer, now, deliveryId }),
+        )
+        yield* schedulePaneIo(rt)
+        return
+      }
+      if (msg._tag === "SignInLimited") {
+        const now = yield* Clock.currentTimeMillis
+        const deliveryId = yield* mintDeliveryId()
+        yield* applyInternalTransition(rt, MachineEvent.SignInLimited({ resetAt: msg.resetAt, now, deliveryId }))
+        return
+      }
+      yield* processIoMessage(rt, msg)
+    })
+
+    const isQuiescent = (rt: ActorRuntime): boolean =>
+      !needsPaneWork(rt.state.worker) &&
+      Option.isNone(nextRetryableWake(rt.state.worker)) &&
+      !rt.paneIoRunning &&
+      !rt.wakeIoRunning
+
+    const spawnActor = Effect.fn("PaneAgent.spawnActor")(function* (
+      worker: PaneWorker,
+      initialSawWorking: boolean,
+      freshFromStore = false,
+    ): Effect.fn.Return<ActorEntry> {
+      const mailbox = yield* Queue.bounded<ActorMessage>(MAILBOX_CAPACITY)
       const paneIo = yield* FiberHandle.make<void, never>().pipe(Effect.provideService(Scope.Scope, scope))
       const wakeIo = yield* FiberHandle.make<void, never>().pipe(Effect.provideService(Scope.Scope, scope))
+      const entry: ActorEntry = { mailbox, harness: worker.harness, probePending: false }
       const rt: ActorRuntime = {
         id: worker.id,
+        entry,
         mailbox,
         paneIo,
         wakeIo,
@@ -1117,125 +2115,227 @@ const makeModel = (config: ModelConfig = {}) =>
         paneIoRunning: false,
         wakeIoRunning: false,
         nextPaneIo: "read",
+        waitLimitUntil: 0,
         lastScreen: Option.getOrElse(Option.fromUndefinedOr(worker.lastLines), () => ""),
+        needsReload: false,
+        freshFromStore,
+        completedIntents: new Set(),
       }
+
+      const cleanup = (exit: Exit.Exit<void, unknown>) =>
+        Effect.gen(function* () {
+          yield* Ref.update(actors, (prev) => {
+            const current = prev.get(worker.id)
+            if (current !== entry) return prev
+            const next = new Map(prev)
+            next.delete(worker.id)
+            return next
+          })
+          yield* FiberHandle.clear(paneIo)
+          yield* FiberHandle.clear(wakeIo)
+          const pending = yield* Queue.clear(mailbox)
+          let reason = "actor stopped"
+          if (Exit.isFailure(exit)) reason = Cause.pretty(exit.cause)
+          for (const queued of pending) {
+            yield* failReplyOf(queued, worker.id, reason)
+          }
+          if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
+            const crashes = yield* Ref.modify(crashCounts, (prev) => {
+              const count = Option.getOrElse(Option.fromUndefinedOr(prev.get(worker.id)), () => 0) + 1
+              return [count, new Map([...prev, [worker.id, count]])] as const
+            })
+            if (crashes <= MAX_ACTOR_RESTARTS && needsPaneWork(rt.state.worker)) {
+              yield* Effect.forkIn(
+                Effect.gen(function* () {
+                  yield* pauseFor(retryDelay)
+                  const snapOut = yield* runBounded(storeDeadline, store.read())
+                  if (snapOut._tag !== "Succeeded") return
+                  const found = Arr.findFirst(snapOut.value.workers, (w) => w.id === worker.id)
+                  if (Option.isSome(found) && needsPaneWork(found.value)) {
+                    yield* actorCreateLock.withPermits(1)(
+                      Effect.gen(function* () {
+                        const existing = (yield* Ref.get(actors)).get(worker.id)
+                        if (Option.isSome(Option.fromUndefinedOr(existing))) return
+                        yield* spawnActor(found.value, activeTurnTypedOf(found.value))
+                      }),
+                    )
+                  }
+                }).pipe(Effect.catchDefect(() => Effect.void)),
+                scope,
+              )
+            }
+          }
+        })
+
       yield* Effect.forkIn(
         Effect.gen(function* () {
+          yield* schedulePaneIo(rt)
+          yield* scheduleWakeIo(rt)
           while (true) {
+            if (isQuiescent(rt)) {
+              const size = yield* Queue.size(mailbox)
+              if (size === 0) break
+            }
             const msg = yield* Queue.take(mailbox)
-            yield* processMessage(rt, msg)
+            const stepExit = yield* Effect.exit(processMessage(rt, msg))
+            if (Exit.isFailure(stepExit)) {
+              yield* failReplyOf(msg, worker.id, Cause.pretty(stepExit.cause))
+              if (!Cause.hasInterruptsOnly(stepExit.cause)) {
+                return yield* Effect.failCause(stepExit.cause)
+              }
+              return
+            }
           }
-        }).pipe(Effect.catchCause((cause) => Effect.logDebug("pane-agent actor ended", cause))),
+        }).pipe(Effect.onExit(cleanup), Effect.catchDefect(() => Effect.void)),
         scope,
       )
-      yield* Ref.update(actors, (prev) => new Map([...prev, [worker.id, mailbox]]))
-      return mailbox
+      yield* Ref.update(actors, (prev) => new Map([...prev, [worker.id, entry]]))
+      return entry
     })
 
     const getOrSpawnActor = Effect.fn("PaneAgent.getOrSpawnActor")(function* (
       id: string,
       initialSawWorking = false,
-    ): Effect.fn.Return<Queue.Queue<ActorMessage>, StoreFailed | WorkerRejected> {
+      knownWorker: Option.Option<PaneWorker> = Option.none(),
+    ): Effect.fn.Return<ActorEntry, StoreFailed | WorkerRejected | WorkerCrashed | ToolTimedOut> {
       return yield* actorCreateLock.withPermits(1)(
         Effect.gen(function* () {
           const map = yield* Ref.get(actors)
           const existing = Option.fromUndefinedOr(map.get(id))
           if (Option.isSome(existing)) return existing.value
-          const stored = yield* findWorkerInStore(id)
+          if (Option.isSome(knownWorker)) {
+            return yield* spawnActor(knownWorker.value, initialSawWorking)
+          }
+          const snap = yield* boundedStoreRead(id)
+          const stored = Arr.findFirst(snap.workers, (w) => w.id === id)
           if (Option.isNone(stored)) {
             return yield* new WorkerRejected({ reason: `No pane worker found with id ${id}.` })
           }
-          return yield* spawnActor(stored.value, initialSawWorking)
+          return yield* spawnActor(stored.value, initialSawWorking, true)
         }),
       )
     })
 
     const askActor = Effect.fn("PaneAgent.askActor")(function* (
       id: string,
+      operation: string,
       makeMsg: (reply: Deferred.Deferred<PaneWorker, ModelError>) => ActorMessage,
       initialSawWorking = false,
+      knownWorker: Option.Option<PaneWorker> = Option.none(),
     ): Effect.fn.Return<PaneWorker, ModelError> {
-      const mailbox = yield* getOrSpawnActor(id, initialSawWorking)
-      const reply = yield* Deferred.make<PaneWorker, ModelError>()
-      yield* offerMsg(mailbox, makeMsg(reply))
-      return yield* Deferred.await(reply)
-    })
-
-    const openOrSelectPane = Effect.fn("PaneAgent.openOrSelectPane")(function* (
-      input: StartInput,
-      adapter: HarnessAdapter,
-      unit: string,
-      resolvedCwd: string,
-      resolvedAddDirs: ReadonlyArray<string>,
-      skipPermissions: boolean,
-      savedAnchor: Option.Option<PaneAnchor>,
-    ) {
-      const explicitBlock = Option.filter(Option.fromUndefinedOr(input.blockId), (b) => b.length > 0)
-      const anchor = resolveAnchor(input, savedAnchor)
-      if (Option.isSome(explicitBlock)) {
-        const sessionId = Option.orElse(
-          Option.filter(Option.fromUndefinedOr(input.rexSession), (s) => s.length > 0),
-          () => Option.map(anchor, (a) => a.session),
-        )
-        if (Option.isNone(sessionId)) {
-          return yield* new WorkerRejected({
-            reason: "Cannot target an existing block without a Rex session id (pass rexSession or bind a Rex pane).",
-          })
-        }
-        return { rexSessionId: sessionId.value, blockId: explicitBlock.value, ownedBlock: false }
-      }
-      if (Option.isNone(anchor)) {
-        return yield* new WorkerRejected({
-          reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
+      const out = yield* runToolBounded(
+        askDeadline,
+        Effect.gen(function* () {
+          const entry = yield* getOrSpawnActor(id, initialSawWorking, knownWorker)
+          const reply = yield* Deferred.make<PaneWorker, ModelError>()
+          yield* offerMsg(entry.mailbox, makeMsg(reply))
+          return yield* Deferred.await(reply)
+        }),
+      )
+      if (out._tag === "Succeeded") return out.value
+      if (out._tag === "Failed") return yield* out.error
+      if (out._tag === "TimedOut") {
+        return yield* new ToolTimedOut({
+          operation,
+          workerId: id,
+          deadlineMs: out.deadlineMs,
+          message: `Pane worker ${operation} timed out after ${out.deadlineMs}ms`,
         })
       }
-      const command = adapter.command(
-        buildStartOptions(input.harness, resolvedAddDirs, skipPermissions, config.binaryOverrides),
-      )
-      const blockId = yield* rex.splitRight({
-        sessionId: anchor.value.session,
-        anchorBlockId: anchor.value.block,
-        label: `${input.harness}:${unit}`.slice(0, 48),
-        command,
-        cwd: resolvedCwd,
-      })
-      return { rexSessionId: anchor.value.session, blockId, ownedBlock: true }
+      return yield* new WorkerCrashed({ workerId: id, message: out.defect })
     })
 
-    const start = Effect.fn("PaneAgent.start")(function* (input: StartInput) {
+    const nudgeProbe = (id: string) =>
+      Effect.forkIn(
+        Effect.gen(function* () {
+          const entry = yield* getOrSpawnActor(id, true).pipe(Effect.option)
+          if (Option.isNone(entry)) return
+          if (entry.value.probePending) return
+          const size = yield* Queue.size(entry.value.mailbox)
+          if (size >= MAILBOX_CAPACITY - 4) return
+          yield* Queue.offer(entry.value.mailbox, ActorMessage.CmdNudgeProbe())
+        }).pipe(Effect.catchDefect(() => Effect.void)),
+        scope,
+      ).pipe(Effect.asVoid)
+
+    const start = Effect.fn("PaneAgent.start")(function* (input: StartInput): Effect.fn.Return<PaneWorker, ModelError> {
       const adapter = adapterFor(input.harness)
-      const snapshot = yield* store.read()
-      const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
+      const explicitBlock = Option.filter(Option.fromUndefinedOr(input.blockId), (b) => b.length > 0)
+      const explicitSession = Option.filter(Option.fromUndefinedOr(input.rexSession), (s) => s.length > 0)
+      const explicitAnchor = resolveAnchor(input, Option.none())
+
+      let savedAnchor: Option.Option<PaneAnchor> = Option.none()
+      if (Option.isNone(explicitAnchor) && !(Option.isSome(explicitBlock) && Option.isSome(explicitSession))) {
+        const snapshot = yield* boundedStoreRead("*")
+        savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
+      }
+      const anchor = resolveAnchor(input, savedAnchor)
+
       const resolvedCwd = Option.getOrElse(Option.fromUndefinedOr(input.cwd), () => input.directory)
       const resolvedAddDirs = computeAddDirs(resolvedCwd, input.resultFile, input.addDirs)
       const skipPermissions = input.skipPermissions !== false
       const { role, unit } = parseDescription(input.description)
       const now = yield* Clock.currentTimeMillis
-      const id = yield* makeWorkerId()
-      const opened = yield* openOrSelectPane(
-        input,
-        adapter,
-        unit,
-        resolvedCwd,
-        resolvedAddDirs,
-        skipPermissions,
-        savedAnchor,
-      )
-
+      const id = yield* makeRandomToken("pa")
       const brief = taskBrief({ prompt: input.prompt, resultFile: input.resultFile })
+
+      let rexSessionId = ""
+      let blockId = ""
+      let ownedBlock = true
+      const outbox: Array<DurableIntent> = []
+
+      if (Option.isSome(explicitBlock)) {
+        const sessionId = Option.orElse(explicitSession, () => Option.map(anchor, (a) => a.session))
+        if (Option.isNone(sessionId)) {
+          return yield* new WorkerRejected({
+            reason: "Cannot target an existing block without a Rex session id (pass rexSession or bind a Rex pane).",
+          })
+        }
+        rexSessionId = sessionId.value
+        blockId = explicitBlock.value
+        ownedBlock = false
+      } else {
+        if (Option.isNone(anchor)) {
+          return yield* new WorkerRejected({
+            reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
+          })
+        }
+        rexSessionId = anchor.value.session
+        const command = adapter.command(
+          buildStartOptions(input.harness, resolvedAddDirs, skipPermissions, config.binaryOverrides),
+        )
+        const reqId = yield* makeRandomToken("rq")
+        const intentId = yield* makeRandomToken("sp")
+        const splitIntent = SplitPaneIntent.make({
+          intentId,
+          reqId,
+          ownerProc: procId,
+          sessionId: anchor.value.session,
+          anchorBlockId: anchor.value.block,
+          label: splitLabelFor(input.harness, unit, reqId),
+          command: [...command],
+          cwd: resolvedCwd,
+          forRestart: false,
+          dispatched: false,
+          attempt: 1,
+          createdAt: now,
+        })
+        outbox.push(splitIntent)
+      }
+
       const starting: PaneWorker = {
         id,
         parentSessionID: input.parentSessionID,
         directory: input.directory,
         cwd: resolvedCwd,
-        addDirs: resolvedAddDirs,
+        addDirs: [...resolvedAddDirs],
         skipPermissions,
         harness: input.harness,
         role,
         unit,
-        rexSessionId: opened.rexSessionId,
-        blockId: opened.blockId,
-        ownedBlock: opened.ownedBlock,
+        rexSessionId,
+        blockId,
+        ownedBlock,
         resultFile: input.resultFile,
         state: "starting",
         update: `starting ${input.harness} in Rex pane`,
@@ -1243,37 +2343,100 @@ const makeModel = (config: ModelConfig = {}) =>
         notifiedTurn: 0,
         revision: 0,
         activeTurnTyped: false,
+        outbox,
         pendingTurns: [{ turn: 1, brief, resultFile: input.resultFile, mode: "submit", queuedAt: now }],
         pendingWakes: [],
         deliveredWakes: [],
         startedAt: now,
         updatedAt: now,
       }
-      const created = yield* casPersist(starting, starting)
-      const mailbox = yield* actorCreateLock.withPermits(1)(spawnActor(created, false))
-      const reply = yield* Deferred.make<PaneWorker, ModelError>()
-      yield* offerMsg(mailbox, ActorMessage.CmdAwaitStart({ reply }))
-      return yield* Deferred.await(reply)
+      const created = yield* boundedUpsert(starting, 0)
+      yield* actorCreateLock.withPermits(1)(spawnActor(created, false))
+      return created
     })
 
     const followUp = Effect.fn("PaneAgent.followUp")(function* (input: FollowUpInput) {
-      return yield* askActor(input.id, (reply) => ActorMessage.CmdFollowUp({ input, reply }))
+      return yield* askActor(input.id, "follow_up", (reply) => ActorMessage.CmdFollowUp({ input, reply }))
     })
 
-    const restart = Effect.fn("PaneAgent.restart")(function* (input: RestartInput) {
-      return yield* askActor(input.id, (reply) => ActorMessage.CmdRestart({ input, reply }))
+    const restart = Effect.fn("PaneAgent.restart")(function* (input: RestartInput): Effect.fn.Return<PaneWorker, ModelError> {
+      const out = yield* runToolBounded(
+        askDeadline,
+        Effect.gen(function* () {
+          const explicitAnchor = resolveAnchor(input, Option.none())
+          let anchor = explicitAnchor
+          if (Option.isNone(anchor)) {
+            const snapshot = yield* boundedStoreRead(input.id)
+            const savedAnchor = Option.fromUndefinedOr(snapshot.anchors[input.parentSessionID])
+            anchor = resolveAnchor(input, savedAnchor)
+          }
+          if (Option.isNone(anchor)) {
+            return yield* new WorkerRejected({
+              reason: "No Rex pane anchor is known for this session; open OpenCode inside Rex or pass rexSession and rexBlock.",
+            })
+          }
+          const resolvedAnchor = anchor.value
+          return yield* askActor(input.id, "restart", (reply) =>
+            ActorMessage.CmdRestart({ input, anchor: resolvedAnchor, reply }),
+          )
+        }),
+      )
+      if (out._tag === "Succeeded") return out.value
+      if (out._tag === "Failed") return yield* out.error
+      if (out._tag === "TimedOut") {
+        return yield* new ToolTimedOut({
+          operation: "restart",
+          workerId: input.id,
+          deadlineMs: out.deadlineMs,
+          message: `Pane worker restart timed out after ${out.deadlineMs}ms`,
+        })
+      }
+      return yield* new WorkerCrashed({ workerId: input.id, message: out.defect })
     })
 
     const stop = Effect.fn("PaneAgent.stop")(function* (input: StopInput) {
-      return yield* askActor(input.id, (reply) => ActorMessage.CmdStop({ input, reply }))
+      return yield* askActor(input.id, "stop", (reply) => ActorMessage.CmdStop({ input, reply }))
     })
 
-    const status = Effect.fn("PaneAgent.status")(function* (parentSessionID: string, id: string) {
-      return yield* askActor(id, (reply) => ActorMessage.CmdStatus({ parentSessionID, reply }))
+    const status = Effect.fn("PaneAgent.status")(function* (
+      parentSessionID: string,
+      id: string,
+    ): Effect.fn.Return<PaneWorker, ModelError> {
+      const map = yield* Ref.get(actors)
+      let worker: PaneWorker
+      if (map.has(id)) {
+        worker = yield* askActor(id, "status", (reply) => ActorMessage.CmdStatus({ parentSessionID, reply }))
+      } else {
+        const snap = yield* boundedStoreRead(id)
+        const found = Arr.findFirst(snap.workers, (w) => w.id === id)
+        if (Option.isNone(found)) {
+          return yield* new WorkerRejected({ reason: `No pane worker found with id ${id}.` })
+        }
+        if (found.value.parentSessionID !== parentSessionID) {
+          return yield* new WorkerRejected({ reason: `Pane worker ${id} belongs to another session.` })
+        }
+        worker = found.value
+      }
+
+      const expectsPane =
+        worker.blockId.length > 0 &&
+        worker.state !== "stopped" &&
+        worker.state !== "pane_gone" &&
+        worker.state !== "failed"
+      if (!expectsPane) return worker
+
+      const tailOut = yield* runBounded(tailDeadline, rex.readTail(targetOf(worker), TAIL_BYTES))
+      if (tailOut._tag === "Succeeded") {
+        return { ...worker, lastLines: shortLines(tailOut.value) }
+      }
+      if (tailOut._tag === "Failed" && tailOut.error._tag === "RexPaneGone") {
+        yield* nudgeProbe(id)
+      }
+      return worker
     })
 
     const list = Effect.fn("PaneAgent.list")(function* (parentSessionID: string) {
-      const snapshot = yield* store.read()
+      const snapshot = yield* boundedStoreRead("*")
       return snapshot.workers.filter((worker) => worker.parentSessionID === parentSessionID)
     })
 
@@ -1283,25 +2446,70 @@ const makeModel = (config: ModelConfig = {}) =>
     })
 
     const bindPane = Effect.fn("PaneAgent.bindPane")(function* (sessionID: string, anchor: PaneAnchor) {
-      yield* store.saveAnchor(sessionID, anchor)
+      const out = yield* runBounded(storeDeadline, store.saveAnchor(sessionID, anchor))
+      if (out._tag === "Succeeded") return
+      if (out._tag === "Failed") return yield* out.error
+      if (out._tag === "TimedOut") {
+        return yield* new ToolTimedOut({
+          operation: "bindPane",
+          workerId: "*",
+          deadlineMs: out.deadlineMs,
+          message: `saveAnchor timed out after ${out.deadlineMs}ms`,
+        })
+      }
+      return yield* new WorkerCrashed({ workerId: "*", message: out.defect })
     })
 
     const needsReattach = (worker: PaneWorker): boolean =>
       needsPaneWork(worker) || pendingWakesOf(worker).length > 0 || hasUndeliveredWakes(worker)
 
-    const reattach = Effect.fn("PaneAgent.reattach")(function* (directory: string) {
-      const snapshot = yield* store.read()
-      const candidates = snapshot.workers.filter((worker) => worker.directory === directory && needsReattach(worker))
-      const resultsOut: Array<PaneWorker> = []
-      for (const worker of candidates) {
-        const next = yield* askActor(
-          worker.id,
-          (reply) => ActorMessage.CmdReattach({ reply }),
-          activeTurnTypedOf(worker),
-        )
-        resultsOut.push(next)
+    const retryReattachInBackground = (directory: string) =>
+      Effect.forkIn(
+        Effect.gen(function* () {
+          for (let attempt = 0; attempt < 5; attempt++) {
+            yield* pauseFor(Duration.max(Duration.millis(20), retryDelay))
+            const snapOut = yield* runBounded(storeDeadline, store.read())
+            if (snapOut._tag !== "Succeeded") continue
+            const candidates = snapOut.value.workers.filter((w) => w.directory === directory && needsReattach(w))
+            yield* Effect.forEach(
+              candidates,
+              (worker) =>
+                askActor(
+                  worker.id,
+                  "reattach",
+                  (reply) => ActorMessage.CmdReattach({ reply }),
+                  activeTurnTypedOf(worker),
+                  Option.some(worker),
+                ).pipe(Effect.option),
+              { concurrency: 16 },
+            )
+            return
+          }
+        }).pipe(Effect.catchDefect(() => Effect.void)),
+        scope,
+      ).pipe(Effect.asVoid)
+
+    const reattach = Effect.fn("PaneAgent.reattach")(function* (directory: string): Effect.fn.Return<ReadonlyArray<PaneWorker>, ModelError> {
+      const snapRes = yield* Effect.result(boundedStoreRead("*"))
+      if (snapRes._tag === "Failure") {
+        yield* retryReattachInBackground(directory)
+        return yield* snapRes.failure
       }
-      return resultsOut
+      const snapshot = snapRes.success
+      const candidates = snapshot.workers.filter((worker) => worker.directory === directory && needsReattach(worker))
+      const resultsOut = yield* Effect.forEach(
+        candidates,
+        (worker) =>
+          askActor(
+            worker.id,
+            "reattach",
+            (reply) => ActorMessage.CmdReattach({ reply }),
+            activeTurnTypedOf(worker),
+            Option.some(worker),
+          ).pipe(Effect.option),
+        { concurrency: 16 },
+      )
+      return resultsOut.flatMap((item) => Option.toArray(item))
     })
 
     return PaneAgentModel.of({

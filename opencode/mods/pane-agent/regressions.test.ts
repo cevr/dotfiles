@@ -13,7 +13,7 @@ import {
 } from "./memory/doubles.ts"
 import * as Model from "./model.ts"
 import { RexCallFailed, RexClient } from "./service.ts"
-import type { StoreSnapshot } from "./worker.ts"
+import type { PaneWorker, StoreSnapshot } from "./worker.ts"
 
 const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
   Effect.gen(function* () {
@@ -22,6 +22,23 @@ const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
       yield* Effect.yieldNow
     }
     return false
+  })
+
+const waitForWorker = (
+  store: Ref.Ref<StoreSnapshot>,
+  id: string,
+  pred: (w: PaneWorker) => boolean,
+  maxSteps = 400,
+) =>
+  Effect.gen(function* () {
+    for (let step = 0; step < maxSteps; step++) {
+      const snap = yield* Ref.get(store)
+      const found = snap.workers.find((w) => w.id === id)
+      if (found && pred(found)) return found
+      yield* Effect.yieldNow
+    }
+    const snap = yield* Ref.get(store)
+    return snap.workers.find((w) => w.id === id)
   })
 
 const FAST: Model.ModelConfig = {
@@ -64,16 +81,19 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME, WORKING_FRAME] })
       const started = yield* h.model.start(BASE)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      const blockId = running?.blockId ?? ""
+      const startedAt = running?.startedAt ?? started.startedAt
 
       // Placeholder written while pane still shows esc to cancel
-      yield* h.results.put(BASE.resultFile, "scratch", started.startedAt + 1)
+      yield* h.results.put(BASE.resultFile, "scratch", startedAt + 1)
       yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length > 0)), 40)
       const prematureWakes = yield* Ref.get(h.notifier.wakes)
       expect(prematureWakes).toHaveLength(0)
 
       // Final answer written, then harness finishes and goes idle across waitForQuiet
-      yield* h.results.put(BASE.resultFile, "pane-agent", started.startedAt + 2)
-      yield* h.rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* h.results.put(BASE.resultFile, "pane-agent", startedAt + 2)
+      yield* h.rex.setScreens(blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
       const woke = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length > 0)))
       expect(woke).toBe(true)
 
@@ -93,7 +113,8 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
       for (const frame of [TRUST_FRAME, PERMISSION_FRAME]) {
         const h = yield* makeHarness({ defaultScreens: [frame, frame, frame] })
         const started = yield* h.model.start(BASE)
-        expect(started.state).toBe("needs_input")
+        const blocked = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "needs_input" && w.blockId.length > 0)
+        expect(blocked?.state).toBe("needs_input")
 
         const afterFollow = yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "next-queued" })
         const afterSteer = yield* h.model.followUp({
@@ -109,7 +130,7 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
         expect(writesWhileBlocked).toEqual([])
 
         // Once human clears the prompt, first task is typed first (never dropped!)
-        yield* h.rex.setScreens(started.blockId, [READY_FRAME, WORKING_FRAME, WORKING_FRAME])
+        yield* h.rex.setScreens(blocked?.blockId ?? "", [READY_FRAME, WORKING_FRAME, WORKING_FRAME])
         const typedFirst = yield* waitFor(
           Ref.get(h.rex.state).pipe(Effect.map((s) => (s.panes[0]?.writes.length ?? 0) > 0)),
         )
@@ -127,6 +148,9 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
       const started = yield* h.model.start(BASE)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      const blockId = running?.blockId ?? ""
+      const startedAt = running?.startedAt ?? started.startedAt
 
       // Persistent transient Rex outage exceeds maxTransientErrors -> surfaces distinct rex_unreachable (NEVER pane_gone)
       yield* Ref.update(h.rex.state, (s) => ({
@@ -144,6 +168,7 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
       expect(statusDuringOutage.state).toBe("rex_unreachable")
       expect(statusDuringOutage.state).not.toBe("pane_gone")
 
+      yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 1)))
       const wakesDuringOutage = yield* Ref.get(h.notifier.wakes)
       expect(wakesDuringOutage).toHaveLength(1)
       expect(wakesDuringOutage[0]?.letter.text).toContain('state="rex_unreachable"')
@@ -151,8 +176,8 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
 
       // Rex recovers and turn completes cleanly
       yield* Ref.update(h.rex.state, (s) => ({ ...s, failWith: Option.none() }))
-      yield* h.results.put(BASE.resultFile, "recovered-answer", started.startedAt + 10)
-      yield* h.rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* h.results.put(BASE.resultFile, "recovered-answer", startedAt + 10)
+      yield* h.rex.setScreens(blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
       const woke = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 2)))
       expect(woke).toBe(true)
 
@@ -258,8 +283,12 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
       const started = yield* h.model.start({ ...BASE, skipPermissions: false })
-      yield* h.rex.setAlive(started.blockId, false)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      yield* h.rex.setAlive(running?.blockId ?? "", false)
+      yield* h.model.status("ses_p", started.id)
+      yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone")
       yield* h.model.restart({ parentSessionID: "ses_p", id: started.id })
+      yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
       const splits = (yield* Ref.get(h.rex.state)).splits
       expect(splits).toHaveLength(2)
       expect(splits[0]?.command).not.toContain("--dangerously-skip-permissions")
@@ -288,9 +317,11 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
           const model = Context.get(services, Model.PaneAgentModel)
           yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
           const started = yield* model.start(BASE)
-          expect(started.state).toBe("needs_input")
+          const blocked = yield* waitForWorker(store.state, started.id, (w) => w.state === "needs_input" && w.blockId.length > 0)
+          yield* waitFor(Ref.get(notifier.wakes).pipe(Effect.map((w) => w.length >= 1)))
+          expect(blocked?.state).toBe("needs_input")
           workerId = started.id
-          blockId = started.blockId
+          blockId = blocked?.blockId ?? ""
         }),
       )
 
@@ -326,6 +357,9 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME, WORKING_FRAME] })
       const started = yield* h.model.start(BASE)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      const blockId = running?.blockId ?? ""
+      const startedAt = running?.startedAt ?? started.startedAt
 
       // Queue follow-up while turn 1 is still running (even reusing same resultFile!)
       yield* h.model.followUp({
@@ -340,8 +374,8 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
       expect(writesDuringT1).not.toContain("Second turn task.")
 
       // Turn 1 writes its answer and goes idle
-      yield* h.results.put(BASE.resultFile, "answer-turn-1", started.startedAt + 10)
-      yield* h.rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* h.results.put(BASE.resultFile, "answer-turn-1", startedAt + 10)
+      yield* h.rex.setScreens(blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
 
       const t1Done = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 1)))
       expect(t1Done).toBe(true)
@@ -357,13 +391,12 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
       expect(t2Typed).toBe(true)
 
       // Turn 2 finishes without prematurely grabbing turn 1's result file
-      const snapAfterT2Typed = yield* Ref.get(h.store.state)
-      const workerT2 = snapAfterT2Typed.workers.find((w) => w.id === started.id)
+      const workerT2 = yield* waitForWorker(h.store.state, started.id, (w) => w.turn === 2 && w.state === "working")
       expect(workerT2?.turn).toBe(2)
       expect(workerT2?.resultFile).not.toBe(BASE.resultFile)
 
       yield* h.results.put(workerT2?.resultFile ?? "", "answer-turn-2", (workerT2?.startedAt ?? 0) + 10)
-      yield* h.rex.setScreens(started.blockId, [WORKING_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* h.rex.setScreens(blockId, [WORKING_FRAME, DONE_FRAME, DONE_FRAME])
 
       const t2Done = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 2)))
       expect(t2Done).toBe(true)
@@ -410,11 +443,12 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
       const model = Context.get(services, Model.PaneAgentModel)
       yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
       const started = yield* model.start(BASE)
+      const running = yield* waitForWorker(store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
 
       // Let watcher observe WORKING_FRAME at least once, then arm the ConfirmIdle waitForQuiet gate.
       yield* waitFor(Effect.succeed(false), 5)
       yield* Ref.set(armed, true)
-      yield* rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* rex.setScreens(running?.blockId ?? "", [DONE_FRAME, DONE_FRAME, DONE_FRAME])
       const isBlocked = yield* waitFor(Ref.get(blocked), 400)
       expect(isBlocked).toBe(true)
 
@@ -429,6 +463,11 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
       )
       expect(typedSecond).toBe(true)
 
+      const gotTurn1Wake = yield* waitFor(
+        Ref.get(notifier.wakes).pipe(Effect.map((w) => w.some((item) => item.letter.text.includes('turn="1"')))),
+        400,
+      )
+      expect(gotTurn1Wake).toBe(true)
       const wakesAfterT1 = yield* Ref.get(notifier.wakes)
       expect(wakesAfterT1.some((w) => w.letter.text.includes('turn="1"'))).toBe(true)
     }).pipe(Effect.scoped),
@@ -440,28 +479,32 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
       const started = yield* h.model.start(BASE)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
       yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "QUEUED-AFTER-RESTART" })
 
       // Pane vanishes before QUEUED-AFTER-RESTART is typed
-      yield* h.rex.setAlive(started.blockId, false)
-      const gone = yield* h.model.status("ses_p", started.id)
-      expect(gone.state).toBe("pane_gone")
-      expect(gone.pendingTurns?.length).toBe(1)
+      yield* h.rex.setAlive(running?.blockId ?? "", false)
+      yield* h.model.status("ses_p", started.id)
+      const gone = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone")
+      expect(gone?.state).toBe("pane_gone")
+      expect(gone?.pendingTurns?.length).toBe(1)
 
       // Restart resumes the vanished turn AND preserves QUEUED-AFTER-RESTART
-      const restarted = yield* h.model.restart({
+      yield* h.model.restart({
         parentSessionID: "ses_p",
         id: started.id,
         prompt: "Resume vanished work.",
       })
-      expect(restarted.pendingTurns?.length).toBe(1)
+      const restarted = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      expect(restarted?.pendingTurns?.length).toBe(1)
 
       // Once resumed turn finishes, QUEUED-AFTER-RESTART is typed into the new pane!
-      yield* h.rex.setScreens(restarted.blockId, [WORKING_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME, READY_FRAME, READY_FRAME])
+      const restartedBlock = restarted?.blockId ?? ""
+      yield* h.rex.setScreens(restartedBlock, [WORKING_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME, READY_FRAME, READY_FRAME])
       const typedQueued = yield* waitFor(
         Ref.get(h.rex.state).pipe(
           Effect.map((s) => {
-            const newPane = s.panes.find((p) => p.blockId === restarted.blockId)
+            const newPane = s.panes.find((p) => p.blockId === restartedBlock)
             return (newPane?.writes.join("") ?? "").includes("QUEUED-AFTER-RESTART")
           }),
         ),
@@ -492,9 +535,11 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
           const model = Context.get(services, Model.PaneAgentModel)
           yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
           const started = yield* model.start(BASE)
-          expect(started.state).toBe("needs_input")
+          const blocked = yield* waitForWorker(store.state, started.id, (w) => w.state === "needs_input" && w.blockId.length > 0)
+          yield* waitFor(Ref.get(notifier.wakes).pipe(Effect.map((w) => w.length >= 1)))
+          expect(blocked?.state).toBe("needs_input")
           workerId = started.id
-          blockId = started.blockId
+          blockId = blocked?.blockId ?? ""
 
           // Pane vanishes while needs_input wake is STILL undelivered -> pane_gone wake must queue AFTER it, not replace it!
           yield* rex.setAlive(blockId, false)
@@ -539,13 +584,16 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
       const model = Context.get(services, Model.PaneAgentModel)
       yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
       const started = yield* model.start(BASE)
+      const running = yield* waitForWorker(store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      const blockId = running?.blockId ?? ""
+      const startedAt = running?.startedAt ?? started.startedAt
 
       // Queue turn 2 while turn 1 runs
       yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "TURN-2-MUST-RUN" })
 
       // Turn 1 finishes; its wake fails repeatedly -> MUST NOT block turn 2 from being typed!
-      yield* results.put(BASE.resultFile, "turn-1-answer", started.startedAt + 10)
-      yield* rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* results.put(BASE.resultFile, "turn-1-answer", startedAt + 10)
+      yield* rex.setScreens(blockId, [DONE_FRAME, DONE_FRAME, READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME])
 
       const turn2Typed = yield* waitFor(
         Ref.get(rex.state).pipe(Effect.map((s) => (s.panes[0]?.writes.join("") ?? "").includes("TURN-2-MUST-RUN"))),
@@ -669,10 +717,16 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
         const model = Context.get(services, Model.PaneAgentModel)
         yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
         const started = yield* model.start({ ...BASE, prompt: `TURN1-RUN-${idx}` })
+        const ready = yield* waitForWorker(
+          store.state,
+          started.id,
+          (w) => w.blockId.length > 0 && (w.state === "working" || w.state === "needs_input"),
+        )
+        const blockId = ready?.blockId ?? ""
 
         // Arm the chosen I/O gate and fire two concurrent follow-ups right while the actor's paneIo is blocked
         yield* Ref.set(armed, true)
-        const gatedReached = yield* waitFor(Ref.get(hitGate), 100)
+        const gatedReached = yield* waitFor(Ref.get(hitGate), 200)
         expect(gatedReached).toBe(true)
 
         yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: `FOLLOW-A-${idx}` })
@@ -701,7 +755,7 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
         if (withPrompt) {
           drainScreens = [READY_FRAME, WORKING_FRAME, ...drainScreens]
         }
-        yield* rex.setScreens(started.blockId, drainScreens)
+        yield* rex.setScreens(blockId, drainScreens)
 
         const allTyped = yield* waitFor(
           Ref.get(rex.state).pipe(

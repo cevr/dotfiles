@@ -103,4 +103,26 @@ describe("agy harness adapter", () => {
   test("reads the last answer from a completed frame", () => {
     expect(agyAdapter.readLastAnswer(DONE_FRAME)).toBe("pong")
   })
+
+  test("detects Antigravity usage-limit quota frame with Go duration and excludes it from ready/turnEnded", () => {
+    const limitFrame = [
+      "",
+      "  Antigravity CLI 1.5.16",
+      "",
+      "  Individual quota reached for Gemini 4 Neon. Resets in 1h8m38s.",
+      "────────────────────────────────────────────────────────────────────────────────",
+      "> ",
+      "────────────────────────────────────────────────────────────────────────────────",
+      "? for shortcuts                                      auto · Gemini 4 Neon · high",
+    ].join("\n")
+    const detected = agyAdapter.usageLimit(limitFrame, 10_000)
+    expect(Option.isSome(detected)).toBe(true)
+    if (Option.isSome(detected)) {
+      expect(detected.value.resetInMs).toBe((3600 + 8 * 60 + 38) * 1000)
+      expect(detected.value.resetAt).toBe(10_000 + (3600 + 8 * 60 + 38) * 1000)
+    }
+    expect(agyAdapter.readyForInput(limitFrame)).toBe(false)
+    expect(agyAdapter.turnEnded(limitFrame)).toBe(false)
+    expect(Option.isNone(agyAdapter.usageLimit(DONE_FRAME, 10_000))).toBe(true)
+  })
 })

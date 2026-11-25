@@ -3,6 +3,7 @@ import { StoreConflict, StoreFailed, WorkerStore } from "../service.ts"
 import {
   EMPTY_SNAPSHOT,
   isLive,
+  outboxOf,
   PaneAnchor,
   PaneWorker,
   pendingWakesOf,
@@ -12,6 +13,7 @@ import {
 } from "../worker.ts"
 
 const MAX_ENDED_WORKERS = 200
+const EMPTY_QUARANTINED: ReadonlyArray<unknown> = []
 
 const RawEnvelope = Schema.Struct({
   version: Schema.optionalKey(Schema.Int),
@@ -21,14 +23,15 @@ const RawEnvelope = Schema.Struct({
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(RawEnvelope))
 const decodeWorkerOpt = Schema.decodeUnknownOption(PaneWorker)
-const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(StoreSnapshot))
+const encodeWorker = Schema.encodeSync(PaneWorker)
+const encodeEnvelope = Schema.encodeEffect(Schema.fromJsonString(RawEnvelope))
 
 const storeFailure = (operation: string, cause: { readonly message: string }) =>
   new StoreFailed({ operation, message: cause.message })
 
 const mustRetain = (worker: PaneWorker): boolean => {
   const turns = Option.getOrElse(Option.fromUndefinedOr(worker.pendingTurns), () => [])
-  return isLive(worker.state) || turns.length > 0 || pendingWakesOf(worker).length > 0
+  return isLive(worker.state) || turns.length > 0 || outboxOf(worker).length > 0 || pendingWakesOf(worker).length > 0
 }
 
 const pruneEndedWorkers = (workers: ReadonlyArray<PaneWorker>): ReadonlyArray<PaneWorker> => {
@@ -57,9 +60,9 @@ export const layer = (file: string) =>
       const seq = yield* Ref.make(0)
       const instanceToken = (yield* Random.nextIntBetween(0x100000, 0xffffff)).toString(36)
 
-      const readRaw = Effect.fn("FileWorkerStore.readRaw")(function* () {
+      const readEnvelope = Effect.fn("FileWorkerStore.readEnvelope")(function* () {
         const exists = yield* fs.exists(file).pipe(Effect.mapError((cause) => storeFailure("exists", cause)))
-        if (!exists) return EMPTY_SNAPSHOT
+        if (!exists) return { snapshot: EMPTY_SNAPSHOT, quarantined: EMPTY_QUARANTINED }
         const text = yield* fs.readFileString(file).pipe(Effect.mapError((cause) => storeFailure("read", cause)))
         const env = yield* decodeEnvelope(text).pipe(Effect.mapError((cause) => storeFailure("decode", cause)))
         const ver = Option.getOrElse(Option.fromUndefinedOr(env.version), () => 1)
@@ -70,22 +73,29 @@ export const layer = (file: string) =>
           })
         }
         const workers: Array<PaneWorker> = []
+        const quarantined: Array<unknown> = []
         for (const entry of env.workers) {
           const decoded = decodeWorkerOpt(entry)
           if (Option.isSome(decoded)) {
             workers.push(decoded.value)
+          } else {
+            quarantined.push(entry)
           }
         }
-        return { version: STORE_VERSION, workers, anchors: env.anchors }
+        return { snapshot: { version: STORE_VERSION, workers, anchors: env.anchors }, quarantined }
       })
 
-      const writeRaw = Effect.fn("FileWorkerStore.writeRaw")(function* (snapshot: StoreSnapshot) {
-        const versioned: StoreSnapshot = {
+      const writeRaw = Effect.fn("FileWorkerStore.writeRaw")(function* (
+        snapshot: StoreSnapshot,
+        quarantined: ReadonlyArray<unknown>,
+      ) {
+        const retained = pruneEndedWorkers(snapshot.workers)
+        const rawWorkers: ReadonlyArray<unknown> = [...retained.map((w) => encodeWorker(w)), ...quarantined]
+        const encoded = yield* encodeEnvelope({
           version: STORE_VERSION,
-          workers: pruneEndedWorkers(snapshot.workers),
+          workers: rawWorkers,
           anchors: snapshot.anchors,
-        }
-        const encoded = yield* encodeSnapshot(versioned).pipe(Effect.mapError((cause) => storeFailure("encode", cause)))
+        }).pipe(Effect.mapError((cause) => storeFailure("encode", cause)))
         const dir = path.dirname(file)
         yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.mapError((cause) => storeFailure("mkdir", cause)))
         const nextSeq = yield* Ref.updateAndGet(seq, (n) => n + 1)
@@ -95,11 +105,18 @@ export const layer = (file: string) =>
       })
 
       const read = Effect.fn("FileWorkerStore.read")(function* () {
-        return yield* lock.withPermits(1)(readRaw())
+        return yield* lock.withPermits(1)(Effect.map(readEnvelope(), (res) => res.snapshot))
       })
 
       const write = Effect.fn("FileWorkerStore.write")(function* (snapshot: StoreSnapshot) {
-        return yield* lock.withPermits(1)(writeRaw(snapshot))
+        return yield* lock.withPermits(1)(
+          Effect.gen(function* () {
+            const existing = yield* readEnvelope().pipe(
+              Effect.orElseSucceed(() => ({ snapshot: EMPTY_SNAPSHOT, quarantined: EMPTY_QUARANTINED })),
+            )
+            yield* writeRaw(snapshot, existing.quarantined)
+          }),
+        )
       })
 
       const upsertWorker = Effect.fn("FileWorkerStore.upsertWorker")(function* (
@@ -108,7 +125,7 @@ export const layer = (file: string) =>
       ) {
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
-            const current = yield* readRaw()
+            const { snapshot: current, quarantined } = yield* readEnvelope()
             const existing = Arr.findFirst(current.workers, (item) => item.id === worker.id)
             const actualRevision = Option.match(existing, {
               onNone: () => 0,
@@ -130,7 +147,7 @@ export const layer = (file: string) =>
               anchors: current.anchors,
               workers: [...others, stamped],
             }
-            yield* writeRaw(next)
+            yield* writeRaw(next, quarantined)
             return next
           }),
         )
@@ -139,13 +156,13 @@ export const layer = (file: string) =>
       const saveAnchor = Effect.fn("FileWorkerStore.saveAnchor")(function* (sessionID: string, anchor: PaneAnchor) {
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
-            const current = yield* readRaw()
+            const { snapshot: current, quarantined } = yield* readEnvelope()
             const next: StoreSnapshot = {
               version: STORE_VERSION,
               workers: current.workers,
               anchors: { ...current.anchors, [sessionID]: anchor },
             }
-            yield* writeRaw(next)
+            yield* writeRaw(next, quarantined)
             return next
           }),
         )

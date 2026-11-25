@@ -24,6 +24,23 @@ const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
     return false
   })
 
+const waitForWorker = (
+  store: Ref.Ref<StoreSnapshot>,
+  id: string,
+  pred: (w: PaneWorker) => boolean,
+  maxSteps = 400,
+) =>
+  Effect.gen(function* () {
+    for (let step = 0; step < maxSteps; step++) {
+      const snap = yield* Ref.get(store)
+      const found = snap.workers.find((w) => w.id === id)
+      if (found && pred(found)) return found
+      yield* Effect.yieldNow
+    }
+    const snap = yield* Ref.get(store)
+    return snap.workers.find((w) => w.id === id)
+  })
+
 const FAST_CONFIG: Model.ModelConfig = {
   quietFor: Duration.millis(5),
   pollTimeout: Duration.millis(15),
@@ -69,7 +86,10 @@ describe("PaneAgentModel", () => {
         resultFile: "/nonexistent/run/result.md",
       })
 
-      expect(started.state).toBe("working")
+      expect(started.state).toBe("starting")
+      expect(started.blockId).toBe("")
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      expect(running?.state).toBe("working")
       expect(started.harness).toBe("agy")
       expect(started.ownedBlock).toBe(true)
       expect(started.cwd).toBe("/nonexistent/lane")
@@ -94,8 +114,9 @@ describe("PaneAgentModel", () => {
       expect(written).toContain("\x1b[200~")
       expect(written).toContain("\r")
 
-      yield* h.results.put("/nonexistent/run/result.md", "Head: abc123\npane-agent r1: ready", started.startedAt + 50)
-      yield* h.rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      const blockId = running?.blockId ?? ""
+      yield* h.results.put("/nonexistent/run/result.md", "Head: abc123\npane-agent r1: ready", (running?.startedAt ?? started.startedAt) + 50)
+      yield* h.rex.setScreens(blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
       const settled = yield* waitFor(
         Ref.get(h.notifier.wakes).pipe(Effect.map((wakes) => wakes.length > 0)),
       )
@@ -148,17 +169,19 @@ describe("PaneAgentModel", () => {
         prompt: "Do the check.",
         resultFile: "/nonexistent/run/trust.md",
       })
-      expect(started.state).toBe("needs_input")
-      expect(started.lastLines).toContain("Do you trust the contents of this project?")
+      const blocked = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "needs_input" && w.blockId.length > 0)
+      expect(blocked?.state).toBe("needs_input")
+      expect(blocked?.lastLines).toContain("Do you trust the contents of this project?")
 
       const beforeResolve = yield* Ref.get(h.rex.state)
       expect(beforeResolve.panes[0]?.writes).toEqual([])
 
+      yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((wakes) => wakes.length >= 1)))
       const wakes1 = yield* Ref.get(h.notifier.wakes)
       expect(wakes1).toHaveLength(1)
       expect(wakes1[0]?.letter.text).toContain('state="needs_input"')
 
-      yield* h.rex.setScreens(started.blockId, [READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME])
+      yield* h.rex.setScreens(blocked?.blockId ?? "", [READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME])
       const finished = yield* waitFor(
         Ref.get(h.notifier.wakes).pipe(Effect.map((wakes) => wakes.length >= 2)),
       )
@@ -222,6 +245,8 @@ describe("PaneAgentModel", () => {
         blockId: "block:user-named",
       })
       expect(started.ownedBlock).toBe(false)
+      const running1 = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working")
+      expect(running1?.state).toBe("working")
 
       // Queued follow-up while turn 1 runs waits for turn 1 to settle, then submits turn 2 with Enter (\r)
       yield* h.rex.setScreens("block:user-named", [WORKING_FRAME, WORKING_FRAME])
@@ -236,7 +261,7 @@ describe("PaneAgentModel", () => {
       expect(queued.pendingTurns?.[0]?.turn).toBe(2)
 
       // Turn 1 completes -> turn 2 is typed automatically with Enter (\r)
-      yield* h.results.put("/nonexistent/run/t1.md", "turn-1-done", started.startedAt + 10)
+      yield* h.results.put("/nonexistent/run/t1.md", "turn-1-done", (running1?.startedAt ?? started.startedAt) + 10)
       yield* h.rex.setScreens("block:user-named", [DONE_FRAME, DONE_FRAME, READY_FRAME, WORKING_FRAME, WORKING_FRAME])
       const t2Started = yield* waitFor(
         Ref.get(h.rex.state).pipe(
@@ -248,19 +273,21 @@ describe("PaneAgentModel", () => {
       expect(afterQueue.panes[0]?.writes[afterQueue.panes[0].writes.length - 1]).toBe("\r")
 
       // Steer sends immediately with Alt+M (\x1bm)
-      const steered = yield* h.model.followUp({
+      yield* h.model.followUp({
         parentSessionID: "ses_parent",
         id: started.id,
         prompt: "Immediate steer.",
         steer: true,
       })
-      expect(steered.turn).toBe(3)
-      expect(steered.update).toContain("steered")
+      const steered = yield* waitForWorker(h.store.state, started.id, (w) => w.turn === 3 && w.state === "working")
+      expect(steered?.turn).toBe(3)
+      expect(steered?.update).toContain("steered")
       const afterSteer = yield* Ref.get(h.rex.state)
       expect(afterSteer.panes[0]?.writes[afterSteer.panes[0].writes.length - 1]).toBe("\x1bm")
 
       const stopped = yield* h.model.stop({ parentSessionID: "ses_parent", id: started.id, close: true })
       expect(stopped.state).toBe("stopped")
+      yield* waitForWorker(h.store.state, started.id, (w) => (w.outbox ?? []).length === 0)
       const rexState = yield* Ref.get(h.rex.state)
       const pane = rexState.panes[0]
       expect(pane?.writes[pane.writes.length - 1]).toBe("\x1b")
@@ -284,29 +311,36 @@ describe("PaneAgentModel", () => {
         prompt: "Build the module.",
         resultFile: "/nonexistent/run/out.md",
       })
-      expect(started.state).toBe("working")
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      expect(running?.state).toBe("working")
+      const firstBlockId = running?.blockId ?? ""
 
       // Tab/pane vanishes externally
-      yield* h.rex.setAlive(started.blockId, false)
+      yield* h.rex.setAlive(firstBlockId, false)
 
+      yield* h.model.status("ses_parent", started.id)
+      const goneWorker = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone")
       const goneStatus = yield* h.model.status("ses_parent", started.id)
+      expect(goneWorker?.state).toBe("pane_gone")
       expect(goneStatus.state).toBe("pane_gone")
       expect(goneStatus.update).toContain("pane gone")
 
+      yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 1)))
       const wakes = yield* Ref.get(h.notifier.wakes)
       expect(wakes).toHaveLength(1)
       expect(wakes[0]?.letter.text).toContain('state="pane_gone"')
       expect(wakes[0]?.letter.text).toContain('"restart"')
 
       // Restart opens a new right-split pane in same cwd using --continue --dangerously-skip-permissions --add-dir ... -i "<brief>"
-      const restarted = yield* h.model.restart({
+      yield* h.model.restart({
         parentSessionID: "ses_parent",
         id: started.id,
         prompt: "Pick up from where the pane closed.",
       })
-      expect(restarted.state).toBe("working")
-      expect(restarted.blockId).not.toBe(started.blockId)
-      expect(restarted.turn).toBe(2)
+      const restarted = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      expect(restarted?.state).toBe("working")
+      expect(restarted?.blockId).not.toBe(firstBlockId)
+      expect(restarted?.turn).toBe(2)
 
       const rexState = yield* Ref.get(h.rex.state)
       expect(rexState.splits).toHaveLength(2)
@@ -340,7 +374,9 @@ describe("PaneAgentModel", () => {
         prompt: "Work on task.",
         resultFile: "/nonexistent/run/owned.md",
       })
+      yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
       yield* h.model.stop({ parentSessionID: "ses_parent", id: started.id, close: true })
+      yield* waitForWorker(h.store.state, started.id, (w) => (w.outbox ?? []).length === 0)
       const rexState = yield* Ref.get(h.rex.state)
       expect(rexState.panes[0]?.closed).toBe(true)
     }).pipe(Effect.scoped),
@@ -398,14 +434,17 @@ describe("PaneAgentModel", () => {
 
       const attached = yield* h.model.reattach("/nonexistent/repo")
       expect(attached).toHaveLength(2)
-      expect(attached.find((w) => w.id === "pa_restart1")?.state).toBe("done")
-      expect(attached.find((w) => w.id === "pa_vanished1")?.state).toBe("pane_gone")
+      const settled1 = yield* waitForWorker(h.store.state, "pa_restart1", (w) => w.state === "done")
+      const settled2 = yield* waitForWorker(h.store.state, "pa_vanished1", (w) => w.state === "pane_gone")
+      expect(settled1?.state).toBe("done")
+      expect(settled2?.state).toBe("pane_gone")
 
+      yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 2)))
       yield* h.model.reattach("/nonexistent/repo")
       const wakes = yield* Ref.get(h.notifier.wakes)
       expect(wakes).toHaveLength(2)
-      expect(wakes[0]?.letter.text).toContain("finished while server restarted")
-      expect(wakes[1]?.letter.text).toContain('state="pane_gone"')
+      expect(wakes.some((w) => w.letter.text.includes("finished while server restarted"))).toBe(true)
+      expect(wakes.some((w) => w.letter.text.includes('state="pane_gone"'))).toBe(true)
       const rexState = yield* Ref.get(h.rex.state)
       expect(rexState.panes[0]?.writes).toEqual([])
     }).pipe(Effect.scoped),
@@ -422,22 +461,19 @@ describe("PaneAgentModel", () => {
       })
       const h = yield* makeHarness({ failWith: Option.some(mismatch) })
       yield* h.model.bindPane("ses_parent", { session: "session:root", block: "block:anchor" })
-      const exit = yield* Effect.exit(
-        h.model.start({
-          parentSessionID: "ses_parent",
-          directory: "/nonexistent/repo",
-          harness: "agy",
-          description: "worker rev",
-          prompt: "hello",
-          resultFile: "/nonexistent/run/rev.md",
-        }),
-      )
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        const text = String(exit.cause)
-        expect(text).toContain("18")
-        expect(text).toContain("19")
-      }
+      const started = yield* h.model.start({
+        parentSessionID: "ses_parent",
+        directory: "/nonexistent/repo",
+        harness: "agy",
+        description: "worker rev",
+        prompt: "hello",
+        resultFile: "/nonexistent/run/rev.md",
+      })
+      const failed = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "failed")
+      expect(failed?.state).toBe("failed")
+      const text = failed?.update ?? ""
+      expect(text).toContain("18")
+      expect(text).toContain("19")
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )

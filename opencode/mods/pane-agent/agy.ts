@@ -1,11 +1,13 @@
 import { Array as Arr, Option } from "effect"
-import type { HarnessAdapter, NeedsInput, ResumeOptions, StartOptions } from "./adapter.ts"
+import type { HarnessAdapter, NeedsInput, ResumeOptions, StartOptions, UsageLimit } from "./adapter.ts"
 
 const RULE_LINE = /^─{20,}$/
 const ESC_TO_CANCEL = /\besc to cancel\b/i
 const SHORTCUTS_FOOTER = /\?\s+for shortcuts\b/i
 const GENERATING = /Generating\.{3}|Thinking\.{3}/i
 const PROMPT_LINE = /^>\s*(.*)$/
+const QUOTA_REACHED = /Individual quota reached/i
+const RESETS_IN = /Resets in\s+((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)/i
 const ESC_CODE = "\x1b"
 
 const NEEDS_INPUT_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly summary: string }> = [
@@ -74,6 +76,60 @@ const activePromptRegion = (screen: string): string => {
   return lastLines(screen, TAIL_LINES)
 }
 
+const parseGoDurationMs = (raw: string): number => {
+  const hours = Option.fromNullishOr(/(\d+)h/i.exec(raw)).pipe(
+    Option.flatMap((m) => Option.fromUndefinedOr(m[1])),
+    Option.map(Number),
+    Option.getOrElse(() => 0),
+  )
+  const mins = Option.fromNullishOr(/(\d+)m/i.exec(raw)).pipe(
+    Option.flatMap((m) => Option.fromUndefinedOr(m[1])),
+    Option.map(Number),
+    Option.getOrElse(() => 0),
+  )
+  const secs = Option.fromNullishOr(/(\d+(?:\.\d+)?)s/i.exec(raw)).pipe(
+    Option.flatMap((m) => Option.fromUndefinedOr(m[1])),
+    Option.map(Number),
+    Option.getOrElse(() => 0),
+  )
+  return Math.round((hours * 3600 + mins * 60 + secs) * 1000)
+}
+
+const activeOutputRegion = (screen: string): ReadonlyArray<string> => {
+  const lines = nonEmptyLines(screen)
+  return Option.match(lastTwoRules(lines), {
+    onNone: () => lines.filter((line) => line.trim().length > 0).slice(-TAIL_LINES),
+    onSome: ([boxTop]) => {
+      const beforeBox = lines.slice(0, boxTop)
+      const lastPromptIndex = Arr.findLastIndex(beforeBox, (line) => PROMPT_LINE.test(line.trim()))
+      const body = Option.match(lastPromptIndex, {
+        onNone: () => beforeBox,
+        onSome: (index) => beforeBox.slice(index + 1),
+      })
+      return body.filter((line) => line.trim().length > 0)
+    },
+  })
+}
+
+const detectUsageLimit = (screen: string, now: number): Option.Option<UsageLimit> => {
+  if (ESC_TO_CANCEL.test(screen)) return Option.none()
+  const region = activeOutputRegion(screen)
+  const matched = Arr.findFirst(region, (line) => QUOTA_REACHED.test(line))
+  if (Option.isNone(matched)) return Option.none()
+  const joined = region.join(" ")
+  const resetInMs = Option.fromNullishOr(RESETS_IN.exec(joined)).pipe(
+    Option.flatMap((m) => Option.fromUndefinedOr(m[1])),
+    Option.filter((raw) => raw.length > 0),
+    Option.map(parseGoDurationMs),
+    Option.getOrElse(() => 0),
+  )
+  return Option.some({
+    resetAt: now + resetInMs,
+    resetInMs,
+    summary: matched.value.trim(),
+  })
+}
+
 const detectNeedsInput = (screen: string): Option.Option<NeedsInput> => {
   const region = activePromptRegion(screen)
   const matched = Arr.findFirst(NEEDS_INPUT_PATTERNS, ({ pattern }) => pattern.test(region))
@@ -84,6 +140,7 @@ const isReadyForInput = (screen: string): boolean => {
   if (screen.trim().length === 0) return false
   if (ESC_TO_CANCEL.test(screen)) return false
   if (Option.isSome(detectNeedsInput(screen))) return false
+  if (Option.isSome(detectUsageLimit(screen, 0))) return false
   return hasInputBox(nonEmptyLines(screen))
 }
 
@@ -172,6 +229,7 @@ export const agyAdapter: HarnessAdapter = {
   formatSteer: (text) => [`\x1b[200~${sanitizePaste(text)}\x1b[201~`, "\x1bm"],
   turnEnded: isTurnEnded,
   needsInput: detectNeedsInput,
+  usageLimit: detectUsageLimit,
   interruptSequence: "\x1b",
   readLastAnswer: readAnswer,
 }

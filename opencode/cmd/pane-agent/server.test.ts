@@ -2,7 +2,7 @@
 // @reads-reason computed read at mods/pane-agent/filestore/store.ts: fs.exists(file)
 import { describe, expect } from "bun:test"
 import type { Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Duration, Effect, Exit, Layer, Option } from "effect"
+import { Array as Arr, Duration, Effect, Layer, Option, Ref } from "effect"
 import { READY_FRAME, WORKING_FRAME } from "@dotfiles/opencode-pane-agent/agy.fixture"
 import {
   emptyRexState,
@@ -124,7 +124,7 @@ describe("cmd/pane-agent server plugin", () => {
       )
       const text = firstText(started.content)
       expect(text).toContain("harness: agy")
-      expect(text).toContain("state: working")
+      expect(text).toContain("state: starting")
 
       const listed = yield* env.rpc().rows({ sessionID: "ses_root" })
       expect(listed.workers).toHaveLength(1)
@@ -134,24 +134,53 @@ describe("cmd/pane-agent server plugin", () => {
       const workerId = idMatch?.[1] ?? ""
       expect(workerId.length).toBeGreaterThan(0)
 
+      let workingText = ""
+      for (let step = 0; step < 400; step++) {
+        const st = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
+        workingText = firstText(st.content)
+        if (workingText.includes("state: working")) break
+        yield* Effect.yieldNow
+      }
+      expect(workingText).toContain("state: working")
+
       // Steer action routes to Alt+M immediate steer
-      const steered = yield* tool!.execute(
+      yield* tool!.execute(
         { action: "steer", id: workerId, prompt: "Switch focus now." },
         { sessionID: "ses_root" },
       )
-      expect(firstText(steered.content)).toContain("steered in Rex pane")
+      let steeredText = ""
+      for (let step = 0; step < 400; step++) {
+        const st = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
+        steeredText = firstText(st.content)
+        if (steeredText.includes("steered in Rex pane")) break
+        yield* Effect.yieldNow
+      }
+      expect(steeredText).toContain("steered in Rex pane")
 
       // Vanished pane -> status reports pane_gone -> restart resumes with --continue
-      const blockMatch = /^blockId:\s+(\S+)/m.exec(text)
+      const blockMatch = /^blockId:\s+(\S+)/m.exec(workingText)
       yield* env.rex.setAlive(blockMatch?.[1] ?? "", false)
-      const gone = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
-      expect(firstText(gone.content)).toContain("state: pane_gone")
+      let goneText = ""
+      for (let step = 0; step < 400; step++) {
+        const st = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
+        goneText = firstText(st.content)
+        if (goneText.includes("state: pane_gone")) break
+        yield* Effect.yieldNow
+      }
+      expect(goneText).toContain("state: pane_gone")
 
-      const restarted = yield* tool!.execute(
+      yield* tool!.execute(
         { action: "restart", id: workerId, prompt: "Resume work." },
         { sessionID: "ses_root" },
       )
-      expect(firstText(restarted.content)).toContain("restarted in Rex pane (--continue)")
+      let restartedText = ""
+      for (let step = 0; step < 400; step++) {
+        const st = yield* tool!.execute({ action: "status", id: workerId }, { sessionID: "ses_root" })
+        restartedText = firstText(st.content)
+        if (restartedText.includes("restarted in Rex pane (--continue)")) break
+        yield* Effect.yieldNow
+      }
+      expect(restartedText).toContain("restarted in Rex pane (--continue)")
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
@@ -173,24 +202,30 @@ describe("cmd/pane-agent server plugin", () => {
         rexSession: "session:1",
         rexBlock: "block:anchor",
       })
-      const exit = yield* Effect.exit(
-        tool!.execute(
-          {
-            action: "start",
-            harness: "agy",
-            description: "worker mismatch",
-            prompt: "hello",
-            resultFile: "/nonexistent/run/m.md",
-          },
-          { sessionID: "ses_root" },
-        ),
+      const started = yield* tool!.execute(
+        {
+          action: "start",
+          harness: "agy",
+          description: "worker mismatch",
+          prompt: "hello",
+          resultFile: "/nonexistent/run/m.md",
+        },
+        { sessionID: "ses_root" },
       )
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        const msg = String(exit.cause)
-        expect(msg).toContain("18")
-        expect(msg).toContain("19")
+      const idMatch = /^id:\s+(\S+)/m.exec(firstText(started.content))
+      const workerId = idMatch?.[1] ?? ""
+      let failedText = ""
+      for (let step = 0; step < 400; step++) {
+        const snap = yield* Ref.get(env.store.state)
+        const found = snap.workers.find((w) => w.id === workerId)
+        if (found?.state === "failed") {
+          failedText = found.update
+          break
+        }
+        yield* Effect.yieldNow
       }
+      expect(failedText).toContain("18")
+      expect(failedText).toContain("19")
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )

@@ -33,11 +33,94 @@ export const QueuedTurn = Schema.Struct({
 })
 export type QueuedTurn = typeof QueuedTurn.Type
 
+/** Explicit lifecycle phase for an active typed turn (`intended -> written -> confirmed`, plus `ambiguous`). */
+export const TurnPhase = Schema.Literals(["intended", "ambiguous", "written", "confirmed"])
+export type TurnPhase = typeof TurnPhase.Type
+
+/** Active turn record persisted atomically with durable outbox intents. */
+export const ActiveTurn = Schema.Struct({
+  turn: Schema.Int,
+  brief: Schema.String,
+  resultFile: Schema.String,
+  mode: Schema.Literals(["submit", "steer"]),
+  phase: TurnPhase,
+  writeAttempts: Schema.Int,
+  writtenIdlePolls: Schema.Int,
+  startedAt: Schema.Number,
+  chunkIndex: Schema.optionalKey(Schema.Int),
+  lastWriteError: Schema.optionalKey(Schema.String),
+  limitedResetAt: Schema.optionalKey(Schema.Number),
+  sawLimitFrame: Schema.optionalKey(Schema.Boolean),
+  resumeAttempted: Schema.optionalKey(Schema.Boolean),
+  resumed: Schema.optionalKey(Schema.Boolean),
+})
+export type ActiveTurn = typeof ActiveTurn.Type
+
+/** Durable intent to open a right-split Rex pane (initial start or `--continue` restart). */
+export const SplitPaneIntent = Schema.TaggedStruct("SplitPane", {
+  intentId: Schema.String,
+  reqId: Schema.String,
+  ownerProc: Schema.String,
+  sessionId: Schema.String,
+  anchorBlockId: Schema.String,
+  label: Schema.String,
+  command: Schema.Array(Schema.String),
+  cwd: Schema.String,
+  forRestart: Schema.Boolean,
+  resumedTurn: Schema.optionalKey(Schema.Int),
+  resumedBrief: Schema.optionalKey(Schema.String),
+  resumedResultFile: Schema.optionalKey(Schema.String),
+  dispatched: Schema.Boolean,
+  attempt: Schema.Int,
+  createdAt: Schema.Number,
+})
+export type SplitPaneIntent = typeof SplitPaneIntent.Type
+
+/** Durable intent to write a turn's chunks into the pane. */
+export const TypeTurnIntent = Schema.TaggedStruct("TypeTurn", {
+  intentId: Schema.String,
+  ownerProc: Schema.String,
+  turn: Schema.Int,
+  mode: Schema.Literals(["submit", "steer"]),
+  chunks: Schema.Array(Schema.String),
+  chunkIndex: Schema.Int,
+  attempt: Schema.Int,
+  createdAt: Schema.Number,
+})
+export type TypeTurnIntent = typeof TypeTurnIntent.Type
+
+/** Durable intent to resume a usage-limited turn with `"continue"` at or after `resetAt`. */
+export const TypeResumeIntent = Schema.TaggedStruct("TypeResume", {
+  intentId: Schema.String,
+  ownerProc: Schema.String,
+  turn: Schema.Int,
+  resetAt: Schema.Number,
+  chunks: Schema.Array(Schema.String),
+  attempt: Schema.Int,
+  createdAt: Schema.Number,
+})
+export type TypeResumeIntent = typeof TypeResumeIntent.Type
+
+/** Durable intent to interrupt and optionally close an owned Rex pane. */
+export const ClosePaneIntent = Schema.TaggedStruct("ClosePane", {
+  intentId: Schema.String,
+  ownerProc: Schema.String,
+  sessionId: Schema.String,
+  blockId: Schema.String,
+  interruptFirst: Schema.Boolean,
+  closeBlock: Schema.Boolean,
+  createdAt: Schema.Number,
+})
+export type ClosePaneIntent = typeof ClosePaneIntent.Type
+
+export const DurableIntent = Schema.Union([SplitPaneIntent, TypeTurnIntent, TypeResumeIntent, ClosePaneIntent])
+export type DurableIntent = typeof DurableIntent.Type
+
 /** Durable wake outbox record persisted before sending so crashes/failures retry with the same id. */
 export const PendingWake = Schema.Struct({
   deliveryId: Schema.String,
   turn: Schema.Int,
-  kind: Schema.Literals(["done", "needs_input", "pane_gone", "rex_unreachable", "failed"]),
+  kind: Schema.Literals(["done", "not_typed", "limited", "needs_input", "pane_gone", "rex_unreachable", "failed"]),
   key: Schema.String,
   description: Schema.String,
   text: Schema.String,
@@ -69,6 +152,8 @@ export const PaneWorker = Schema.Struct({
   notifiedTurn: Schema.Int,
   revision: Schema.optionalKey(Schema.Int),
   activeTurnTyped: Schema.optionalKey(Schema.Boolean),
+  activeTurn: Schema.optionalKey(ActiveTurn),
+  outbox: Schema.optionalKey(Schema.Array(DurableIntent)),
   pendingTurns: Schema.optionalKey(Schema.Array(QueuedTurn)),
   pendingWake: Schema.optionalKey(PendingWake),
   pendingWakes: Schema.optionalKey(Schema.Array(PendingWake)),
@@ -95,6 +180,9 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = { version: STORE_VERSION, workers: 
 
 export const revisionOf = (worker: PaneWorker): number =>
   Option.getOrElse(Option.fromUndefinedOr(worker.revision), () => 0)
+
+export const outboxOf = (worker: PaneWorker): ReadonlyArray<DurableIntent> =>
+  Option.getOrElse(Option.fromUndefinedOr(worker.outbox), () => [])
 
 export const pendingWakesOf = (worker: PaneWorker): ReadonlyArray<PendingWake> => {
   const list = Option.getOrElse(Option.fromUndefinedOr(worker.pendingWakes), () => [])

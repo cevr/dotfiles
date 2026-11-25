@@ -60,6 +60,8 @@ const formatModelError = (error: Model.ModelError): Tool.Error =>
     Match.tag("StoreFailed", (err) => new Tool.Error({ message: `Pane worker store ${err.operation} failed: ${err.message}`, error: err })),
     Match.tag("StoreConflict", (err) => new Tool.Error({ message: `Pane worker store conflict on ${err.workerId}: ${err.message}`, error: err })),
     Match.tag("ResultReadFailed", (err) => new Tool.Error({ message: `Failed to read result file ${err.path}: ${err.message}`, error: err })),
+    Match.tag("WorkerCrashed", (err) => new Tool.Error({ message: `Pane worker ${err.workerId} actor crashed: ${err.message}`, error: err })),
+    Match.tag("ToolTimedOut", (err) => new Tool.Error({ message: `Pane worker ${err.operation} timed out after ${err.deadlineMs}ms: ${err.message}`, error: err })),
     Match.exhaustive,
   )
 

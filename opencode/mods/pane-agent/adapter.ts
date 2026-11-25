@@ -11,6 +11,13 @@ export interface NeedsInput {
   readonly tail: string
 }
 
+/** Detected quota/usage limit frame waiting until `resetAt` (epoch ms). */
+export interface UsageLimit {
+  readonly resetAt: number
+  readonly resetInMs: number
+  readonly summary: string
+}
+
 /** Options for constructing the CLI start command. */
 export interface StartOptions {
   readonly binary?: string
@@ -46,6 +53,8 @@ export interface HarnessAdapter {
   readonly turnEnded: (screen: string) => boolean
   /** Some when the pane is waiting on a human (trust, sign-in, permission, question). */
   readonly needsInput: (screen: string) => Option.Option<NeedsInput>
+  /** Some when the pane shows a provider usage/quota limit with a reset time. */
+  readonly usageLimit: (screen: string, now: number) => Option.Option<UsageLimit>
   /** Escape sequence sent to interrupt an active turn. */
   readonly interruptSequence: string
   /** Extracts the last answer text from a completed screen capture. */

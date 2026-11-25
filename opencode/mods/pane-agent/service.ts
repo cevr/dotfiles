@@ -62,6 +62,18 @@ export class WorkerRejected extends Schema.TaggedError<WorkerRejected>()("Worker
   reason: Schema.String,
 }) {}
 
+export class WorkerCrashed extends Schema.TaggedError<WorkerCrashed>()("WorkerCrashed", {
+  workerId: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class ToolTimedOut extends Schema.TaggedError<ToolTimedOut>()("ToolTimedOut", {
+  operation: Schema.String,
+  workerId: Schema.String,
+  deadlineMs: Schema.Int,
+  message: Schema.String,
+}) {}
+
 export interface SplitRightInput {
   readonly sessionId: string
   readonly anchorBlockId: string
