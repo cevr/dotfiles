@@ -132,7 +132,7 @@ export const PINS: PinTable = {
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "await:second:follow_up@121": [
-      "I2 <tok> was refused to the caller, yet typed Nx",
+      "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
       "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
       "I6 w1: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
@@ -485,7 +485,7 @@ export const PINS: PinTable = {
   },
   "batch await:second:reattach 2/4": {
     "await:second:reattach@121": [
-      "I2 <tok> was refused to the caller, yet typed Nx",
+      "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
       "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
@@ -900,7 +900,7 @@ export const PINS: PinTable = {
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "await:second:steer@121": [
-      "I2 <tok> was refused to the caller, yet typed Nx",
+      "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
       "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
       "I6 w1: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
@@ -1241,7 +1241,7 @@ export const PINS: PinTable = {
       "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
     ],
     "await:second:stop_close@124": [
-      "I2 <tok> was refused to the caller, yet typed Nx",
+      "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
     ],
     "await:second:stop_close@176": [
@@ -1250,7 +1250,7 @@ export const PINS: PinTable = {
   },
   "batch await:second:stop_close 2/4": {
     "await:second:stop_close@125": [
-      "I2 <tok> was refused to the caller, yet typed Nx",
+      "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
     ],
     "await:second:stop_close@177": [
@@ -1283,7 +1283,7 @@ export const PINS: PinTable = {
   },
   "batch crash 2/4": {
     "crash@125": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 w1: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "crash@65": [
       "I6 w1: done wake for turn N at t=N carries the answer of turn N (<tok>), a turn already reported",
@@ -1296,7 +1296,7 @@ export const PINS: PinTable = {
   },
   "batch crash 4/4": {
     "crash@3": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "crash@67": [
       "I6 w1: done wake for turn N at t=N carries the answer of turn N (<tok>), a turn already reported",
@@ -1317,6 +1317,7 @@ export const PINS: PinTable = {
     "pair:pane.readTail:hang#0": [
       "I1 restart#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
     ],
     "pair:pane.split:hang#0": [
       "I1 start#N (w1) did not answer within N ms",
@@ -1331,6 +1332,7 @@ export const PINS: PinTable = {
       "I1 start#N (w1) did not answer within N ms",
     ],
     "pair:timer.sleep:hang#0": [
+      "I1 status#N (w2) did not answer within N ms",
       "I1 status#N (w2) did not answer within N ms",
     ],
   },
@@ -1352,11 +1354,11 @@ export const PINS: PinTable = {
       "I1 start#N (w2) did not answer within N ms",
     ],
     "pair:store.write:conflict#1": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "pair:store.write:hang#1": [
       "I1 start#N (w1) did not answer within N ms",
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
   },
   "batch pairs 3/6": {
@@ -1365,6 +1367,7 @@ export const PINS: PinTable = {
     ],
     "pair:pane.readTail:hang#2": [
       "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
       "I1 stop_close#N (w1) did not answer within N ms",
     ],
@@ -1396,6 +1399,7 @@ export const PINS: PinTable = {
     "pair:pane.readTail:defect#0": [
       "I1 restart#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
     ],
     "pair:pane.split:defect#0": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at pane.split #N",
@@ -1413,6 +1417,7 @@ export const PINS: PinTable = {
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.read #N",
     ],
     "pair:timer.sleep:defect#0": [
+      "I1 status#N (w2) did not answer within N ms",
       "I1 status#N (w2) did not answer within N ms",
     ],
   },
@@ -1440,17 +1445,17 @@ export const PINS: PinTable = {
       "I1 start#N (w2) died with an untyped defect: Error: sim: defect injected at store.read #N",
     ],
     "pair:store.write:crash#1": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "pair:store.write:defect#1": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.write #N",
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "pair:store.write:timeout#1": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "pair:store.write:transient#1": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
   },
   "batch pairs 6/6": {
@@ -1462,6 +1467,7 @@ export const PINS: PinTable = {
     ],
     "pair:pane.readTail:defect#2": [
       "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
       "I1 stop_close#N (w1) did not answer within N ms",
     ],
@@ -1482,12 +1488,13 @@ export const PINS: PinTable = {
       "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I6 w2: at quiescence status says needs_input/turn N but the store says needs_input/turn N",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
+      "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
     ],
     "seed:10": [
       "I1 start#N (w2) did not answer within N ms",
     ],
     "seed:13": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
       "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I4 named1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
       "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
@@ -1495,15 +1502,17 @@ export const PINS: PinTable = {
     ],
     "seed:28": [
       "I1 restart#N (w1) did not answer within N ms",
+      "I1 restart#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
       "I1 steer#N (w1) did not answer within N ms",
       "I1 stop#N (w1) did not answer within N ms",
+      "I1 stop#N (w1) did not answer within N ms",
       "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
-      "I5 wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
     ],
     "seed:31": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.write #N",
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
       "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
     ],
     "seed:34": [
@@ -1517,7 +1526,7 @@ export const PINS: PinTable = {
       "I4 w2: N distinct wakes for (turn, kind) N:needs_input",
     ],
     "seed:43": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "seed:46": [
       "I1 reattach#N (*) did not answer within N ms",
@@ -1533,6 +1542,7 @@ export const PINS: PinTable = {
     "seed:52": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.read #N",
       "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I3 w2 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
       "I4 w2: N distinct wakes for (turn, kind) N:needs_input",
     ],
@@ -1542,12 +1552,13 @@ export const PINS: PinTable = {
       "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
     ],
     "seed:58": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
   },
   "batch seeds 2/3": {
     "seed:11": [
       "I1 status#N (named1) did not answer within N ms",
+      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I3 named1 turn N (<tok>, steer) was accepted but never typed and never reported \"not typed\"",
       "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
@@ -1556,14 +1567,14 @@ export const PINS: PinTable = {
     ],
     "seed:17": [
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-      "I5 wrote \"\\e\" into <block> while it showed a permission prompt (t=N)",
+      "I5 w2: wrote \"\\e\" into <block> while it showed a permission prompt (t=N)",
       "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
       "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
       "I8 w1: N wake(s) still pending in the outbox at quiescence",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "seed:2": [
-      "I5 wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
     ],
     "seed:20": [
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
@@ -1572,7 +1583,8 @@ export const PINS: PinTable = {
     "seed:23": [
       "I1 start#N (w2) did not answer within N ms",
       "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I5 wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
     ],
     "seed:29": [
       "I1 start#N (w1) did not answer within N ms",
@@ -1610,11 +1622,12 @@ export const PINS: PinTable = {
       "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
     ],
     "seed:5": [
-      "I5 wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
     ],
     "seed:50": [
       "I1 follow_up#N (w2) did not answer within N ms",
       "I1 reattach#N (*) did not answer within N ms",
+      "I1 status#N (w2) did not answer within N ms",
       "I1 status#N (w2) did not answer within N ms",
       "I4 w2 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
       "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
@@ -1623,12 +1636,14 @@ export const PINS: PinTable = {
       "I1 follow_up#N (w1) did not answer within N ms",
       "I1 restart#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
       "I1 stop_close#N (w1) did not answer within N ms",
     ],
   },
   "batch seeds 3/3": {
     "seed:12": [
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "seed:21": [
       "I1 start#N (w2) did not answer within N ms",
@@ -1653,9 +1668,10 @@ export const PINS: PinTable = {
       "I1 follow_up#N (w2) did not answer within N ms",
       "I1 start#N (w1) did not answer within N ms",
       "I1 stop_close#N (w2) did not answer within N ms",
-      "I2 pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "seed:36": [
+      "I1 follow_up#N (w1) did not answer within N ms",
       "I1 follow_up#N (w1) did not answer within N ms",
       "I1 follow_up#N (w2) did not answer within N ms",
       "I1 reattach#N (*) did not answer within N ms",
@@ -1672,6 +1688,7 @@ export const PINS: PinTable = {
     ],
     "seed:48": [
       "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
+      "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
     ],
     "seed:51": [
@@ -1703,6 +1720,8 @@ export const PINS: PinTable = {
   "scenario F1-changed-defect": {
     "F1-changed-defect": [
       "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
       "I8 w1: N queued turn(s) never typed though the pane is idle",
     ],
@@ -1717,6 +1736,8 @@ export const PINS: PinTable = {
   "scenario H-alive-never-answers": {
     "H-alive-never-answers": [
       "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
       "I1 status#N (w1) did not answer within N ms",
     ],
   },
