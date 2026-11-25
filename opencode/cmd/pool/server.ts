@@ -133,8 +133,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, type Scope, Stream } from "effect"
-import * as BunServices from "@effect/platform-bun/BunServices"
+import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
@@ -341,9 +340,11 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
  * Antigravity's quota source for the `antigravity` option (`@dotfiles/opencode-pool/antigravity/live`):
  * in OpenCode, one authority per state file in the process, built with no I/O, which reads only when asked
  * (the keychain only with a consent, once); none in a
- * test's pool, so no test reads a real profile or keychain.
+ * test's pool, so no test reads a real profile or keychain. Its files and paths are the host's: the fork's plugin
+ * host gives a server plugin FileSystem and Path (`@opencode/plugin/effect` `Plugin.Environment`), so the pool
+ * imports no platform implementation.
  */
-export type AntigravityRoot = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope>
+export type AntigravityRoot = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | FileSystem.FileSystem | Path.Path>
 export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
 
 /**
@@ -856,7 +857,7 @@ export const make = (
               ),
             ),
         })
-        editor.add(agy.tool)
+        editor.add({ ...agy.tool, name: AgyWiring.TOOL_NAME })
       })
 
       // The pool's own RPC has no error to answer with: a pool whose logins
@@ -993,5 +994,5 @@ const sessionOf = (input: unknown) =>
     : undefined
 
 export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, (option) =>
-  AgyLive.poolSource(option).pipe(Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))),
+  AgyLive.poolSource(option).pipe(Effect.provide(FetchHttpClient.layer)),
 )

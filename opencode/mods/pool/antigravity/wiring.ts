@@ -9,6 +9,9 @@ import { Effect, Match, Option } from "effect"
 import { reasonOf, type Source } from "./source.ts"
 import { ANTIGRAVITY_DESCRIPTION, AntigravityToolInput, answer } from "./tool.ts"
 
+/** The tool's name: the plugin registers `{ ...tool, name: TOOL_NAME }`, a name read without running it. */
+export const TOOL_NAME = "antigravity"
+
 /** The row in place of Antigravity's when its code failed. */
 export const containedLine = (reason: string) => `antigravity · unknown: the Antigravity reader failed here (${reason})`
 
@@ -19,9 +22,8 @@ export interface Wiring {
   readonly pushText: (action: string, text: string) => Effect.Effect<string>
   /** The pool's `antigravity` RPC method's answer: `{ lines }`. Never fails. */
   readonly rpc: () => Effect.Effect<{ readonly lines: ReadonlyArray<string> }>
-  /** The `antigravity` tool as the plugin adds it. Its execute never fails. */
+  /** The `antigravity` tool as the plugin adds it, under the name TOOL_NAME. Its execute never fails. */
   readonly tool: {
-    readonly name: "antigravity"
     readonly description: string
     readonly input: typeof AntigravityToolInput
     readonly options: { readonly codemode: false }
@@ -42,7 +44,6 @@ export const wire = (agy: Option.Option<Source>): Wiring => {
       ),
     rpc: () => Effect.map(lines, (rows) => ({ lines: rows })),
     tool: {
-      name: "antigravity",
       description: ANTIGRAVITY_DESCRIPTION,
       input: AntigravityToolInput,
       options: { codemode: false },
