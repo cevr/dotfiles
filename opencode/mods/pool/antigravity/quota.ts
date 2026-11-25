@@ -8,24 +8,12 @@
 // or one with no fraction is no reading, which the pool shows as unknown,
 // never as unlimited. Pure: no request, no clock.
 import { Array as Arr, DateTime, Match, Option, Schema } from "effect"
-
-/** A window's length: the 5-hour window, the weekly one, or a model's quota of unstated length. */
-export const Span = Schema.Literals(["5h", "7d", "quota"])
-export type Span = typeof Span.Type
+import { Span, Window } from "../antigravity-report.ts"
+export { Span, Window } from "../antigravity-report.ts"
 
 /** The quota groups Antigravity meters apart. */
 export const GEMINI = "gemini"
 export const SHARED = "claude-gpt"
-
-/** One window of one quota group as read: the share used (0 to 1) and, when Google says it, its reset (epoch ms). */
-export const Window = Schema.Struct({
-  group: Schema.String,
-  label: Schema.String,
-  span: Span,
-  used: Schema.Finite,
-  resetAt: Schema.optionalKey(Schema.Finite),
-})
-export type Window = typeof Window.Type
 
 const Bucket = Schema.Struct({
   bucketId: Schema.NonEmptyString,

@@ -7,7 +7,9 @@
 // An unknown window is never unlimited and never a hold by itself: with one
 // unknown, "is it open" answers a typed unknown. Pure: no clock, no I/O.
 import { Array as Arr, Match, Option, Schema } from "effect"
+import { Why } from "../antigravity-report.ts"
 import { keyOf, Span, Window } from "./quota.ts"
+export { RequestWhy, Why } from "../antigravity-report.ts"
 
 const MINUTE = 60_000
 /** At most one read of Google per sign-in in this long. */
@@ -18,45 +20,6 @@ export const BACKOFF_CAP_MS = 60 * MINUTE
 /** What a keychain attempt came to; `started` until it answers. Each attempt uses one consent, whatever it comes to. */
 export const KeychainOutcome = Schema.Literals(["started", "read", "absent", "denied", "failed", "timed-out"])
 export type KeychainOutcome = typeof KeychainOutcome.Type
-
-/** Why a request to Google gave no reading. */
-export const RequestWhy = Schema.Literals(["refused", "rate-limited", "timed-out", "unreachable", "malformed", "failed"])
-export type RequestWhy = typeof RequestWhy.Type
-
-/** Why nothing, or not everything, can be said: each case has its own words (text.ts `whyText`). */
-export const Why = Schema.TaggedUnion({
-  /** No read has been made yet. */
-  NotRead: {},
-  /** No token file in the profile, and no keychain entry. */
-  NoSignIn: {},
-  /** No file, and this host has no keychain this can read (a Linux without one). */
-  NotReadableHere: {},
-  /** The sign-in's token has expired and cannot be refreshed from here. */
-  SignInExpired: {},
-  /** The keychain attempt was refused, failed or timed out: none again until the owner consents again. */
-  KeychainRefused: { outcome: Schema.Literals(["denied", "failed", "timed-out"]) },
-  /** No token file, and no sign-in held from a keychain read: the keychain is read only with the owner's consent. */
-  NotHeld: {},
-  /** A personal sign-in: no token file in the managed profile `profile`; it is never read from the keychain. */
-  NotSignedIn: { profile: Schema.String },
-  /** The state file did not decode (kept beside it as `.undecodable`): read as an attempt made then, so the floor holds. */
-  StateUnreadable: {},
-  /** The Antigravity code itself failed here: contained, with its reason. */
-  Contained: { reason: Schema.String },
-  /** Google's answer was no reading: its status when it answered. */
-  RequestFailed: { why: RequestWhy, status: Schema.optionalKey(Schema.Finite) },
-  /** Google answered, with no quota this reads. */
-  NoQuota: {},
-  /** A request was to go to a host that is not Google's, and did not. */
-  HostRefused: { host: Schema.String },
-  /** The group's window of this length was not in the last reading, or has reset since. */
-  WindowUnknown: { group: Schema.String, span: Span },
-  /** A full window with no reset time. */
-  FullWithoutReset: { group: Schema.String, span: Span },
-  /** A fleet peer could not be read: shown stale with its age, never as open. */
-  PeerStale: { peer: Schema.String, ageMs: Schema.Finite },
-})
-export type Why = typeof Why.Type
 
 /** The last limit a pane printed: when, until when if it said, and the group if one was named (else every group). */
 export const SeenLimit = Schema.Struct({

@@ -5,7 +5,7 @@
 import { Context, type Effect, type Option, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
-import type { AntigravityReport } from "./antigravity/fleet.ts"
+import type { AntigravityReport } from "./antigravity-report.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use } from "./limits.ts"
 import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"

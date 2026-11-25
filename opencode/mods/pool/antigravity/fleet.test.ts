@@ -29,7 +29,7 @@ import {
   resolveGroup,
 } from "./fleet.ts"
 import type { Span, Window } from "./quota.ts"
-import { Answer, Shown, Why } from "./state.ts"
+import { Answer, Shown } from "./state.ts"
 import { mergedStatusLines } from "./text.ts"
 
 const MINUTE = 60_000

@@ -11,63 +11,10 @@
 // - an unknown or absent window is never "unlimited" and never blocks a start.
 // Pure: no clock, no I/O.
 import { Array as Arr, Match, Option, Schema } from "effect"
-import { GEMINI, keyOf, SHARED, Span, Window } from "./quota.ts"
+import { AntigravityReport, HostAttempt, HostFailure, HostReading, LimitEvent } from "../antigravity-report.ts"
+import { GEMINI, keyOf, SHARED, type Span, type Window } from "./quota.ts"
 import { Answer, READ_EVERY_MS, Shown, type State, Why } from "./state.ts"
-
-/** One pane limit event observed on a host. */
-export const LimitEvent = Schema.Struct({
-  group: Schema.String,
-  seenAt: Schema.Finite,
-  resetAt: Schema.optionalKey(Schema.Finite),
-  host: Schema.String,
-  /** Stable dedup key (Error ID line when present, else reset time). */
-  key: Schema.optionalKey(Schema.String),
-})
-export type LimitEvent = typeof LimitEvent.Type
-
-/** One quota reading taken on a host. */
-export const HostReading = Schema.Struct({
-  at: Schema.Finite,
-  host: Schema.String,
-  windows: Schema.Array(Window),
-})
-export type HostReading = typeof HostReading.Type
-
-/** One read attempt and its floor, for cross-host 5-minute spacing. */
-export const HostAttempt = Schema.Struct({
-  id: Schema.String,
-  at: Schema.Finite,
-  nextReadAt: Schema.Finite,
-  host: Schema.String,
-})
-export type HostAttempt = typeof HostAttempt.Type
-
-/** One host's last read failure, for status display. */
-export const HostFailure = Schema.Struct({
-  host: Schema.String,
-  at: Schema.Finite,
-  why: Why,
-})
-export type HostFailure = typeof HostFailure.Type
-
-/** One host's Antigravity report, carried in the fleet Report. Never carries a token. */
-export const AntigravityReport = Schema.Struct({
-  host: Schema.String,
-  at: Schema.Finite,
-  /** Whether this host currently has a readable sign-in (managed profile token file or held token; never touches keychain). */
-  readableSignIn: Schema.Boolean,
-  /** Limit events seen on this host. */
-  limits: Schema.Array(LimitEvent),
-  /** Dedup keys of pane limit frames this host has already recorded. */
-  seenLimitKeys: Schema.optionalKey(Schema.Array(Schema.String)),
-  /** This host's newest reading, if any. */
-  reading: Schema.optionalKey(HostReading),
-  /** This host's last read attempt and floor, if any. */
-  attempt: Schema.optionalKey(HostAttempt),
-  /** Why this host last failed or could not read, if any. */
-  failure: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, why: Why })),
-})
-export type AntigravityReport = typeof AntigravityReport.Type
+export { AntigravityReport, HostAttempt, HostFailure, HostReading, LimitEvent } from "../antigravity-report.ts"
 
 /** One host's reachability in the merged fleet view. */
 export const PeerHealth = Schema.TaggedUnion({

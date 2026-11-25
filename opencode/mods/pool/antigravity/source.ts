@@ -432,7 +432,7 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
           ),
         ),
       ),
-    record: (text, groupOrModel, recordOptions) =>
+    record: (text, groupOrModel, recordOptions?: RecordOptions) =>
       Effect.gen(function* () {
         const at = yield* now
         const parsed = parsePaneLimits(text, at, Option.getOrUndefined(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.at))))

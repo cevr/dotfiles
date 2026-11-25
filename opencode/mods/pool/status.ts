@@ -9,7 +9,7 @@
 // schemas below describe the answers of the older methods. No answer carries
 // a secret.
 import { Schema } from "effect"
-import { AntigravityReport } from "./antigravity/fleet.ts"
+import { AntigravityReport } from "./antigravity-report.ts"
 import { Hold } from "./hold.ts"
 import { QuotaReading, UsageReadFailure } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"

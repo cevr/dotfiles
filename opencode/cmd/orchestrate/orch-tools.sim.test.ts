@@ -220,7 +220,7 @@ seeded("status and land answers show Antigravity per group beside Claude and Ope
                 ],
               }),
           },
-        ),
+        ).pipe(Effect.asVoid, Effect.orDie),
     })
     yield* run.world.load(fakePool, { directory: WORK })
     const root = yield* run.world.session(WORK)

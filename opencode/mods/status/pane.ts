@@ -205,7 +205,7 @@ export interface AntigravityRow {
 /** Antigravity's merged per-group rows as the pool pane draws them beside Claude and OpenAI. */
 export const antigravityRows = (read: PaneAntigravity): ReadonlyArray<AntigravityRow> =>
   read.lines.map((text) => ({
-    warn: /· (?:limited|stale|unavailable)|stale \(/.test(text),
+    warn: ["· limited", "· stale", "· unavailable", "stale ("].some((token) => text.includes(token)),
     detail: text.startsWith("  "),
     text,
   }))
