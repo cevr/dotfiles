@@ -21,14 +21,14 @@ const holdsKey = (run: string): boolean => {
   const add = (char: string, by: number) => {
     const before = Option.getOrElse(Option.fromUndefinedOr(counts.get(char)), () => 0)
     counts.set(char, before + by)
-    sum += WEIGHT[before + by] - WEIGHT[before]
+    sum += Option.getOrElse(Arr.get(WEIGHT, before + by), () => 0) - Option.getOrElse(Arr.get(WEIGHT, before), () => 0)
   }
-  for (let at = 0; at < RUN_MIN; at++) add(run[at], 1)
+  for (let at = 0; at < RUN_MIN; at++) add(run.charAt(at), 1)
   for (let at = 0; at <= run.length - RUN_MIN; at++) {
     if (Math.log2(RUN_MIN) - sum / RUN_MIN >= 4.19 && isRandom(run.slice(at, at + RUN_MIN))) return true
     if (at < run.length - RUN_MIN) {
-      add(run[at], -1)
-      add(run[at + RUN_MIN], 1)
+      add(run.charAt(at), -1)
+      add(run.charAt(at + RUN_MIN), 1)
     }
   }
   return false
@@ -59,14 +59,15 @@ export const secretFree = (text: string): string => {
   for (const match of text.matchAll(TOKEN_RUN)) {
     const start = match.index
     const end = start + match[0].length
-    while (at < known.length && known[at].end <= start) at++
-    if (holdsKey(match[0]) || (at < known.length && known[at].start < end)) spans.push({ start, end })
+    while (Option.exists(Arr.get(known, at), (span) => span.end <= start)) at++
+    if (holdsKey(match[0]) || Option.exists(Arr.get(known, at), (span) => span.start < end)) spans.push({ start, end })
   }
-  if (spans.length === 0) return text
   spans.sort(byStart)
+  const first = Arr.head(spans)
+  if (Option.isNone(first)) return text
   // Walk the sorted union. No edit is made until the next disjoint span proves the previous one has ended.
   let output = ""
-  let start = spans[0].start
+  let start = first.value.start
   let end = start
   let copied = 0
   for (const span of spans) {
