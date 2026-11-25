@@ -16,7 +16,8 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Console, Effect, Option, Schedule, Stream } from "effect"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { testHostEnv } from "../scripts/test-host.ts"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { elapsedForReport } from "../tests/hang-guard.ts"
 
 const ASK = "Run the slow check."
@@ -88,7 +89,7 @@ export default OpenCodeDriver.use(
             onExit: () => {
               exited = true
             },
-            env: { ...env, ...environment, TERM: "xterm-256color", TERM_PROGRAM: "rex", REX_SESSION: "session:rex-state-test", REX_BLOCK: "block:rex-state-test" },
+            env: { ...env, ...environment, TERM: "xterm-256color", TERM_PROGRAM: "rex", REX_SESSION: "session:rex-state-test", REX_BLOCK: "block:rex-state-test", ...testHostEnv() },
             terminal: {
               cols: 100,
               rows: 30,

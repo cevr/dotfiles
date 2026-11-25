@@ -20,6 +20,7 @@ import { dirname, join, resolve } from "node:path"
 import { anthropicAuthPlugin } from "../../testbeds/anthropic-auth.ts"
 import { forkLaunch, unboundBuild } from "../../testbeds/gamut/gamut.ts"
 import { BUILTIN_AUTOMATION_OFF, pluginDir } from "../daily.ts"
+import { testHostEnv } from "../test-host.ts"
 import { Data, Effect, Option, Result, Schedule } from "effect"
 import { spawnSync } from "bun"
 
@@ -254,6 +255,7 @@ export const measure = async (options: Options): Promise<Measure> => {
     OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${receiver.port}`,
     OTEL_BSP_SCHEDULE_DELAY: String(EXPORT_MS),
     ...options.launch.env,
+    ...testHostEnv(),
   }
   if (options.cpuProfile) env.BUN_OPTIONS = `${env.BUN_OPTIONS ?? ""} --cpu-prof --cpu-prof-dir=${resolve(options.cpuProfile)}`.trim()
   mkdirSync(join(root, "tmp"), { recursive: true })

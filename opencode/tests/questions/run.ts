@@ -17,6 +17,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { formOf } from "../../mods/questions/form.ts"
 import type { Question } from "../../mods/questions/question.ts"
 import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
@@ -92,7 +93,7 @@ const warnings: Array<Warning> = []
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 try {
-  const opencode = await OpenCode.create({
+  const opencode = await OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
@@ -104,7 +105,7 @@ try {
         if (entry.level === "warn") warnings.push({ message: entry.message, ...(entry.attributes === undefined ? {} : { attributes: { sessionID: entry.attributes.sessionID } }) })
       },
     },
-  })
+  }))
   try {
     // The other directory first, so the plugin is loaded there as well.
     const idle = await opencode.sessions.create({ location: { directory: other } })

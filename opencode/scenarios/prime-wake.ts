@@ -25,7 +25,7 @@
 import { Effect, Schedule, Stream } from "effect"
 import { cpSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { envelopesInJson } from "../sim/envelopes.ts"
 
 const root = process.cwd()

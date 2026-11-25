@@ -8,6 +8,7 @@ import { checkoutRoot, matchingInput } from "../tests/read-path.ts"
 import { checkForkEnvironment, spawnScratchGitSync, spawnScratchShell } from "../tests/scratch-child.ts"
 import { localTestPaths, localTestProcess, scratch } from "../tests/scratch.ts"
 import { readMatcher } from "./read-declarations.ts"
+import { testHostEnv } from "./test-host.ts"
 import { acceptanceTests, checkedTests, mergeScriptTests, unitTests, workboxTestFiles } from "./test-population.ts"
 import { checkReadInputs } from "./test-reads.ts"
 
@@ -128,6 +129,7 @@ it.live.layer(BunServices.layer)("fork fixture environment accepts safe PATH ent
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
       OPENCODE_DB: join(fixture.path, "opencode.db"),
+      ...testHostEnv(),
     }
     expect(() => checkForkEnvironment(base)).not.toThrow()
     expect(() => checkForkEnvironment({ ...base, PATH: "/usr/bin:/bin" })).not.toThrow()

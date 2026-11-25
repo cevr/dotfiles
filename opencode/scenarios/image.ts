@@ -26,7 +26,7 @@
 import { Effect, Option, Schedule, Schema, Stream } from "effect"
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
