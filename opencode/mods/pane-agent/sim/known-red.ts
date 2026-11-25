@@ -32,7 +32,34 @@ export const reasonOf = (key: string): string => Option.getOrElse(Option.fromUnd
  * The named signature classes (ruling 7, widened): one real fault, with its diagnosis or review reference, and the
  * signatures it shows as. Every pinned signature must belong to one (a unit test checks it).
  */
-export const CLASSES: ReadonlyArray<{ readonly name: string; readonly reference: string; readonly pattern: RegExp }> = []
+export const CLASSES: ReadonlyArray<{ readonly name: string; readonly reference: string; readonly pattern: RegExp }> = [
+  {
+    name: "StoreConflict wedge",
+    reference: "Q-a reload (r3), diagnosis #9, two processes on one store (r3 §3): a stale actor's follow_up conflicts for good",
+    pattern: /^I8 \S+: with faults off and the pane idle, a follow_up still fails \(StoreConflict\): the worker is wedged$/,
+  },
+  {
+    name: "status disagrees with the store",
+    reference: "Q-a reload (r3), review r2 grouping: a stale actor's view against another writer's row",
+    pattern: /^I6 \S+: at quiescence status says \S+\/turn N but the store says \S+\/turn N$/,
+  },
+  { name: "call never answers", reference: "H and F1 (diagnosis §3, r3), diagnosis #2, #11 and #12: a tool call with no bound", pattern: /^I1 \S+#N \(\S+\) did not answer within N ms$/ },
+  { name: "untyped defect reaches the caller", reference: "F1 (r3), diagnosis §3 I: a defect is not a typed error", pattern: /^I1 \S+#N \(\S+\) died with an untyped defect: / },
+  { name: "settled turn never woken", reference: "I, R1 and Q2 (diagnosis §3, r1, r2): a turn ends in the pane and no done wake carries it", pattern: /^I4 \S+ turn N \(<tok>\) ended in the pane, but no done wake ever carried its answer$/ },
+  { name: "duplicate wake", reference: "I4 one wake per (turn, kind), diagnosis section 4", pattern: /^I4 \S+: N distinct wakes for \(turn, kind\) N:\S+$/ },
+  { name: "done before the turn ended", reference: "B1 and R3 (r1), review r2 (await:second:reattach@10: a ready screen read as done)", pattern: /^I6 \S+: done wake for turn N \(<tok>\) at t=N, but that turn had not ended in the pane$/ },
+  { name: "answer re-delivered for another turn", reference: "diagnosis #8: a crash after Persist(typed) reports a turn that never ran", pattern: /^I6 \S+: done wake for turn N at t=N carries the answer of turn N \(<tok>\), a turn already reported$/ },
+  { name: "working with no typed turn", reference: "I and G (diagnosis §3): the store says working forever", pattern: /^I6 \S+: at quiescence the store says working, but no typed turn is open in the pane$/ },
+  { name: "status says done too early", reference: "B3 (r1), I6 truth: a reply claims done before the turn ended", pattern: /^I6 \S+: status#N says done at t=N, but turn N \(<tok>\) has not ended in the pane$/ },
+  { name: "orphan split", reference: "diagnosis #5, ruling (2): a split no record owns and no \"split result unknown\"", pattern: /^I2 pane <block> was split by the unit and is running, but no worker record owns it/ },
+  { name: "store ahead of the caller", reference: "G (diagnosis §3, #7): the store records a turn the caller was refused", pattern: /^I2 \S+: the store records turn N, but the caller saw only N turn\(s\) accepted$/ },
+  { name: "refused yet typed", reference: "review r2 grouping, G's class: a refused turn was typed", pattern: /^I2 <tok> was refused to the caller, yet typed Nx$/ },
+  { name: "accepted turn never typed", reference: "E1 and Q1 (r2), ruling (3): no not_typed report", pattern: /^I3 \S+ turn N \(<tok>, \S+\) was accepted but never typed and never reported "not typed"$/ },
+  { name: "write into a prompt", reference: "B2 (r1): bytes typed while a trust or permission prompt shows", pattern: /^I5 wrote .* into <block> while it showed a \S+ prompt \(t=N\)$/ },
+  { name: "queued turn never typed", reference: "Q1 (r2), F1 (r3): a queued turn waits on an idle pane", pattern: /^I8 \S+: N queued turn\(s\) never typed though the pane is idle$/ },
+  { name: "wake stuck in the outbox", reference: "R1 and Q2 (r1, r2), diagnosis #3: a pending wake never delivered", pattern: /^I8 \S+: N wake\(s\) still pending in the outbox at quiescence$/ },
+  { name: "usage limit not handled", reference: "SPEC v2 addition and ruling (5): no limited wake, no resume", pattern: /^I9 \S+ turn N \(<tok>\) hit the usage limit at t=N(, but no "limited" wake reported it|; never resumed after its reset at t=N and never reported "not typed")$/ },
+]
 
 export const classOf = (signature: string): Option.Option<string> =>
   Option.map(Option.fromUndefinedOr(CLASSES.find((item) => item.pattern.test(signature))), (item) => item.name)

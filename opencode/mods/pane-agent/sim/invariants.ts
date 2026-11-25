@@ -481,7 +481,7 @@ export const formatViolations = (violations: ReadonlyArray<Violation>): string =
   violations.map((item) => `  [I${item.invariant} ${INVARIANTS[item.invariant]}] ${item.detail}`).join("\n")
 
 /** A detail with its numbers, tokens and ids stripped; worker keys (w1, named1) stay, so a fault on another worker differs. */
-export const shapeOf = (detail: string): string =>
+export const strippedDetail = (detail: string): string =>
   detail
     .replace(/\bmsg_[A-Za-z0-9_]+/g, "<msg>")
     .replace(/\bpa_[A-Za-z0-9_]+/g, "<id>")
@@ -490,4 +490,4 @@ export const shapeOf = (detail: string): string =>
     .replace(/(?<![A-Za-z])\d+/g, "N")
 
 /** A violation's signature (SPEC v2 ruling 7, widened): its invariant and its shaped detail (the worker is in the detail). */
-export const signatureOf = (violation: Violation): string => `I${violation.invariant} ${shapeOf(violation.detail)}`
+export const signatureOf = (violation: Violation): string => `I${violation.invariant} ${strippedDetail(violation.detail)}`

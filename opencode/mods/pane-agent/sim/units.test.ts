@@ -296,9 +296,9 @@ describe("pane-agent-sim pins are per violation signature (SPEC v2 ruling 7, wid
       expect(pinned.length).toBeGreaterThan(0)
       const [check, job] = pinned[0] ?? ["", ""]
       const pin = pinnedRed(check)
-      expect(pinDiff(pin, { [job]: [wedge] })).toEqual([])
-      expect(pinDiff(pin, { [job]: [wedge, signatureOf({ invariant: 8, detail: WEDGE.replace("w1:", "w2:") })] }).length).toBeGreaterThan(0)
-      expect(pinDiff(pin, { [job]: [wedge, signatureOf({ invariant: 8, detail: "w1: 1 queued turn(s) never typed though the pane is idle" })] }).length).toBeGreaterThan(0)
+      expect(pinDiff(pin, { ...pin, [job]: [wedge] })).toEqual([])
+      expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: WEDGE.replace("w1:", "w2:") })] }).length).toBeGreaterThan(0)
+      expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: "w1: 1 queued turn(s) never typed though the pane is idle" })] }).length).toBeGreaterThan(0)
       expect(pinDiff(pin, {}).length).toBeGreaterThan(0)
     }),
     hangGuard("unit-law"),
