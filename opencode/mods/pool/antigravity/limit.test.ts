@@ -56,13 +56,13 @@ describe("Antigravity limit messages, generated", () => {
       const parts = UNITS.flatMap(([unit, ms]) => {
         if (random() < 0.4) return []
         const fractional = unit !== "ms" && random() < 0.3
-        const amount = fractional ? Math.round(random() * 5900) / 100 : Math.floor(random() * 60)
+        const amount = Math.round(random() * 5900) / 100 * Number(fractional) + Math.floor(random() * 60) * Number(!fractional)
         expected += amount * ms
         return [`${amount}${unit}`]
       })
-      const duration = parts.length === 0 ? "1s" : parts.join("")
+      const duration = parts.join("") || "1s"
       if (parts.length === 0) expected = 1_000
-      const prefix = random() < 0.5 ? "RESOURCE_EXHAUSTED (code 429): " : ""
+      const prefix = ["", "RESOURCE_EXHAUSTED (code 429): "][Number(random() < 0.5)]
       const text = `${prefix}Individual quota reached. Please upgrade your subscription to increase your limits. Resets in ${duration}.`
       const reset = Option.flatMap(parseLimit(text, NOW), (limit) => limit.resetAt)
       if (expected === 0) expect(reset).toEqual(Option.none())

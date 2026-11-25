@@ -2,13 +2,13 @@
 // shapes (antigravityUsageLimits.test.ts at 55085df2) as a table, then
 // generated bodies, which never throw and whose excess fields change nothing.
 import { describe, expect, test } from "bun:test"
-import { Option } from "effect"
-import { decodeModels, decodeSummary, firstAnswers, modelWindows, summaryWindows, type Window } from "./quota.ts"
+import { Array as Arr, DateTime, Option, type Schema } from "effect"
+import { decodeModels, decodeSummary, firstAnswers, type Models, modelWindows, type Summary, summaryWindows, type Window } from "./quota.ts"
 
 const at = (iso: string) => Date.parse(iso)
-const summary = (body: unknown, requestedAt: number) => Option.match(decodeSummary(body), { onNone: () => [], onSome: (read) => summaryWindows(read, requestedAt) })
-const models = (body: unknown) => Option.match(decodeModels(body), { onNone: () => [], onSome: modelWindows })
-const brief = (windows: ReadonlyArray<Window>) => windows.map((window) => [window.group, window.span, Math.round(window.used * 1000) / 1000, window.resetAt])
+const summary = (decoded: Option.Option<Summary>, requestedAt: number) => Option.match(decoded, { onNone: () => [], onSome: (read) => summaryWindows(read, requestedAt) })
+const models = (decoded: Option.Option<Models>) => Option.match(decoded, { onNone: () => [], onSome: modelWindows })
+const brief = (windows: ReadonlyArray<Window>) => windows.map((window) => [window.group, window.span, Math.round(window.used * 1000) / 1000, Option.fromUndefinedOr(window.resetAt)])
 
 describe("Antigravity quota summary", () => {
   test("the two groups' 5-hour and weekly buckets read as their windows", () => {
@@ -30,11 +30,11 @@ describe("Antigravity quota summary", () => {
         },
       ],
     }
-    expect(brief(summary(body, at("2026-10-09T12:00:00Z")))).toEqual([
-      ["gemini", "7d", 0.04, at("2026-10-12T19:41:43Z")],
-      ["gemini", "5h", 0.09, at("2026-10-09T16:06:01Z")],
-      ["claude-gpt", "7d", 1, at("2026-10-10T15:28:22Z")],
-      ["claude-gpt", "5h", 0.56, at("2026-10-09T16:06:30Z")],
+    expect(brief(summary(decodeSummary(body), at("2026-10-09T12:00:00Z")))).toEqual([
+      ["gemini", "7d", 0.04, Option.some(at("2026-10-12T19:41:43Z"))],
+      ["gemini", "5h", 0.09, Option.some(at("2026-10-09T16:06:01Z"))],
+      ["claude-gpt", "7d", 1, Option.some(at("2026-10-10T15:28:22Z"))],
+      ["claude-gpt", "5h", 0.56, Option.some(at("2026-10-09T16:06:30Z"))],
     ])
   })
 
@@ -51,10 +51,10 @@ describe("Antigravity quota summary", () => {
         },
       ],
     }
-    expect(brief(summary(body, requestedAt))).toEqual([
-      ["claude-gpt", "5h", 0, undefined],
-      ["claude-gpt", "7d", 0, undefined],
-      ["gemini", "5h", 0.152, at("2026-10-21T13:29:53Z")],
+    expect(brief(summary(decodeSummary(body), requestedAt))).toEqual([
+      ["claude-gpt", "5h", 0, Option.none()],
+      ["claude-gpt", "7d", 0, Option.none()],
+      ["gemini", "5h", 0.152, Option.some(at("2026-10-21T13:29:53Z"))],
     ])
     const kept = {
       buckets: [
@@ -65,12 +65,12 @@ describe("Antigravity quota summary", () => {
         { bucketId: "empty-description", window: "5h", remainingFraction: 1, description: "", resetTime: "2026-10-21T15:16:04Z" },
       ],
     }
-    expect(summary(kept, requestedAt).map((window) => [window.group, window.resetAt])).toEqual([
-      ["described", at("2026-10-21T15:16:04Z")],
-      ["distant", at("2026-10-28T12:16:04Z")],
-      ["spent", at("2026-10-21T15:16:04Z")],
-      ["overfull", at("2026-10-21T15:16:04Z")],
-      ["empty-description", at("2026-10-21T15:16:04Z")],
+    expect(summary(decodeSummary(kept), requestedAt).map((window) => [window.group, Option.fromUndefinedOr(window.resetAt)])).toEqual([
+      ["described", Option.some(at("2026-10-21T15:16:04Z"))],
+      ["distant", Option.some(at("2026-10-28T12:16:04Z"))],
+      ["spent", Option.some(at("2026-10-21T15:16:04Z"))],
+      ["overfull", Option.some(at("2026-10-21T15:16:04Z"))],
+      ["empty-description", Option.some(at("2026-10-21T15:16:04Z"))],
     ])
   })
 
@@ -87,13 +87,13 @@ describe("Antigravity quota summary", () => {
         bucket("weekly-edge", "weekly", "2026-10-28T10:15:04Z"),
       ],
     }
-    expect(summary(body, requestedAt).map((window) => [window.group, window.resetAt])).toEqual([
-      ["5h-after", at("2026-10-21T15:17:05Z")],
-      ["5h-before", undefined],
-      ["5h-edge", undefined],
-      ["weekly-after", undefined],
-      ["weekly-before", at("2026-10-28T10:15:03Z")],
-      ["weekly-edge", undefined],
+    expect(summary(decodeSummary(body), requestedAt).map((window) => [window.group, Option.fromUndefinedOr(window.resetAt)])).toEqual([
+      ["5h-after", Option.some(at("2026-10-21T15:17:05Z"))],
+      ["5h-before", Option.none()],
+      ["5h-edge", Option.none()],
+      ["weekly-after", Option.none()],
+      ["weekly-before", Option.some(at("2026-10-28T10:15:03Z"))],
+      ["weekly-edge", Option.none()],
     ])
   })
 
@@ -113,10 +113,10 @@ describe("Antigravity quota summary", () => {
         },
       ],
     }
-    expect(summary(body, 0).map((window) => [window.group, window.label, window.span, window.used, window.resetAt])).toEqual([
-      ["gemini-argon", "Argon", "5h", 0.5, undefined],
-      ["gemini-carbon", "Argon", "5h", 1, undefined],
-      ["gemini", "Gemini", "5h", 0, undefined],
+    expect(summary(decodeSummary(body), 0).map((window) => [window.group, window.label, window.span, window.used, Option.fromUndefinedOr(window.resetAt)])).toEqual([
+      ["gemini-argon", "Argon", "5h", 0.5, Option.none()],
+      ["gemini-carbon", "Argon", "5h", 1, Option.none()],
+      ["gemini", "Gemini", "5h", 0, Option.none()],
     ])
   })
 
@@ -129,18 +129,18 @@ describe("Antigravity quota summary", () => {
         "other-model": { quotaInfo: { remainingFraction: 0 } },
       },
     }
-    expect(brief(models(body))).toEqual([
-      ["gemini", "quota", 0.4, at("2026-10-10T12:00:00Z")],
-      ["claude-gpt", "quota", 0.8, undefined],
-      ["claude-gpt", "7d", 0.5, undefined],
+    expect(brief(models(decodeModels(body)))).toEqual([
+      ["gemini", "quota", 0.4, Option.some(at("2026-10-10T12:00:00Z"))],
+      ["claude-gpt", "quota", 0.8, Option.none()],
+      ["claude-gpt", "7d", 0.5, Option.none()],
     ])
   })
 
   test("the first endpoint to read a window wins it; another endpoint adds only what the first lacks", () => {
     const window = (group: string, span: "5h" | "7d", used: number): Window => ({ group, label: group, span, used })
     expect(brief(firstAnswers([[window("claude-gpt", "5h", 0.5)], [window("claude-gpt", "5h", 0), window("gemini", "7d", 0.1)]]))).toEqual([
-      ["claude-gpt", "5h", 0.5, undefined],
-      ["gemini", "7d", 0.1, undefined],
+      ["claude-gpt", "5h", 0.5, Option.none()],
+      ["gemini", "7d", 0.1, Option.none()],
     ])
   })
 })
@@ -156,33 +156,44 @@ const generator = (seed: number) => {
   }
 }
 
-const ANYTHING: ReadonlyArray<unknown> = [null, undefined, 0, -1, 1.5, Number.NaN, "", "5h", "weekly", true, [], {}, { nested: { deep: 1 } }, "2026-10-10T12:00:00Z", "gemini-5h", "3p-weekly"]
+type Random = ReturnType<typeof generator>
+
+/** One of `from`, at random. */
+const pick = <A,>(random: Random, from: readonly [A, ...ReadonlyArray<A>]): A => Option.getOrElse(Arr.get(from, Math.floor(random() * from.length)), () => from[0])
+
+/** `often()` with chance `p`, else `rarely()`. */
+const either = <A,>(random: Random, p: number, often: () => A, rarely: () => A): A =>
+  Option.getOrElse(Arr.get([rarely, often], Number(random() < p)), () => rarely)()
+
+const ANYTHING: readonly [Schema.Json, ...ReadonlyArray<Schema.Json>] = [0, -1, 1.5, Number.NaN, "", "5h", "weekly", true, [], {}, { nested: { deep: 1 } }, "2026-10-10T12:00:00Z", "gemini-5h", "3p-weekly"]
 
 describe("Antigravity quota decoding of generated bodies", () => {
   test("never throws, reads only fractions in range, and ignores excess fields", () => {
     for (let seed = 1; seed <= 400; seed++) {
       const random = generator(seed)
-      const any = () => ANYTHING[Math.floor(random() * ANYTHING.length)]
-      const bucket = () => ({
-        bucketId: random() < 0.8 ? ["gemini-5h", "3p-weekly", "gemini-argon-x", "custom"][Math.floor(random() * 4)] : any(),
-        window: random() < 0.8 ? ["5h", "weekly", "daily"][Math.floor(random() * 3)] : any(),
-        remainingFraction: random() < 0.7 ? random() * 1.4 - 0.2 : any(),
-        resetTime: random() < 0.7 ? new Date(1_800_000_000_000 + random() * 1e9).toISOString() : any(),
-        ...(random() < 0.3 ? { description: any() } : {}),
-        ...(random() < 0.3 ? { disabled: any() } : {}),
-      })
-      const buckets = Array.from({ length: Math.floor(random() * 6) }, bucket)
-      const body = random() < 0.5 ? { groups: [{ displayName: any(), buckets }] } : random() < 0.8 ? { buckets } : any()
-      const read = summary(body, 1_800_000_000_000)
+      const any = () => pick(random, ANYTHING)
+      const bucket = () => {
+        const base = {
+          bucketId: either(random, 0.8, () => pick(random, ["gemini-5h", "3p-weekly", "gemini-argon-x", "custom"]), any),
+          window: either(random, 0.8, () => pick(random, ["5h", "weekly", "daily"]), any),
+          remainingFraction: either(random, 0.7, () => random() * 1.4 - 0.2, any),
+          resetTime: either(random, 0.7, () => DateTime.formatIso(DateTime.makeUnsafe(1_800_000_000_000 + random() * 1e9)), any),
+        }
+        const described = either(random, 0.3, () => ({ ...base, description: any() }), () => base)
+        return either(random, 0.3, () => ({ ...described, disabled: any() }), () => described)
+      }
+      const buckets = Arr.makeBy(Math.floor(random() * 6), bucket)
+      const record = either(random, 0.6, () => ({ groups: [{ displayName: any(), buckets }] }), () => ({ buckets }))
+      const read = summary(decodeSummary(record), 1_800_000_000_000)
       for (const window of read) {
         expect(window.used).toBeGreaterThanOrEqual(0)
         expect(window.used).toBeLessThanOrEqual(1)
         expect(["5h", "7d"]).toContain(window.span)
-        if (window.resetAt !== undefined) expect(Number.isFinite(window.resetAt)).toBe(true)
+        expect(Option.getOrElse(Option.map(Option.fromUndefinedOr(window.resetAt), Number.isFinite), () => true)).toBe(true)
       }
-      const extra = typeof body === "object" && body !== null && !Array.isArray(body) ? { ...body, unrelated: any(), kind: "extra" } : body
-      expect(summary(extra, 1_800_000_000_000)).toEqual(read)
-      expect(() => models({ models: { [`gemini-${seed}`]: { quotaInfo: bucket(), weeklyQuotaInfo: any(), extra: any() } } })).not.toThrow()
+      expect(summary(decodeSummary({ ...record, unrelated: any(), kind: "extra" }), 1_800_000_000_000)).toEqual(read)
+      expect(() => summary(decodeSummary(any()), 1_800_000_000_000)).not.toThrow()
+      expect(() => models(decodeModels({ models: { [`gemini-${seed}`]: { quotaInfo: bucket(), weeklyQuotaInfo: any(), extra: any() } } }))).not.toThrow()
     }
   })
 })
