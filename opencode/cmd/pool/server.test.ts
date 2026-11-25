@@ -2472,9 +2472,9 @@ describe("interim hold-wake on hosts without a Step", () => {
             const label = `fails ${fails}, ${disruption}, ${moment}`
             const until = (yield* Clock.currentTimeMillis) + 2 * MINUTE
             const state = heldWorld(until)
-            const process = LedgerLive.holdAuthority().lock
+            const sameProcess = LedgerLive.holdAuthority().lock
             const first = yield* Scope.make()
-            const plugin = yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, process).pipe(Scope.provide(first))
+            const plugin = yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, sameProcess).pipe(Scope.provide(first))
             const other = yield* Scope.make()
             if (disruption === "second-process") yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(other))
             yield* refusalOf(plugin.request("ses_child"))
@@ -2484,7 +2484,7 @@ describe("interim hold-wake on hosts without a Step", () => {
             yield* advance(until - (yield* Clock.currentTimeMillis) + 6 * MINUTE)
             const later = yield* Scope.make()
             if (disruption === "reload") {
-              yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, process).pipe(Scope.provide(later))
+              yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, sameProcess).pipe(Scope.provide(later))
               yield* Scope.close(first, Exit.void)
             }
             if (disruption === "stop-start") {
