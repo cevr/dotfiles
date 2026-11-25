@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Scope, Stream } from "effect"
 import { GateDecision } from "@dotfiles/opencode-pool/antigravity/gate"
 import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
 import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
@@ -135,6 +135,12 @@ interface World {
   readonly synthetics: Array<{ readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean; readonly woke: boolean }>
   /** Admitted synthetic ids (`${sessionID}\0${id}`), modelling the host's first-admission-wins reconciliation. */
   readonly admitted: Set<string>
+  /**
+   * The wake's host calls: `calls` every `session.synthetic` asked (a repeat the host refuses included), the next
+   * `fails` of them fail before the host admits anything, `hang` holds a call after the host admitted it (the pool
+   * never hears back), and `scans` counts the pool's reads of its held-send rows.
+   */
+  readonly wakeAccess: { calls: number; fails: number; hang: boolean; scans: number }
 }
 
 const world = (): World => ({
@@ -153,6 +159,7 @@ const world = (): World => ({
   stopped: new Set(),
   synthetics: [],
   admitted: new Set(),
+  wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0 },
 })
 
 /** The outside systems as test layers over `state`. */
@@ -213,6 +220,8 @@ const start = <R = never,>(
   ready = true,
   /** The Antigravity root: none by default; one that needs the host's services makes the start need them too. */
   antigravity: AntigravityRoot<R> = NO_ANTIGRAVITY,
+  /** The lock over the held-send rows: one per process (a reload's copies share it); a fresh one is another process. */
+  sendRecords = LedgerLive.holdAuthority().lock,
 ) =>
   Effect.gen(function* () {
     const root = yield* scratchRoot
@@ -291,13 +300,18 @@ const start = <R = never,>(
         },
         synthetic: (input: { readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean }) =>
           Effect.suspend(() => {
+            state.wakeAccess.calls += 1
             if (state.missing.has(input.sessionID)) return Effect.fail(SessionNotFound.make({ sessionID: input.sessionID }))
+            if (state.wakeAccess.fails > 0) {
+              state.wakeAccess.fails -= 1
+              return Effect.fail(new Error("the host could not admit the notice"))
+            }
             const key = Option.map(Option.fromUndefinedOr(input.id), (id) => `${input.sessionID}\0${id}`)
             if (Option.exists(key, (value) => state.admitted.has(value))) return Effect.void
             if (Option.isSome(key)) state.admitted.add(key.value)
             const woke = input.resume !== false && !state.stopped.has(input.sessionID)
             state.synthetics.push({ ...input, woke })
-            return Effect.void
+            return state.wakeAccess.hang ? Effect.never : Effect.void
           }),
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {
@@ -372,11 +386,12 @@ const start = <R = never,>(
             if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
             return state.holdAccess.beforeRead.pipe(Effect.andThen(storage.scan(input)))
           }
+          if (input.prefix.startsWith("held-send/")) state.wakeAccess.scans += 1
           return storage.scan(input)
         }),
       },
     } as unknown as Host
-    yield* make(externals === "test" ? testLayers(state, published, root) : externals, LIVE_STORE_HOST, LedgerLive.holdAuthority().lock, antigravity).effect(host)
+    yield* make(externals === "test" ? testLayers(state, published, root) : externals, LIVE_STORE_HOST, sendRecords, antigravity).effect(host)
     // The model builds from the ledger after the plugin is active: a start is complete once the pool answers.
     if (ready) yield* Effect.exit(rpc[POOL_STATUS.id]!["alerts"]!({}))
 
@@ -2345,13 +2360,29 @@ describe("Antigravity, composed as OpenCode composes the pool", () => {
 })
 
 describe("interim hold-wake on hosts without a Step", () => {
-  test("a held subagent's error states it resumes by itself and stopping cancels; a root's and an auxiliary request's do not", () =>
+  /** Moves the test clock in `step`s, letting the plugin's fibers (and the live adapters' I/O) take each one in. */
+  const advance = (ms: number, step = 30_000) =>
+    Effect.gen(function* () {
+      for (let left = ms; left > 0; left -= step) {
+        yield* TestClock.adjust(Math.min(step, left))
+        yield* settle
+      }
+    })
+  /** The wakes the host admitted for `sessionID` (a repeated id is refused, so it is not among them). */
+  const admittedFor = (state: World, sessionID: string) => state.synthetics.filter((entry) => entry.sessionID === sessionID)
+  /** A world with one Anthropic login held until `until` and `child` a subagent of `ses_root`. */
+  const heldWorld = (until: number, child = "ses_child") => {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    state.parents.set(child, "ses_root")
+    state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+    return state
+  }
+
+  test("a held subagent's error states it resumes by itself unless stopped first; a root's and an auxiliary request's do not", () =>
     onTestClock(Effect.gen(function* () {
-      const state = world()
-      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
-      state.parents.set("ses_child", "ses_root")
       const until = 10 * MINUTE
-      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      const state = heldWorld(until)
       const plugin = yield* start({ sweepMinutes: 0 }, state, live())
       const childError = yield* refusalOf(plugin.request("ses_child"))
       expect(childError).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
@@ -2369,17 +2400,14 @@ describe("interim hold-wake on hosts without a Step", () => {
       if (Schema.is(Handoff.cases.Held)(lateHandoff)) expect(lateHandoff.message).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
     })))
 
-  test("a stopped subagent is not woken by the host when its hold opens, and a restart never wakes it again", () =>
+  test("a stopped subagent is not woken by the host when its hold opens, its notice gives way to a newer task, and a restart never wakes it again", () =>
     onTestClock(Effect.gen(function* () {
-      const state = world()
-      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
-      state.parents.set("ses_stopped", "ses_root")
       const until = 2 * MINUTE
-      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      const state = heldWorld(until, "ses_stopped")
       const plugin = yield* start({ sweepMinutes: 0 }, state, live())
       expect(yield* refusalOf(plugin.request("ses_stopped"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
       state.stopped.add("ses_stopped")
-      yield* TestClock.setTime(until + MINUTE)
+      yield* advance(until + MINUTE)
       expect(state.synthetics).toHaveLength(1)
       expect(state.synthetics[0]).toMatchObject({
         sessionID: "ses_stopped",
@@ -2388,18 +2416,173 @@ describe("interim hold-wake on hosts without a Step", () => {
         resume: true,
         woke: false,
       })
+      // The host keeps a stopped Session's notice for its next task: the notice itself says that task wins.
+      expect(HoldWake.WAKE_TEXT).toContain("If a newer task came with this notice, do that task instead")
       expect(state.storage.get("held-send/ses_stopped")).toMatchObject({ wokenAt: until })
       // A fresh pool copy after restart sees wokenAt and sends nothing more.
       yield* start({ sweepMinutes: 0 }, state, live())
-      yield* TestClock.adjust(5 * MINUTE)
+      yield* advance(5 * MINUTE)
       expect(state.synthetics).toHaveLength(1)
     })))
 
-  test("wakes once with an absent 5-hour usage window, decodes legacy rows, drops gone sessions, and stays idle on hosts with a Step", () =>
+  test("a failed wake delivery is tried again: the held child is woken exactly once, and the row records only what the host took", () =>
+    onTestClock(Effect.gen(function* () {
+      const until = 2 * MINUTE
+      const state = heldWorld(until)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* refusalOf(plugin.request("ses_child"))
+      state.wakeAccess.fails = 1
+      yield* advance(until + 10 * MINUTE)
+      expect(admittedFor(state, "ses_child")).toHaveLength(1)
+      expect(admittedFor(state, "ses_child")[0]).toMatchObject({ id: HoldWake.wakeDeliveryId("ses_child", until), text: HoldWake.WAKE_TEXT, woke: true })
+      expect(state.wakeAccess.calls).toBe(2)
+      expect(state.storage.get("held-send/ses_child")).toMatchObject({ retryAt: until, wakeFailures: 1 })
+      expect(state.storage.get("held-send/ses_child")).toHaveProperty("wokenAt")
+    })))
+
+  test("once the host took the wake, the pool asks it nothing more for that hold: two restarts while it admits leave it", () =>
+    onTestClock(Effect.gen(function* () {
+      const until = 2 * MINUTE
+      const state = heldWorld(until)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* refusalOf(plugin.request("ses_child"))
+      yield* advance(until + MINUTE)
+      expect(state.wakeAccess.calls).toBe(1)
+      // A restart reads the rows at its start, while the pool admits the child; a second one again.
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* advance(5 * MINUTE)
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* advance(5 * MINUTE)
+      expect(state.wakeAccess.calls).toBe(1)
+      expect(admittedFor(state, "ses_child")).toHaveLength(1)
+    })))
+
+  // Every interleaving of failed deliveries, a reload, a stop and start, and a second server process on the same
+  // store, between the decision, the host's admission and the mark: the host takes the wake exactly once.
+  const DISRUPTIONS = ["none", "reload", "stop-start", "second-process"] as const
+  const MOMENTS = ["before the host admits", "after the host admits, before the mark"] as const
+  for (const disruption of DISRUPTIONS)
+    test(`the host takes a held child's wake exactly once: failed deliveries, then ${disruption}, at each moment`, () =>
+      onTestClock(Effect.gen(function* () {
+        for (const fails of [0, 1, 2, 3])
+          for (const moment of MOMENTS) {
+            const label = `fails ${fails}, ${disruption}, ${moment}`
+            const until = (yield* Clock.currentTimeMillis) + 2 * MINUTE
+            const state = heldWorld(until)
+            const process = LedgerLive.holdAuthority().lock
+            const first = yield* Scope.make()
+            const plugin = yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, process).pipe(Scope.provide(first))
+            const other = yield* Scope.make()
+            if (disruption === "second-process") yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(other))
+            yield* refusalOf(plugin.request("ses_child"))
+            state.wakeAccess.fails = fails
+            state.wakeAccess.hang = moment !== "before the host admits"
+            // Past the hold and the failures' back-off (30 s, 1, 2 minutes): a delivery is made, or hangs at the host.
+            yield* advance(until - (yield* Clock.currentTimeMillis) + 6 * MINUTE)
+            const later = yield* Scope.make()
+            if (disruption === "reload") {
+              yield* start({ sweepMinutes: 0 }, state, live(), true, NO_ANTIGRAVITY, process).pipe(Scope.provide(later))
+              yield* Scope.close(first, Exit.void)
+            }
+            if (disruption === "stop-start") {
+              yield* Scope.close(first, Exit.void)
+              yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+            }
+            state.wakeAccess.hang = false
+            yield* advance(30 * MINUTE, 2 * MINUTE)
+            expect([label, admittedFor(state, "ses_child").length]).toEqual([label, 1])
+            expect([label, admittedFor(state, "ses_child")[0]?.id]).toEqual([label, HoldWake.wakeDeliveryId("ses_child", until)])
+            yield* Scope.close(later, Exit.void)
+            yield* Scope.close(other, Exit.void)
+            yield* Scope.close(first, Exit.void)
+          }
+      })))
+
+  test("two server processes on one store: both deliver the hold's one id, and the host takes it once", () =>
+    onTestClock(Effect.gen(function* () {
+      const until = 2 * MINUTE
+      const state = heldWorld(until)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* refusalOf(plugin.request("ses_child"))
+      // The other process's mark is lost (overwritten by a stale write): the next look delivers the same id again.
+      yield* advance(until + MINUTE)
+      const row = state.storage.get("held-send/ses_child")
+      expect(row).toHaveProperty("wokenAt")
+      state.storage.set("held-send/ses_child", { sessionID: "ses_child", providerID: "anthropic", reasonCode: "account-held", retryAt: until, model: model.id })
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* advance(5 * MINUTE)
+      expect(state.wakeAccess.calls).toBeGreaterThan(1)
+      expect(admittedFor(state, "ses_child")).toHaveLength(1)
+    })))
+
+  test("with no held rows the wake scanner sets no timer; a written row is read when written and again when due", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      state.parents.set("ses_child", "ses_root")
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* settle
+      const atStart = state.wakeAccess.scans
+      expect(atStart).toBeLessThanOrEqual(1)
+      yield* TestClock.adjust(30 * 24 * HOUR)
+      yield* settle
+      expect(state.wakeAccess.scans).toBe(atStart)
+      const now = yield* Clock.currentTimeMillis
+      const until = now + 10 * MINUTE
+      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: now, until })
+      yield* refusalOf(plugin.request("ses_child"))
+      yield* advance(15 * MINUTE)
+      expect(admittedFor(state, "ses_child")).toHaveLength(1)
+      // Once when written, once when due: no look in between.
+      expect(state.wakeAccess.scans - atStart).toBe(2)
+    })))
+
+  test("a wake scan with nothing due asks the pool nothing and claims no reset; at its time the re-check is the child's own question", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      state.parents.set("ses_child", "ses_root")
+      // A spent 5-hour window with a grant in hand: a held request's admission would have the review claim it.
+      state.readings.set("cred-a", {
+        at: 0,
+        windows: [
+          { name: "5h", utilization: 1, resetAt: 3 * HOUR },
+          { name: "7d", utilization: 0.4, resetAt: 72 * HOUR },
+        ],
+        resets: {
+          available: 1,
+          credits: [{ id: "grant-1", count: 2, usable: true, expiresAt: 120 * 24 * HOUR, clears: ["five_hour", "seven_day_overage_included"] }],
+        },
+      })
+      const due = HOUR
+      // A row as the pool wrote it before a restart: the child's own held request is not part of this start.
+      state.storage.set("held-send/ses_child", { sessionID: "ses_child", providerID: "anthropic", reasonCode: "account-held", retryAt: due, model: model.id })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      const usage = state.holdAccess.usage
+      yield* advance(due - MINUTE, 5 * MINUTE)
+      expect(plugin.claims).toEqual([])
+      expect(state.holdAccess.usage).toBe(usage)
+      expect(state.synthetics).toEqual([])
+      // Due: the pool is asked once, as the child's request would be at its dispatch; still held, the row takes the
+      // pool's own time and nothing is woken. That question is the one bookkeeping a held request has (the newest
+      // asker, the held work noted for the review); here the review claims nothing for it, and nothing is asked again
+      // before the recheck.
+      yield* advance(2 * MINUTE)
+      expect(state.storage.get("held-send/ses_child")).toMatchObject({ retryAt: due, recheckAt: 3 * HOUR })
+      const scans = state.wakeAccess.scans
+      yield* advance(HOUR, 5 * MINUTE)
+      expect(state.wakeAccess.scans).toBe(scans)
+      expect(plugin.claims).toEqual([])
+      expect(state.synthetics).toEqual([])
+    })))
+
+  test("rows the installed pool wrote (no model) are not woken; a row this pool wrote wakes once with an absent 5-hour window; gone sessions and hosts with a Step wake none", () =>
     onTestClock(Effect.gen(function* () {
       const state = world()
       state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
       state.parents.set("ses_legacy", "ses_root")
+      state.parents.set("ses_new", "ses_root")
       state.parents.set("ses_gone", "ses_root")
       state.missing.add("ses_gone")
       const until = MINUTE
@@ -2409,15 +2592,19 @@ describe("interim hold-wake on hosts without a Step", () => {
         windows: [{ name: "7d", utilization: 0.1, resetAt: until + 72 * HOUR }],
         absent: [{ name: "5h", at: until }],
       })
+      // Its parent got the old error, without "resumes by itself": it may have replaced the child by hand.
       state.storage.set("held-send/ses_legacy", { sessionID: "ses_legacy", providerID: "anthropic", reasonCode: "account-held", retryAt: until })
-      state.storage.set("held-send/ses_gone", { sessionID: "ses_gone", providerID: "anthropic", reasonCode: "account-held", retryAt: until })
+      state.storage.set("held-send/ses_new", { sessionID: "ses_new", providerID: "anthropic", reasonCode: "account-held", retryAt: until, model: model.id })
+      state.storage.set("held-send/ses_gone", { sessionID: "ses_gone", providerID: "anthropic", reasonCode: "account-held", retryAt: until, model: model.id })
       yield* start({ sweepMinutes: 0 }, state, live())
       yield* start({ sweepMinutes: 0 }, state, live())
-      yield* TestClock.setTime(until + 30_000)
+      yield* advance(until + 30_000)
+      expect(admittedFor(state, "ses_legacy")).toEqual([])
+      expect(admittedFor(state, "ses_gone")).toEqual([])
       expect(state.synthetics).toHaveLength(1)
       expect(state.synthetics[0]).toMatchObject({
-        sessionID: "ses_legacy",
-        id: HoldWake.wakeDeliveryId("ses_legacy", until),
+        sessionID: "ses_new",
+        id: HoldWake.wakeDeliveryId("ses_new", until),
         text: HoldWake.WAKE_TEXT,
         woke: true,
       })
@@ -2425,12 +2612,12 @@ describe("interim hold-wake on hosts without a Step", () => {
       const stepped = world()
       stepped.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
       stepped.parents.set("ses_stepped", "ses_root")
-      stepped.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      stepped.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until: (yield* Clock.currentTimeMillis) + MINUTE })
       const plugin = yield* start({ sweepMinutes: 0 }, stepped, live())
       const resolve = yield* registered(plugin.hooks, "experimental.model.resolve")
       yield* resolve({ sessionID: "ses_stepped", agent: "build", kind: "primary", model, step: { id: "step_1" } })
       expect(yield* refusalOf(plugin.request("ses_stepped"))).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
-      yield* TestClock.setTime(until + 2 * MINUTE)
+      yield* advance(2 * MINUTE)
       expect(stepped.synthetics).toEqual([])
     })))
 })

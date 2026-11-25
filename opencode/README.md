@@ -1515,14 +1515,24 @@ older pool kept them, is read too and folded into chunks in the background. A le
 
 On a host without a typed Step (`canDeferPrimary` false, pin `c6664062`), a
 held primary request still ends its turn in error. For a subagent (a session
-with a `parentID`), the pool appends `This session resumes by itself then; stop it to cancel.`
-to the refusal message, stores the request's `model` on `held-send/<sessionID>`,
-and runs a scoped scanner every 30 seconds on the Effect `Clock` (`mods/pool/hold-wake.ts`).
-At or after `retryAt`, the scanner re-checks the pool's dispatch pace: if still
-held, it advances `retryAt` without waking; if admitted, it records `wokenAt`
-and delivers one synthetic wake with a deterministic message id derived from
-`(sessionID, retryAt)` so multiple copies or restarts wake at most once. Roots
-are never woken, and the host ignores wakes for stopped sessions. The
+with a `parentID`), the pool appends `This session resumes by itself then, unless it is stopped first.`
+to the refusal message and stores the request's `model` on `held-send/<sessionID>`
+(`mods/pool/hold-wake.ts`). A row is one hold that ended one turn: its
+`retryAt` is the time that hold named and never changes, and the wake's message
+id is built from the session and that time, so every attempt, pool copy,
+process and restart delivers the same id, which the host admits once. Each pool
+copy reads the rows at its start, then sleeps until the earliest one is due or a
+new row is written (no timer while there are none). At a row's time it asks the
+pool's dispatch pace once, as the child's own request would: still held, the
+row takes a `recheckAt` and nothing is sent; admitted, it delivers the wake
+(`The pool hold that ended your last turn has opened. If a newer task came with this notice, do that task instead; …`)
+and only then records `wokenAt`. A failed delivery is counted on the row
+(`wakeFailures`) and tried again after 30 s, doubling to 10 minutes, eight times
+at most, each logged; a reload or a stop between the delivery and its mark
+leaves the row due, and the next look delivers the same id again. Roots, gone
+sessions and rows the installed pool wrote (no `model`: their parents never
+read "resumes by itself") are never woken. A stopped child is not woken (the
+host keeps the notice for its next task, whose words win). The
 `pool-hold-latch` unit deletes this interim once the host holds the Step.
 
 ### Rate-limit resets

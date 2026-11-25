@@ -131,7 +131,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Duration, Effect, Exit, type FileSystem, Layer, Option, type Path, Queue, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import * as HoldWake from "@dotfiles/opencode-pool/hold-wake"
@@ -252,6 +252,25 @@ const publicHeldSend = (hold: HeldSend): HeldSend => HeldSend.make({
   retryAt: hold.retryAt,
   ...Option.match(Option.fromUndefinedOr(hold.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
 })
+
+const wakeBellsKey = Symbol.for("dotfiles-opencode.pool.hold-wake-bells")
+const isBells = (value: unknown): value is Set<() => void> => value instanceof Set
+/**
+ * The wake scanner of every live pool copy in this process, rung when a row it may wake is written. On `globalThis`
+ * like the hold authority: a reload evaluates the module again while the old copy's scanner may still run, and a
+ * copy whose location closes leaves the others to wake its rows.
+ */
+const wakeBells = (): Set<() => void> =>
+  Option.getOrElse(
+    Option.flatMap(Option.fromUndefinedOr(Object.getOwnPropertyDescriptor(globalThis, wakeBellsKey)), (property) =>
+      Option.liftPredicate(property.value, isBells),
+    ),
+    () => {
+      const fresh = new Set<() => void>()
+      Object.defineProperty(globalThis, wakeBellsKey, { value: fresh })
+      return fresh
+    },
+  )
 
 /** The outside systems the model runs on. */
 export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
@@ -646,58 +665,86 @@ export const make = <R = never,>(
         }
         // No successful/typed refusal is published before this commit.
         yield* sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold))
+        // Every wake scanner of the process looks at the new row (a reload's copies too): a row it may wake has a time.
+        if (!canDeferPrimary && Option.isSome(HoldWake.dueAt(hold))) yield* Effect.sync(() => wakeBells().forEach((ring) => ring()))
         return { ...hold, reason: message }
       })
       const removeHeld = (sessionID: string) => Effect.gen(function* () {
         const key = sendHoldKey(sessionID)
         if (Option.isSome(Option.fromUndefinedOr(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
       })
-      const commitWakeDecision = Effect.fn("Pool.commitWakeDecision")(function* (
+      // The wake of one held-send row (mods/pool/hold-wake.ts). Under the permit it reads the row again and decides on
+      // what is stored; still held, it records the recheck. The delivery goes outside the permit (the host's admission
+      // may start the woken turn, whose own requests take the permit), and only what the host took is recorded after
+      // it: `wokenAt` once the host admitted the wake, a counted failure and a later recheck when it did not. Nothing
+      // is recorded before the delivery, so a failure, a reload or a stop in between leaves the row due, and the next
+      // look delivers the same id again, which the host keeps once.
+      const decideHeldRow = Effect.fn("Pool.decideHeldRow")(function* (
         key: string,
-        expectedRetryAt: number,
+        seen: HeldSend,
         role: HoldWake.SessionRole,
         pace: Pace,
       ) {
         const current = sendHoldOf(yield* ctx.storage.get(key))
-        if (Option.isNone(current) || current.value.retryAt !== expectedRetryAt) return Option.none<string>()
+        if (Option.isNone(current)) return { decision: HoldWake.Decision.cases.Drop.make({}), next: Option.none<number>() }
+        // A newer hold replaced the row since it was read: it is looked at on its own time.
+        if (!HoldWake.sameHold(seen, current.value)) return { decision: HoldWake.Decision.cases.Wait.make({}), next: HoldWake.dueAt(current.value) }
         const now = yield* Clock.currentTimeMillis
         const decision = HoldWake.decide({ row: current.value, session: role, now, pace: Option.some(pace) })
         if (HoldWake.Decision.guards.Hold(decision)) {
-          yield* ctx.storage.set(key, HeldSend.make({ ...current.value, retryAt: decision.retryAt }))
-          return Option.none<string>()
+          yield* ctx.storage.set(key, HeldSend.make({ ...current.value, recheckAt: decision.recheckAt }))
+          return { decision, next: Option.some(decision.recheckAt) }
         }
-        if (!HoldWake.Decision.guards.Wake(decision)) return Option.none<string>()
-        yield* ctx.storage.set(key, HeldSend.make({ ...current.value, wokenAt: now }))
-        return Option.some(HoldWake.wakeDeliveryId(current.value.sessionID, current.value.retryAt))
+        return { decision, next: HoldWake.Decision.guards.Wait(decision) ? HoldWake.dueAt(current.value) : Option.none<number>() }
       })
       const deliverWake = Effect.fn("Pool.deliverWake")(function* (sessionID: string, deliveryID: string) {
-        const session = yield* Schema.decodeUnknownEffect(HostSessionID)(sessionID).pipe(Effect.option)
-        const id = yield* Schema.decodeUnknownEffect(HostMessageID)(deliveryID).pipe(Effect.option)
-        if (Option.isNone(session) || Option.isNone(id)) return
         yield* ctx.session.synthetic({
-          sessionID: session.value,
-          id: id.value,
+          sessionID: yield* Schema.decodeUnknownEffect(HostSessionID)(sessionID),
+          id: yield* Schema.decodeUnknownEffect(HostMessageID)(deliveryID),
           text: HoldWake.WAKE_TEXT,
           description: HoldWake.WAKE_DESCRIPTION,
           resume: true,
-        }).pipe(
-          Effect.catchCause((cause) => {
-            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
-            return Effect.logWarning("pool hold-wake synthetic delivery failed", cause)
-          }),
-        )
+        })
       })
-      const checkHeldRow = Effect.fn("Pool.checkHeldRow")(function* (key: string, row: HeldSend) {
+      // What the host took, recorded on the row when it is still the hold that was woken.
+      const recordDelivery = Effect.fn("Pool.recordDelivery")(function* (key: string, seen: HeldSend, took: boolean) {
+        const current = sendHoldOf(yield* ctx.storage.get(key))
+        if (Option.isNone(current) || !HoldWake.sameHold(seen, current.value) || Option.isSome(Option.fromUndefinedOr(current.value.wokenAt)))
+          return Option.none<number>()
         const now = yield* Clock.currentTimeMillis
-        if (!HoldWake.needsCheck(row, now)) return
-        const role = yield* sessionRole(row.sessionID)
-        if (role !== "subagent") return
-        const pace = yield* paceAnswer(row.providerID, Option.fromUndefinedOr(row.model), Option.some(row.sessionID), Option.some(true))
-        const delivery = yield* sendRecords.withPermits(1)(commitWakeDecision(key, row.retryAt, role, pace))
-        if (Option.isSome(delivery)) yield* deliverWake(row.sessionID, delivery.value)
+        const row = took ? HoldWake.delivered(current.value, now) : HoldWake.failed(current.value, now)
+        yield* ctx.storage.set(key, HeldSend.make(row))
+        return took ? Option.none<number>() : Option.some(Option.getOrElse(Option.fromUndefinedOr(row.wakeFailures), () => 0))
       })
+      /** Look at one row: when it is next due, or none when nothing more is to be done for it. */
+      const checkHeldRow = Effect.fn("Pool.checkHeldRow")(function* (key: string, row: HeldSend) {
+        const due = HoldWake.dueAt(row)
+        if (Option.isNone(due)) return Option.none<number>()
+        if ((yield* Clock.currentTimeMillis) < due.value) return due
+        const role = yield* sessionRole(row.sessionID)
+        if (role !== "subagent") return Option.none<number>()
+        // The question its own request would ask at its dispatch (`place` asks the same pace, with the same
+        // bookkeeping: the session is the newest asker, and a measured hold notes the held work for the reset review).
+        // It is asked once per due time, never on a tick, so a scan with nothing due asks nothing and claims nothing.
+        const pace = yield* paceAnswer(row.providerID, Option.fromUndefinedOr(row.model), Option.some(row.sessionID), Option.some(true))
+        const { decision, next } = yield* sendRecords.withPermits(1)(decideHeldRow(key, row, role, pace))
+        if (!HoldWake.Decision.guards.Wake(decision)) return next
+        const sent = yield* Effect.exit(deliverWake(row.sessionID, decision.id))
+        // A stop or a reload: nothing is recorded, and the next start delivers the same id again.
+        if (Exit.isFailure(sent) && Cause.hasInterrupts(sent.cause)) return yield* Effect.failCause(sent.cause)
+        const failures = yield* sendRecords.withPermits(1)(recordDelivery(key, row, Exit.isSuccess(sent)))
+        if (Exit.isSuccess(sent) || Option.isNone(failures)) return Option.none<number>()
+        if (failures.value >= HoldWake.MAX_WAKE_FAILURES) {
+          yield* Effect.logError(`pool hold-wake: gave up waking ${row.sessionID} after ${failures.value} failed deliveries; its parent must wake it`, sent.cause)
+          return Option.none<number>()
+        }
+        yield* Effect.logWarning(`pool hold-wake: delivering the wake of ${row.sessionID} failed (${failures.value} of ${HoldWake.MAX_WAKE_FAILURES}); it is tried again`, sent.cause)
+        return Option.some((yield* Clock.currentTimeMillis) + HoldWake.retryDelay(failures.value))
+      })
+      /** Look at every row once: the earliest time one is due again, or none when no row waits on the pool. */
       const wakeHeldSends = Effect.fn("Pool.wakeHeldSends")(function* () {
-        if (canDeferPrimary) return
+        if (canDeferPrimary) return Option.none<number>()
+        let next = Option.none<number>()
         let after = Option.none<string>()
         do {
           const page = yield* ctx.storage.scan({
@@ -707,14 +754,53 @@ export const make = <R = never,>(
           for (const { key, value } of page.entries) {
             const row = sendHoldOf(value)
             if (Option.isNone(row)) continue
-            yield* checkHeldRow(key, row.value)
+            // One row's failure is that row's: it is looked at again later, and the others go on.
+            const due = yield* checkHeldRow(key, row.value).pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+                return Effect.logWarning(`pool hold-wake: checking ${row.value.sessionID} failed; it is checked again`, cause).pipe(
+                  Effect.andThen(Clock.currentTimeMillis),
+                  Effect.map((now) => Option.some(now + HoldWake.WAKE_RETRY_MS)),
+                )
+              }),
+            )
+            next = Option.match(due, { onNone: () => next, onSome: (at) => Option.some(Option.match(next, { onNone: () => at, onSome: (earlier) => Math.min(earlier, at) })) })
           }
           after = Option.fromUndefinedOr(page.next)
         } while (Option.isSome(after))
+        return next
       })
+      // The scanner sleeps until the earliest row is due, or until a row is written: with no row it has no timer.
+      const wakeBell = yield* Queue.sliding<void>(1)
+      const ring = () => void Queue.offerUnsafe(wakeBell, undefined)
+      yield* Effect.acquireRelease(
+        Effect.sync(() => wakeBells().add(ring)),
+        () => Effect.sync(() => void wakeBells().delete(ring)),
+      )
+      const untilNext = (next: Option.Option<number>) =>
+        Option.match(next, {
+          onNone: () => Queue.take(wakeBell),
+          onSome: (at) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) => Effect.raceFirst(Effect.sleep(Duration.millis(Math.max(0, at - now))), Queue.take(wakeBell))),
+            ),
+        })
+      const wakeScanner = Effect.forever(
+        wakeHeldSends().pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+            return Effect.logWarning("pool hold-wake scan failed; it scans again", cause).pipe(
+              Effect.andThen(Clock.currentTimeMillis),
+              Effect.map((now) => Option.some(now + HoldWake.WAKE_RETRY_MS)),
+            )
+          }),
+          Effect.flatMap(untilNext),
+        ),
+      )
       const pruneHeldSends = Effect.gen(function* () {
         const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
-        const expired = (hold: Option.Option<HeldSend>) => Option.exists(hold, (entry) => entry.retryAt <= cutoff)
+        // A row the wake still rechecks counts from its recheck, so a hold that outlasts the retention is kept.
+        const expired = (hold: Option.Option<HeldSend>) => Option.exists(hold, (entry) => HoldWake.heldUntil(entry) <= cutoff)
         let after = Option.none<string>()
         do {
           const page = yield* ctx.storage.scan({
@@ -760,16 +846,9 @@ export const make = <R = never,>(
 
           yield* Effect.forkScoped(pool.follow)
 
-          // On hosts without a Step, scan held-send rows at start and every 30 s so held subagents wake once when the pool opens.
-          yield* Effect.forkScoped(
-            wakeHeldSends().pipe(
-              Effect.catchCause((cause) => {
-                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
-                return Effect.logWarning("pool hold-wake scan failed", cause)
-              }),
-              Effect.repeat(Schedule.spaced(HoldWake.WAKE_INTERVAL)),
-            ),
-          )
+          // On hosts without a Step, held subagents are woken when the pool opens: the rows are read at start, then
+          // when one falls due or a new one is written.
+          yield* Effect.forkScoped(wakeScanner)
 
           // A notice read leaves the tray as soon as the questions change.
           if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
