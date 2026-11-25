@@ -8,7 +8,7 @@ import * as Service from "../service.ts"
 import type { PaneWorker } from "../worker.ts"
 import { LATE_LAND_MS, type ProcEnv, servicesLayer, TIMEOUT_MS } from "./doubles.ts"
 import { defaultConfig, runScript, TICK_MS, type CommandName, type ToolCall, type Trace } from "./driver.ts"
-import { type EffectRecord, makeGate, makeInjector, type PlannedFault } from "./faults.ts"
+import { type EffectRecord, makeGate, makeInjector, makePrng, type PlannedFault } from "./faults.ts"
 import { CORE } from "./generator.ts"
 import { BOUND_MS, checkAll, type InvariantId, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
 import { classOf, pinDiff, pinnedRed } from "./known-red.ts"
@@ -745,48 +745,147 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
   const OK_DONE_READ = (blockId: string, at: number) => [effectAt(1, "pane.read", "ok", at, `${blockId}:done`)]
   const NOT_CAPTURED = wakeAt(200, "msg_nc", "answer_not_captured", 1, `<pane-agent-result state="answer_not_captured" turn="1">\nTurn 1 ended but its answer was not captured: the pane could not be read\n</pane-agent-result>`)
 
+  // Review r5 B1: the excuse is a bounded interval of THIS pane's disruptions. The turn ends at t=60; the read path
+  // blocked through the whole window is a read hang at 62 and again at 170 (each gap under OBSERVE_GAP_MS = 160).
+  const effectBy = (index: number, boundary: EffectRecord["boundary"], fault: EffectRecord["fault"], at: number, detail: string, proc: number): EffectRecord => ({ ...effectAt(index, boundary, fault, at, detail), proc })
+  const BLOCKED = (blockId: string) => [effectAt(0, "pane.read", "hang", 62, `${blockId}:done`), effectAt(1, "pane.read", "hang", 170, `${blockId}:done`)]
+  const OTHER_PANE = () => [effectAt(0, "pane.read", "hang", 62, "block:sim-9:done"), effectAt(1, "pane.read", "hang", 170, "block:sim-9:done")]
+  const STORE = () => [effectAt(0, "store.read", "hang", 62, "read"), effectAt(1, "store.write", "timeout", 170, "write")]
+  /** The watcher (proc 1) observed the pane while it worked, then crashed at 62 on a store call. */
+  const WATCHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectAt(1, "store.read", "crash", 62, "read")]
+  /** A process that never watched this pane (proc 2) crashed at 62. */
+  const OTHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectBy(1, "store.read", "crash", 62, "read", 2)]
+
+  /** Turn 1 ends at t=60 and a human types into the pane at `humanAt`, which replaces the unread done frame. */
+  const humanTyped = (humanAt: number) => {
+    const { blockId, world } = turnOneDone()
+    return { blockId, world: applyEvent(tick(world, humanAt), WorldEvent.HumanTypes({ blockId: Option.some(blockId), text: "a human's own question" })) }
+  }
+
   effectTest(
-    "4a (ruling 10): answer_not_captured is accepted only when no read saw the done frame and a fault was active; after an ok done read, with no fault, or in silence I4 stays red; a done wake with a human's text stays red under I6",
+    "4a (ruling 10, review r5 B1): answer_not_captured is accepted only while this pane's reads were blocked until the frame was gone; a fault then a long quiet window, a fault on another pane or the store, a frame still showing, an ok done read, no fault or silence stay red; a human's text stays red under I6",
     Effect.sync(() => {
+      const run = (humanAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>, wakes: ReadonlyArray<WakeRecord>) => {
+        const { blockId, world } = humanTyped(humanAt)
+        const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
+        return of(checkAll(synth(world, [startOf(row)], effects(blockId), wakes, row)), 4)
+      }
+      expect(run(250, BLOCKED, [NOT_CAPTURED])).toEqual([])
+      expect(run(120, FAULT_NEAR_END, [NOT_CAPTURED])).toEqual([])
+      expect(run(400, FAULT_NEAR_END, [NOT_CAPTURED]).map((item) => item.detail).join()).toMatch(/fault-free chance to \(ruling 10\)/)
+      expect(run(400, BLOCKED, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, OTHER_PANE, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, STORE, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, (b) => [...FAULT_NEAR_END(b), ...OK_DONE_READ(b, 70)], [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, () => [], [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, FAULT_NEAR_END, []).length).toBeGreaterThan(0)
       const { blockId, world } = turnOneDone()
       const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
-      const run = (effects: ReadonlyArray<EffectRecord>, wakes: ReadonlyArray<WakeRecord>) => checkAll(synth(world, [startOf(row)], effects, wakes, row))
-      expect(of(run(FAULT_NEAR_END(blockId), [NOT_CAPTURED]), 4)).toEqual([])
-      expect(of(run([...FAULT_NEAR_END(blockId), ...OK_DONE_READ(blockId, 70)], [NOT_CAPTURED]), 4).length).toBeGreaterThan(0)
-      expect(of(run([], [NOT_CAPTURED]), 4).length).toBeGreaterThan(0)
-      expect(of(run(FAULT_NEAR_END(blockId), []), 4).length).toBeGreaterThan(0)
+      expect(of(checkAll(synth(world, [startOf(row)], BLOCKED(blockId), [NOT_CAPTURED], row)), 4).length).toBeGreaterThan(0)
       const human = wakeAt(200, "msg_human", "done", 1, `<pane-agent-result state="done" turn="1">\nhuman answer\n</pane-agent-result>`)
-      expect(of(run(FAULT_NEAR_END(blockId), [human]), 6).length).toBeGreaterThan(0)
+      expect(of(checkAll(synth(humanTyped(120).world, [startOf(row)], FAULT_NEAR_END(blockId), [human], row)), 6).length).toBeGreaterThan(0)
     }),
     hangGuard("unit-law"),
   )
 
   effectTest(
-    "4b: a truthful pane_gone stands in for the done wake only when no read saw the done frame, a fault was active and no file holds the answer",
+    "4b (review r5 B1): a truthful pane_gone stands in for the done wake only when this pane's reads were blocked or its watcher crashed until the pane exited, no read saw the done frame and no file holds the answer; a late pane_gone after a quiet window, another process's crash or a store fault stay red",
     Effect.sync(() => {
-      const gone = (config: WorldConfig, effects: (blockId: string) => ReadonlyArray<EffectRecord>) => {
+      const gone = (config: WorldConfig, diesAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>) => {
         const { blockId, world } = turnOneDone(config)
-        const died = applyEvent(tick(world, 80), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
+        const died = applyEvent(tick(world, diesAt), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
         const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "pane_gone", turn: 1 }
-        return checkAll(synth(died, [startOf(row)], effects(blockId), [wakeAt(90, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)], row))
+        return of(checkAll(synth(died, [startOf(row)], effects(blockId), [wakeAt(diesAt + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)], row)), 4)
       }
-      expect(of(gone(NONE_FILE, FAULT_NEAR_END), 4)).toEqual([])
-      expect(of(gone(NONE_FILE, () => []), 4).length).toBeGreaterThan(0)
-      expect(of(gone(NONE_FILE, (b) => [...FAULT_NEAR_END(b), ...OK_DONE_READ(b, 70)]), 4).length).toBeGreaterThan(0)
-      expect(of(gone(DEFAULT_WORLD, FAULT_NEAR_END), 4).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 80, FAULT_NEAR_END)).toEqual([])
+      expect(gone(NONE_FILE, 250, BLOCKED)).toEqual([])
+      expect(gone(NONE_FILE, 150, WATCHER_CRASH)).toEqual([])
+      expect(gone(NONE_FILE, 300, FAULT_NEAR_END).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 300, WATCHER_CRASH).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, OTHER_CRASH).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, OTHER_PANE).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, STORE).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 80, () => []).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 80, (b) => [...FAULT_NEAR_END(b), ...OK_DONE_READ(b, 70)]).length).toBeGreaterThan(0)
+      expect(gone(DEFAULT_WORLD, 80, FAULT_NEAR_END).length).toBeGreaterThan(0)
     }),
     hangGuard("unit-law"),
   )
 
   effectTest(
-    "4c: a stop 65 ms after the end races the settle only when faults were active before any ok done read; fault-free keeps 60 ms; a stop well after an ok done read stays red",
+    "4c (review r5 B1): a stop races the settle until this pane's last disruption plus OBSERVE_GAP_MS, never unbounded; a late stop after a quiet window, a fault on another pane or the store, fault-free past 60 ms, and well after an ok done read stay red",
     Effect.sync(() => {
       const { blockId, world } = turnOneDone()
       const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "stopped", turn: 1 }
       const stopAt = (at: number, effects: ReadonlyArray<EffectRecord>) => of(checkAll(synth(world, [startOf(row), synthCall(2, "stop", Option.none(), at, at + 5, row)], effects, [], row)), 4)
       expect(stopAt(125, FAULT_NEAR_END(blockId))).toEqual([])
+      expect(stopAt(320, BLOCKED(blockId))).toEqual([])
+      expect(stopAt(200, WATCHER_CRASH(blockId))).toEqual([])
+      expect(stopAt(300, FAULT_NEAR_END(blockId)).length).toBeGreaterThan(0)
+      expect(stopAt(400, BLOCKED(blockId)).length).toBeGreaterThan(0)
+      expect(stopAt(125, OTHER_PANE()).length).toBeGreaterThan(0)
+      expect(stopAt(125, STORE()).length).toBeGreaterThan(0)
+      expect(stopAt(125, OTHER_CRASH(blockId)).length).toBeGreaterThan(0)
       expect(stopAt(125, []).length).toBeGreaterThan(0)
       expect(stopAt(200, [...FAULT_NEAR_END(blockId), ...OK_DONE_READ(blockId, 65)]).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  type LazyReport = "not_captured" | "pane_gone" | "stop"
+  const LAZY_REPORTS: ReadonlyArray<LazyReport> = ["not_captured", "pane_gone", "stop"]
+  const PANE_FAULTS: ReadonlyArray<EffectRecord["fault"]> = ["hang", "timeout", "late", "unavailable", "transient", "gone", "defect"]
+  const OBSERVING_CALLS: ReadonlyArray<EffectRecord["boundary"]> = ["pane.read", "pane.readTail", "pane.alive", "pane.waitForQuiet"]
+
+  /**
+   * One generated trace: faults anywhere (this pane's observing calls, another pane, the store, a crash of the watcher
+   * or of another process) from just before the turn's end (t=60) to t=400; the frame is gone (the pane exits or a
+   * human types) at 600..799, or never. The lazy shell double reads until its first fault and never after, so it never
+   * sees the done frame, and then gives the report `report`. A correct shell had a fault-free chance from 400 on.
+   */
+  const lazyTrace = (prng: { readonly int: (bound: number) => number }, report: LazyReport) => {
+    const { blockId, world } = turnOneDone()
+    const pick = <A>(items: ReadonlyArray<A>, fallback: A): A => items[prng.int(items.length)] ?? fallback
+    const faultAt = (i: number, at: number): EffectRecord => {
+      const kind = prng.int(5)
+      if (kind === 0) return effectBy(i, "store.read", pick(["hang", "timeout", "transient"] as const, "hang"), at, "read", 1)
+      if (kind === 1) return effectBy(i, "pane.read", pick(PANE_FAULTS, "hang"), at, "block:sim-9:done", 2)
+      if (kind === 2) return effectBy(i, pick(["store.write", "notifier.wake"] as const, "store.write"), "crash", at, "write", 1 + prng.int(2))
+      return effectBy(i, pick(OBSERVING_CALLS, "pane.read"), pick(PANE_FAULTS, "hang"), at, `${blockId}:${pick(["working", "done"], "done")}`, 1)
+    }
+    const first = faultAt(1, 30 + prng.int(36))
+    const rest = Array.from({ length: prng.int(5) }, (_, i) => faultAt(i + 2, 40 + prng.int(361)))
+    const effects = [effectAt(0, "pane.read", "ok", 20, `${blockId}:working`), first, ...rest].sort((a, b) => a.at - b.at)
+    const frameAt = 600 + prng.int(200)
+    const exits = report === "pane_gone" || prng.int(3) === 0
+    const human = !exits && prng.int(2) === 0
+    const ended = tick(world, frameAt)
+    const frame = [ended, applyEvent(ended, WorldEvent.PaneExits({ blockId: Option.some(blockId) })), applyEvent(ended, WorldEvent.HumanTypes({ blockId: Option.some(blockId), text: "a human's own question" }))][Number(exits) + 2 * Number(human)] ?? ended
+    const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
+    const reportAt = Math.max(frameAt, 600) + 10 + prng.int(100)
+    const wakes = [
+      ...[wakeAt(reportAt, "msg_nc", "answer_not_captured", 1, NOT_CAPTURED.letter.text)].filter(() => report === "not_captured"),
+      ...[wakeAt(reportAt, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)].filter(() => report === "pane_gone"),
+    ]
+    const calls = [startOf(row), ...[synthCall(2, "stop", Option.none(), reportAt, reportAt + 5, { ...row, state: "stopped" })].filter(() => report === "stop")]
+    const lazy = synth(frame, calls, effects, wakes, row)
+    const correct = synth(frame, [startOf(row)], [...effects, effectAt(99, "pane.read", "ok", 500, `${blockId}:done`)], [wakeAt(520, "msg_done", "done", 1, `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)], row)
+    return { lazy, correct }
+  }
+
+  effectTest(
+    "4a/4b/4c property (review r5 B1): over generated traces, a shell double that never reads after its first fault is always red under I4, whatever it reports; a shell that read and woke on the same traces is green",
+    Effect.gen(function* () {
+      const prng = yield* makePrng(51)
+      const ints = yield* Effect.forEach(Array.from({ length: 300 * 40 }), () => prng.next)
+      let cursor = 0
+      const draw = { int: (bound: number) => Math.floor((ints[cursor++ % ints.length] ?? 0) * bound) }
+      for (let n = 0; n < 300; n++) {
+        const report = LAZY_REPORTS[n % LAZY_REPORTS.length] ?? "not_captured"
+        const { lazy, correct } = lazyTrace(draw, report)
+        expect({ n, report, red: of(checkAll(lazy), 4).length > 0 }).toEqual({ n, report, red: true })
+        expect({ n, report, i4: of(checkAll(correct), 4) }).toEqual({ n, report, i4: [] })
+      }
     }),
     hangGuard("unit-law"),
   )

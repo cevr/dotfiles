@@ -276,10 +276,6 @@ const doneReads = (trace: Trace, blockId: string, from: number, to: number, live
     (e) => READS.includes(e.boundary) && e.fault === "ok" && e.detail === `${blockId}:done` && e.at >= from && e.at <= to && (!liveOnly || !trace.world.deadProcs.has(e.proc)),
   )
 
-/** Whether a fault fired (one that could still hold a read: from a read deadline before `from`) or a process crashed and restarted in [from, to]. */
-const faultActive = (trace: Trace, from: number, to: number): boolean =>
-  trace.effects.some((e) => e.at <= to && ((e.fault !== "ok" && e.at >= from - DEADLINES_MS.readDeadline) || (e.boundary === "process.start" && e.at >= from)))
-
 /** When a run's done frame stopped being readable: the next run in that pane, the pane's death, or never. */
 const frameUntil = (trace: Trace, run: Run): number => {
   const end = Option.getOrElse(run.endedAt, () => 0)
@@ -287,12 +283,109 @@ const frameUntil = (trace: Trace, run: Run): number => {
   return Math.min(...next, Option.getOrElse(goneAt(trace.world, run.blockId), () => Infinity))
 }
 
-/** Ruling (10): no successful read saw the done frame while it showed, and a fault or crash was active then. */
-const uncapturable = (trace: Trace, run: Run): boolean => {
-  const end = Option.getOrElse(run.endedAt, () => 0)
-  const until = frameUntil(trace, run)
-  return doneReads(trace, run.blockId, end, until, false).length === 0 && faultActive(trace, end, until)
+/**
+ * How long a fault-free gap after a disruption gives a correct shell its chance: its bounded call returns within a
+ * read deadline, then it reads the frame and settles within the settle window. Once such a gap has passed, not
+ * having read is the shell's failure, not the fault's.
+ */
+export const OBSERVE_GAP_MS = DEADLINES_MS.readDeadline + SETTLE_WINDOW_MS
+
+/** The calls by which a shell observes a pane's turn end: its liveness, its quiet wait and its reads. */
+const OBSERVING: ReadonlyArray<string> = ["pane.read", "pane.readTail", "pane.alive", "pane.waitForQuiet"]
+
+/** Faults that still hold their call when the turn ends (a hang until its deadline, a timeout, a late landing, a crash). */
+const LASTING: ReadonlyArray<string> = ["hang", "timeout", "late", "crash"]
+
+const observes = (e: EffectRecord, blockId: string): boolean => OBSERVING.includes(e.boundary) && e.detail.startsWith(`${blockId}:`)
+
+/** The processes watching a run's pane: the last to observe it by the run's end, and every one observing it after. */
+const watchersOf = (trace: Trace, blockId: string, end: number): ReadonlySet<number> => {
+  const observing = trace.effects.filter((e) => observes(e, blockId))
+  const before = Option.fromUndefinedOr(observing.filter((e) => e.at <= end).at(-1))
+  return new Set([...Option.toArray(before), ...observing.filter((e) => e.at >= end)].map((e) => e.proc))
 }
+
+/**
+ * When a watching process died: the crash fault it took, else (a crash the driver forced, which records no fault)
+ * the first process start after its last effect, which is its recovery. A process still alive has no death.
+ */
+const deathOf = (trace: Trace, proc: number): Option.Option<number> => {
+  const crash = Option.fromUndefinedOr(trace.effects.find((e) => e.proc === proc && e.fault === "crash"))
+  if (Option.isSome(crash)) return Option.some(crash.value.at)
+  if (!trace.world.deadProcs.has(proc)) return Option.none()
+  const last = Math.max(...trace.effects.filter((e) => e.proc === proc).map((e) => e.at))
+  return Option.map(Option.fromUndefinedOr(trace.effects.find((e) => e.boundary === "process.start" && e.at >= last && e.proc !== proc)), (e) => e.at)
+}
+
+interface Disruption {
+  readonly at: number
+  readonly lasting: boolean
+}
+
+/**
+ * Adjudication 4a/4b/4c, scoped (review r5 B1): the disruptions that can keep THIS run's end from being observed are a
+ * fault on an observing call of its pane and a crash of a process watching it, while its frame showed. A fault on
+ * another worker, another pane or the store is none of them.
+ */
+const disruptionsOf = (trace: Trace, run: Run, end: number, frameEnd: number): ReadonlyArray<Disruption> => {
+  const faults = trace.effects.filter((e) => observes(e, run.blockId) && e.fault !== "ok").map((e) => ({ at: e.at, lasting: LASTING.includes(e.fault) }))
+  const deaths = [...watchersOf(trace, run.blockId, end)].flatMap((proc) => Option.toArray(deathOf(trace, proc))).map((at) => ({ at, lasting: true }))
+  return [...faults, ...deaths].filter((d) => d.at <= frameEnd).sort((a, b) => a.at - b.at)
+}
+
+/**
+ * The last disruption of the excuse chain that starts at the run's end, if one starts there. It starts with a
+ * lasting disruption still holding at the end (from a read deadline before), or with one within the settle window
+ * after it (a fault-free run settles in that window); each next one follows the last within OBSERVE_GAP_MS. The
+ * first fault-free gap longer than that ends the chain: a correct shell has read by then.
+ */
+const excuseEnd = (disruptions: ReadonlyArray<Disruption>, end: number): Option.Option<number> => {
+  const holding = disruptions.flatMap((d) => [d.at].filter(() => d.lasting && d.at >= end - DEADLINES_MS.readDeadline && d.at < end))
+  let last = Math.max(...holding, -Infinity)
+  if (holding.length === 0) last = end
+  let gap = [SETTLE_WINDOW_MS, OBSERVE_GAP_MS][Number(holding.length > 0)] ?? SETTLE_WINDOW_MS
+  let linked = holding.length > 0
+  for (const d of disruptions.filter((item) => item.at >= end)) {
+    if (d.at - last > gap) break
+    last = d.at
+    gap = OBSERVE_GAP_MS
+    linked = true
+  }
+  return Option.filter(Option.some(last), () => linked)
+}
+
+export interface Observability {
+  /** No correct shell could have observed the run's end while its frame showed (ruling 10, adjudication 4a/4b). */
+  readonly unobservable: boolean
+  /** By when a correct shell has settled the run; a stop, steer or restart issued by then races the settle (4c). Never unbounded. */
+  readonly settleBy: number
+}
+
+/**
+ * Was this turn's end unobservable to a correct shell? The ONE answer 4a, 4b and 4c use (review r5 B1). An excuse is
+ * a bounded, causally connected interval, never a flag: the chain of this pane's disruptions from the run's end
+ * (`excuseEnd`). The end was unobservable only when no ok read saw the done frame and the chain lasted until the
+ * frame was gone (the pane's death or its next run), with no gap longer than OBSERVE_GAP_MS before that. A frame
+ * still showing is never unobservable: faults stop and a correct shell reads it. A stop, steer or restart races the
+ * settle until the chain's last disruption plus OBSERVE_GAP_MS (or an ok read plus the settle window, if earlier);
+ * with no chain the window stays the fault-free 60 ms.
+ */
+export const observability = (trace: Trace, run: Run): Observability => {
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const frameEnd = frameUntil(trace, run)
+  const seen = doneReads(trace, run.blockId, end, frameEnd, false).length > 0
+  const firstLiveRead = Option.fromUndefinedOr(doneReads(trace, run.blockId, end, Infinity, true)[0])
+  const readSettle = Option.match(firstLiveRead, { onNone: () => Infinity, onSome: (e) => Math.max(e.at, end) + SETTLE_WINDOW_MS })
+  return Option.match(excuseEnd(disruptionsOf(trace, run, end, frameEnd), end), {
+    onNone: () => ({ unobservable: false, settleBy: end + SETTLE_WINDOW_MS }),
+    onSome: (last) => ({
+      unobservable: !seen && frameEnd - last <= OBSERVE_GAP_MS,
+      settleBy: Math.max(end + SETTLE_WINDOW_MS, Math.min(last + OBSERVE_GAP_MS, readSettle)),
+    }),
+  })
+}
+
+const uncapturable = (trace: Trace, run: Run): boolean => observability(trace, run).unobservable
 
 const notCapturedWakes = (trace: Trace, worker: RefWorker, turn: RefTurn): ReadonlyArray<WakeRecord> => {
   const numbers = numbersOf(trace, worker, turn)
@@ -311,27 +404,16 @@ const unreadReported = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run
   return Option.isSome(died) && !fileHoldsAnswer(trace, run, turn.token) && goneWakes(trace, worker).some((wake) => wake.at >= end)
 }
 
-/**
- * Adjudication 4c: a stop, steer or restart races the settle when issued before the end plus the settle window;
- * only when a fault or crash was active between the end and the first ok done read by a live process does the
- * window run from that read instead (no read: the stop is the truthful report). Fault-free runs keep 60 ms.
- */
-const settleLimit = (trace: Trace, end: number, readAt: number): number => {
-  if (!faultActive(trace, end, readAt)) return end + SETTLE_WINDOW_MS
-  return Math.max(end, readAt) + SETTLE_WINDOW_MS
-}
-
+/** Adjudication 4c: a stop, steer or restart races the settle when issued by `settleBy` (60 ms without a disruption chain). */
 const superseded = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): boolean => {
-  const end = Option.getOrElse(run.endedAt, () => 0)
-  const firstRead = Option.fromUndefinedOr(doneReads(trace, run.blockId, end, Infinity, true)[0])
-  const limit = settleLimit(trace, end, Option.match(firstRead, { onNone: () => Infinity, onSome: (e) => e.at }))
+  const limit = observability(trace, run).settleBy
   return worker.supersedes.some((command) => command.at >= turn.acceptedAt && command.issuedAt <= limit)
 }
 
-/** Ruling (10): a not-captured report for a turn whose done frame a read saw, or with no fault active, is false. */
+/** Ruling (10): a not-captured report for a turn whose end a correct shell could observe (`observability`) is false. */
 const falseNotCaptured = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): ReadonlyArray<Violation> => {
   if (notCapturedWakes(trace, worker, turn).length === 0 || uncapturable(trace, run)) return []
-  return [v(4, `${worker.key} turn ${turn.index} (${turn.token}) was reported "answer_not_captured", but a read saw its done frame or no fault was active (ruling 10)`)]
+  return [v(4, `${worker.key} turn ${turn.index} (${turn.token}) was reported "answer_not_captured", but a read saw its done frame or its pane's reads had a fault-free chance to (ruling 10)`)]
 }
 
 /** 4. One settle per turn and one wake per (turn, kind) as the receiver counts them (distinct delivery ids). */
