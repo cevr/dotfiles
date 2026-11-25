@@ -68,6 +68,8 @@ export const POOL_STATUS = {
     limits: { input: { type: "object" }, output: { type: "object" } },
     /** Start, end, read or plan a push (push.ts `PushRequest`); the answer is a `PushAnswer`. A peer's `pool_push` forwards here over SSH. */
     push: { input: { type: "object" }, output: { type: "object" } },
+    /** Antigravity's quota as the pool last read it (antigravity/text.ts `statusLines`), `{ lines }`; no lines when this host does not read it. Read only: never waits on Google. */
+    antigravity: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const

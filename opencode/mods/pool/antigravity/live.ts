@@ -7,11 +7,12 @@
 // Linux workbox reads its sign-in from the profile's files, else "sign-in not
 // readable here".
 import { readableStreamToText, spawn } from "bun"
-import { Context, Effect, FileSystem, Layer, Match, Option, Path, Redacted, Schema } from "effect"
+import { Context, Effect, FileSystem, Layer, Match, Option, Path, Redacted, Schedule, Schema } from "effect"
+import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { FetchHttpClient, HttpClient } from "effect/http"
-import { type AuthMethod, GOOGLE, userAgent } from "./reader.ts"
-import { KeychainRead, type KeychainMode, type Places } from "./signin.ts"
-import { make, type Store } from "./source.ts"
+import { type AuthMethod, AuthMethod as AuthMethodSchema, GOOGLE, userAgent } from "./reader.ts"
+import { KeychainRead, type KeychainMode, KeychainMode as KeychainModeSchema, type Places } from "./signin.ts"
+import { make, type Source, type Store } from "./source.ts"
 import { State } from "./state.ts"
 
 /** How long the keychain read may take: long enough for the owner to answer macOS's dialog once. */
@@ -133,6 +134,45 @@ export interface LiveConfig {
   readonly auth: AuthMethod
   readonly keychain: KeychainMode
 }
+
+/** The pool's `antigravity` option: `false` reads nothing; else where to read, all defaulted. */
+export const PoolOption = Schema.Union([
+  Schema.Literal(false),
+  Schema.Struct({
+    /** The CLI's profile; default `~/.gemini/antigravity-cli`. */
+    profile: Schema.optionalKey(Schema.String),
+    /** The state file; default `$XDG_STATE_HOME/opencode-pool/antigravity.json`. */
+    stateFile: Schema.optionalKey(Schema.String),
+    /** `personal` (the daily host first, the default) or `business` (production first). */
+    auth: Schema.optionalKey(AuthMethodSchema),
+    /** `ask` (the default): the keychain only once the owner asked through the tool; `auto`: on the first read. */
+    keychain: Schema.optionalKey(KeychainModeSchema),
+  }),
+])
+export type PoolOption = typeof PoolOption.Type
+
+/** The state file beside the pool's other state. */
+export const defaultStateFile = () => `${TuiDirs.dirs().state}/opencode-pool/antigravity.json`
+
+/** How often the reader looks whether a read is due; the state's spacing decides whether it reads. */
+const LOOK_EVERY_MS = 60_000
+
+/**
+ * The pool's Antigravity source for `option` on this host (its home from tui-dirs),
+ * its reader looking every minute in the plugin's scope; none when the option
+ * is `false`.
+ */
+export const poolSource = Effect.fn("Antigravity.poolSource")(function* (option: PoolOption) {
+  if (option === false) return Option.none<Source>()
+  const source = yield* liveSource({
+    profile: Option.getOrElse(Option.fromUndefinedOr(option.profile), () => defaultProfile(TuiDirs.dirs().home)),
+    stateFile: Option.getOrElse(Option.fromUndefinedOr(option.stateFile), defaultStateFile),
+    auth: Option.getOrElse(Option.fromUndefinedOr(option.auth), (): AuthMethod => "personal"),
+    keychain: Option.getOrElse(Option.fromUndefinedOr(option.keychain), (): KeychainMode => "ask"),
+  })
+  yield* Effect.forkScoped(source.refresh.pipe(Effect.repeat(Schedule.spaced(LOOK_EVERY_MS))))
+  return Option.some(source)
+})
 
 /** The source as a host runs it: its files, its keychain, its state file and Google over fetch, in `scope`. */
 export const liveSource = Effect.fn("Antigravity.liveSource")(function* (config: LiveConfig) {

@@ -153,6 +153,14 @@ export const accountRows = (pools: PanePools, now = Date.now()): ReadonlyArray<A
 export const PaneLimits = Schema.Struct({ line: Schema.optionalKey(Schema.String) })
 export type PaneLimits = typeof PaneLimits.Type
 
+/**
+ * The pool's antigravity answer as the pane reads it: Antigravity's quota rows
+ * as last read (the pool's antigravity/text.ts `statusLines`), none when the
+ * host does not read it.
+ */
+export const PaneAntigravity = Schema.Struct({ lines: Schema.Array(Schema.String) })
+export type PaneAntigravity = typeof PaneAntigravity.Type
+
 /** The provider each pool's resets are known by. */
 const RESET_NAMES: Readonly<Record<string, string>> = { anthropic: "Claude", openai: "Codex" }
 

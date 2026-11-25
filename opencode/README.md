@@ -1583,6 +1583,35 @@ unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
 its properties over generated weeks of steady burn, and against the same
 weeks with no reset spent.
 
+### Antigravity quota
+
+`mods/pool/antigravity` tracks Antigravity's (agy's) quota groups, Gemini and the
+Claude & GPT quota they share, each with its 5-hour and weekly window. It reads
+the same way T3 Code does (`antigravityUsageLimits.ts` at 55085df2). The sign-in
+comes from the CLI profile's token files. The macOS keychain is read only after
+the owner asks through the tool's `read` action, and it is tried once; the
+outcome is remembered. The read itself is `v1internal:retrieveUserQuotaSummary`,
+then `fetchAvailableModels`, on Google's daily and production Code Assist hosts.
+It happens at most every 5 minutes and backs off on failure. Each request carries
+only the bearer and Antigravity's user agent, follows no redirect and sends no
+trace header (`source.test.ts` pins every request). The state file
+`$XDG_STATE_HOME/opencode-pool/antigravity.json` holds no token.
+
+A group answers in one of these states:
+
+- limited until a time, from a limit an agy pane printed (recorded with the tool's
+  `limit` action, on every group when the pane names none) or from a full window;
+- limited, reset unknown, when the limit came with no reset time;
+- open, only from a reading with room;
+- not measured, when there is no reading and no live limit: usable, but never
+  called open;
+- unknown, when the reading leaves a window out.
+
+The `antigravity` tool answers `status`, `open`, `limit`, `clear` and `read`. The
+same rows appear in `pool_push` status, in the `/pool` pane (the pool's
+`antigravity` RPC method) and from `bun cmd/pool/antigravity-read.ts`. The pool
+option `antigravity: false` turns all of this off.
+
 ## Status
 
 `mods/status` draws the `/pool` pane; its plugins are `cmd/status`

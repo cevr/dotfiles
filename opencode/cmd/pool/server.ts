@@ -133,13 +133,17 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, type Scope, Stream } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
+import * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
+import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
+import * as AgyTool from "@dotfiles/opencode-pool/antigravity/tool"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
 import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -230,6 +234,7 @@ export const Options = Schema.Struct({
   ),
   limitsFile: Schema.optional(Schema.String),
   unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  antigravity: AgyLive.PoolOption.pipe(withDefault<AgyLive.PoolOption>({})),
 })
 export type Options = typeof Options.Type
 
@@ -330,6 +335,14 @@ export interface StoreHost {
 }
 
 export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCredentialSource }
+
+/**
+ * Antigravity's quota source for the `antigravity` option (`@dotfiles/opencode-pool/antigravity/live`):
+ * in OpenCode, this host's profile, keychain (only once the owner asked) and Google; none in a
+ * test's pool, so no test reads a real profile or keychain.
+ */
+export type AntigravityRoot = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope>
+export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
 
 /**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
@@ -444,6 +457,7 @@ export const make = (
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
   sendRecords = LedgerLive.holdAuthority().lock,
+  antigravity: AntigravityRoot = NO_ANTIGRAVITY,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -478,6 +492,8 @@ export const make = (
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
+      // Antigravity's quota: read in the background, answered from what was last read; no send waits on it.
+      const agy = yield* antigravity(options.antigravity)
 
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
@@ -818,6 +834,11 @@ export const make = (
         ),
       )
 
+      /** Antigravity's rows as last read: every row in a status, none in another action or with no source. */
+      const agyLines = Option.match(agy, { onNone: () => Effect.succeed<ReadonlyArray<string>>([]), onSome: (source) => source.lines })
+      const agyStatus = (action: string) =>
+        Option.match(Option.liftPredicate(action, (named) => named === "status"), { onNone: () => Effect.succeed<ReadonlyArray<string>>([]), onSome: () => agyLines })
+
       // The owner's session starts, reads, ends or plans a push; the calling session scopes one that names `session`.
       yield* ctx.tool.transform((editor) => {
         editor.add({
@@ -828,12 +849,21 @@ export const make = (
           options: { codemode: false },
           execute: (input, context) =>
             withPool((pool) => pool.push({ ...input, sessionID: context.sessionID })).pipe(
+              // A status names Antigravity's quota too, as last read.
+              Effect.flatMap((answer) => Effect.map(agyStatus(input.action), (lines) => ({ ...answer, text: [answer.text, ...lines].join("\n") }))),
               Effect.flatMap((answer) =>
                 answer.ok
                   ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
                   : Effect.fail(new Tool.Error({ message: answer.text, error: answer })),
               ),
             ),
+        })
+        editor.add({
+          name: "antigravity",
+          description: AgyTool.ANTIGRAVITY_DESCRIPTION,
+          input: AgyTool.AntigravityToolInput,
+          options: { codemode: false },
+          execute: (input) => Effect.map(AgyTool.answer(agy, input), (text) => ({ content: [{ type: "text" as const, text }] })),
         })
       })
 
@@ -942,6 +972,7 @@ export const make = (
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
               onSome: (request) => withPool((pool) => pool.push(request)),
             }),
+          antigravity: () => Effect.map(agyLines, (lines) => ({ lines })),
         })
         .pipe(Effect.orDie)
     }),
@@ -969,4 +1000,6 @@ const sessionOf = (input: unknown) =>
     ? input.sessionID
     : undefined
 
-export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, (option) =>
+  AgyLive.poolSource(option).pipe(Effect.provide(BunServices.layer)),
+)

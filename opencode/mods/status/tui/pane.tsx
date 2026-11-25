@@ -10,7 +10,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
@@ -18,6 +18,7 @@ const decodeSnapshot = Schema.decodeUnknownOption(Snapshot)
 const decodeFleet = Schema.decodeUnknownOption(PaneFleet)
 const decodeResets = Schema.decodeUnknownOption(PaneResets)
 const decodeLimits = Schema.decodeUnknownOption(PaneLimits)
+const decodeAntigravity = Schema.decodeUnknownOption(PaneAntigravity)
 
 /** What an answer decodes to; a call that failed decodes to nothing. */
 const answer = <A,>(result: PromiseSettledResult<unknown>, decode: (input: unknown) => Option.Option<A>) =>
@@ -37,6 +38,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const [fleet, setFleet] = createSignal<PaneFleet>()
   const [claims, setClaims] = createSignal<PaneResets>()
   const [limits, setLimits] = createSignal<string>()
+  const [antigravity, setAntigravity] = createSignal<ReadonlyArray<string>>([])
   const [errors, setErrors] = createSignal<ReadonlyArray<string>>([])
   const [at, setAt] = createSignal<number>()
   const abort = new AbortController()
@@ -46,12 +48,13 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     if (pending) return
     pending = true
     const location = ctx.location
-    const [poolResult, statusResult, fleetResult, resetsResult, limitsResult] = await Promise.allSettled([
+    const [poolResult, statusResult, fleetResult, resetsResult, limitsResult, antigravityResult] = await Promise.allSettled([
       ctx.client.rpc(POOL_STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).fleet({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).resets({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).limits({}, { location, signal: abort.signal }),
+      ctx.client.rpc(POOL_STATUS).antigravity({}, { location, signal: abort.signal }),
     ])
     if (closed) return
     const pools = answer(poolResult, decodePools)
@@ -61,6 +64,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     setFleet(Option.getOrUndefined(answer(fleetResult, decodeFleet)))
     setClaims(Option.getOrUndefined(answer(resetsResult, decodeResets)))
     setLimits(Option.getOrUndefined(answer(limitsResult, decodeLimits))?.line)
+    setAntigravity(Option.match(answer(antigravityResult, decodeAntigravity), { onNone: () => [], onSome: (read) => read.lines }))
     setErrors(unavailable(Option.isNone(pools), Option.isNone(status)))
     setAt(Date.now())
     pending = false
@@ -111,6 +115,7 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
         {heading("Accounts")}
         <Show when={resets()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
         <Show when={limits()}>{(line) => <text fg={theme().text.base}>{line()}</text>}</Show>
+        <For each={antigravity()}>{(line) => <text fg={theme().text.base}>{line}</text>}</For>
         <Show when={accounts()} fallback={muted("Loading accounts…")}>
           {(rows) => (
             <For each={rows()} fallback={muted("No pool accounts.")}>
