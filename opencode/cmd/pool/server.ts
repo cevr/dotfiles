@@ -133,7 +133,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, FileSystem, Layer, Option, Path, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
@@ -496,8 +496,15 @@ export const make = (
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
       // Antigravity's quota: built with no I/O, read only when asked; its rows come from what was stored, and no
-      // failure of its code reaches the pool (AgyWiring is the one boundary).
-      const agy = AgyWiring.wire(yield* antigravity(options.antigravity).pipe(Effect.catchCause(() => Effect.succeed(Option.none<AgySource.Source>()))))
+      // failure of its code reaches the pool (AgyWiring is the one boundary). Its files and paths are the host's
+      // (Plugin.Environment); a host that gives none (a test's harness) has no Antigravity source.
+      const hostFiles = Option.all([yield* Effect.serviceOption(FileSystem.FileSystem), yield* Effect.serviceOption(Path.Path)])
+      const agySource = yield* Option.match(hostFiles, {
+        onNone: () => Effect.succeed(Option.none<AgySource.Source>()),
+        onSome: ([fs, path]) =>
+          antigravity(options.antigravity).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.provideService(Path.Path, path)),
+      }).pipe(Effect.catchCause(() => Effect.succeed(Option.none<AgySource.Source>())))
+      const agy = AgyWiring.wire(agySource)
 
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
