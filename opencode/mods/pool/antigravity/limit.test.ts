@@ -29,7 +29,7 @@ describe("Antigravity limit messages", () => {
     for (const text of ["", "Resets in 4m", "Done. The tests pass.", "error: code 500", "quota", "the quota was fine (code 200)"]) expect(parseLimit(text, NOW)).toEqual(Option.none())
   })
 
-  test("parsePaneLimits classifies Individual (gemini) and Third-party (claude-gpt), ignores expired frames, and keys by Error ID else reset time", () => {
+  test("parsePaneLimits classifies Individual (gemini) and Third-party (claude-gpt), ignores expired frames, and keys by Error ID else frame text hash", () => {
     const scrollback = [
       "Working on task...",
       "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.",

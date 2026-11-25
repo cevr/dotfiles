@@ -1659,7 +1659,7 @@ A group answers in one of these states:
   called open;
 - unknown, when the reading leaves a window out.
 
-The `antigravity` tool answers `status`, `open`, `record` (alias `limit`), `gate`, `clear` and `read`. The
+The `antigravity` tool answers `status`, `open`, `record` (alias `limit`), `gate`, `heartbeat`, `release`, `clear` and `read`. The
 same rows appear in `pool_push` status, in `orchestrate status` and `land`, in the `/pool` pane (the pool's
 `antigravity` RPC method) and from `bun cmd/pool/antigravity-read.ts`. The pool
 option `antigravity: false` turns all of this off.
@@ -1668,13 +1668,18 @@ Across a fleet, each host includes its Antigravity record (limit events, latest
 reading, attempt floor, readable-sign-in bit and wire-safe reason kind — never a
 token, profile path or home directory) in its fleet report, decoded tolerantly
 on its own so an unknown future reason, field or garbage payload never drops a
-peer's Claude or OpenAI pool data. Reports merge as a commutative, associative,
-idempotent join-semilattice: the worse live reading wins, distinct resets never
-move earlier, a keyed pane frame (`Error ID` when present, else a
-time-independent hash of the frame's exact text) keeps its earliest sighting so
-replayed scrollback never re-arms or shifts its reset, and a cross-host reading
-lifts a limit only past the 5-minute clock-skew bound (`CLOCK_SKEW_BOUND_MS`)
-with extreme future resets clamped to 7 days + 5 minutes.
+peer's Claude or OpenAI pool data. Every peer report is normalized ONCE at
+arrival onto this host's clock (`offset = receivedAt - report.at`, cancelling
+peer clock skew of any magnitude or sign; transit delay up to `TRANSIT_BOUND_MS`
+= 15 s only shifts normalized times slightly late, erring toward limited) and
+clamped ONCE against `receivedAt + MAX_RESET_HORIZON_MS` (7 days + 5 minutes) so
+nothing ever re-clamps against rolling `now`. Normalized reports merge as a
+commutative, associative, idempotent join-semilattice: the worse live reading
+wins, keyed limits take the latest reset (erring toward limited and letting a
+newer episode supersede an expired one), Error IDs (`id:*`) stay bounded in
+`seenLimitKeys`, and content-hash episode keys (`text:*`) suppress repeats only
+while live and are pruned once spent (past reset, cleared, or lifted by a later
+reading with room beyond `CLOCK_SKEW_BOUND_MS` = 5 min).
 
 Only one host in the fleet makes active Google reads: the lowest fresh host id
 with a readable sign-in, obeying the 5-minute floor across all hosts' merged
@@ -1687,9 +1692,12 @@ merged floor converges.
 Before starting or resuming an agy pane or worker, the start gate (`gate`) holds
 any limited group until its finite reset time (leaving unknown/absent windows
 and stale peers without limits unblocked) and enforces a cross-host Gemini
-concurrency cap counted from the fleet's busy set (default 4 per agent and 8
-across the fleet, configurable via `antigravity.geminiCap`; a stale peer's last
-reported running agents count until its report ages past `BUSY_FRESH_MS`).
+concurrency cap counted from the fleet's live busy set (default 4 per agent and
+8 across the fleet, configurable via `antigravity.geminiCap`; a stale peer's
+last reported running agents count until its report ages past `BUSY_FRESH_MS`).
+A running external agy pane refreshes its busy slot with `heartbeat` (keeping it
+counted past `BUSY_MS` = 60 min while still running) and frees it on exit with
+`release`.
 
 ## Status
 

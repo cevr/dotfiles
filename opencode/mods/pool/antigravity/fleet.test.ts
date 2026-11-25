@@ -32,12 +32,15 @@ import {
   type MergedRecord,
   openDecisionAt,
   OpenStatus,
+  pruneSpentMerged,
   readingHost,
   resolveGroup,
+  TRANSIT_BOUND_MS,
   WireWhy,
 } from "./fleet.ts"
+import { parsePaneLimits } from "./limit.ts"
 import type { Span, Window } from "./quota.ts"
-import { Answer, EMPTY, Event, evolve, READ_EVERY_MS, Shown, Why } from "./state.ts"
+import { Answer, EMPTY, Event, evolve, MAX_SEEN_KEYS, READ_EVERY_MS, Shown, Why } from "./state.ts"
 import { mergedStatusLines, statusLines } from "./text.ts"
 
 const MINUTE = 60_000
@@ -525,7 +528,7 @@ const checkMergedWindowLaw = (r1: ReturnType<typeof fromReport>, r2: ReturnType<
     expect(OpenStatus.cases.NotNow).toBeDefined()
   })
 
-  test("B1 cross-host merge: same key seen later on a peer keeps earliest sighting and never moves reset later", () => {
+  test("Rule A cross-host merge: same key normalized with slight transit difference takes latest reset (errs toward limited, commutative)", () => {
     const first = fromReport(
       {
         host: "workbox",
@@ -535,18 +538,18 @@ const checkMergedWindowLaw = (r1: ReturnType<typeof fromReport>, r2: ReturnType<
       },
       START,
     )
-    const replayOnPeer = fromReport(
+    const slightTransit = fromReport(
       {
         host: "mac",
-        at: START + 10 * MINUTE,
+        at: START,
         readableSignIn: true,
-        limits: [{ group: "gemini", seenAt: START + 10 * MINUTE, resetAt: START + 70 * MINUTE, host: "mac", key: "text:sameframe" }],
+        limits: [{ group: "gemini", seenAt: START, resetAt: START + 60 * MINUTE, host: "mac", key: "text:sameframe" }],
       },
-      START + 10 * MINUTE,
+      START + 8_000,
     )
-    const merged = mergeRecords(first, replayOnPeer)
-    expect(mergedAnswerAt(merged, START + 20 * MINUTE, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + 60 * MINUTE, by: "limit" }))
-    expect(mergeRecords(first, replayOnPeer)).toEqual(mergeRecords(replayOnPeer, first))
+    const merged = mergeRecords(first, slightTransit)
+    expect(mergedAnswerAt(merged, START + 20 * MINUTE, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + 60 * MINUTE + 8_000, by: "limit" }))
+    expect(mergeRecords(first, slightTransit)).toEqual(mergeRecords(slightTransit, first))
   })
 
   test("B2 clock skew: within 5-min skew bound a cross-host reading never lifts a live limit early; beyond it errs toward limited and clamps extreme resets", () => {
@@ -663,6 +666,8 @@ const checkMergedWindowLaw = (r1: ReturnType<typeof fromReport>, r2: ReturnType<
     }
 
     // Beyond the bound: reader clock +10m ahead of `now` stamps reading in the future (> now + 5m) -> errs toward Limited!
+    // (When normalized at arrival against `receivedAt = limitT`, a reading stamped at `report.at` normalizes to `limitT`,
+    // which is NOT > limitT + 5m, so it STILL errs toward Limited!)
     const futureReader = fromReport(
       {
         host: "fast-reader",
@@ -809,4 +814,161 @@ const checkMergedWindowLaw = (r1: ReturnType<typeof fromReport>, r2: ReturnType<
       }
     }
   })
+
+  test("R2 / Rule A: a peer a year ahead holds nothing past its real reset (or arrival horizon) at +0d, +8d, +30d, +200d", () => {
+    const DAY = 24 * HOUR
+    const YEAR = 365 * DAY
+    const T0 = START
+    // Subcase A: peer clock is +1 year ahead and reports a real 1-hour limit
+    const peerAheadClock: AntigravityReport = {
+      host: "year-ahead",
+      at: T0 + YEAR,
+      readableSignIn: false,
+      limits: [{ group: "gemini", seenAt: T0 + YEAR, resetAt: T0 + YEAR + HOUR, host: "year-ahead", key: "id:yr-1" }],
+    }
+    const normClock = fromReport(peerAheadClock, T0)
+    expect(openDecisionAt(normClock, T0, "gemini")._tag).toBe("NotNow")
+    for (const days of [8, 30, 200]) {
+      expect(openDecisionAt(normClock, T0 + days * DAY, "gemini")._tag).toBe("Now")
+    }
+
+    // Subcase B: peer reports a bogus 365-day reset duration relative to its own clock -> clamped ONCE at arrival (T0 + 7d5m), never rolls
+    const peerAbsurdDuration: AntigravityReport = {
+      host: "absurd-dur",
+      at: T0,
+      readableSignIn: false,
+      limits: [{ group: "gemini", seenAt: T0, resetAt: T0 + YEAR, host: "absurd-dur", key: "id:yr-2" }],
+    }
+    const normDur = fromReport(peerAbsurdDuration, T0)
+    const atZero = openDecisionAt(normDur, T0, "gemini")
+    expect(atZero._tag).toBe("NotNow")
+    if (atZero._tag === "NotNow") expect(atZero.until).toBe(T0 + MAX_RESET_HORIZON_MS)
+    for (const days of [8, 30, 200]) {
+      expect(openDecisionAt(normDur, T0 + days * DAY, "gemini")._tag).toBe("Now")
+    }
+  })
+
+  test("R3 / Rule A: a peer 4m or 30m behind against a real reset at T+45m still holds at T+16m and T+42m (never lifts early)", () => {
+    const T0 = START
+    for (const behindMin of [4, 30]) {
+      const behindMs = behindMin * MINUTE
+      // True limit at T0 with real 45m reset; peer's clock is `behindMin` slow
+      const peerReport: AntigravityReport = {
+        host: `behind-${behindMin}`,
+        at: T0 - behindMs,
+        readableSignIn: false,
+        limits: [{ group: "gemini", seenAt: T0 - behindMs, resetAt: T0 - behindMs + 45 * MINUTE, host: `behind-${behindMin}`, key: "text:same45m" }],
+      }
+      const ownReport: AntigravityReport = {
+        host: "mac",
+        at: T0,
+        readableSignIn: true,
+        limits: [{ group: "gemini", seenAt: T0, resetAt: T0 + 45 * MINUTE, host: "mac", key: "text:same45m" }],
+      }
+      // Received at local time T0 (transit 0) or T0 + 2s
+      const mergedSingle = fromReport(peerReport, T0)
+      const mergedBoth = mergeRecords(fromReport(ownReport, T0), fromReport(peerReport, T0))
+      for (const rec of [mergedSingle, mergedBoth]) {
+        expect(openDecisionAt(rec, T0 + 16 * MINUTE, "gemini")._tag).toBe("NotNow")
+        expect(openDecisionAt(rec, T0 + 42 * MINUTE, "gemini")._tag).toBe("NotNow")
+        expect(openDecisionAt(rec, T0 + 46 * MINUTE, "gemini")._tag).toBe("Now")
+      }
+    }
+  })
+
+  test("Rules A + B property: arbitrary host clock offsets (seconds to 1 year, both signs), transit delays, repeated episodes & scrollback prefixes", () => {
+    const DAY = 24 * HOUR
+    const OFFSET_SCALES = [5_000, 4 * MINUTE, 30 * MINUTE, 6 * HOUR, 10 * DAY, 365 * DAY] as const
+    const DURATIONS: readonly [{ readonly text: string; readonly ms: number }, ...ReadonlyArray<{ readonly text: string; readonly ms: number }>] = [
+      { text: "15m", ms: 15 * MINUTE },
+      { text: "45m", ms: 45 * MINUTE },
+      { text: "1h30m", ms: 90 * MINUTE },
+    ]
+
+    for (let seed = 600; seed <= 680; seed++) {
+      const random = generator(seed)
+      const hostOffsets = HOSTS.map((host) => {
+        const mag = Math.floor(random() * pick(random, OFFSET_SCALES))
+        const sign = Match.value(random() < 0.5).pipe(Match.when(true, () => 1), Match.orElse(() => -1))
+        return { host, offset: sign * mag }
+      })
+      const dur = pick(random, DURATIONS)
+      const frameText = `Individual quota reached. Please upgrade your subscription to increase your limits. Resets in ${dur.text}.`
+
+      // Two identical-text episodes separated by more than the duration (plus transit)
+      const ep1TrueAt = START + HOUR
+      const ep1TrueReset = ep1TrueAt + dur.ms
+      const ep2TrueAt = ep1TrueReset + 2 * HOUR + Math.floor(random() * 3 * DAY)
+      const ep2TrueReset = ep2TrueAt + dur.ms
+
+      const pickHost = () =>
+        Option.getOrElse(Arr.get(hostOffsets, Math.floor(random() * hostOffsets.length)), () => ({ host: HOSTS[0], offset: 0 }))
+
+      // Episode 1 seen on a peer with arbitrary clock offset and transit delay in [0, TRANSIT_BOUND_MS]
+      const peer1 = pickHost()
+      const transit1 = Math.floor(random() * TRANSIT_BOUND_MS)
+      const peer1LocalSeen = ep1TrueAt + peer1.offset
+      const parsed1 = parsePaneLimits(frameText, peer1LocalSeen)[0]!
+      const peer1State = evolve(
+        EMPTY,
+        Event.cases.LimitSeen.make({
+          limit: { group: "gemini", seenAt: parsed1.seenAt, resetAt: Option.getOrThrow(parsed1.resetAt), host: peer1.host, key: parsed1.key },
+        }),
+      )
+      // Replaying any scrollback prefix before reset on peer1 changes nothing
+      const replayPrefix = `log line\n${frameText}`
+      let replayed = peer1State
+      for (const delta of [1_000, Math.floor(dur.ms / 3), Math.floor(dur.ms / 2)]) {
+        for (const seen of parsePaneLimits(replayPrefix, peer1LocalSeen + delta)) {
+          replayed = evolve(
+            replayed,
+            Event.cases.LimitSeen.make({
+              limit: { group: "gemini", seenAt: seen.seenAt, resetAt: Option.getOrThrow(seen.resetAt), host: peer1.host, key: seen.key },
+            }),
+          )
+        }
+      }
+      expect(replayed).toEqual(peer1State)
+
+      // Receiver ingests peer1's report after transit1
+      const peer1Report = fromLocalState(peer1.host, peer1State, peer1LocalSeen, false)
+      const rec1 = fromReport(peer1Report, ep1TrueAt + transit1)
+      // Invariant 1: while live by the true timeline, NEVER answered Now
+      expect(openDecisionAt(rec1, ep1TrueAt + Math.floor(dur.ms / 2), "gemini")._tag).toBe("NotNow")
+      expect(openDecisionAt(rec1, ep1TrueReset - 1, "gemini")._tag).toBe("NotNow")
+      // Invariant 2: NEVER held past true reset + transit bound
+      expect(openDecisionAt(rec1, ep1TrueReset + TRANSIT_BOUND_MS + 1, "gemini")._tag).toBe("Now")
+      // Pruning spent keys after episode 1 empties spent text:* limits
+      expect(pruneSpentMerged(rec1, ep1TrueReset + TRANSIT_BOUND_MS + 1).limits.length).toBe(0)
+
+      // Episode 2: identical text after ep1's reset on a second peer with another arbitrary clock offset
+      const peer2 = pickHost()
+      const transit2 = Math.floor(random() * TRANSIT_BOUND_MS)
+      const peer2LocalSeen = ep2TrueAt + peer2.offset
+      const parsed2 = parsePaneLimits(frameText, peer2LocalSeen)[0]!
+      const peer2Initial = Match.value(peer2.host === peer1.host).pipe(
+        Match.when(true, () => peer1State),
+        Match.orElse(() => EMPTY),
+      )
+      const peer2State = evolve(
+        peer2Initial,
+        Event.cases.LimitSeen.make({
+          limit: { group: "gemini", seenAt: parsed2.seenAt, resetAt: Option.getOrThrow(parsed2.resetAt), host: peer2.host, key: parsed2.key },
+        }),
+      )
+      // Wait: if peer2 === peer1, peer2LocalSeen is > peer1 reset on peer1's clock -> Episode 2 MUST be recorded!
+      const peer2Report = fromLocalState(peer2.host, peer2State, peer2LocalSeen, false)
+      const rec2 = fromReport(peer2Report, ep2TrueAt + transit2)
+      const merged = mergeRecords(rec1, rec2)
+      // Invariant 3: repeated episode is ALWAYS recorded and holds until its new reset
+      expect(openDecisionAt(merged, ep2TrueAt + Math.floor(dur.ms / 2), "gemini")._tag).toBe("NotNow")
+      expect(openDecisionAt(merged, ep2TrueReset - 1, "gemini")._tag).toBe("NotNow")
+      expect(openDecisionAt(merged, ep2TrueReset + TRANSIT_BOUND_MS + 1, "gemini")._tag).toBe("Now")
+      // Invariant 4: merge laws hold over normalized records
+      expect(mergeRecords(rec1, rec2)).toEqual(mergeRecords(rec2, rec1))
+      expect(mergeRecords(merged, merged)).toEqual(merged)
+      expect(merged.seenLimitKeys.length).toBeLessThanOrEqual(MAX_SEEN_KEYS)
+      expect(merged.seenLimitKeys.every((k) => k.startsWith("id:"))).toBe(true)
+    }
+  }, hangGuard("in-memory"))
 })

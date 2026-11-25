@@ -79,6 +79,8 @@ const fake = (state: Ref.Ref<State>, asked: Ref.Ref<number>): Source => ({
         query,
       }),
     ),
+  heartbeat: () => Effect.void,
+  release: () => Effect.void,
 })
 
 const withSource = <A,>(body: (source: Source, asked: Ref.Ref<number>) => Effect.Effect<A>) =>

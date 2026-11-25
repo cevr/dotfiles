@@ -844,4 +844,34 @@ describe("Antigravity read authority on a fake Google", () => {
       expect(rep.failure?.why._tag).toBe("Contained")
     }),
   )
+
+  live(
+    "running Gemini pane heartbeat refreshes busy slot (past 60m BUSY_MS) and release frees it on exit",
+    Effect.gen(function* () {
+      const setup = yield* scratch
+      const events: Array<string> = []
+      const source = yield* make({
+        profile: setup.profile,
+        places: setup.places,
+        store: setup.store,
+        auth: "personal",
+        endpoints: GOOGLE,
+        agent: Effect.succeed(AGENT),
+        fleet: {
+          host: "mac-pro",
+          read: Effect.succeed({ host: "mac-pro", peers: {}, peerNames: [], ownBusy: [], peerBusy: [] }),
+          recordBusy: (paneId, providerID) => Effect.sync(() => { events.push(`busy:${paneId}:${providerID}`) }),
+          releaseBusy: (paneId) => Effect.sync(() => { events.push(`release:${paneId}`) }),
+        },
+      }).pipe(Effect.provideService(HttpClient.HttpClient, HttpClient.make(() => Effect.die("unused"))))
+      yield* source.heartbeat("pane-long-1", "implementor")
+      yield* source.heartbeat("pane-long-1", "implementor")
+      yield* source.release("pane-long-1")
+      expect(events).toEqual([
+        "busy:pane-long-1:antigravity:gemini:implementor",
+        "busy:pane-long-1:antigravity:gemini:implementor",
+        "release:pane-long-1",
+      ])
+    }),
+  )
 })

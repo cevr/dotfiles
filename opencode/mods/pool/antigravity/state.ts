@@ -125,30 +125,48 @@ const attempted = (state: State, id: string, at: number, keychain: boolean): Sta
 
 const limitsOf = (state: State): ReadonlyArray<GroupLimit> => Option.getOrElse(Option.fromUndefinedOr(state.limits), () => [])
 const seenKeysOf = (state: State): ReadonlyArray<string> => Option.getOrElse(Option.fromUndefinedOr(state.seenLimitKeys), () => [])
-const MAX_SEEN_KEYS = 200
+export const MAX_SEEN_KEYS = 200
 
-const recordSeenKey = (existing: ReadonlyArray<string>, key: Option.Option<string>): Option.Option<ReadonlyArray<string>> =>
-  Option.match(key, {
-    onNone: () => Option.liftPredicate(existing, Arr.isReadonlyArrayNonEmpty),
+const isErrorIdKey = (key: string): boolean => key.startsWith("id:")
+const isTextKey = (key: string): boolean => key.startsWith("text:")
+
+/** Whether `reading` is strictly later than `afterSeenAt` and shows room on `group` at `now`. */
+const isGroupReadingRoomy = (reading: Option.Option<Reading>, group: string, afterSeenAt: number, now: number): boolean =>
+  Option.exists(reading, (read) => {
+    if (read.at <= afterSeenAt) return false
+    const liveForGroup = read.windows.filter(
+      (window) => window.group === group && !Option.exists(Option.fromUndefinedOr(window.resetAt), (at) => at <= now),
+    )
+    return liveForGroup.length > 0 && liveForGroup.every((window) => window.used < 1)
+  })
+
+/** Whether a recorded `GroupLimit` is still live at `at` given `reading` (not expired and not lifted by a later reading with room). */
+export const isLocalLimitLiveAt = (limit: GroupLimit, reading: Option.Option<Reading>, at: number): boolean => {
+  if (isGroupReadingRoomy(reading, limit.group, limit.seenAt, at)) return false
+  return Option.match(Option.fromUndefinedOr(limit.resetAt), {
+    onNone: () => true,
+    onSome: (resetAt) => resetAt > at,
+  })
+}
+
+const recordSeenErrorId = (existing: ReadonlyArray<string>, key: Option.Option<string>): Option.Option<ReadonlyArray<string>> => {
+  // Only globally unique Error IDs (`id:*`) live in seenLimitKeys; episode text keys (`text:*`) live only while their limit is live.
+  const onlyIds = existing.filter(isErrorIdKey)
+  return Option.match(Option.filter(key, isErrorIdKey), {
+    onNone: () => Option.liftPredicate(onlyIds, Arr.isReadonlyArrayNonEmpty),
     onSome: (value) =>
       Option.some(
-        Match.value(existing.includes(value)).pipe(
-          Match.when(true, () => existing),
-          Match.orElse(() => [...existing, value].slice(-MAX_SEEN_KEYS)),
+        Match.value(onlyIds.includes(value)).pipe(
+          Match.when(true, () => onlyIds),
+          Match.orElse(() => [...onlyIds, value].slice(-MAX_SEEN_KEYS)),
         ),
       ),
   })
+}
 
-const buildGroupLimit = (group: string, limit: SeenLimit, previous: Option.Option<GroupLimit>): GroupLimit => {
-  // Never move a live reset earlier when recording a keyed frame on the same group.
-  const nextReset = Option.flatMap(Option.fromUndefinedOr(limit.resetAt), (at) =>
-    Option.match(
-      Option.flatMap(previous, (prev) => Option.filter(Option.fromUndefinedOr(prev.resetAt), (prevAt) => prevAt > limit.seenAt)),
-      { onNone: () => Option.some(at), onSome: (prevAt) => Option.some(Math.max(prevAt, at)) },
-    ),
-  )
+const buildGroupLimit = (group: string, limit: SeenLimit): GroupLimit => {
   const base: GroupLimit = { group, seenAt: limit.seenAt }
-  const withReset = Option.match(nextReset, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
+  const withReset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
   const withHost = Option.match(Option.fromUndefinedOr(limit.host), { onNone: () => withReset, onSome: (host) => ({ ...withReset, host }) })
   return Option.match(Option.fromUndefinedOr(limit.key), { onNone: () => withHost, onSome: (key) => ({ ...withHost, key }) })
 }
@@ -168,35 +186,80 @@ const namedGroups = (state: State, name: Option.Option<string>): ReadonlyArray<s
     ],
   })
 
+const applyLimitSeen = (state: State, limit: SeenLimit): State => {
+  const key = Option.fromUndefinedOr(limit.key)
+  const reading = Option.fromUndefinedOr(state.reading)
+  if (Option.isSome(key)) {
+    // Ignore frames older than their own reset.
+    if (Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= limit.seenAt)) return state
+    // Globally unique Error IDs never re-arm once seen.
+    if (isErrorIdKey(key.value) && seenKeysOf(state).includes(key.value)) return state
+  }
+  const targets = namedGroups(state, Option.fromUndefinedOr(limit.group))
+  // Episode text keys suppress repeats ONLY while their limit is still live; once spent (past reset, cleared, or lifted by room), the same text starts a new episode.
+  if (Option.isSome(key) && isTextKey(key.value)) {
+    const keyValue = key.value
+    const allAlreadyLive = targets.every((group) =>
+      limitsOf(state).some((before) => before.group === group && before.key === keyValue && isLocalLimitLiveAt(before, reading, limit.seenAt)),
+    )
+    if (allAlreadyLive) return state
+  }
+  const nextLimits = targets.reduce((limits, group) => {
+    if (Option.isNone(key)) {
+      // Unkeyed legacy limits: newest seenAt wins per group.
+      const prev = Arr.findFirst(limits, (before) => before.group === group && Option.isNone(Option.fromUndefinedOr(before.key)))
+      if (Option.exists(prev, (before) => before.seenAt > limit.seenAt)) return limits
+      return [...limits.filter((before) => before.group !== group), buildGroupLimit(group, limit)]
+    }
+    const alreadyLiveSameKey = limits.some((before) => before.group === group && before.key === key.value && isLocalLimitLiveAt(before, reading, limit.seenAt))
+    if (alreadyLiveSameKey) return limits
+    // Keep other currently-live keyed entries on this group; prune spent text:* entries and replace any spent entry with the same key.
+    const kept = limits.filter((before) => {
+      if (before.group !== group) return true
+      if (before.key === key.value) return false
+      if (Option.exists(Option.fromUndefinedOr(before.key), isTextKey)) return isLocalLimitLiveAt(before, reading, limit.seenAt)
+      return isLocalLimitLiveAt(before, reading, limit.seenAt)
+    })
+    return [...kept, buildGroupLimit(group, limit)]
+  }, limitsOf(state))
+  const nextKeys = recordSeenErrorId(seenKeysOf(state), key)
+  const { seenLimitKeys: _dropped, ...withoutKeys } = state
+  return Option.match(nextKeys, {
+    onNone: () => ({ ...withoutKeys, limits: nextLimits }),
+    onSome: (seenLimitKeys) => ({ ...withoutKeys, limits: nextLimits, seenLimitKeys }),
+  })
+}
+
 export const evolve = (state: State, event: Event): State =>
   Event.match(event, {
     Attempted: ({ id, at, keychain }) => attempted(state, id, at, keychain),
-    Read: ({ attempt, at, windows }) => ifCurrent(state, attempt, () => ({ ...withoutFailure(state), reading: { at, windows }, failures: 0 })),
+    Read: ({ attempt, at, windows }) =>
+      ifCurrent(state, attempt, () => {
+        const nextReading: Reading = { at, windows }
+        // Prune spent text:* episode limits lifted by this reading so they never stay in local state or reports.
+        const nextLimits = limitsOf(state).filter((limit) => {
+          if (!Option.exists(Option.fromUndefinedOr(limit.key), isTextKey)) return true
+          return isLocalLimitLiveAt(limit, Option.some(nextReading), at)
+        })
+        const base = { ...withoutFailure(state), reading: nextReading, failures: 0 }
+        return Option.match(Option.fromUndefinedOr(state.limits), {
+          onNone: () => base,
+          onSome: () => ({ ...base, limits: nextLimits }),
+        })
+      }),
     Failed: ({ attempt, at, why }) =>
       ifCurrent(state, attempt, () => ({ ...state, failure: { at, why }, failures: state.failures + 1, nextReadAt: attemptAt(state) + backoffMs(state.failures + 1) })),
     Unavailable: ({ at, why }) => ({ ...state, failure: { at, why } }),
-    LimitSeen: ({ limit }) => {
-      const key = Option.fromUndefinedOr(limit.key)
-      // Keyed pane frames: ignore frames older than their own reset, and never re-arm or shift a replayed frame.
-      if (Option.isSome(key)) {
-        if (Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= limit.seenAt)) return state
-        if (seenKeysOf(state).includes(key.value) || limitsOf(state).some((before) => before.key === key.value)) return state
-      }
-      const nextLimits = namedGroups(state, Option.fromUndefinedOr(limit.group)).reduce((limits, group) => {
-        const prev = Arr.findFirst(limits, (before) => before.group === group)
-        if (Option.exists(prev, (before) => before.seenAt > limit.seenAt)) return limits
-        const seen = buildGroupLimit(group, limit, Option.filter(prev, () => Option.isSome(key)))
-        return [...limits.filter((before) => before.group !== group), seen]
-      }, limitsOf(state))
-      const nextKeys = recordSeenKey(seenKeysOf(state), key)
-      return Option.match(nextKeys, {
-        onNone: () => ({ ...state, limits: nextLimits }),
-        onSome: (seenLimitKeys) => ({ ...state, limits: nextLimits, seenLimitKeys }),
-      })
-    },
+    LimitSeen: ({ limit }) => applyLimitSeen(state, limit),
     LimitCleared: ({ group }) => {
       const cleared = namedGroups(state, Option.fromUndefinedOr(group))
-      return { ...state, limits: limitsOf(state).filter((seen) => !cleared.includes(seen.group)) }
+      const onlyIds = seenKeysOf(state).filter(isErrorIdKey)
+      const { seenLimitKeys: _dropped, ...withoutKeys } = state
+      const base = { ...withoutKeys, limits: limitsOf(state).filter((seen) => !cleared.includes(seen.group)) }
+      return Option.match(Option.liftPredicate(onlyIds, Arr.isReadonlyArrayNonEmpty), {
+        onNone: () => base,
+        onSome: (seenLimitKeys) => ({ ...base, seenLimitKeys }),
+      })
     },
     KeychainTried: ({ at, outcome }) => ({ ...state, keychain: { at, outcome } }),
     ConsentGiven: ({ at }) => ({ ...state, consentAt: at }),
@@ -254,7 +317,7 @@ export const Answer = Schema.TaggedUnion({
 })
 export type Answer = typeof Answer.Type
 
-const limitOn = (state: State, group: string) => Arr.findFirst(limitsOf(state), (limit) => limit.group === group)
+const limitsOn = (state: State, group: string): ReadonlyArray<GroupLimit> => limitsOf(state).filter((limit) => limit.group === group)
 
 /** Why nothing is read: the last failure's reason, else not read yet. */
 const unreadWhy = (state: State): Why =>
@@ -270,18 +333,22 @@ const unreadWhy = (state: State): Why =>
  */
 export const answerAt = (state: State, now: number, group: string): Answer => {
   const reading = Option.fromUndefinedOr(state.reading)
-  const limit = limitOn(state, group)
-  const limitedUntil = Option.flatMap(limit, (seen) => Option.filter(Option.fromUndefinedOr(seen.resetAt), (at) => at > now))
-  if (Option.isSome(limitedUntil)) return Answer.cases.Limited.make({ until: limitedUntil.value, by: "limit" })
-  const silent = Option.filter(limit, (seen) =>
-    Option.isNone(Option.fromUndefinedOr(seen.resetAt)) && !Option.exists(reading, (read) => read.at > seen.seenAt),
+  const groupLimits = limitsOn(state, group)
+  const liveResets = groupLimits.flatMap((seen) =>
+    Option.toArray(Option.filter(Option.fromUndefinedOr(seen.resetAt), (at) => at > now)),
   )
-  if (Option.isSome(silent)) return Answer.cases.LimitedResetUnknown.make({ seenAt: silent.value.seenAt })
-  if (Option.isNone(reading))
-    return Option.match(Option.flatMap(limit, (seen) => Option.fromUndefinedOr(seen.resetAt)), {
-      onNone: () => Answer.cases.Unmeasured.make({ why: unreadWhy(state) }),
-      onSome: (since) => Answer.cases.Unmeasured.make({ why: unreadWhy(state), since }),
+  if (Arr.isReadonlyArrayNonEmpty(liveResets)) return Answer.cases.Limited.make({ until: Math.max(...liveResets), by: "limit" })
+  const silent = groupLimits.filter(
+    (seen) => Option.isNone(Option.fromUndefinedOr(seen.resetAt)) && !Option.exists(reading, (read) => read.at > seen.seenAt),
+  )
+  if (Arr.isReadonlyArrayNonEmpty(silent)) return Answer.cases.LimitedResetUnknown.make({ seenAt: Math.max(...silent.map((l) => l.seenAt)) })
+  if (Option.isNone(reading)) {
+    const pastResets = groupLimits.flatMap((seen) => Option.toArray(Option.fromUndefinedOr(seen.resetAt)))
+    return Arr.match(pastResets, {
+      onEmpty: () => Answer.cases.Unmeasured.make({ why: unreadWhy(state) }),
+      onNonEmpty: (resets) => Answer.cases.Unmeasured.make({ why: unreadWhy(state), since: Math.max(...resets) }),
     })
+  }
   const spans: ReadonlyArray<Span> = ["5h", "7d", "quota"]
   const known = spans.flatMap((span) => {
     const shown = windowAt(state, now, group, span)

@@ -2248,6 +2248,8 @@ const agySource: AgySource.Source = {
   clear: () => Effect.void,
   read: () => Effect.succeed({ note: "Read now.", lines: AGY_ROWS }),
   gate: () => Effect.succeed(GateDecision.cases.Admitted.make({ group: "gemini", measured: true, answer: AgyAnswer.cases.Open.make({}), geminiFleetCount: 0, geminiAgentCount: 0 })),
+  heartbeat: () => Effect.void,
+  release: () => Effect.void,
 }
 
 /** The `antigravity` tool's text for `action`, through the tool the plugin registered. */

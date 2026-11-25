@@ -289,32 +289,87 @@ describe("Antigravity reading store", () => {
     expect(expired.limits).toBeUndefined()
   })
 
-  test("B1 property: re-reading scrollback (with or without Error ID) at any later times never moves the reset or re-arms", () => {
+  test("B1 property: re-reading scrollback (with or without Error ID) while live, or with print time `at` after reset, never moves the reset or re-arms", () => {
     const toLimit = (parsed: ReturnType<typeof parsePaneLimits>[number]) => {
       const base = { seenAt: parsed.seenAt, key: parsed.key, host: "mac" }
       const withReset = Option.match(parsed.resetAt, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
       return Option.match(parsed.group, { onNone: () => withReset, onSome: (group) => ({ ...withReset, group }) })
     }
-    const frames = [
-      "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.",
-      "Third-party quota reached. Please upgrade your subscription to increase your limits. Resets in 45m.\nError ID: err-3p-prop",
-      "Individual quota reached. Please upgrade your subscription.",
-    ]
-    for (const frame of frames) {
-      let state = EMPTY
-      const firstParsed = parsePaneLimits(frame, START)
+    const cases = [
+      { frame: "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m38s.", liveUntilMin: 68, errorId: false },
+      { frame: "Third-party quota reached. Please upgrade your subscription to increase your limits. Resets in 45m.\nError ID: err-3p-prop", liveUntilMin: 45, errorId: true },
+      { frame: "Individual quota reached. Please upgrade your subscription.", liveUntilMin: Number.POSITIVE_INFINITY, errorId: false },
+    ] as const
+    for (const item of cases) {
+      const firstParsed = parsePaneLimits(item.frame, START)
       expect(firstParsed.length).toBe(1)
       const first = firstParsed[0]!
-      state = evolve(state, Event.cases.LimitSeen.make({ limit: toLimit(first) }))
-      const afterFirst = state
-      // Re-reading the exact same scrollback 10 times at arbitrary later times changes nothing
+      const afterFirst = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: toLimit(first) }))
+      let state = afterFirst
       for (const offsetMin of [1, 5, 10, 30, 60, 90, 180, 500]) {
         const later = START + offsetMin * MINUTE
-        for (const parsed of parsePaneLimits(frame, later)) {
+        // Before reset (or Error ID or no-duration while live): even without `at`, replay changes nothing.
+        // After reset for a no-ID frame: scrollback replay passes its print time `at = START` -> ignored as older than its own reset.
+        const parsedList = Match.value(!item.errorId && offsetMin >= item.liveUntilMin).pipe(
+          Match.when(true, () => parsePaneLimits(item.frame, later, START)),
+          Match.orElse(() => parsePaneLimits(item.frame, later)),
+        )
+        for (const parsed of parsedList) {
           state = evolve(state, Event.cases.LimitSeen.make({ limit: toLimit(parsed) }))
         }
         expect(state).toEqual(afterFirst)
       }
     }
+  })
+
+  test("R1 / Rule B: same text 3 days later is a new limit; two no-duration frames 7 days apart (after clear or roomy reading) both arm; scrollback replay with print time `at` never re-arms", () => {
+    const toLimit = (parsed: ReturnType<typeof parsePaneLimits>[number]) => {
+      const base = { seenAt: parsed.seenAt, key: parsed.key, host: "mac" }
+      const withReset = Option.match(parsed.resetAt, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
+      return Option.match(parsed.group, { onNone: () => withReset, onSome: (group) => ({ ...withReset, group }) })
+    }
+    const DAY = 24 * HOUR
+    // Case 1: same text "Resets in 45m." 3 days later MUST be recorded as a new limit
+    const text45m = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 45m."
+    const p1 = parsePaneLimits(text45m, START)[0]!
+    const afterFirst = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: toLimit(p1) }))
+    expect(answerAt(afterFirst, START + 10 * MINUTE, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + 45 * MINUTE, by: "limit" }))
+    // Replay before reset (at +10m) is suppressed and does not move reset
+    const pReplay = parsePaneLimits(text45m, START + 10 * MINUTE)[0]!
+    expect(evolve(afterFirst, Event.cases.LimitSeen.make({ limit: toLimit(pReplay) }))).toEqual(afterFirst)
+    // Old scrollback replay 3 days later WITH print time `at = START` is ignored ("older than its own reset")
+    expect(parsePaneLimits(text45m, START + 3 * DAY, START)).toEqual([])
+    // Genuine NEW limit 3 days later with identical text IS recorded!
+    const p3d = parsePaneLimits(text45m, START + 3 * DAY)[0]!
+    const after3d = evolve(afterFirst, Event.cases.LimitSeen.make({ limit: toLimit(p3d) }))
+    expect(answerAt(after3d, START + 3 * DAY + MINUTE, "gemini")).toEqual(
+      Answer.cases.Limited.make({ until: START + 3 * DAY + 45 * MINUTE, by: "limit" }),
+    )
+
+    // Case 2: two no-duration frames 7 days apart: after clear OR after a later reading with room, the second MUST arm
+    const noDur = "Individual quota reached. Please upgrade your subscription."
+    const nd1 = parsePaneLimits(noDur, START)[0]!
+    const s1 = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: toLimit(nd1) }))
+    expect(answerAt(s1, START + 10 * MINUTE, "gemini")._tag).toBe("LimitedResetUnknown")
+    // Replay while still live changes nothing
+    const ndReplay = parsePaneLimits(noDur, START + 20 * MINUTE)[0]!
+    expect(evolve(s1, Event.cases.LimitSeen.make({ limit: toLimit(ndReplay) }))).toEqual(s1)
+    // After clear -> 7 days later same no-duration text arms again!
+    const cleared = evolve(s1, Event.cases.LimitCleared.make({ group: "gemini" }))
+    const nd7d = parsePaneLimits(noDur, START + 7 * DAY)[0]!
+    const rearmedAfterClear = evolve(cleared, Event.cases.LimitSeen.make({ limit: toLimit(nd7d) }))
+    expect(answerAt(rearmedAfterClear, START + 7 * DAY + MINUTE, "gemini")._tag).toBe("LimitedResetUnknown")
+    // After a later reading with room -> 7 days later same no-duration text arms again!
+    const withRoom = evolve(
+      evolve(s1, Event.cases.Attempted.make({ id: "r1", at: START + DAY, keychain: false })),
+      Event.cases.Read.make({
+        attempt: "r1",
+        at: START + DAY,
+        windows: SPANS.map((span) => ({ group: "gemini", label: "Gemini", span, used: 0.2, resetAt: START + 2 * DAY })),
+      }),
+    )
+    expect(answerAt(withRoom, START + DAY + MINUTE, "gemini")._tag).toBe("Open")
+    const rearmedAfterRoom = evolve(withRoom, Event.cases.LimitSeen.make({ limit: toLimit(nd7d) }))
+    expect(answerAt(rearmedAfterRoom, START + 7 * DAY + MINUTE, "gemini")._tag).toBe("LimitedResetUnknown")
   })
 })

@@ -4,56 +4,53 @@
 // its newest reading, its last read attempt + floor, whether it has a readable
 // sign-in, and its wire-safe failure kind.
 //
-// Every field in MergedRecord joins as a true join-semilattice (pure max/min/
-// union over a strict total order on immutable fields, with no post-hoc
-// adjustment), and peer health (fresh vs stale) is DERIVED at answer time:
-// - for one (group, span), the worse (higher used) live reading wins;
-// - a reset is never moved earlier across distinct limits or readings;
-// - for one keyed pane limit frame, the earliest sighting (min seenAt) wins so
-//   replaying scrollback on this host or a peer never moves its reset later;
-// - a limit holds until its reset (clamped to MAX_RESET_HORIZON_MS) or until a
-//   LATER reading with room (same host: strictly later; another host: later by
-//   more than CLOCK_SKEW_BOUND_MS and not stamped beyond now + CLOCK_SKEW_BOUND_MS);
-// - an unreadable peer is shown stale with its age, never as open;
-// - an unknown or absent window is never "unlimited" and never blocks a start.
-// Pure: no clock, no I/O.
+// Two rules govern time and identity by construction:
+// - RULE A (one clock): every peer report is normalized ONCE at arrival onto
+//   this host's clock (`offset = receivedAt - report.at`, cancelling any peer
+//   clock skew of either sign, with transit delay <= TRANSIT_BOUND_MS shifting
+//   times slightly late / toward limited) and clamped ONCE against
+//   `receivedAt + MAX_RESET_HORIZON_MS`. Nothing is re-clamped at answer time.
+// - RULE B (episode keys): Error IDs (`id:*`) never recur and stay bounded in
+//   `seenLimitKeys` (top-K sorted union, <= MAX_SEEN_KEYS). Content-hash keys
+//   (`text:*`) are episodes that suppress repeats ONLY while live and are spent
+//   once their reset passes (or, with no duration, on clear or a later reading
+//   with room).
+//
+// Every field in MergedRecord joins as a true join-semilattice (pure max/union/
+// top-K over strict total orders on immutable fields, no post-hoc adjustment),
+// and peer health (Fresh vs Stale) is DERIVED at answer time. Pure: no I/O.
 import { Array as Arr, Match, Option, Schema } from "effect"
 import {
   AntigravityReport,
+  CLOCK_SKEW_BOUND_MS,
   decodeAntigravityReport,
   fromWireWhy,
   HostAttempt,
   HostFailure,
   HostReading,
   LimitEvent,
+  normalizeAntigravityReport,
   toWireWhy,
   wireWhySortKey,
 } from "../antigravity-report.ts"
 import { GEMINI, keyOf, SHARED, type Span, type Window } from "./quota.ts"
-import { Answer, READ_EVERY_MS, Shown, type State, Why } from "./state.ts"
+import { Answer, isLocalLimitLiveAt, MAX_SEEN_KEYS, READ_EVERY_MS, Shown, type State, Why } from "./state.ts"
 export {
   AntigravityReport,
+  CLOCK_SKEW_BOUND_MS,
   decodeAntigravityReport,
   fromWireWhy,
   HostAttempt,
   HostFailure,
   HostReading,
   LimitEvent,
+  MAX_RESET_HORIZON_MS,
+  MAX_WINDOW_MS,
+  normalizeAntigravityReport,
   toWireWhy,
+  TRANSIT_BOUND_MS,
   WireWhy,
 } from "../antigravity-report.ts"
-
-/** Cross-host clock-skew bound (matches the 5-minute read floor): a reading from another host lifts a limit only past this margin. */
-export const CLOCK_SKEW_BOUND_MS = READ_EVERY_MS
-
-/** Longest quota window Antigravity meters (7 days). */
-export const MAX_WINDOW_MS = 7 * 24 * 60 * 60_000
-
-/** Sane reset horizon (longest window + skew bound): a broken clock cannot pin a limit forever. */
-export const MAX_RESET_HORIZON_MS = MAX_WINDOW_MS + CLOCK_SKEW_BOUND_MS
-
-/** Clamp a future reset timestamp to the sane horizon relative to `now`. */
-export const clampResetAt = (resetAt: number, now: number): number => Math.min(resetAt, now + MAX_RESET_HORIZON_MS)
 
 /** Newest fresh sighting of a host: joined by strict total-order max (at, readableSignIn). */
 export const FreshFact = Schema.Struct({
@@ -218,24 +215,36 @@ const joinHostFacts = (left: HostFacts, right: HostFacts): HostFacts => {
 const unkeyedLimitIdentity = (limit: LimitEvent): string =>
   `${limit.group}\0${limit.host}\0${limit.seenAt}\0${Option.getOrElse(Option.map(Option.fromUndefinedOr(limit.resetAt), String), () => "")}`
 
+const isErrorIdKey = (key: string): boolean => key.startsWith("id:")
+const isTextKey = (key: string): boolean => key.startsWith("text:")
+
+/** Bounded top-K join-semilattice over globally unique Error IDs (`id:*`): commutative, associative, idempotent. */
+const canonicalErrorIdKeys = (keys: Iterable<string>): ReadonlyArray<string> => {
+  const set = new Set<string>()
+  for (const key of keys) if (isErrorIdKey(key)) set.add(key)
+  return [...set].toSorted(compareText).slice(-MAX_SEEN_KEYS)
+}
+
 /**
- * Strict total order for sightings of the SAME `(group, key)`:
- * earliest `seenAt` wins (so re-reading the same scrollback frame later on this
- * host or a peer never moves its reset later); ties broken by having a reset,
- * then earlier resetAt, then lexicographic host.
+ * Strict total order for sightings of the SAME `(group, key)` on the normalized
+ * local clock: latest reset (or latest seenAt when reset is absent) wins, so
+ * transit differences err toward limited AND a newer episode with identical
+ * text supersedes an expired earlier episode. Pure max over a total order ->
+ * provably commutative, associative, and idempotent.
  */
 const compareSameKeySighting = (left: LimitEvent, right: LimitEvent): number => {
+  const leftTime = Option.getOrElse(Option.fromUndefinedOr(left.resetAt), () => left.seenAt)
+  const rightTime = Option.getOrElse(Option.fromUndefinedOr(right.resetAt), () => right.seenAt)
+  if (leftTime !== rightTime) return leftTime - rightTime
   if (left.seenAt !== right.seenAt) return left.seenAt - right.seenAt
   const leftHasReset = Option.isSome(Option.fromUndefinedOr(left.resetAt))
   const rightHasReset = Option.isSome(Option.fromUndefinedOr(right.resetAt))
-  if (leftHasReset !== rightHasReset) return Number(rightHasReset) - Number(leftHasReset)
-  const byReset = compareOptNumber(Option.fromUndefinedOr(left.resetAt), Option.fromUndefinedOr(right.resetAt))
-  if (byReset !== 0) return byReset
+  if (leftHasReset !== rightHasReset) return Number(leftHasReset) - Number(rightHasReset)
   return compareText(left.host, right.host)
 }
 
 const joinKeyedLimit = (left: LimitEvent, right: LimitEvent): LimitEvent =>
-  Match.value(compareSameKeySighting(left, right) <= 0).pipe(
+  Match.value(compareSameKeySighting(left, right) >= 0).pipe(
     Match.when(true, () => left),
     Match.orElse(() => right),
   )
@@ -302,32 +311,33 @@ const joinFailure = (left: HostFailure, right: HostFailure): HostFailure =>
     Match.orElse(() => right),
   )
 
-/** Lift a single host's AntigravityReport into a canonical MergedRecord. */
-export const fromReport = (report: AntigravityReport, seenAt: number = report.at): MergedRecord => {
-  const limits = canonicalLimits(report.limits)
-  const keys = new Set<string>(Option.getOrElse(Option.fromUndefinedOr(report.seenLimitKeys), () => []))
+/** Lift a single host's AntigravityReport into a canonical MergedRecord, normalizing its timestamps onto this host's clock ONCE at `receivedAt`. */
+export const fromReport = (report: AntigravityReport, receivedAt: number = report.at): MergedRecord => {
+  const norm = normalizeAntigravityReport(report, receivedAt)
+  const limits = canonicalLimits(norm.limits)
+  const rawKeys: Array<string> = [...Option.getOrElse(Option.fromUndefinedOr(norm.seenLimitKeys), () => [])]
   for (const limit of limits) {
     const key = Option.fromUndefinedOr(limit.key)
-    if (Option.isSome(key)) keys.add(key.value)
+    if (Option.isSome(key)) rawKeys.push(key.value)
   }
   const readings = Option.toArray(
-    Option.map(Option.fromUndefinedOr(report.reading), (reading): HostReading => ({ ...reading, windows: canonicalWindows(reading.windows) })),
+    Option.map(Option.fromUndefinedOr(norm.reading), (reading): HostReading => ({ ...reading, windows: canonicalWindows(reading.windows) })),
   )
-  const attempts = Option.toArray(Option.fromUndefinedOr(report.attempt))
-  const failures = Option.toArray(Option.map(Option.fromUndefinedOr(report.failure), (failure): HostFailure => ({ host: report.host, at: failure.at, why: failure.why })))
+  const attempts = Option.toArray(Option.fromUndefinedOr(norm.attempt))
+  const failures = Option.toArray(Option.map(Option.fromUndefinedOr(norm.failure), (failure): HostFailure => ({ host: norm.host, at: failure.at, why: failure.why })))
   const baseHost: HostFacts = {
-    host: report.host,
-    fresh: { at: seenAt, readableSignIn: report.readableSignIn },
-    lastSeenAt: seenAt,
+    host: norm.host,
+    fresh: { at: receivedAt, readableSignIn: norm.readableSignIn },
+    lastSeenAt: receivedAt,
   }
-  const hostFacts: HostFacts = Match.value(report.fromNewerHost === true).pipe(
+  const hostFacts: HostFacts = Match.value(norm.fromNewerHost === true).pipe(
     Match.when(true, () => ({ ...baseHost, fromNewerHost: true })),
     Match.orElse(() => baseHost),
   )
   return {
     hosts: [hostFacts],
     limits,
-    seenLimitKeys: [...keys].toSorted(compareText),
+    seenLimitKeys: canonicalErrorIdKeys(rawKeys),
     readings,
     attempts,
     failures,
@@ -373,12 +383,12 @@ export const mergeRecords = (left: MergedRecord, right: MergedRecord): MergedRec
 
   const limits = canonicalLimits([...left.limits, ...right.limits])
 
-  const keys = new Set<string>([...left.seenLimitKeys, ...right.seenLimitKeys])
+  const rawKeys: Array<string> = [...left.seenLimitKeys, ...right.seenLimitKeys]
   for (const limit of limits) {
     const key = Option.fromUndefinedOr(limit.key)
-    if (Option.isSome(key)) keys.add(key.value)
+    if (Option.isSome(key)) rawKeys.push(key.value)
   }
-  const seenLimitKeys = [...keys].toSorted(compareText)
+  const seenLimitKeys = canonicalErrorIdKeys(rawKeys)
 
   const readingsMap = new Map<string, HostReading>()
   for (const reading of [...left.readings, ...right.readings]) {
@@ -411,19 +421,27 @@ export const mergeRecords = (left: MergedRecord, right: MergedRecord): MergedRec
 /** Fold mergeRecords over any collection of records. */
 export const mergeAll = (records: ReadonlyArray<MergedRecord>): MergedRecord => records.reduce(mergeRecords, EMPTY_MERGED)
 
-/** Build this host's own AntigravityReport from its local disk state (never carries a token or profile path). */
+/** Build this host's own AntigravityReport from its local disk state (never carries a token or profile path; prunes spent episode keys). */
 export const fromLocalState = (host: string, state: State, now: number, readableSignIn: boolean): AntigravityReport => {
-  const limits: ReadonlyArray<LimitEvent> = Option.getOrElse(Option.fromUndefinedOr(state.limits), () => []).map((limit) => {
-    const base: LimitEvent = {
-      group: limit.group,
-      seenAt: limit.seenAt,
-      host: Option.getOrElse(Option.fromUndefinedOr(limit.host), () => host),
-    }
-    const withReset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
-    return Option.match(Option.fromUndefinedOr(limit.key), { onNone: () => withReset, onSome: (key) => ({ ...withReset, key }) })
-  })
+  const reading = Option.fromUndefinedOr(state.reading)
+  const limits: ReadonlyArray<LimitEvent> = Option.getOrElse(Option.fromUndefinedOr(state.limits), () => [])
+    .filter((limit) => {
+      // Prune spent text:* episode limits so they are neither kept unboundedly nor re-gossiped across the fleet.
+      if (!Option.exists(Option.fromUndefinedOr(limit.key), isTextKey)) return true
+      return isLocalLimitLiveAt(limit, reading, now)
+    })
+    .map((limit) => {
+      const base: LimitEvent = {
+        group: limit.group,
+        seenAt: limit.seenAt,
+        host: Option.getOrElse(Option.fromUndefinedOr(limit.host), () => host),
+      }
+      const withReset = Option.match(Option.fromUndefinedOr(limit.resetAt), { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
+      return Option.match(Option.fromUndefinedOr(limit.key), { onNone: () => withReset, onSome: (key) => ({ ...withReset, key }) })
+    })
   const base: AntigravityReport = { host, at: now, readableSignIn, limits }
-  const withKeys = Option.match(Option.filter(Option.fromUndefinedOr(state.seenLimitKeys), Arr.isReadonlyArrayNonEmpty), {
+  const errorIdKeys = canonicalErrorIdKeys(Option.getOrElse(Option.fromUndefinedOr(state.seenLimitKeys), () => []))
+  const withKeys = Option.match(Option.liftPredicate(errorIdKeys, Arr.isReadonlyArrayNonEmpty), {
     onNone: () => base,
     onSome: (seenLimitKeys) => ({ ...base, seenLimitKeys }),
   })
@@ -514,13 +532,7 @@ export const mergedGroupsOf = (merged: MergedRecord): ReadonlyArray<{ readonly i
   return Arr.dedupeWith([...base, ...fromReadings, ...fromLimits], (left, right) => left.id === right.id)
 }
 
-const clampWindowReset = (window: Window, now: number): Window =>
-  Option.match(Option.fromUndefinedOr(window.resetAt), {
-    onNone: () => window,
-    onSome: (resetAt) => ({ ...window, resetAt: clampResetAt(resetAt, now) }),
-  })
-
-/** The merged live window of `(group, span)` at `now`: worse reading wins, reset never moved earlier (clamped to sane horizon); unknown when absent or expired. */
+/** The merged live window of `(group, span)` at `now`: worse reading wins, reset never moved earlier (stored normalized; never re-clamped at answer time). */
 export const mergedWindowAt = (merged: MergedRecord, now: number, group: string, span: Span): Shown => {
   const live = merged.readings.flatMap((reading) =>
     reading.windows.filter(
@@ -529,7 +541,7 @@ export const mergedWindowAt = (merged: MergedRecord, now: number, group: string,
   )
   return Arr.match(live, {
     onEmpty: () => Shown.cases.Unknown.make({ why: Why.cases.WindowUnknown.make({ group, span }) }),
-    onNonEmpty: (items) => Shown.cases.Known.make({ window: clampWindowReset(items.reduce(joinWindow), now) }),
+    onNonEmpty: (items) => Shown.cases.Known.make({ window: items.reduce(joinWindow) }),
   })
 }
 
@@ -588,12 +600,49 @@ const unreadWhy = (merged: MergedRecord, now: number): Why => {
 }
 
 /**
- * Whether `group` is open at `now` from the merged fleet record:
- * 1. A limit holds until its reset (clamped to `now + MAX_RESET_HORIZON_MS`) or
- *    until a reading later beyond doubt with room (max reset wins, never moved earlier).
+ * Whether a frame dedup key is currently suppressing repeats in `merged` at `now`:
+ * - Error ID (`id:*`): suppressed once seen (globally unique, never recurs).
+ * - Text hash (`text:*`): suppressed ONLY while its limit episode is still live
+ *   (not past reset and not lifted by a later reading with room); once spent,
+ *   the same text starts a new episode.
+ */
+export const isKeyLiveInMerged = (merged: MergedRecord, now: number, group: Option.Option<string>, key: string): boolean => {
+  if (isErrorIdKey(key)) return merged.seenLimitKeys.includes(key) || merged.limits.some((limit) => limit.key === key)
+  const targets = Option.match(group, {
+    onSome: (named) => [named],
+    onNone: () => mergedGroupsOf(merged).map((entry) => entry.id),
+  })
+  return targets.every((target) =>
+    merged.limits.some(
+      (limit) =>
+        limit.group === target &&
+        limit.key === key &&
+        !hasLaterReadingWithRoom(merged, now, target, limit) &&
+        !Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= now),
+    ),
+  )
+}
+
+/** Prune spent `text:*` episode limits from a merged record at `now` so long-lived views stay bounded. */
+export const pruneSpentMerged = (merged: MergedRecord, now: number): MergedRecord => ({
+  ...merged,
+  limits: merged.limits.filter((limit) => {
+    if (!Option.exists(Option.fromUndefinedOr(limit.key), isTextKey)) return true
+    if (hasLaterReadingWithRoom(merged, now, limit.group, limit)) return false
+    return !Option.exists(Option.fromUndefinedOr(limit.resetAt), (at) => at <= now)
+  }),
+  seenLimitKeys: canonicalErrorIdKeys(merged.seenLimitKeys),
+})
+
+/**
+ * Whether `group` is open at `now` from the merged fleet record (all times
+ * already normalized to this host's clock at arrival — nothing is re-clamped
+ * against rolling `now`):
+ * 1. A limit holds until its stored reset or until a reading later beyond doubt
+ *    with room (max reset wins, never moved earlier).
  * 2. A limit with no reset holds until a reading later beyond doubt with room.
  * 3. With no readings at all, Unmeasured (never open, never blocks).
- * 4. A full live window holds until its reset (clamped, max reset wins), or Unknown(FullWithoutReset).
+ * 4. A full live window holds until its stored reset (max reset wins), or Unknown(FullWithoutReset).
  * 5. An unreadable peer is shown stale with its age, never as open.
  * 6. Open only when both 5h and 7d are live and not full and all peers are fresh; else Unknown (never unlimited, never blocks).
  */
@@ -601,7 +650,7 @@ export const mergedAnswerAt = (merged: MergedRecord, now: number, group: string)
   const groupLimits = merged.limits.filter((limit) => limit.group === group)
   const activeLimits = groupLimits.filter((limit) => !hasLaterReadingWithRoom(merged, now, group, limit))
   const liveResets = activeLimits.flatMap((limit) =>
-    Option.toArray(Option.map(Option.filter(Option.fromUndefinedOr(limit.resetAt), (at) => at > now), (at) => clampResetAt(at, now))),
+    Option.toArray(Option.filter(Option.fromUndefinedOr(limit.resetAt), (at) => at > now)),
   )
   if (Arr.isReadonlyArrayNonEmpty(liveResets)) return Answer.cases.Limited.make({ until: Math.max(...liveResets), by: "limit" })
   const silentLimits = activeLimits.filter((limit) => Option.isNone(Option.fromUndefinedOr(limit.resetAt)))
@@ -627,7 +676,7 @@ export const mergedAnswerAt = (merged: MergedRecord, now: number, group: string)
   if (Option.isSome(fullWithoutReset)) {
     return Answer.cases.Unknown.make({ why: Why.cases.FullWithoutReset.make({ group, span: fullWithoutReset.value.span }) })
   }
-  const resets = full.flatMap((window) => Option.toArray(Option.map(Option.fromUndefinedOr(window.resetAt), (at) => clampResetAt(at, now))))
+  const resets = full.flatMap((window) => Option.toArray(Option.fromUndefinedOr(window.resetAt)))
   if (Arr.isReadonlyArrayNonEmpty(resets)) return Answer.cases.Limited.make({ until: Math.max(...resets), by: "window" })
 
   const stale = Arr.head(stalePeersOf(merged))

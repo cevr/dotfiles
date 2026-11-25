@@ -45,7 +45,7 @@ export const availability = <R,>(root: Effect.Effect<Option.Option<Source>, neve
   )
 
 export const RpcInput = Schema.Struct({
-  action: Schema.optionalKey(Schema.Literals(["status", "open", "gate", "record", "limit"])),
+  action: Schema.optionalKey(Schema.Literals(["status", "open", "gate", "heartbeat", "release", "record", "limit"])),
   group: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(Schema.String),
@@ -229,6 +229,28 @@ export const wire = (agy: Availability): Wiring => {
           Match.value(parsed.action).pipe(
             Match.when("open", () => openRpc(Option.orElse(Option.fromUndefinedOr(parsed.group), () => Option.fromUndefinedOr(parsed.model)))),
             Match.when("gate", () => gateRpc(parsed)),
+            Match.when("heartbeat", () =>
+              Availability.$match(agy, {
+                Present: ({ source }) =>
+                  Option.match(Option.fromUndefinedOr(parsed.paneId), {
+                    onNone: () => Effect.map(lines, (rows) => ({ lines: rows })),
+                    onSome: (paneId) => Effect.andThen(source.heartbeat(paneId, parsed.agent), Effect.map(lines, (rows) => ({ lines: rows }))),
+                  }),
+                Off: () => Effect.succeed({ lines: Arr.empty<string>() }),
+                Failed: ({ reason }) => Effect.succeed({ lines: [failedLine(reason)] }),
+              }).pipe(Effect.catchCause((cause) => Effect.succeed({ lines: [containedLine(reasonOf(cause))] }))),
+            ),
+            Match.when("release", () =>
+              Availability.$match(agy, {
+                Present: ({ source }) =>
+                  Option.match(Option.fromUndefinedOr(parsed.paneId), {
+                    onNone: () => Effect.map(lines, (rows) => ({ lines: rows })),
+                    onSome: (paneId) => Effect.andThen(source.release(paneId), Effect.map(lines, (rows) => ({ lines: rows }))),
+                  }),
+                Off: () => Effect.succeed({ lines: Arr.empty<string>() }),
+                Failed: ({ reason }) => Effect.succeed({ lines: [failedLine(reason)] }),
+              }).pipe(Effect.catchCause((cause) => Effect.succeed({ lines: [containedLine(reasonOf(cause))] }))),
+            ),
             Match.whenOr("record", "limit", () => recordRpc(parsed)),
             Match.orElse(() => Effect.map(lines, (rows) => ({ lines: rows }))),
           ),

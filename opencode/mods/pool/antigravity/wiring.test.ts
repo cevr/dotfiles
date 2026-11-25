@@ -43,6 +43,8 @@ const present: Source = {
   clear: () => Effect.void,
   read: () => Effect.succeed({ note: "Read now.", lines: ROWS }),
   gate: () => Effect.succeed(GateDecision.cases.Admitted.make({ group: "gemini", measured: true, answer: Answer.cases.Open.make({}), geminiFleetCount: 1, geminiAgentCount: 1 })),
+  heartbeat: () => Effect.void,
+  release: () => Effect.void,
 }
 
 /** Every method a defect, as a thrown exception in Antigravity's code would be. */
@@ -54,6 +56,8 @@ const dying: Source = {
   clear: () => Effect.die(new TypeError("clear threw")),
   read: () => Effect.die(new TypeError("read threw")),
   gate: () => Effect.die(new TypeError("gate threw")),
+  heartbeat: () => Effect.die(new TypeError("heartbeat threw")),
+  release: () => Effect.die(new TypeError("release threw")),
 }
 
 const toolText = (agy: Availability, action: "status" | "read") =>

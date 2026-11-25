@@ -30,6 +30,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
+import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
 import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
@@ -1527,7 +1528,17 @@ export const layer = (config: Config) =>
             onSuccess: (answer) =>
               Effect.gen(function* () {
                 const missed = (yield* fleetStore.read).peers[peer]?.missed
-                yield* sendFleet(FleetModel.TakeReport.make({ peer, report: answer }))
+                // Normalize a peer's Antigravity timestamps onto this host's clock ONCE at arrival (Rule A),
+                // leaving undecodable/garbage payloads untouched so the peer's pool data is never dropped (B5).
+                const receivedAt = yield* Clock.currentTimeMillis
+                const normalizedReport = Option.match(
+                  Option.flatMap(Option.fromUndefinedOr(answer.antigravity), (raw) => decodeAntigravityReport(raw)),
+                  {
+                    onNone: () => answer,
+                    onSome: (agyReport) => ({ ...answer, antigravity: normalizeAntigravityReport(agyReport, receivedAt) }),
+                  },
+                )
+                yield* sendFleet(FleetModel.TakeReport.make({ peer, report: normalizedReport }))
                 if (missed !== undefined) yield* Effect.logInfo(`pool fleet: ${peer} answers again`)
                 yield* Effect.forEach(answer.readings, merge, { discard: true })
                 if (limits !== undefined && answer.limits !== undefined) yield* limits.takePeer(peer, answer.limits)

@@ -11,9 +11,9 @@ import { openDecisionText } from "./text.ts"
 
 export const AntigravityToolInput = toolInput(
   Schema.Struct({
-    action: Schema.Literals(["status", "open", "limit", "record", "gate", "clear", "read"]).annotate({
+    action: Schema.Literals(["status", "open", "limit", "record", "gate", "heartbeat", "release", "clear", "read"]).annotate({
       description:
-        "status: the merged windows across hosts; open: is a model's group open now, else when (finite time); record (or limit): record a limit a pane printed (text); gate: check before starting or resuming an agy pane/worker (limit + cross-host Gemini concurrency cap); clear: a pane on the group ran a turn since its limit (forget the limit); read: read Google now (sole reading host, at most once per 5 minutes across hosts; else the stored reading and when the next read is possible); with consent, also the one keychain attempt",
+        "status: the merged windows across hosts; open: is a model's group open now, else when (finite time); record (or limit): record a limit a pane printed (text); gate: check before starting or resuming an agy pane/worker (limit + cross-host Gemini concurrency cap); heartbeat: refresh a running Gemini pane's busy slot (paneId, agent?); release: free a finished Gemini pane's busy slot (paneId); clear: a pane on the group ran a turn since its limit (forget the limit); read: read Google now (sole reading host, at most once per 5 minutes across hosts; else the stored reading and when the next read is possible); with consent, also the one keychain attempt",
     }),
     text: Schema.optionalKey(Schema.String).annotate({ description: "For record/limit: the pane's text, e.g. \"Individual quota reached. … Resets in 1h8m38s.\"" }),
     group: Schema.optionalKey(Schema.String).annotate({ description: "A quota group (gemini, claude-gpt, or its label): open/gate answers only it; record/limit records it on only it. Default every group." }),
@@ -83,6 +83,18 @@ export const answer = Effect.fn("Antigravity.tool")(function* (source: Option.Op
         }),
         gateText,
       ),
+    ),
+    Match.when("heartbeat", () =>
+      Option.match(Option.fromUndefinedOr(input.paneId), {
+        onNone: () => Effect.succeed("No paneId given: nothing refreshed."),
+        onSome: (paneId) => Effect.as(agy.heartbeat(paneId, input.agent), `Refreshed busy heartbeat for ${paneId}.`),
+      }),
+    ),
+    Match.when("release", () =>
+      Option.match(Option.fromUndefinedOr(input.paneId), {
+        onNone: () => Effect.succeed("No paneId given: nothing released."),
+        onSome: (paneId) => Effect.as(agy.release(paneId), `Released busy slot for ${paneId}.`),
+      }),
     ),
     Match.when("clear", () =>
       Effect.as(agy.clear(target), `Cleared the pane limit on ${Option.getOrElse(target, () => "every group")}.`),

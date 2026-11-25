@@ -351,5 +351,94 @@ export const TolerantAntigravityReport = ReportEnvelope.pipe(
   }),
 )
 
+/** Maximum transit delay for a peer report over SSH (matches ssh/peers.ts TIMEOUT_MS). Transit delay shifts normalized peer times slightly late (erring toward limited). */
+export const TRANSIT_BOUND_MS = 15_000
+
+/** Cross-host clock-skew / transit margin (matches the 5-minute read floor): strictly >= TRANSIT_BOUND_MS. */
+export const CLOCK_SKEW_BOUND_MS = 5 * 60_000
+
+/** Longest quota window Antigravity meters (7 days). */
+export const MAX_WINDOW_MS = 7 * 24 * 60 * 60_000
+
+/** Sane reset horizon applied ONCE at arrival (longest window + bound): a broken clock cannot pin a limit forever. */
+export const MAX_RESET_HORIZON_MS = MAX_WINDOW_MS + CLOCK_SKEW_BOUND_MS
+
+/**
+ * Translate every timestamp in a peer's `AntigravityReport` onto the receiver's
+ * clock ONCE at arrival:
+ *   offset = receivedAt - report.at
+ * Every peer timestamp (limit seenAt/resetAt, reading at + window resets,
+ * attempt at/nextReadAt, failure at) is shifted by `offset`, cancelling any
+ * peer clock skew (seconds to years, either sign). Transit delay `d >= 0`
+ * (bounded by TRANSIT_BOUND_MS) only shifts times slightly late (erring toward
+ * limited). The sanity horizon (`receivedAt + MAX_RESET_HORIZON_MS`) is applied
+ * ONCE here against the fixed arrival time, never rolled against `now` later.
+ * Idempotent for a fixed `receivedAt` (once normalized, `offset === 0`).
+ */
+export const normalizeAntigravityReport = (report: AntigravityReport, receivedAt: number): AntigravityReport => {
+  const offset = receivedAt - report.at
+  const maxSeen = receivedAt + CLOCK_SKEW_BOUND_MS
+  const maxReset = receivedAt + MAX_RESET_HORIZON_MS
+  const shiftSeen = (at: number) => Math.min(at + offset, maxSeen)
+  const shiftReset = (at: number) => Math.min(at + offset, maxReset)
+  const limits: ReadonlyArray<LimitEvent> = report.limits.map((limit) => {
+    const base: LimitEvent = { group: limit.group, seenAt: shiftSeen(limit.seenAt), host: limit.host }
+    const withReset = Option.match(Option.fromUndefinedOr(limit.resetAt), {
+      onNone: () => base,
+      onSome: (resetAt) => ({ ...base, resetAt: shiftReset(resetAt) }),
+    })
+    return Option.match(Option.fromUndefinedOr(limit.key), {
+      onNone: () => withReset,
+      onSome: (key) => ({ ...withReset, key }),
+    })
+  })
+  const base: AntigravityReport = {
+    host: report.host,
+    at: receivedAt,
+    readableSignIn: report.readableSignIn,
+    limits,
+  }
+  const withKeys = Option.match(Option.fromUndefinedOr(report.seenLimitKeys), {
+    onNone: () => base,
+    onSome: (seenLimitKeys) => ({ ...base, seenLimitKeys }),
+  })
+  const withReading = Option.match(Option.fromUndefinedOr(report.reading), {
+    onNone: () => withKeys,
+    onSome: (reading) => ({
+      ...withKeys,
+      reading: {
+        at: shiftSeen(reading.at),
+        host: reading.host,
+        windows: reading.windows.map((window) =>
+          Option.match(Option.fromUndefinedOr(window.resetAt), {
+            onNone: () => window,
+            onSome: (resetAt) => ({ ...window, resetAt: shiftReset(resetAt) }),
+          }),
+        ),
+      },
+    }),
+  })
+  const withAttempt = Option.match(Option.fromUndefinedOr(report.attempt), {
+    onNone: () => withReading,
+    onSome: (attempt) => ({
+      ...withReading,
+      attempt: {
+        id: attempt.id,
+        at: shiftSeen(attempt.at),
+        nextReadAt: shiftReset(attempt.nextReadAt),
+        host: attempt.host,
+      },
+    }),
+  })
+  const withFailure = Option.match(Option.fromUndefinedOr(report.failure), {
+    onNone: () => withAttempt,
+    onSome: (failure) => ({ ...withAttempt, failure: { at: shiftSeen(failure.at), why: failure.why } }),
+  })
+  return Match.value(report.fromNewerHost === true).pipe(
+    Match.when(true, () => ({ ...withFailure, fromNewerHost: true })),
+    Match.orElse(() => withFailure),
+  )
+}
+
 /** Tolerantly decode a peer's `antigravity` field on its own; none when absent or completely undecodable. */
 export const decodeAntigravityReport = Schema.decodeUnknownOption(TolerantAntigravityReport)

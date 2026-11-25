@@ -22,6 +22,7 @@ import {
   type AntigravityReport,
   fromLocalState,
   fromReport,
+  isKeyLiveInMerged,
   mergedGroupsOf,
   mergedNextReadAt,
   mergeFleet,
@@ -121,8 +122,12 @@ export interface Source {
   readonly read: (consent: boolean) => Effect.Effect<ReadAnswer>
   /** This host's own Antigravity report (never carries a token or peer data), for the fleet Report. */
   readonly report: Effect.Effect<AntigravityReport>
-  /** Start gate before starting or resuming an agy pane/worker; with `recordStart`, records a Gemini start when admitted. */
+  /** Start gate before starting or resuming an agy pane/worker; with `recordStart`, records a Gemini pane busy when admitted. */
   readonly gate: (query: GateQuery & { readonly recordStart?: boolean }) => Effect.Effect<GateDecision>
+  /** Refresh a running Gemini pane's live busy entry so long-running panes (> 60m) never drop out of the concurrency count. */
+  readonly heartbeat: (paneId: string, agent?: string) => Effect.Effect<void>
+  /** Release a finished Gemini pane's busy entry immediately on exit. */
+  readonly release: (paneId: string) => Effect.Effect<void>
 }
 
 const isRefused = (failure: ReadFailed) =>
@@ -454,15 +459,14 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
         const view = yield* fleetView
         const host = Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.host)), () => view.host)
         const callerGroup = Option.map(groupOrModel, (named) => Option.getOrElse(resolveGroup(named), () => named))
-        // Cross-host seen keys from peers so replaying another host's already-seen scrollback frame never re-arms.
+        // Cross-host liveness check: an Error ID never re-arms; a text-hash episode key suppresses repeats ONLY while live on a peer.
         const peerMerged = mergeFleet(fromLocalState(view.host, { failures: 0, nextReadAt: 0 }, at, false), view.peers, view.peerNames, at)
-        const peerKeys = new Set(peerMerged.seenLimitKeys)
         return yield* options.store.transact((stored) => {
           let next = stored
           let lastRecorded = Option.none<PaneLimit>()
           for (const seen of parsed) {
-            if (peerKeys.has(seen.key)) continue
             const group = Option.orElse(seen.group, () => callerGroup)
+            if (isKeyLiveInMerged(peerMerged, at, group, seen.key)) continue
             const base = { seenAt: seen.seenAt, host, key: seen.key }
             const withReset = Option.match(seen.resetAt, { onNone: () => base, onSome: (resetAt) => ({ ...base, resetAt }) })
             const withGroup = Option.match(group, { onNone: () => withReset, onSome: (named) => ({ ...withReset, group: named }) })
@@ -475,6 +479,16 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
           return Effect.succeed([next, lastRecorded] as const)
         })
       }).pipe(Effect.catchCause(() => Effect.succeed(Option.none<PaneLimit>()))),
+    heartbeat: (paneId, agent) =>
+      Option.match(Option.flatMap(Option.fromUndefinedOr(options.fleet), (fleet) => Option.fromUndefinedOr(fleet.recordBusy)), {
+        onNone: () => Effect.void,
+        onSome: (recordBusy) => recordBusy(paneId, geminiStartProvider(agent)).pipe(Effect.ignoreCause),
+      }),
+    release: (paneId) =>
+      Option.match(Option.flatMap(Option.fromUndefinedOr(options.fleet), (fleet) => Option.fromUndefinedOr(fleet.releaseBusy)), {
+        onNone: () => Effect.void,
+        onSome: (releaseBusy) => releaseBusy(paneId).pipe(Effect.ignoreCause),
+      }),
     clear: (group) =>
       options.store
         .transact((state) =>
