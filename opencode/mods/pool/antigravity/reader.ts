@@ -10,7 +10,7 @@
 // anything is sent. A failure is a `Why` and nothing else: no response text,
 // no header and no token ever reaches it.
 import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect"
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { decodeModels, decodeSummary, firstAnswers, modelWindows, summaryWindows, type Window } from "./quota.ts"
 import { type SignIn, SignIn as SignInSchema } from "./signin.ts"
 import { type RequestWhy, Why } from "./state.ts"
@@ -85,11 +85,15 @@ export const checkHost = (url: string): Result.Result<string, ReadFailed> =>
     onSome: () => Result.succeed(url),
   })
 
+const NO_REDIRECT: RequestInit = { redirect: "manual", credentials: "omit" }
+
 /** One request's JSON, bounded; any failure is a `ReadFailed` with no text of the response. */
 const send = Effect.fn("Antigravity.send")(function* (request: HttpClientRequest.HttpClientRequest) {
   yield* Result.match(checkHost(request.url), { onFailure: Effect.fail, onSuccess: () => Effect.void })
   const client = yield* HttpClient.HttpClient
   const response: HttpClientResponse.HttpClientResponse = yield* client.execute(request).pipe(
+    // A redirect is an answer, never followed: it could lead off Google's hosts.
+    Effect.provideService(FetchHttpClient.RequestInit, NO_REDIRECT),
     Effect.mapError(() => failed("unreachable", Option.none())),
     Effect.timeoutOrElse({ duration: REQUEST_TIMEOUT_MS, orElse: () => Effect.fail(failed("timed-out", Option.none())) }),
   )

@@ -7,10 +7,11 @@
 // Linux workbox reads its sign-in from the profile's files, else "sign-in not
 // readable here".
 import { readableStreamToText, spawn } from "bun"
-import { Effect, FileSystem, Match, Option, Path, Redacted, Schema } from "effect"
-import { FetchHttpClient } from "effect/http"
-import { KeychainRead, type Places } from "./signin.ts"
-import type { Store } from "./source.ts"
+import { Context, Effect, FileSystem, Layer, Match, Option, Path, Redacted, Schema } from "effect"
+import { FetchHttpClient, HttpClient } from "effect/http"
+import { type AuthMethod, GOOGLE, userAgent } from "./reader.ts"
+import { KeychainRead, type KeychainMode, type Places } from "./signin.ts"
+import { make, type Store } from "./source.ts"
 import { State } from "./state.ts"
 
 /** How long the keychain read may take: long enough for the owner to answer macOS's dialog once. */
@@ -125,6 +126,26 @@ export const fileStore = Effect.fn("Antigravity.fileStore")(function* (file: str
   return { load, save } satisfies Store
 })
 
-/** Requests follow no redirect and send no ambient credential. */
-export const httpLayer = FetchHttpClient.layer
-export const requestInit: RequestInit = { redirect: "manual", credentials: "omit" }
+/** Where a host's source reads and keeps its state. */
+export interface LiveConfig {
+  readonly profile: string
+  readonly stateFile: string
+  readonly auth: AuthMethod
+  readonly keychain: KeychainMode
+}
+
+/** The source as a host runs it: its files, its keychain, its state file and Google over fetch, in `scope`. */
+export const liveSource = Effect.fn("Antigravity.liveSource")(function* (config: LiveConfig) {
+  const http = yield* Layer.build(FetchHttpClient.layer)
+  const host = yield* hostKind()
+  return yield* make({
+    profile: config.profile,
+    places: yield* places(keychainFor(host.platform)),
+    store: yield* fileStore(config.stateFile),
+    auth: config.auth,
+    keychain: config.keychain,
+    endpoints: GOOGLE,
+    agent: userAgent(host.platform, host.arch),
+  }).pipe(Effect.provideService(HttpClient.HttpClient, Context.get(http, HttpClient.HttpClient)))
+})
+
