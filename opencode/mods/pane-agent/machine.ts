@@ -92,9 +92,8 @@ export type MachineEvent = Data.TaggedEnum<{
     readonly screen: string
     readonly now: number
     readonly deliveryId: string
-    readonly durableOutbox?: boolean
-    readonly intentId?: string
-    readonly ownerProc?: string
+    readonly intentId: string
+    readonly ownerProc: string
   }
   readonly IdleConfirmed: {
     readonly screen: string
@@ -115,26 +114,13 @@ export type MachineEvent = Data.TaggedEnum<{
     readonly message: string
     readonly now: number
     readonly deliveryId: string
+    readonly defect?: boolean
   }
   readonly QueueFollowUp: {
     readonly prompt: string
     readonly resultFile: Option.Option<string>
     readonly now: number
     readonly steer?: boolean
-  }
-  readonly RequestSteer: {
-    readonly prompt: string
-    readonly resultFile: Option.Option<string>
-    readonly screen: Option.Option<string>
-    readonly now: number
-  }
-  readonly RestartPane: {
-    readonly rexSessionId: string
-    readonly newBlockId: string
-    readonly cwd: string
-    readonly addDirs: ReadonlyArray<string>
-    readonly resultFile: string
-    readonly now: number
   }
   readonly QueueRestart: {
     readonly rexSessionId: string
@@ -235,7 +221,6 @@ export type MachineEvent = Data.TaggedEnum<{
   readonly Stop: {
     readonly close: boolean
     readonly now: number
-    readonly durableOutbox?: boolean
     readonly closeIntentId?: string
     readonly ownerProc?: string
     readonly lastScreen?: string
@@ -250,14 +235,12 @@ export const MachineEvent = Data.taggedEnum<MachineEvent>()
 export type MachineAction = Data.TaggedEnum<{
   readonly Persist: {}
   readonly FlushWake: {}
-  readonly WritePane: { readonly chunks: ReadonlyArray<string> }
   readonly WaitQuiet: {}
   readonly ConfirmIdle: {}
   readonly ConfirmGone: {}
   readonly RetryTransient: {}
   readonly WaitLimitReset: { readonly resetAt: number }
   readonly BroadcastLimit: { readonly resetAt: number }
-  readonly InterruptPane: { readonly close: boolean }
   readonly StopWatching: {}
 }>
 
@@ -764,66 +747,42 @@ const submitNextQueued = (
   rest: ReadonlyArray<QueuedTurn>,
   adapter: HarnessAdapter,
   now: number,
-  durableOutbox: boolean,
   intentId: string,
   ownerProc: string,
 ): TransitionResult => {
   const chunks = chunksForTurn(adapter, nextTurn)
   const update = queuedUpdateLabel(nextTurn.turn, nextTurn.mode)
   const { endedAt: _cleared, ...base } = state.worker
-  if (durableOutbox) {
-    const activeTurn: ActiveTurn = {
-      turn: nextTurn.turn,
-      brief: nextTurn.brief,
-      resultFile: nextTurn.resultFile,
-      mode: nextTurn.mode,
-      phase: "intended",
-      writeAttempts: 1,
-      writtenIdlePolls: 0,
-      startedAt: now,
-      chunkIndex: 0,
-    }
-    const intent = TypeTurnIntent.make({
-      intentId,
-      ownerProc,
-      turn: nextTurn.turn,
-      mode: nextTurn.mode,
-      chunks: [...chunks],
-      chunkIndex: 0,
-      attempt: 1,
-      createdAt: now,
-    })
-    const nextWorker: PaneWorker = {
-      ...base,
-      turn: nextTurn.turn,
-      resultFile: nextTurn.resultFile,
-      state: "starting",
-      update,
-      activeTurnTyped: false,
-      activeTurn,
-      outbox: [...outboxOf(base), intent],
-      pendingTurns: [...rest],
-      startedAt: now,
-      updatedAt: now,
-    }
-    return {
-      state: {
-        worker: nextWorker,
-        sawWorking: false,
-        idlePendingConfirm: false,
-        consecutiveGone: 0,
-        consecutiveTransient: 0,
-      },
-      actions: [MachineAction.Persist()],
-    }
+  const activeTurn: ActiveTurn = {
+    turn: nextTurn.turn,
+    brief: nextTurn.brief,
+    resultFile: nextTurn.resultFile,
+    mode: nextTurn.mode,
+    phase: "intended",
+    writeAttempts: 1,
+    writtenIdlePolls: 0,
+    startedAt: now,
+    chunkIndex: 0,
   }
+  const intent = TypeTurnIntent.make({
+    intentId,
+    ownerProc,
+    turn: nextTurn.turn,
+    mode: nextTurn.mode,
+    chunks: [...chunks],
+    chunkIndex: 0,
+    attempt: 1,
+    createdAt: now,
+  })
   const nextWorker: PaneWorker = {
     ...base,
     turn: nextTurn.turn,
     resultFile: nextTurn.resultFile,
-    state: "working",
+    state: "starting",
     update,
-    activeTurnTyped: true,
+    activeTurnTyped: false,
+    activeTurn,
+    outbox: [...outboxOf(base), intent],
     pendingTurns: [...rest],
     startedAt: now,
     updatedAt: now,
@@ -836,7 +795,7 @@ const submitNextQueued = (
       consecutiveGone: 0,
       consecutiveTransient: 0,
     },
-    actions: [MachineAction.Persist(), MachineAction.WritePane({ chunks })],
+    actions: [MachineAction.Persist()],
   }
 }
 
@@ -847,7 +806,6 @@ const enterUsageLimit = (
   now: number,
   deliveryId: string,
   adapter: HarnessAdapter,
-  durableOutbox: boolean,
   intentId: string,
   ownerProc: string,
 ): TransitionResult => {
@@ -861,7 +819,13 @@ const enterUsageLimit = (
   const iso = formatIsoMillis(resetAt)
 
   // Already observed limit frame and now >= resetAt -> arm TypeResume once if not already attempted/resumed.
-  if (active.sawLimitFrame === true && now >= resetAt && active.resumeAttempted !== true && active.resumed !== true) {
+  if (
+    intentId.length > 0 &&
+    active.sawLimitFrame === true &&
+    now >= resetAt &&
+    active.resumeAttempted !== true &&
+    active.resumed !== true
+  ) {
     const updatedActive: ActiveTurn = {
       ...active,
       limitedResetAt: resetAt,
@@ -877,16 +841,12 @@ const enterUsageLimit = (
       attempt: 1,
       createdAt: now,
     })
-    let nextOutbox = outboxOf(state.worker)
-    if (durableOutbox) {
-      nextOutbox = [...nextOutbox, resumeIntent]
-    }
     const nextWorker: PaneWorker = {
       ...state.worker,
       state: "working",
       update: `resuming after usage limit (${iso})`,
       activeTurn: updatedActive,
-      outbox: [...nextOutbox],
+      outbox: [...outboxOf(state.worker), resumeIntent],
       updatedAt: now,
     }
     return {
@@ -1064,9 +1024,6 @@ const handleObserveScreen = (
   if (state.worker.state === "stopped") {
     return { state, actions: [MachineAction.StopWatching()] }
   }
-  const durableOutbox = event.durableOutbox === true
-  const intentId = Option.getOrElse(Option.fromUndefinedOr(event.intentId), () => "")
-  const ownerProc = Option.getOrElse(Option.fromUndefinedOr(event.ownerProc), () => "")
   const { recovered, persist: recoveredPersist } = recoverFromUnreachable(state, event.now)
 
   // Single write gate: never type or settle while a human prompt is active.
@@ -1087,9 +1044,8 @@ const handleObserveScreen = (
         event.now,
         event.deliveryId,
         adapter,
-        durableOutbox,
-        intentId,
-        ownerProc,
+        event.intentId,
+        event.ownerProc,
       )
     }
     return {
@@ -1103,8 +1059,8 @@ const handleObserveScreen = (
   const head = Arr.head(queue)
   const writeInFlight = Option.exists(active, (at) => at.phase === "intended" || at.phase === "ambiguous")
   const activeStillWorking = activeTurnTypedOf(recovered.worker) && !adapter.turnEnded(event.screen)
-  if (durableOutbox && Option.isSome(head) && head.value.mode === "steer" && !writeInFlight && activeStillWorking) {
-    return submitNextQueued(recovered, head.value, queue.slice(1), adapter, event.now, true, intentId, ownerProc)
+  if (Option.isSome(head) && head.value.mode === "steer" && !writeInFlight && activeStillWorking) {
+    return submitNextQueued(recovered, head.value, queue.slice(1), adapter, event.now, event.intentId, event.ownerProc)
   }
 
   // If no active turn is typed yet (startup or between queued turns), type head queued turn ONLY when readyForInput.
@@ -1121,9 +1077,8 @@ const handleObserveScreen = (
       queue.slice(1),
       adapter,
       event.now,
-      durableOutbox,
-      intentId,
-      ownerProc,
+      event.intentId,
+      event.ownerProc,
     )
   }
 
@@ -1257,7 +1212,7 @@ const handleIdleConfirmed = (
   const limit = adapter.usageLimit(event.screen, event.now)
   const active = activeTurnOf(state.worker)
   if (Option.isSome(limit) && Option.isSome(active)) {
-    return enterUsageLimit(state, active.value, limit.value, event.now, event.deliveryId, adapter, false, "", "")
+    return enterUsageLimit(state, active.value, limit.value, event.now, event.deliveryId, adapter, "", "")
   }
   if (activeTurnTypedOf(state.worker) && Option.isSome(active) && screenBelongsToOtherTurn(event.screen, active.value, adapter)) {
     return resolveOverwrittenTurn(state, active.value, event, adapter)
@@ -1368,6 +1323,23 @@ const handleTransientError = (
 ): TransitionResult => {
   const nextTransient = state.consecutiveTransient + 1
   if (nextTransient < config.maxTransientErrors) {
+    if (event.defect === true) {
+      const noted: PaneWorker = {
+        ...state.worker,
+        update: `pane ${event.operation} defect: ${event.message}`,
+        updatedAt: event.now,
+      }
+      return {
+        state: {
+          ...state,
+          worker: noted,
+          consecutiveTransient: nextTransient,
+          consecutiveGone: 0,
+          idlePendingConfirm: false,
+        },
+        actions: [MachineAction.Persist(), MachineAction.RetryTransient()],
+      }
+    }
     return {
       state: { ...state, consecutiveTransient: nextTransient, consecutiveGone: 0, idlePendingConfirm: false },
       actions: [MachineAction.RetryTransient()],
@@ -1443,65 +1415,6 @@ const handleQueueFollowUp = (
   }
 }
 
-const handleRequestSteer = (
-  state: MachineState,
-  event: Extract<MachineEvent, { readonly _tag: "RequestSteer" }>,
-  adapter: HarnessAdapter,
-): TransitionResult => {
-  const nextTurn = maxTurnOf(state.worker) + 1
-  const nextResultFile = resolveNextResultFile(state.worker, event.resultFile, nextTurn)
-  const brief = taskBrief({ prompt: event.prompt, resultFile: nextResultFile, followUp: true })
-  const screenBlocked =
-    Option.isNone(event.screen) || Option.isSome(adapter.needsInput(event.screen.value))
-  const hasQueued = pendingTurnsOf(state.worker).length > 0
-  const turnReadyForSteer =
-    (state.worker.state === "working" && activeTurnTypedOf(state.worker)) ||
-    state.worker.state === "done" ||
-    state.worker.state === "wake_undelivered"
-  const canSteerNow = !screenBlocked && !hasQueued && turnReadyForSteer
-
-  if (!canSteerNow) {
-    const queued: QueuedTurn = {
-      turn: nextTurn,
-      brief,
-      resultFile: nextResultFile,
-      mode: "steer",
-      queuedAt: event.now,
-    }
-    const nextWorker: PaneWorker = {
-      ...state.worker,
-      pendingTurns: [...pendingTurnsOf(state.worker), queued],
-      updatedAt: event.now,
-    }
-    return {
-      state: { ...state, worker: nextWorker },
-      actions: [MachineAction.Persist()],
-    }
-  }
-
-  const { endedAt: _cleared, ...base } = state.worker
-  const steered: PaneWorker = {
-    ...base,
-    turn: nextTurn,
-    resultFile: nextResultFile,
-    state: "working",
-    update: "steered in Rex pane",
-    activeTurnTyped: true,
-    startedAt: event.now,
-    updatedAt: event.now,
-  }
-  return {
-    state: {
-      worker: steered,
-      sawWorking: false,
-      idlePendingConfirm: false,
-      consecutiveGone: 0,
-      consecutiveTransient: 0,
-    },
-    actions: [MachineAction.Persist(), MachineAction.WritePane({ chunks: adapter.formatSteer(brief) })],
-  }
-}
-
 /** Renumbers carried pendingTurns sequentially after `resumedTurn` so turn ids stay strictly ascending (Q1). */
 const carryPendingTurns = (
   carried: ReadonlyArray<QueuedTurn>,
@@ -1511,47 +1424,6 @@ const carryPendingTurns = (
     ...item,
     turn: resumedTurn + idx + 1,
   }))
-
-const handleRestartPane = (
-  state: MachineState,
-  event: Extract<MachineEvent, { readonly _tag: "RestartPane" }>,
-): TransitionResult => {
-  const resumedTurn = state.worker.turn + 1
-  const carried = carryPendingTurns(pendingTurnsOf(state.worker), resumedTurn)
-  const { endedAt: _ea, ...keep } = state.worker
-  const restarted: PaneWorker = {
-    ...keep,
-    cwd: event.cwd,
-    addDirs: [...event.addDirs],
-    skipPermissions: state.worker.skipPermissions !== false,
-    rexSessionId: event.rexSessionId,
-    blockId: event.newBlockId,
-    ownedBlock: true,
-    resultFile: event.resultFile,
-    state: "working",
-    update: "restarted in Rex pane (--continue)",
-    turn: resumedTurn,
-    notifiedTurn: Math.max(state.worker.notifiedTurn, state.worker.turn),
-    activeTurnTyped: true,
-    pendingTurns: [...carried],
-    startedAt: event.now,
-    updatedAt: event.now,
-  }
-  const actions: Array<MachineAction> = [MachineAction.Persist()]
-  if (Option.isSome(nextRetryableWake(restarted))) {
-    actions.push(MachineAction.FlushWake())
-  }
-  return {
-    state: {
-      worker: restarted,
-      sawWorking: false,
-      idlePendingConfirm: false,
-      consecutiveGone: 0,
-      consecutiveTransient: 0,
-    },
-    actions,
-  }
-}
 
 const handleQueueRestart = (
   state: MachineState,
@@ -2378,7 +2250,7 @@ const handleStop = (
   const shouldClose = event.close && withSettled.ownedBlock
   const hasBlock = withSettled.blockId.length > 0
   const intents: Array<DurableIntent> = []
-  if (event.durableOutbox === true && hasBlock) {
+  if (hasBlock) {
     const closeIntent = ClosePaneIntent.make({
       intentId: Option.getOrElse(Option.fromUndefinedOr(event.closeIntentId), () => "close"),
       ownerProc: Option.getOrElse(Option.fromUndefinedOr(event.ownerProc), () => ""),
@@ -2411,18 +2283,6 @@ const handleStop = (
   if (Option.isSome(nextRetryableWake(stopped))) {
     stopActions.push(MachineAction.FlushWake())
   }
-  if (event.durableOutbox === true) {
-    return {
-      state: {
-        worker: stopped,
-        sawWorking: false,
-        idlePendingConfirm: false,
-        consecutiveGone: 0,
-        consecutiveTransient: 0,
-      },
-      actions: stopActions,
-    }
-  }
   return {
     state: {
       worker: stopped,
@@ -2431,11 +2291,7 @@ const handleStop = (
       consecutiveGone: 0,
       consecutiveTransient: 0,
     },
-    actions: [
-      MachineAction.InterruptPane({ close: shouldClose }),
-      MachineAction.Persist(),
-      MachineAction.StopWatching(),
-    ],
+    actions: stopActions,
   }
 }
 
@@ -2453,8 +2309,6 @@ export const transition = (
       ProbeGone: (ev) => handleProbeGone(state, ev, adapter, config),
       TransientError: (ev) => handleTransientError(state, ev, config),
       QueueFollowUp: (ev) => handleQueueFollowUp(state, ev),
-      RequestSteer: (ev) => handleRequestSteer(state, ev, adapter),
-      RestartPane: (ev) => handleRestartPane(state, ev),
       QueueRestart: (ev) => handleQueueRestart(state, ev),
       MarkSplitDispatched: (ev) => handleMarkSplitDispatched(state, ev),
       SplitSucceeded: (ev) => handleSplitSucceeded(state, ev),

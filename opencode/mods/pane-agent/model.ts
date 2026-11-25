@@ -460,6 +460,7 @@ type ActorMessage = Data.TaggedEnum<{
     readonly operation: string
     readonly kind: "gone" | "transient" | "unsupported"
     readonly message: string
+    readonly defect?: boolean
   }
   readonly IoQuietDone: { readonly gen: number; readonly liveness: PaneLiveness; readonly lastScreen: string }
   readonly IoGoneProbe: {
@@ -469,8 +470,12 @@ type ActorMessage = Data.TaggedEnum<{
     readonly resultFileAnswer: Option.Option<string>
   }
   readonly IoRetryTick: { readonly gen: number }
+  readonly IoRetryCommit: { readonly gen: number; readonly intentId: string }
+  readonly IoPaneTaskExited: { readonly gen: number; readonly defect: Option.Option<string> }
   readonly IoPeerCheck: { readonly gen: number; readonly intentId: string; readonly expired: boolean }
-  readonly IoWakeResult: { readonly deliveryId: string; readonly ok: boolean; readonly error: string }
+  readonly IoWakeResult: { readonly gen: number; readonly deliveryId: string; readonly ok: boolean; readonly error: string }
+  readonly IoWakeRetryCommit: { readonly gen: number; readonly deliveryId: string }
+  readonly IoWakeTaskExited: { readonly gen: number; readonly deliveryId: string; readonly defect: Option.Option<string> }
 }>
 
 type AmbiguousOutcome = Extract<ActorMessage, { readonly _tag: "IoAmbiguousResult" }>["result"]
@@ -530,6 +535,11 @@ interface PreWriteFailure {
   readonly reason: string
 }
 
+interface PendingIntentCommit {
+  readonly event: MachineEvent
+  attempts: number
+}
+
 interface ActorRuntime {
   readonly id: string
   readonly entry: ActorEntry
@@ -538,7 +548,10 @@ interface ActorRuntime {
   readonly wakeIo: FiberHandle.FiberHandle<void, never>
   state: MachineState
   paneIoGen: number
+  paneIoHandledGen: number
   paneIoRunning: boolean
+  wakeIoGen: number
+  wakeIoHandledGen: number
   wakeIoRunning: boolean
   nextPaneIo: PaneIoMode
   waitLimitUntil: number
@@ -546,7 +559,8 @@ interface ActorRuntime {
   needsReload: boolean
   freshFromStore: boolean
   needsInputPolls: number
-  readonly completedIntents: Set<string>
+  readonly pendingCommits: Map<string, PendingIntentCommit>
+  readonly pendingWakeCommits: Map<string, PendingIntentCommit>
 }
 
 const failReplyOf = (msg: ActorMessage, workerId: string, reason: string): Effect.Effect<void> => {
@@ -730,30 +744,76 @@ const makeModel = (config: ModelConfig = {}) =>
       }
     })
 
+    const launchWakeIo = (
+      rt: ActorRuntime,
+      deliveryId: string,
+      makeTask: (gen: number) => Effect.Effect<void>,
+    ) => {
+      rt.wakeIoGen += 1
+      const gen = rt.wakeIoGen
+      rt.wakeIoRunning = true
+      return FiberHandle.run(
+        rt.wakeIo,
+        Effect.suspend(() => makeTask(gen)).pipe(
+          Effect.onExit((exit) => {
+            if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
+              return offerMsg(
+                rt.mailbox,
+                ActorMessage.IoWakeTaskExited({ gen, deliveryId, defect: Option.some(Cause.pretty(exit.cause)) }),
+              ).pipe(Effect.ignore)
+            }
+            return offerMsg(
+              rt.mailbox,
+              ActorMessage.IoWakeTaskExited({ gen, deliveryId, defect: Option.none() }),
+            ).pipe(Effect.ignore)
+          }),
+          Effect.ignore,
+        ),
+      )
+    }
+
+    const commitBackoffDelay = (attempts: number): Duration.Duration => {
+      const base = Duration.max(Duration.millis(1), retryDelay)
+      const cap = Duration.max(Duration.millis(25), Duration.min(maxWakeBackoff, Duration.millis(250)))
+      return computeBackoff(base, cap, attempts)
+    }
+
     const scheduleWakeIo = Effect.fn("PaneAgent.scheduleWakeIo")(function* (rt: ActorRuntime) {
       if (rt.wakeIoRunning) return
       const nextWake = nextRetryableWake(rt.state.worker)
-      if (Option.isNone(nextWake)) return
+      if (Option.isNone(nextWake)) {
+        rt.pendingWakeCommits.clear()
+        return
+      }
       const wake = nextWake.value
+      const pendingCommit = Option.fromUndefinedOr(rt.pendingWakeCommits.get(wake.deliveryId))
+      if (Option.isSome(pendingCommit)) {
+        const delay = commitBackoffDelay(pendingCommit.value.attempts)
+        yield* launchWakeIo(rt, wake.deliveryId, (gen) =>
+          Effect.gen(function* () {
+            yield* pauseFor(delay)
+            yield* offerMsg(rt.mailbox, ActorMessage.IoWakeRetryCommit({ gen, deliveryId: wake.deliveryId }))
+          }),
+        )
+        return
+      }
       const sessionID = rt.state.worker.parentSessionID
       const attempts = Option.getOrElse(Option.fromUndefinedOr(wake.attempts), () => 0)
       const delay = computeBackoff(retryDelay, maxWakeBackoff, attempts)
-      rt.wakeIoRunning = true
-      yield* FiberHandle.run(
-        rt.wakeIo,
+      yield* launchWakeIo(rt, wake.deliveryId, (gen) =>
         Effect.gen(function* () {
           yield* pauseFor(delay)
           const out = yield* runBounded(wakeDeadline, notifier.wake(sessionID, wakeLetterOf(wake)))
           if (out._tag === "Succeeded") {
-            yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ deliveryId: wake.deliveryId, ok: true, error: "" }))
+            yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ gen, deliveryId: wake.deliveryId, ok: true, error: "" }))
             return
           }
           let errorText = "wake failed"
           if (out._tag === "Failed") errorText = out.error.message
           else if (out._tag === "TimedOut") errorText = `wake timed out after ${out.deadlineMs}ms`
           else errorText = `wake died: ${out.defect}`
-          yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ deliveryId: wake.deliveryId, ok: false, error: errorText }))
-        }).pipe(Effect.catchDefect(() => Effect.void)),
+          yield* offerMsg(rt.mailbox, ActorMessage.IoWakeResult({ gen, deliveryId: wake.deliveryId, ok: false, error: errorText }))
+        }),
       )
     })
 
@@ -1106,7 +1166,13 @@ const makeModel = (config: ModelConfig = {}) =>
         return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: `timed out after ${out.deadlineMs}ms` })
       }
       if (out._tag === "Died") {
-        return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: `defect: ${out.defect}` })
+        return ActorMessage.IoPaneFault({
+          gen,
+          operation,
+          kind: "transient",
+          message: `defect: ${out.defect}`,
+          defect: true,
+        })
       }
       return ActorMessage.IoPaneFault({ gen, operation, kind: "transient", message: "unexpected outcome" })
     }
@@ -1238,11 +1304,8 @@ const makeModel = (config: ModelConfig = {}) =>
         rt.nextPaneIo = "read"
         return false
       }
-      if (canRetry) {
-        yield* pauseFor(retryDelay)
-        yield* syncFromStoreIfNewer(rt)
-        return true
-      }
+      // Never sleep inside the actor mailbox loop on store outage: keep tool calls within bound B
+      // and let the background runner retry on bounded backoff (N1).
       rt.nextPaneIo = "retry_delay"
       return false
     })
@@ -1251,10 +1314,10 @@ const makeModel = (config: ModelConfig = {}) =>
       rt: ActorRuntime,
       event: MachineEvent,
     ) {
-      const retryOnFailure = isCompletionEvent(event)
+      const retryOnConflict = isCompletionEvent(event)
       const notifyChanged = event._tag !== "MarkSplitDispatched"
       let maxAttempts = 1
-      if (retryOnFailure) maxAttempts = 5
+      if (retryOnConflict) maxAttempts = 5
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const prevWorker = rt.state.worker
         const adapter = adapterFor(prevWorker.harness)
@@ -1264,7 +1327,11 @@ const makeModel = (config: ModelConfig = {}) =>
         if (hasAction(res.actions, "Persist")) {
           const saved = yield* Effect.result(boundedUpsert(nextWorker, revisionOf(prevWorker), notifyChanged))
           if (saved._tag === "Failure") {
-            const shouldRetry = yield* handleInternalPersistFailure(rt, saved.failure, retryOnFailure && attempt + 1 < maxAttempts)
+            const shouldRetry = yield* handleInternalPersistFailure(
+              rt,
+              saved.failure,
+              retryOnConflict && attempt + 1 < maxAttempts,
+            )
             if (shouldRetry) continue
             return Option.none<ReadonlyArray<MachineAction>>()
           }
@@ -1277,6 +1344,34 @@ const makeModel = (config: ModelConfig = {}) =>
         return Option.some(res.actions)
       }
       return Option.none<ReadonlyArray<MachineAction>>()
+    })
+
+    const pruneStalePendingCommits = (rt: ActorRuntime): void => {
+      if (rt.pendingCommits.size === 0) return
+      const liveIds = new Set(outboxOf(rt.state.worker).map((i) => i.intentId))
+      for (const key of rt.pendingCommits.keys()) {
+        if (!liveIds.has(key)) rt.pendingCommits.delete(key)
+      }
+    }
+
+    const commitIntentCompletion = Effect.fn("PaneAgent.commitIntentCompletion")(function* (
+      rt: ActorRuntime,
+      intentId: string,
+      event: MachineEvent,
+    ) {
+      const existing = rt.pendingCommits.get(intentId)
+      const entry: PendingIntentCommit = Option.getOrElse(Option.fromUndefinedOr(existing), () => ({
+        event,
+        attempts: 0,
+      }))
+      rt.pendingCommits.set(intentId, entry)
+      const applied = yield* applyInternalTransition(rt, entry.event)
+      if (Option.isSome(applied) || !outboxOf(rt.state.worker).some((i) => i.intentId === intentId)) {
+        rt.pendingCommits.delete(intentId)
+        return true
+      }
+      entry.attempts += 1
+      return false
     })
 
     const updateNextPaneIo = (rt: ActorRuntime, actions: ReadonlyArray<MachineAction>): void => {
@@ -1302,9 +1397,27 @@ const makeModel = (config: ModelConfig = {}) =>
       }
     }
 
-    const launchPaneIo = (rt: ActorRuntime, task: Effect.Effect<void>) => {
+    const launchPaneIo = (rt: ActorRuntime, makeTask: (gen: number) => Effect.Effect<void>) => {
+      rt.paneIoGen += 1
+      const gen = rt.paneIoGen
       rt.paneIoRunning = true
-      return FiberHandle.run(rt.paneIo, task.pipe(Effect.catchDefect(() => Effect.void)))
+      return FiberHandle.run(
+        rt.paneIo,
+        Effect.suspend(() => makeTask(gen)).pipe(
+          Effect.onExit((exit) => {
+            if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
+              return offerMsg(
+                rt.mailbox,
+                ActorMessage.IoPaneTaskExited({ gen, defect: Option.some(Cause.pretty(exit.cause)) }),
+              ).pipe(Effect.ignore)
+            }
+            return offerMsg(rt.mailbox, ActorMessage.IoPaneTaskExited({ gen, defect: Option.none() })).pipe(
+              Effect.ignore,
+            )
+          }),
+          Effect.ignore,
+        ),
+      )
     }
 
     const scheduleOutboxIntent = Effect.fn("PaneAgent.scheduleOutboxIntent")(function* (
@@ -1313,8 +1426,28 @@ const makeModel = (config: ModelConfig = {}) =>
       worker: PaneWorker,
       adapter: HarnessAdapter,
     ) {
-      if (rt.completedIntents.has(intent.intentId)) {
-        yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, "retry_delay", worker, rt.lastScreen, 0))
+      pruneStalePendingCommits(rt)
+      const pending = Option.fromUndefinedOr(rt.pendingCommits.get(intent.intentId))
+      if (Option.isSome(pending)) {
+        // An intent for another pane behind a pending store commit is not blocked by it (N1).
+        const otherPaneClose = Arr.findFirst(
+          outboxOf(worker).slice(1),
+          (item): item is ClosePaneIntent =>
+            item._tag === "ClosePane" &&
+            item.blockId !== worker.blockId &&
+            !rt.pendingCommits.has(item.intentId),
+        )
+        if (Option.isSome(otherPaneClose)) {
+          yield* launchPaneIo(rt, (gen) => runCloseIntent(rt, gen, otherPaneClose.value, adapter))
+          return
+        }
+        const delay = commitBackoffDelay(pending.value.attempts)
+        yield* launchPaneIo(rt, (gen) =>
+          Effect.gen(function* () {
+            yield* pauseFor(delay)
+            yield* offerMsg(rt.mailbox, ActorMessage.IoRetryCommit({ gen, intentId: intent.intentId }))
+          }),
+        )
         return
       }
       if (intent._tag === "SplitPane" && !intent.dispatched) {
@@ -1324,7 +1457,7 @@ const makeModel = (config: ModelConfig = {}) =>
           MachineEvent.MarkSplitDispatched({ intentId: intent.intentId, ownerProc: procId, now }),
         )
         if (Option.isNone(marked)) {
-          yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, "retry_delay", rt.state.worker, rt.lastScreen, 0))
+          yield* launchPaneIo(rt, (gen) => runObserveTask(rt, gen, "retry_delay", rt.state.worker, rt.lastScreen, 0))
           return
         }
         const updated = Arr.findFirst(
@@ -1332,28 +1465,27 @@ const makeModel = (config: ModelConfig = {}) =>
           (i): i is SplitPaneIntent => i._tag === "SplitPane" && i.intentId === intent.intentId,
         )
         if (Option.isSome(updated)) {
-          yield* launchPaneIo(rt, runSplitIntent(rt, rt.paneIoGen, updated.value))
+          yield* launchPaneIo(rt, (gen) => runSplitIntent(rt, gen, updated.value))
         }
         return
       }
       if (intent._tag !== "ClosePane" && intent.ownerProc !== procId) {
-        yield* launchPaneIo(rt, runPeerWait(rt, rt.paneIoGen, intent))
+        yield* launchPaneIo(rt, (gen) => runPeerWait(rt, gen, intent))
         return
       }
-      const gen = rt.paneIoGen
       if (intent._tag === "ClosePane") {
-        yield* launchPaneIo(rt, runCloseIntent(rt, gen, intent, adapter))
+        yield* launchPaneIo(rt, (gen) => runCloseIntent(rt, gen, intent, adapter))
         return
       }
       if (intent._tag === "SplitPane") {
-        yield* launchPaneIo(rt, runSplitIntent(rt, gen, intent))
+        yield* launchPaneIo(rt, (gen) => runSplitIntent(rt, gen, intent))
         return
       }
       if (intent._tag === "TypeTurn") {
-        yield* launchPaneIo(rt, runTypeTurnIntent(rt, gen, intent, worker, adapter))
+        yield* launchPaneIo(rt, (gen) => runTypeTurnIntent(rt, gen, intent, worker, adapter))
         return
       }
-      yield* launchPaneIo(rt, runTypeResumeIntent(rt, gen, intent, worker, adapter))
+      yield* launchPaneIo(rt, (gen) => runTypeResumeIntent(rt, gen, intent, worker, adapter))
     })
 
     const schedulePaneIo = Effect.fn("PaneAgent.schedulePaneIo")(function* (rt: ActorRuntime) {
@@ -1374,14 +1506,14 @@ const makeModel = (config: ModelConfig = {}) =>
       // Priority 2: Resolve ambiguous active turn via evidence-first probe.
       const active = activeTurnOf(worker)
       if (Option.isSome(active) && active.value.phase === "ambiguous") {
-        yield* launchPaneIo(rt, runResolveAmbiguous(rt, rt.paneIoGen, worker, active.value, adapter))
+        yield* launchPaneIo(rt, (gen) => runResolveAmbiguous(rt, gen, worker, active.value, adapter))
         return
       }
 
       // Priority 3: Observe screen / wait quiet / confirm idle / confirm gone / wait limit reset.
       const mode = rt.nextPaneIo
       if (mode === "confirm_gone") rt.entry.probePending = true
-      yield* launchPaneIo(rt, runObserveTask(rt, rt.paneIoGen, mode, worker, rt.lastScreen, rt.waitLimitUntil))
+      yield* launchPaneIo(rt, (gen) => runObserveTask(rt, gen, mode, worker, rt.lastScreen, rt.waitLimitUntil))
     })
 
     /** Syncs actor state from store if another process advanced the revision. */
@@ -1557,7 +1689,6 @@ const makeModel = (config: ModelConfig = {}) =>
             }
             return MachineEvent.Stop({
               close: input.close === true,
-              durableOutbox: true,
               closeIntentId,
               ownerProc: procId,
               lastScreen: rt.lastScreen,
@@ -1605,15 +1736,7 @@ const makeModel = (config: ModelConfig = {}) =>
     ) {
       const now = yield* Clock.currentTimeMillis
       if (outcome._tag === "Succeeded") {
-        // Persist blockId with bounded retries on transient store errors so we never drop a known blockId!
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const applied = yield* applyInternalTransition(
-            rt,
-            MachineEvent.SplitSucceeded({ intentId, blockId: outcome.value, now }),
-          )
-          if (Option.isSome(applied)) break
-          yield* pauseFor(retryDelay)
-        }
+        yield* commitIntentCompletion(rt, intentId, MachineEvent.SplitSucceeded({ intentId, blockId: outcome.value, now }))
         rt.nextPaneIo = "read"
         yield* schedulePaneIo(rt)
         return
@@ -1641,8 +1764,9 @@ const makeModel = (config: ModelConfig = {}) =>
       } else {
         reason = `split died: ${outcome.defect}`
       }
-      yield* applyInternalTransition(
+      yield* commitIntentCompletion(
         rt,
+        intentId,
         MachineEvent.SplitFailed({
           intentId,
           unknownOutcome,
@@ -1661,6 +1785,7 @@ const makeModel = (config: ModelConfig = {}) =>
       operation: string,
       kind: "gone" | "transient" | "unsupported",
       message: string,
+      defect = false,
     ) {
       const now = yield* Clock.currentTimeMillis
       const deliveryId = yield* mintDeliveryId()
@@ -1681,7 +1806,7 @@ const makeModel = (config: ModelConfig = {}) =>
       }
       yield* applyInternalTransition(
         rt,
-        MachineEvent.TransientError({ operation, message, now, deliveryId }),
+        MachineEvent.TransientError({ operation, message, now, deliveryId, defect }),
       )
       yield* schedulePaneIo(rt)
     })
@@ -1844,11 +1969,15 @@ const makeModel = (config: ModelConfig = {}) =>
       const now = yield* Clock.currentTimeMillis
       const deliveryId = yield* mintDeliveryId()
       if (msg.result.kind === "ok") {
-        rt.completedIntents.add(msg.intentId)
-        yield* applyInternalTransition(rt, MachineEvent.TypeTurnSucceeded({ intentId: msg.intentId, turn: msg.turn, now }))
-      } else if (msg.result.kind === "prompt") {
-        yield* applyInternalTransition(
+        yield* commitIntentCompletion(
           rt,
+          msg.intentId,
+          MachineEvent.TypeTurnSucceeded({ intentId: msg.intentId, turn: msg.turn, now }),
+        )
+      } else if (msg.result.kind === "prompt") {
+        yield* commitIntentCompletion(
+          rt,
+          msg.intentId,
           MachineEvent.TypeTurnDeferredPrompt({
             intentId: msg.intentId,
             summary: msg.result.summary,
@@ -1858,8 +1987,9 @@ const makeModel = (config: ModelConfig = {}) =>
           }),
         )
       } else {
-        yield* applyInternalTransition(
+        yield* commitIntentCompletion(
           rt,
+          msg.intentId,
           MachineEvent.TypeTurnFailed({
             intentId: msg.intentId,
             turn: msg.turn,
@@ -1881,11 +2011,15 @@ const makeModel = (config: ModelConfig = {}) =>
       const now = yield* Clock.currentTimeMillis
       const deliveryId = yield* mintDeliveryId()
       if (msg.result.kind === "ok") {
-        rt.completedIntents.add(msg.intentId)
-        yield* applyInternalTransition(rt, MachineEvent.TypeResumeSucceeded({ intentId: msg.intentId, turn: msg.turn, now }))
-      } else if (msg.result.kind === "prompt") {
-        yield* applyInternalTransition(
+        yield* commitIntentCompletion(
           rt,
+          msg.intentId,
+          MachineEvent.TypeResumeSucceeded({ intentId: msg.intentId, turn: msg.turn, now }),
+        )
+      } else if (msg.result.kind === "prompt") {
+        yield* commitIntentCompletion(
+          rt,
+          msg.intentId,
           MachineEvent.TypeResumeDeferredPrompt({
             intentId: msg.intentId,
             summary: msg.result.summary,
@@ -1895,8 +2029,9 @@ const makeModel = (config: ModelConfig = {}) =>
           }),
         )
       } else {
-        yield* applyInternalTransition(
+        yield* commitIntentCompletion(
           rt,
+          msg.intentId,
           MachineEvent.TypeResumeFailed({
             intentId: msg.intentId,
             turn: msg.turn,
@@ -1925,7 +2060,6 @@ const makeModel = (config: ModelConfig = {}) =>
             screen: msg.result.screen,
             now,
             deliveryId,
-            durableOutbox: true,
             intentId,
             ownerProc: procId,
           }),
@@ -1969,7 +2103,6 @@ const makeModel = (config: ModelConfig = {}) =>
           screen,
           now,
           deliveryId,
-          durableOutbox: true,
           intentId,
           ownerProc: procId,
         }),
@@ -1977,14 +2110,36 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* schedulePaneIo(rt)
     })
 
+    const commitWakeCompletion = Effect.fn("PaneAgent.commitWakeCompletion")(function* (
+      rt: ActorRuntime,
+      deliveryId: string,
+      event: MachineEvent,
+    ) {
+      const existing = rt.pendingWakeCommits.get(deliveryId)
+      const entry: PendingIntentCommit = Option.getOrElse(Option.fromUndefinedOr(existing), () => ({
+        event,
+        attempts: 0,
+      }))
+      rt.pendingWakeCommits.set(deliveryId, entry)
+      const applied = yield* applyInternalTransition(rt, entry.event)
+      if (Option.isSome(applied) || !pendingWakesOf(rt.state.worker).some((w) => w.deliveryId === deliveryId)) {
+        rt.pendingWakeCommits.delete(deliveryId)
+        return true
+      }
+      entry.attempts += 1
+      return false
+    })
+
     const handleIoWakeResult = Effect.fn("PaneAgent.handleIoWakeResult")(function* (
       rt: ActorRuntime,
       msg: Extract<ActorMessage, { readonly _tag: "IoWakeResult" }>,
     ) {
+      if (msg.gen !== rt.wakeIoGen) return
+      rt.wakeIoHandledGen = msg.gen
       rt.wakeIoRunning = false
       const now = yield* Clock.currentTimeMillis
       if (msg.ok) {
-        yield* applyInternalTransition(rt, MachineEvent.WakeDelivered({ deliveryId: msg.deliveryId, now }))
+        yield* commitWakeCompletion(rt, msg.deliveryId, MachineEvent.WakeDelivered({ deliveryId: msg.deliveryId, now }))
       } else {
         yield* applyInternalTransition(
           rt,
@@ -1995,14 +2150,72 @@ const makeModel = (config: ModelConfig = {}) =>
       yield* scheduleWakeIo(rt)
     })
 
+    const handleIoWakeRetryCommit = Effect.fn("PaneAgent.handleIoWakeRetryCommit")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoWakeRetryCommit" }>,
+    ) {
+      if (msg.gen !== rt.wakeIoGen) return
+      rt.wakeIoHandledGen = msg.gen
+      rt.wakeIoRunning = false
+      const entry = Option.fromUndefinedOr(rt.pendingWakeCommits.get(msg.deliveryId))
+      if (Option.isSome(entry) && pendingWakesOf(rt.state.worker).some((w) => w.deliveryId === msg.deliveryId)) {
+        yield* commitWakeCompletion(rt, msg.deliveryId, entry.value.event)
+      } else {
+        rt.pendingWakeCommits.delete(msg.deliveryId)
+      }
+      yield* schedulePaneIo(rt)
+      yield* scheduleWakeIo(rt)
+    })
+
+    const handleIoWakeTaskExited = Effect.fn("PaneAgent.handleIoWakeTaskExited")(function* (
+      rt: ActorRuntime,
+      msg: Extract<ActorMessage, { readonly _tag: "IoWakeTaskExited" }>,
+    ) {
+      if (msg.gen !== rt.wakeIoGen) return
+      if (Option.isNone(msg.defect) && rt.wakeIoHandledGen === msg.gen) return
+      rt.wakeIoRunning = false
+      if (Option.isSome(msg.defect)) {
+        const now = yield* Clock.currentTimeMillis
+        yield* applyInternalTransition(
+          rt,
+          MachineEvent.WakeFailed({ deliveryId: msg.deliveryId, message: `wake defect: ${msg.defect.value}`, now }),
+        )
+      }
+      yield* scheduleWakeIo(rt)
+    })
+
     const processPaneIoMessage = Effect.fn("PaneAgent.processPaneIoMessage")(function* (
       rt: ActorRuntime,
       msg: Exclude<
         ActorMessage,
-        { readonly _tag: "CmdFollowUp" | "CmdRestart" | "CmdStop" | "CmdStatus" | "CmdReattach" | "CmdNudgeProbe" | "SignInLimited" | "IoWakeResult" }
+        {
+          readonly _tag:
+            | "CmdFollowUp"
+            | "CmdRestart"
+            | "CmdStop"
+            | "CmdStatus"
+            | "CmdReattach"
+            | "CmdNudgeProbe"
+            | "SignInLimited"
+            | "IoWakeResult"
+            | "IoWakeRetryCommit"
+            | "IoWakeTaskExited"
+        }
       >,
     ) {
       if (msg.gen !== rt.paneIoGen) return
+      if (msg._tag === "IoPaneTaskExited") {
+        if (Option.isNone(msg.defect) && rt.paneIoHandledGen === msg.gen) return
+        rt.paneIoRunning = false
+        if (Option.isSome(msg.defect)) {
+          yield* handleIoPaneFault(rt, "pane.runner", "transient", `defect: ${msg.defect.value}`, true)
+          return
+        }
+        rt.nextPaneIo = "retry_delay"
+        yield* schedulePaneIo(rt)
+        return
+      }
+      rt.paneIoHandledGen = msg.gen
       rt.paneIoRunning = false
       yield* Match.value(msg).pipe(
         Match.tagsExhaustive({
@@ -2014,7 +2227,7 @@ const makeModel = (config: ModelConfig = {}) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis
               if (m.ok) {
-                yield* applyInternalTransition(rt, MachineEvent.CloseCompleted({ intentId: m.intentId, now }))
+                yield* commitIntentCompletion(rt, m.intentId, MachineEvent.CloseCompleted({ intentId: m.intentId, now }))
               } else {
                 rt.nextPaneIo = "retry_delay"
               }
@@ -2039,12 +2252,22 @@ const makeModel = (config: ModelConfig = {}) =>
               )
               yield* schedulePaneIo(rt)
             }),
-          IoPaneFault: (m) => handleIoPaneFault(rt, m.operation, m.kind, m.message),
+          IoPaneFault: (m) => handleIoPaneFault(rt, m.operation, m.kind, m.message, m.defect === true),
           IoQuietDone: (m) => handleIoQuietDone(rt, m.liveness, m.lastScreen),
           IoGoneProbe: (m) => handleIoGoneProbe(rt, m.liveness, m.tail, m.resultFileAnswer),
           IoRetryTick: () =>
             Effect.gen(function* () {
               rt.nextPaneIo = "read"
+              yield* schedulePaneIo(rt)
+            }),
+          IoRetryCommit: (m) =>
+            Effect.gen(function* () {
+              const entry = Option.fromUndefinedOr(rt.pendingCommits.get(m.intentId))
+              if (Option.isSome(entry) && outboxOf(rt.state.worker).some((i) => i.intentId === m.intentId)) {
+                yield* commitIntentCompletion(rt, m.intentId, entry.value.event)
+              } else {
+                rt.pendingCommits.delete(m.intentId)
+              }
               yield* schedulePaneIo(rt)
             }),
           IoPeerCheck: (m) => handleIoPeerCheck(rt, m.intentId, m.expired),
@@ -2061,6 +2284,14 @@ const makeModel = (config: ModelConfig = {}) =>
     ) {
       if (msg._tag === "IoWakeResult") {
         yield* handleIoWakeResult(rt, msg)
+        return
+      }
+      if (msg._tag === "IoWakeRetryCommit") {
+        yield* handleIoWakeRetryCommit(rt, msg)
+        return
+      }
+      if (msg._tag === "IoWakeTaskExited") {
+        yield* handleIoWakeTaskExited(rt, msg)
         return
       }
       yield* processPaneIoMessage(rt, msg)
@@ -2112,6 +2343,8 @@ const makeModel = (config: ModelConfig = {}) =>
     const isQuiescent = (rt: ActorRuntime): boolean =>
       !needsPaneWork(rt.state.worker) &&
       Option.isNone(nextRetryableWake(rt.state.worker)) &&
+      rt.pendingCommits.size === 0 &&
+      rt.pendingWakeCommits.size === 0 &&
       !rt.paneIoRunning &&
       !rt.wakeIoRunning
 
@@ -2132,7 +2365,10 @@ const makeModel = (config: ModelConfig = {}) =>
         wakeIo,
         state: initialMachineState(worker, initialSawWorking),
         paneIoGen: 1,
+        paneIoHandledGen: 0,
         paneIoRunning: false,
+        wakeIoGen: 1,
+        wakeIoHandledGen: 0,
         wakeIoRunning: false,
         nextPaneIo: "read",
         waitLimitUntil: 0,
@@ -2140,7 +2376,8 @@ const makeModel = (config: ModelConfig = {}) =>
         needsReload: false,
         freshFromStore,
         needsInputPolls: 0,
-        completedIntents: new Set(),
+        pendingCommits: new Map(),
+        pendingWakeCommits: new Map(),
       }
 
       const cleanup = (exit: Exit.Exit<void, unknown>) =>

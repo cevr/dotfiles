@@ -12,7 +12,7 @@ import {
   pendingTurnsOf,
   transition,
 } from "./machine.ts"
-import { type PaneWorker, pendingWakesOf } from "./worker.ts"
+import { outboxOf, type PaneWorker, pendingWakesOf } from "./worker.ts"
 
 const makePrng = (seed: number) => {
   let state = seed >>> 0
@@ -82,6 +82,8 @@ interface SimContext {
   now: number
   deliverySeq: number
   paneSeq: number
+  intentSeq: number
+  drainingOutbox: boolean
   readonly files: Map<string, FileRecord>
   readonly admittedWakes: Map<string, { readonly turn: number; readonly kind: string; readonly text: string }>
   readonly successfulWakeSends: Map<string, number>
@@ -96,6 +98,11 @@ const nextDeliveryId = (sim: SimContext): string => {
   return `msg_prop_${sim.seed}_${sim.deliverySeq}`
 }
 
+const nextIntentId = (sim: SimContext, prefix: string): string => {
+  sim.intentSeq += 1
+  return `${prefix}_prop_${sim.seed}_${sim.intentSeq}`
+}
+
 const readFreshFile = (sim: SimContext): Option.Option<string> => {
   const entry = Option.fromUndefinedOr(sim.files.get(sim.state.worker.resultFile))
   if (Option.isNone(entry)) return Option.none()
@@ -103,21 +110,52 @@ const readFreshFile = (sim: SimContext): Option.Option<string> => {
   return Option.some(entry.value.text)
 }
 
-const checkActionInvariants = (sim: SimContext, actions: ReadonlyArray<{ readonly _tag: string; readonly chunks?: ReadonlyArray<string> }>) => {
-  for (const action of actions) {
-    if (action._tag === "WritePane") {
-      // Invariant (B2): WritePane NEVER fires while currentScreen shows a human prompt.
-      expect(Option.isNone(agyAdapter.needsInput(sim.currentScreen))).toBe(true)
-      sim.typedTurnOrder.push(sim.state.worker.turn)
-      const chunks = Option.getOrElse(Option.fromUndefinedOr(action.chunks), () => [])
-      sim.typedBriefs.push(chunks.join(""))
-      if (sim.typedTurnOrder.length >= 2) {
-        const prevTurn = Option.getOrElse(Arr.get(sim.typedTurnOrder, sim.typedTurnOrder.length - 2), () => 0)
-        const currTurn = Option.getOrElse(Arr.get(sim.typedTurnOrder, sim.typedTurnOrder.length - 1), () => 0)
-        expect(currTurn).toBeGreaterThan(prevTurn)
-      }
-    }
+const executeNextOutboxIntent = (sim: SimContext): boolean => {
+  const head = Arr.head(outboxOf(sim.state.worker))
+  if (Option.isNone(head)) return false
+  const intent = head.value
+  if (intent._tag === "ClosePane") {
+    applyEvent(sim, MachineEvent.CloseCompleted({ intentId: intent.intentId, now: sim.now + 1 }))
+    return true
   }
+  if (intent._tag === "SplitPane") {
+    if (!intent.dispatched) {
+      applyEvent(sim, MachineEvent.MarkSplitDispatched({ intentId: intent.intentId, ownerProc: "prop", now: sim.now + 1 }))
+    }
+    applyEvent(
+      sim,
+      MachineEvent.SplitSucceeded({
+        intentId: intent.intentId,
+        blockId: `block:restarted-${sim.paneSeq}`,
+        now: sim.now + 1,
+      }),
+    )
+    return true
+  }
+  if (intent._tag === "TypeTurn") {
+    // Invariant (B2): TypeTurn NEVER executes while currentScreen shows a human prompt.
+    expect(Option.isNone(agyAdapter.needsInput(sim.currentScreen))).toBe(true)
+    sim.typedTurnOrder.push(intent.turn)
+    sim.typedBriefs.push(intent.chunks.join(""))
+    if (sim.typedTurnOrder.length >= 2) {
+      const prevTurn = Option.getOrElse(Arr.get(sim.typedTurnOrder, sim.typedTurnOrder.length - 2), () => 0)
+      const currTurn = Option.getOrElse(Arr.get(sim.typedTurnOrder, sim.typedTurnOrder.length - 1), () => 0)
+      expect(currTurn).toBeGreaterThan(prevTurn)
+    }
+    applyEvent(sim, MachineEvent.TypeTurnSucceeded({ intentId: intent.intentId, turn: intent.turn, now: sim.now + 1 }))
+    return true
+  }
+  applyEvent(sim, MachineEvent.TypeResumeSucceeded({ intentId: intent.intentId, turn: intent.turn, now: sim.now + 1 }))
+  return true
+}
+
+const drainOutbox = (sim: SimContext) => {
+  if (sim.drainingOutbox) return
+  sim.drainingOutbox = true
+  while (executeNextOutboxIntent(sim)) {
+    // drain FIFO
+  }
+  sim.drainingOutbox = false
 }
 
 const deliverHeadWake = (sim: SimContext, allowFailure: boolean) => {
@@ -155,9 +193,8 @@ const applyEvent = (sim: SimContext, event: MachineEvent) => {
   const result = transition(sim.state, event, agyAdapter, DEFAULT_MACHINE_CONFIG)
   sim.state = result.state
 
-  // Invariant (B4): skipPermissions is preserved across every transition including RestartPane.
+  // Invariant (B4): skipPermissions is preserved across every transition including QueueRestart.
   expect(sim.state.worker.skipPermissions).toBe(sim.skipPermissions)
-  checkActionInvariants(sim, result.actions)
 
   // Invariant (B2 observe needs gate): whenever ObserveScreen sees a prompt, state becomes needs_input.
   if (event._tag === "ObserveScreen" && Option.isSome(agyAdapter.needsInput(event.screen))) {
@@ -191,6 +228,10 @@ const applyEvent = (sim: SimContext, event: MachineEvent) => {
 
   if (result.actions.some((a) => a._tag === "FlushWake")) {
     deliverHeadWake(sim, true)
+  }
+
+  if (outboxOf(sim.state.worker).length > 0) {
+    drainOutbox(sim)
   }
 }
 
@@ -239,7 +280,13 @@ const stepScreen = (sim: SimContext) => {
   sim.currentScreen = pick(sim.rng, ALL_LIVE_FRAMES)
   applyEvent(
     sim,
-    MachineEvent.ObserveScreen({ screen: sim.currentScreen, now: sim.now, deliveryId: nextDeliveryId(sim) }),
+    MachineEvent.ObserveScreen({
+      screen: sim.currentScreen,
+      now: sim.now,
+      deliveryId: nextDeliveryId(sim),
+      intentId: nextIntentId(sim, "tt"),
+      ownerProc: "prop",
+    }),
   )
 }
 
@@ -251,12 +298,19 @@ const stepPaneRestart = (sim: SimContext) => {
   sim.currentScreen = WORKING_FRAME
   applyEvent(
     sim,
-    MachineEvent.RestartPane({
+    MachineEvent.QueueRestart({
       rexSessionId: "session:root",
-      newBlockId: `block:restarted-${sim.paneSeq}`,
+      anchorBlockId: "block:anchor",
+      label: `agy:prop-unit#rq_${sim.paneSeq}`,
+      reqId: `rq_${sim.paneSeq}`,
+      command: ["agy", "--continue"],
       cwd: "/nonexistent/lane",
       addDirs: ["/nonexistent/run"],
       resultFile: sim.state.worker.resultFile,
+      resumedBrief: "Resume",
+      splitIntentId: nextIntentId(sim, "sp"),
+      closeIntentId: Option.none(),
+      ownerProc: "prop",
       now: sim.now,
     }),
   )
@@ -279,7 +333,13 @@ const stepSpuriousGone = (sim: SimContext) => {
   sim.currentScreen = WORKING_FRAME
   applyEvent(
     sim,
-    MachineEvent.ObserveScreen({ screen: WORKING_FRAME, now: sim.now + 1, deliveryId: nextDeliveryId(sim) }),
+    MachineEvent.ObserveScreen({
+      screen: WORKING_FRAME,
+      now: sim.now + 1,
+      deliveryId: nextDeliveryId(sim),
+      intentId: nextIntentId(sim, "tt"),
+      ownerProc: "prop",
+    }),
   )
   expect(sim.state.consecutiveGone).toBe(0)
 }
@@ -332,14 +392,12 @@ const stepQueueFollowUp = (sim: SimContext, step: number) => {
 }
 
 const stepRequestSteer = (sim: SimContext, step: number) => {
-  let screenOpt: Option.Option<string> = Option.some(sim.currentScreen)
-  if (sim.paneActuallyGone) screenOpt = Option.none()
   applyEvent(
     sim,
-    MachineEvent.RequestSteer({
+    MachineEvent.QueueFollowUp({
       prompt: `STEER-${sim.seed}-${step}`,
       resultFile: Option.none(),
-      screen: screenOpt,
+      steer: true,
       now: sim.now,
     }),
   )
@@ -371,7 +429,15 @@ const stepOne = (sim: SimContext, step: number) => {
   if (roll < 0.54) return stepFileWrite(sim, step)
   if (roll < 0.58) return stepRealClose(sim)
   if (roll < 0.6 && step > 45) {
-    applyEvent(sim, MachineEvent.Stop({ close: sim.rng() < 0.5, now: sim.now }))
+    applyEvent(
+      sim,
+      MachineEvent.Stop({
+        close: sim.rng() < 0.5,
+        closeIntentId: nextIntentId(sim, "cl"),
+        ownerProc: "prop",
+        now: sim.now,
+      }),
+    )
     return
   }
   stepScreen(sim)
@@ -383,7 +449,7 @@ const drainLiveness = (sim: SimContext) => {
   if (sim.state.worker.state === "pane_gone") {
     stepPaneRestart(sim)
   }
-  for (let guard = 0; guard < 120; guard++) {
+  for (let guard = 0; guard < 160; guard++) {
     sim.now += 10
     if (pendingWakesOf(sim.state.worker).length > 0) {
       sim.state = transition(
@@ -397,7 +463,8 @@ const drainLiveness = (sim: SimContext) => {
     const doneAll =
       sim.state.worker.state === "done" &&
       pendingTurnsOf(sim.state.worker).length === 0 &&
-      pendingWakesOf(sim.state.worker).length === 0
+      pendingWakesOf(sim.state.worker).length === 0 &&
+      outboxOf(sim.state.worker).length === 0
     if (doneAll) break
 
     if (sim.state.idlePendingConfirm) {
@@ -420,19 +487,37 @@ const drainLiveness = (sim: SimContext) => {
       sim.currentScreen = READY_FRAME
       applyEvent(
         sim,
-        MachineEvent.ObserveScreen({ screen: READY_FRAME, now: sim.now, deliveryId: nextDeliveryId(sim) }),
+        MachineEvent.ObserveScreen({
+          screen: READY_FRAME,
+          now: sim.now,
+          deliveryId: nextDeliveryId(sim),
+          intentId: nextIntentId(sim, "tt"),
+          ownerProc: "prop",
+        }),
       )
     } else if (!sim.state.sawWorking) {
       sim.currentScreen = WORKING_FRAME
       applyEvent(
         sim,
-        MachineEvent.ObserveScreen({ screen: WORKING_FRAME, now: sim.now, deliveryId: nextDeliveryId(sim) }),
+        MachineEvent.ObserveScreen({
+          screen: WORKING_FRAME,
+          now: sim.now,
+          deliveryId: nextDeliveryId(sim),
+          intentId: nextIntentId(sim, "tt"),
+          ownerProc: "prop",
+        }),
       )
     } else {
       sim.currentScreen = DONE_FRAME
       applyEvent(
         sim,
-        MachineEvent.ObserveScreen({ screen: DONE_FRAME, now: sim.now, deliveryId: nextDeliveryId(sim) }),
+        MachineEvent.ObserveScreen({
+          screen: DONE_FRAME,
+          now: sim.now,
+          deliveryId: nextDeliveryId(sim),
+          intentId: nextIntentId(sim, "tt"),
+          ownerProc: "prop",
+        }),
       )
     }
   }
@@ -462,6 +547,8 @@ const runSeed = (seed: number, steps: number) => {
     now: 2000,
     deliverySeq: 0,
     paneSeq: 0,
+    intentSeq: 0,
+    drainingOutbox: false,
     files: new Map(),
     admittedWakes: new Map(),
     successfulWakeSends: new Map(),

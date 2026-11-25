@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
-import { Context, Deferred, Duration, Effect, Exit, Layer, Option, Ref } from "effect"
+import { Clock, Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Ref } from "effect"
+import { TestClock } from "effect/testing"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../tests/hang-guard.ts"
 import { DONE_FRAME, PERMISSION_FRAME, READY_FRAME, TRUST_FRAME, WORKING_FRAME } from "./agy.fixture.ts"
@@ -12,8 +13,8 @@ import {
   type MemoryRexState,
 } from "./memory/doubles.ts"
 import * as Model from "./model.ts"
-import { RexCallFailed, RexClient } from "./service.ts"
-import type { PaneWorker, StoreSnapshot } from "./worker.ts"
+import { RexCallFailed, RexClient, StoreFailed, WorkerStore } from "./service.ts"
+import { outboxOf, type PaneWorker, type StoreSnapshot } from "./worker.ts"
 
 const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
   Effect.gen(function* () {
@@ -904,6 +905,301 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
       expect(wakes[0]?.letter.text).toContain("ANSWER-TK-w2-1")
       expect(wakes.some((w) => w.letter.metadata["state"] === "answer_not_captured")).toBe(false)
       expect(started.id.length).toBeGreaterThan(0)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "N1: outbox completion survives 1..50 consecutive store write failures without re-typing, blocking other panes, or exceeding tool bound B, then drains queued close",
+    Effect.gen(function* () {
+      const N1_CONFIG: Model.ModelConfig = {
+        quietFor: Duration.millis(5),
+        pollTimeout: Duration.millis(15),
+        pasteQuiet: Duration.zero,
+        retryDelay: Duration.millis(5),
+        storeDeadline: Duration.millis(100),
+        askDeadline: Duration.millis(200),
+        tailDeadline: Duration.millis(50),
+        maxStartupChecks: 5,
+        maxTransientErrors: 4,
+      }
+      const boundStatusMs = 250
+      const boundStopMs = 200
+
+      const stepUntil = (clock: TestClock.TestClock, check: Effect.Effect<boolean>, maxTicks = 2000) =>
+        Effect.gen(function* () {
+          for (let tick = 0; tick < maxTicks; tick++) {
+            if (yield* check) return true
+            yield* clock.adjust(Duration.millis(10))
+          }
+          return yield* check
+        })
+
+      const runWithClock = <A, E>(clock: TestClock.TestClock, eff: Effect.Effect<A, E>) =>
+        Effect.gen(function* () {
+          const resultRef = yield* Ref.make(Option.none<Exit.Exit<A, E>>())
+          const fiber = yield* Effect.forkChild(
+            Effect.exit(eff).pipe(
+              Effect.flatMap((exit) => Ref.set(resultRef, Option.some(exit))),
+              Effect.provideService(Clock.Clock, clock),
+            ),
+          )
+          yield* Effect.yieldNow
+          for (let tick = 0; tick < 200; tick++) {
+            const done = yield* Ref.get(resultRef)
+            if (Option.isSome(done)) {
+              if (Exit.isSuccess(done.value)) return done.value.value
+              return yield* Effect.failCause(done.value.cause)
+            }
+            yield* clock.adjust(Duration.millis(5))
+          }
+          yield* Fiber.join(fiber)
+          const final = Option.getOrThrow(yield* Ref.get(resultRef))
+          if (Exit.isSuccess(final)) return final.value
+          return yield* Effect.failCause(final.cause)
+        })
+
+      for (const n of Array.from({ length: 50 }, (_, idx) => idx + 1)) {
+        const clock = yield* TestClock.make({ warningDelay: "10 minutes" })
+        const clockLayer = Layer.succeed(Clock.Clock, clock)
+        const baseStore = yield* makeMemoryStore()
+        const baseRex = yield* makeMemoryRex({
+          ...emptyRexState,
+          defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME, WORKING_FRAME],
+        })
+        const results = yield* makeMemoryResults()
+        const notifier = yield* makeMemoryNotifier()
+
+        const failTargetId = yield* Ref.make(Option.none<string>())
+        const remainingFails = yield* Ref.make(0)
+        const armed = yield* Ref.make(false)
+        const closeArmed = yield* Ref.make(false)
+        const closeCount = yield* Ref.make(0)
+
+        const rawStore = Context.get(yield* Layer.build(baseStore.layer), WorkerStore)
+        const rawRex = Context.get(yield* Layer.build(baseRex.layer), RexClient)
+
+        const flakyStoreLayer = Layer.succeed(
+          WorkerStore,
+          WorkerStore.of({
+            ...rawStore,
+            upsertWorker: (worker, expectedRevision) =>
+              Effect.gen(function* () {
+                const target = yield* Ref.get(failTargetId)
+                const left = yield* Ref.get(remainingFails)
+                if (Option.contains(target, worker.id) && left > 0) {
+                  yield* Ref.set(remainingFails, left - 1)
+                  return yield* new StoreFailed({ operation: "upsertWorker", message: `store down (${left} left)` })
+                }
+                return yield* rawStore.upsertWorker(worker, expectedRevision)
+              }),
+          }),
+        )
+
+        const triggerRexLayer = Layer.succeed(
+          RexClient,
+          RexClient.of({
+            ...rawRex,
+            write: (target, data) =>
+              Effect.gen(function* () {
+                yield* rawRex.write(target, data)
+                if (data === "\r") {
+                  const wasArmed = yield* Ref.get(armed)
+                  const snap = yield* Ref.get(baseStore.state)
+                  const targetId = yield* Ref.get(failTargetId)
+                  const owner = snap.workers.find((w) => w.blockId === target.blockId)
+                  if (!wasArmed && owner && Option.contains(targetId, owner.id)) {
+                    yield* Ref.set(armed, true)
+                    yield* Ref.set(remainingFails, n)
+                  }
+                }
+              }),
+            close: (target) =>
+              Effect.gen(function* () {
+                const snap = yield* Ref.get(baseStore.state)
+                const targetId = yield* Ref.get(failTargetId)
+                const owner = snap.workers.find((w) => w.blockId === target.blockId)
+                if (owner && Option.contains(targetId, owner.id)) {
+                  yield* Ref.update(closeCount, (c) => c + 1)
+                  const wasCloseArmed = yield* Ref.get(closeArmed)
+                  if (!wasCloseArmed && (n === 1 || n === 10 || n === 50)) {
+                    yield* Ref.set(closeArmed, true)
+                    yield* Ref.set(remainingFails, n)
+                  }
+                }
+                return yield* rawRex.close(target)
+              }),
+          }),
+        )
+
+        yield* Effect.gen(function* () {
+          const services = yield* Layer.build(
+            Model.layer(N1_CONFIG).pipe(
+              Layer.provide(Layer.mergeAll(flakyStoreLayer, triggerRexLayer, results.layer, notifier.layer, clockLayer)),
+            ),
+          )
+          const model = Context.get(services, Model.PaneAgentModel)
+          yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+
+          const w1 = yield* model.start({
+            ...BASE,
+            description: `n1-w1-${n}`,
+            prompt: `UNIQUE-N1-PROMPT-${n}`,
+            resultFile: `/nonexistent/run/n1-${n}.md`,
+          })
+          yield* Ref.set(failTargetId, Option.some(w1.id))
+
+          // Wait until w1's TypeTurn has written into Rex and armed the n consecutive store failures.
+          const sawArmed = yield* stepUntil(clock, Ref.get(armed), 200)
+          expect(sawArmed).toBe(true)
+
+          // While w1's store commits are failing, status stays within bound B AND another pane (w2) is never blocked.
+          const tStatus0 = yield* clock.currentTimeMillis
+          const st1 = yield* runWithClock(clock, model.status("ses_p", w1.id))
+          const tStatus1 = yield* clock.currentTimeMillis
+          expect(st1.id).toBe(w1.id)
+          expect(tStatus1 - tStatus0).toBeLessThanOrEqual(boundStatusMs)
+
+          if (n === 1 || n === 10 || n === 50) {
+            const w2 = yield* model.start({
+              ...BASE,
+              description: `n1-w2-${n}`,
+              prompt: `OTHER-PANE-${n}`,
+              resultFile: `/nonexistent/run/n1-w2-${n}.md`,
+            })
+            const w2Ready = yield* stepUntil(
+              clock,
+              Ref.get(baseStore.state).pipe(
+                Effect.map((s) =>
+                  s.workers.some((w) => w.id === w2.id && w.state === "working" && w.blockId.length > 0),
+                ),
+              ),
+              200,
+            )
+            expect(w2Ready).toBe(true)
+            yield* runWithClock(clock, model.stop({ parentSessionID: "ses_p", id: w2.id, close: true }))
+          }
+
+          // Wait for all n consecutive store failures to drain and TypeTurnSucceeded to commit.
+          const recoveredOk = yield* stepUntil(
+            clock,
+            Ref.get(baseStore.state).pipe(
+              Effect.map((s) =>
+                s.workers.some((w) => w.id === w1.id && w.state === "working" && outboxOf(w).length === 0),
+              ),
+            ),
+            3000,
+          )
+          expect(recoveredOk).toBe(true)
+          const recovered = (yield* Ref.get(baseStore.state)).workers.find((w) => w.id === w1.id)
+          expect(recovered?.state).toBe("working")
+          expect(outboxOf(recovered ?? w1)).toHaveLength(0)
+          expect(yield* Ref.get(remainingFails)).toBe(0)
+
+          // Prompt must have been typed into w1's pane EXACTLY ONCE (never re-typed while store was down).
+          const rexSnap = yield* Ref.get(baseRex.state)
+          const w1Pane = rexSnap.panes.find((p) => p.blockId === recovered?.blockId)
+          const combined = w1Pane?.writes.join("") ?? ""
+          const promptCount = combined.split(`UNIQUE-N1-PROMPT-${n}`).length - 1
+          expect(promptCount).toBe(1)
+
+          // Queued ClosePane runs EXACTLY ONCE (even if its own CloseCompleted also hits n store write failures).
+          const tStop0 = yield* clock.currentTimeMillis
+          yield* runWithClock(clock, model.stop({ parentSessionID: "ses_p", id: w1.id, close: true }))
+          const tStop1 = yield* clock.currentTimeMillis
+          expect(tStop1 - tStop0).toBeLessThanOrEqual(boundStopMs)
+
+          const closedOk = yield* stepUntil(
+            clock,
+            Ref.get(baseStore.state).pipe(
+              Effect.map((s) =>
+                s.workers.some((w) => w.id === w1.id && w.state === "stopped" && outboxOf(w).length === 0),
+              ),
+            ),
+            3000,
+          )
+          expect(closedOk).toBe(true)
+          expect(yield* Ref.get(closeCount)).toBe(1)
+          const finalRex = yield* Ref.get(baseRex.state)
+          const finalPane = finalRex.panes.find((p) => p.blockId === recovered?.blockId)
+          expect(finalPane?.closed).toBe(true)
+        }).pipe(Effect.scoped, Effect.provideService(Clock.Clock, clock))
+      }
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "N2: a defect thrown inside a pane read task clears the running flag, stays visible in status, and pane work continues afterwards",
+    Effect.gen(function* () {
+      for (const defectMode of ["sync-throw", "effect-die"] as const) {
+        const baseStore = yield* makeMemoryStore()
+        const baseRex = yield* makeMemoryRex({
+          ...emptyRexState,
+          defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME, WORKING_FRAME],
+        })
+        const results = yield* makeMemoryResults()
+        const notifier = yield* makeMemoryNotifier()
+        const rawRex = Context.get(yield* Layer.build(baseRex.layer), RexClient)
+
+        let syncCalls = 0
+        let syncThrew = false
+        const defectTag = `N2-READ-DEFECT-${defectMode}`
+
+        const defectRexLayer = Layer.succeed(
+          RexClient,
+          RexClient.of({
+            ...rawRex,
+            read: (target) => {
+              // Throw defect once on the 4th read (after start typed turn 1 and entered working).
+              syncCalls += 1
+              if (defectMode === "sync-throw" && !syncThrew && syncCalls === 4) {
+                syncThrew = true
+                return Option.getOrThrowWith(Option.none<Effect.Effect<string, RexCallFailed>>(), () => defectTag)
+              }
+              if (defectMode === "effect-die" && !syncThrew && syncCalls === 4) {
+                syncThrew = true
+                return Effect.die(defectTag)
+              }
+              return rawRex.read(target)
+            },
+          }),
+        )
+
+        const services = yield* Layer.build(
+          Model.layer(FAST).pipe(
+            Layer.provide(Layer.mergeAll(baseStore.layer, defectRexLayer, results.layer, notifier.layer)),
+          ),
+        )
+        const model = Context.get(services, Model.PaneAgentModel)
+        yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+
+        const started = yield* model.start({
+          ...BASE,
+          description: `n2-${defectMode}`,
+          prompt: `PROMPT-${defectMode}`,
+          resultFile: `/nonexistent/run/n2-${defectMode}.md`,
+        })
+
+        // Wait until the defect has been thrown AND surfaced in status.
+        const sawDefectInStatus = yield* waitFor(
+          Effect.gen(function* () {
+            const st = yield* model.status("ses_p", started.id)
+            return st.update.includes(defectTag)
+          }).pipe(Effect.orElseSucceed(() => false)),
+          400,
+        )
+        expect(sawDefectInStatus).toBe(true)
+
+        // Pane work MUST continue after the defect: deliver DONE_FRAME and verify turn settles done!
+        const stNow = yield* model.status("ses_p", started.id)
+        yield* baseRex.setScreens(stNow.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+        const woke = yield* waitFor(
+          Ref.get(notifier.wakes).pipe(Effect.map((w) => w.some((item) => item.letter.metadata["state"] === "done"))),
+          400,
+        )
+        expect(woke).toBe(true)
+      }
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
