@@ -114,6 +114,7 @@ const writesOf = (event: Event): ReadonlyArray<Write> => {
       return [remove(holdKey(event.credentialID))]
     case "LoginsListed":
     case "RunReleased":
+    case "UsageReadFailed":
       return []
   }
 }

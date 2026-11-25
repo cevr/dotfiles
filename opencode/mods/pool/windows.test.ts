@@ -6,9 +6,9 @@
 // the pace reads only the states.
 import { expect, test } from "bun:test"
 import { Array as Arr, Match, Option, Schema } from "effect"
-import { dispatchPace, poolPace, type Pace, UNREAD_RETRY_MS } from "./pace.ts"
-import { Absent, carryOver, type QuotaReading, type QuotaWindow, Reported, windowReading } from "./quota.ts"
-import type { AccountStatus } from "./status.ts"
+import { dispatchPace, lineOf, poolPace, STALE_AFTER_MS, type Pace, UNREAD_RETRY_MS } from "./pace.ts"
+import { Absent, carryOver, type QuotaReading, type QuotaWindow, Reported, type UsageReadFailure, windowReading } from "./quota.ts"
+import type { AccountStatus, Hold } from "./status.ts"
 
 const now = Date.parse("2026-11-24T18:00:00Z")
 const minute = 60_000
@@ -68,7 +68,7 @@ test("every combination of the three states, both windows, with and without a us
     const spent = reported(short, (use) => use >= 0.9) || reported(week, (use) => use >= 0.99)
     // An UNKNOWN window waits for one usage read only; ABSENT never waits.
     const waits = !usage && anyUnknown
-    const unmeasured = usage && !anyReported && anyUnknown
+    const unmeasured = usage && !spent && (week._tag === "Unknown" || (!anyReported && anyUnknown))
     const expected = Match.value({ waits, spent, past: reported(week, (use) => use === 0.7), unmeasured }).pipe(
       Match.when({ waits: true }, () => ({ ok: false, reasonCode: "usage-unread" })),
       Match.when({ spent: true }, () => ({ ok: false, reasonCode: "quota-limit" })),
@@ -162,10 +162,18 @@ test("B2: no REPORTED tracked window with an UNKNOWN one answers unmeasured, nev
   }
   const q6 = accountOf("a", { at: now, usage: fresh, windows: [{ name: "5h", utilization: 0.1, resetAt: RESETS["5h"] }], unrecognised: ["seven_day"] })
   const shortOnly = dispatchPace([q6], now, {}, 0.04, OPUS)
-  expect(shortOnly).toMatchObject({ ok: true, measured: true, admission: "ordinary", eligible: ["a"] })
+  expect(shortOnly).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
+  expect(shortOnly.admission).toBeUndefined()
   expect(shortOnly.reason).toContain("5-hour window binds alone")
+  expect(shortOnly.reason).toContain("7d")
   expect(shortOnly.reason).toContain("seven_day")
   expect(shortOnly.reason).not.toContain("limited by nothing")
+  // N3-r2: missing and malformed fields both name the pool window consistently, plus the unreadable provider field.
+  const mixedUnknown = accountOf("a", { at: now, usage: fresh, windows: [], unrecognised: ["seven_day"] })
+  const mixedAnswer = dispatchPace([mixedUnknown], now, {}, 0.04, OPUS)
+  expect(mixedAnswer).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
+  expect(mixedAnswer.reason).toContain("5h, 7d")
+  expect(mixedAnswer.reason).toContain("seven_day")
 })
 
 test("B1: a carried tracked window older than 30 min under a fresh usage read leaving it UNKNOWN does not block on staleness, yet still binds if spent", () => {
@@ -202,4 +210,202 @@ test("B1: a carried tracked window older than 30 min under a fresh usage read le
   expect(dispatchPace([accountOf("a", spentWeek)], now, {}, 0.04, OPUS)).toMatchObject({ ok: false, reasonCode: "quota-limit", retryAt: now + 3 * day })
   const spentShort = carryOver(held(1, 0.2), cases[2])
   expect(dispatchPace([accountOf("a", spentShort)], now, {}, 0.04, OPUS)).toMatchObject({ ok: false, reasonCode: "quota-limit", retryAt: now + 2 * hour })
+})
+
+test("N2-r2: an explicit window.at matching reading.at is not mistaken for a window carried past a fresh usage read", () => {
+  const then = now - 40 * minute
+  const stamped: QuotaReading = {
+    at: then,
+    usage: { at: then, samples: 1 },
+    windows: [
+      { name: "5h", utilization: 0.1, resetAt: now + 2 * hour, at: then },
+      { name: "7d", utilization: 0.2, resetAt: now + 3 * day, at: then },
+    ],
+  }
+  // Without a fresh usage read or a fresh failed read, explicit window.at does not bypass staleness.
+  expect(dispatchPace([accountOf("a", stamped)], now, {}, 0.04, OPUS)).toMatchObject({ ok: false, reasonCode: "usage-unread" })
+  // After one bounded failed read, the same measured login sends as unmeasured while its reported windows bind.
+  const failed: AccountStatus = { ...accountOf("a", stamped), usageReadFailure: { failedAt: now, nextTryAt: now + UNREAD_RETRY_MS } }
+  const afterFailure = dispatchPace([failed], now, {}, 0.04, OPUS)
+  expect(afterFailure).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
+  expect(afterFailure.admission).toBeUndefined()
+})
+
+const lcg = (initial: number) => {
+  let state = initial >>> 0
+  return (max: number) => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+    return state % max
+  }
+}
+
+const hasMeasured = (reading: Option.Option<QuotaReading>): boolean =>
+  Option.exists(reading, (r) =>
+    Option.isSome(Option.fromUndefinedOr(r.usage)) ||
+    r.windows.length > 0 ||
+    Option.exists(Option.fromUndefinedOr(r.absent), (entries) => entries.length > 0),
+  )
+
+const validWeekWindow = (window: QuotaWindow, at: number): boolean =>
+  Option.exists(Option.fromUndefinedOr(window.resetAt), (resetAt) => resetAt > at && resetAt <= at + 7 * day + minute)
+
+const pickState = (next: (n: number) => number, name: Tracked): State => {
+  const choice = next(5)
+  if (choice === 0) return Used.make({ use: USES[name][0]! })
+  if (choice === 1) return Used.make({ use: USES[name][1]! })
+  if (choice === 2) return Used.make({ use: USES[name][2]! })
+  if (choice === 3) return None.make({})
+  return Unread.make({})
+}
+
+const pickHeaderState = (next: (n: number) => number, name: Tracked): State => {
+  if (next(3) === 0) return Unread.make({})
+  return Used.make({ use: USES[name][next(3)]! })
+}
+
+const buildModelReading = (at: number, short: State, week: State, withUsage: boolean, unrecognised: ReadonlyArray<string>): QuotaReading => {
+  const states = [["5h", short], ["7d", week]] as const
+  const resetFor = (name: Tracked) => {
+    if (name === "5h") return at + 3 * hour
+    return at + 3.5 * day
+  }
+  const windows = states.flatMap(([name, state]): ReadonlyArray<QuotaWindow> =>
+    Match.value(state).pipe(
+      Match.tag("Reported", ({ use }) => [{ name, utilization: use, resetAt: resetFor(name) }]),
+      Match.orElse(() => []),
+    ),
+  )
+  const absent = states.flatMap(([name, state]) => Arr.filter([{ name, at }], () => state._tag === "Absent"))
+  return {
+    at,
+    windows,
+    ...Arr.match(absent, { onEmpty: () => ({}), onNonEmpty: (entries) => ({ absent: entries }) }),
+    ...Arr.match(Arr.filter([{ at, samples: 1 as const }], () => withUsage), { onEmpty: () => ({}), onNonEmpty: ([usage]) => ({ usage }) }),
+    ...Arr.match(Arr.filter([unrecognised], () => withUsage), { onEmpty: () => ({}), onNonEmpty: ([fields]) => ({ unrecognised: fields }) }),
+  }
+}
+
+interface ModelState {
+  readonly at: number
+  readonly current: Option.Option<QuotaReading>
+  readonly hold: Option.Option<Hold>
+  readonly failure: Option.Option<UsageReadFailure>
+}
+
+const IDLE_DELTAS = [10 * minute, 35 * minute, 2 * hour, 4 * hour, 4 * day] as const
+
+const pickBadField = (next: (n: number) => number): string => {
+  if (next(2) === 0) return "seven_day"
+  return "rate_limit.secondary_window"
+}
+
+const sampleUsageReading = (at: number, next: (n: number) => number): QuotaReading => {
+  const short = pickState(next, "5h")
+  let week = pickState(next, "7d")
+  if (short._tag === "Unknown" && week._tag === "Unknown") week = Used.make({ use: USES["7d"][next(3)]! })
+  const unrecognised = Arr.filter([pickBadField(next)], () => week._tag === "Unknown" && next(2) === 0)
+  return buildModelReading(at, short, week, true, unrecognised)
+}
+
+interface ModelStep {
+  readonly op: number
+  readonly next: ModelState
+}
+
+const stepModel = (state: ModelState, next: (n: number) => number): ModelStep => {
+  const op = next(6)
+  const { at, current, hold, failure } = state
+  if (op === 0 || op === 1) {
+    const incoming = sampleUsageReading(at, next)
+    return { op, next: { at, current: Option.some(carryOver(Option.getOrUndefined(current), incoming)), hold, failure: Option.none() } }
+  }
+  if (op === 2) {
+    const short = pickHeaderState(next, "5h")
+    const week = pickHeaderState(next, "7d")
+    if (short._tag === "Reported" || week._tag === "Reported") {
+      const incoming = buildModelReading(at, short, week, false, [])
+      return { op, next: { at, current: Option.some(carryOver(Option.getOrUndefined(current), incoming)), hold, failure } }
+    }
+    return { op, next: state }
+  }
+  if (op === 3) return { op, next: { at, current, hold, failure: Option.some({ failedAt: at, nextTryAt: at + UNREAD_RETRY_MS }) } }
+  if (op === 4) return { op, next: { at, current, hold: Option.some({ kind: "rate-limit", at, until: at + (1 + next(5)) * 15 * minute }), failure } }
+  const moved = at + IDLE_DELTAS[next(IDLE_DELTAS.length)]!
+  return { op, next: { at: moved, current, hold: Option.filter(hold, (h) => h.until > moved), failure } }
+}
+
+const checkModelInvariants = (state: ModelState, ctx: string) => {
+  const { at, current, hold, failure } = state
+  const account: AccountStatus = {
+    credentialID: "a",
+    live: 0,
+    load: 0,
+    noRoom: false,
+    ...Option.match(current, { onNone: () => ({}), onSome: (reading) => ({ reading }) }),
+    ...Option.match(hold, { onNone: () => ({}), onSome: (entry) => ({ hold: entry }) }),
+    ...Option.match(failure, { onNone: () => ({}), onSome: (entry) => ({ usageReadFailure: entry }) }),
+  }
+  const answer = dispatchPace([account], at, {}, 0.04, OPUS)
+  const advisory = poolPace([account], at)
+
+  // Invariant 1: no hold without a finite future retry time.
+  if (!answer.ok) expect([ctx, Number.isFinite(answer.retryAt), answer.retryAt > at]).toEqual([ctx, true, true])
+  if (!advisory.ok) expect([ctx, Number.isFinite(advisory.retryAt), advisory.retryAt > at]).toEqual([ctx, true, true])
+
+  const w5 = Option.flatMap(current, (r) => Arr.findFirst(r.windows, (w) => w.name === "5h"))
+  const w7 = Option.flatMap(current, (r) => Arr.findFirst(r.windows, (w) => w.name === "7d"))
+  const heldLive = Option.exists(hold, (h) => h.until > at)
+  const live5hLimit = Option.exists(w5, (w) => Option.exists(Option.fromUndefinedOr(w.resetAt), (r) => r > at) && w.utilization >= 0.9)
+  const live7dLimit = Option.exists(w7, (w) => Option.exists(Option.fromUndefinedOr(w.resetAt), (r) => r > at) && w.utilization >= 0.99)
+  const live7dOverLine = Option.exists(w7, (w) => validWeekWindow(w, at) && Option.exists(Option.fromUndefinedOr(w.resetAt), (r) => w.utilization > lineOf(r, at, {}) + 1e-9))
+  const usageSample = Option.flatMap(current, (r) => Option.fromUndefinedOr(r.usage))
+  const freshFail =
+    hasMeasured(current) &&
+    Option.exists(failure, (f) => f.failedAt <= at && at - f.failedAt <= STALE_AFTER_MS && !Option.exists(usageSample, (u) => u.at > f.failedAt))
+
+  // Invariant 2: no hold caused only by failed reads on a measured login.
+  if (freshFail && !heldLive && !live5hLimit && !live7dLimit && !live7dOverLine)
+    expect([ctx, answer.ok, answer.eligible]).toEqual([ctx, true, ["a"]])
+
+  // Invariant 3: reported limits and 429 holds always bind until their own reset/end.
+  if (heldLive || live5hLimit || live7dLimit || live7dOverLine)
+    expect([ctx, answer.ok]).toEqual([ctx, false])
+
+  // Invariant 4: unknown or stale-absent 7d is never unlimited (never measured, never bypasses another account's even-line hold).
+  const freshAbsent7d = Option.exists(
+    Option.flatMap(current, (r) => Option.flatMap(Option.fromUndefinedOr(r.absent), (entries) => Arr.findFirst(entries, (entry) => entry.name === "7d"))),
+    (entry) => entry.at <= at && at - entry.at <= STALE_AFTER_MS,
+  )
+  const hasValidWeek = Option.exists(w7, (w) => validWeekWindow(w, at))
+  if (!freshAbsent7d && !hasValidWeek && answer.ok)
+    expect([ctx, answer.measured, Option.isNone(Option.fromUndefinedOr(answer.admission))]).toEqual([ctx, false, true])
+  if (!freshAbsent7d && !hasValidWeek && !heldLive) {
+    const overAccount: AccountStatus = {
+      credentialID: "over",
+      live: 0,
+      load: 0,
+      noRoom: false,
+      reading: {
+        at,
+        usage: { at, samples: 1 },
+        windows: [
+          { name: "5h", utilization: 0.2, resetAt: at + 3 * hour },
+          { name: "7d", utilization: 0.7, resetAt: at + 3.5 * day },
+        ],
+      },
+    }
+    expect([ctx, dispatchPace([overAccount, account], at, {}, 0.04, OPUS).ok]).toEqual([ctx, false])
+  }
+}
+
+test("model-based property: generated sequences of readings, failures, idle gaps and resets obey all pace invariants", () => {
+  const next = lcg(20261124)
+  for (let seq = 0; seq < 160; seq++) {
+    let state: ModelState = { at: now, current: Option.none(), hold: Option.none(), failure: Option.none() }
+    for (let step = 0; step < 25; step++) {
+      const moved = stepModel(state, next)
+      state = moved.next
+      checkModelInvariants(state, `seq ${seq} step ${step} op ${moved.op}`)
+    }
+  }
 })

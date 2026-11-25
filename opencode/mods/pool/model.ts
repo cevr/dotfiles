@@ -13,6 +13,7 @@ import {
   AccountPool,
   AccountsHeld,
   ClearHold,
+  FailUsageRead,
   ListLogins,
   PlaceRequest,
   PruneLedger,
@@ -29,7 +30,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
-import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshEvidence, RequestHeld, requiredScopes, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
@@ -399,7 +400,15 @@ export const layer = (config: Config) =>
             )
 
       const readUsage = (where: Pooled, credentialID: string, recovery: boolean, signIn = Option.none<true>()) => {
-        if (!recovery) return quota.usage(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading, true)))
+        if (!recovery)
+          return quota.usage(where.id, credentialID).pipe(
+            Effect.flatMap((reading) =>
+              Option.match(Option.fromUndefinedOr(reading), {
+                onNone: () => apply(where.pool, where.id, FailUsageRead.make({ credentialID })).pipe(Effect.asVoid),
+                onSome: (value) => take(where, credentialID, value, true),
+              }),
+            ),
+          )
         return Effect.gen(function* () {
           // Reserve the appointment in the shared ledger before leaving its lock for provider I/O.
           const input = Option.match(signIn, { onNone: () => ({ credentialID }), onSome: (signIn) => ({ credentialID, signIn }) })
@@ -1384,6 +1393,19 @@ export const layer = (config: Config) =>
         }
       })
 
+      const recordTimedOutReads = (paced: Pooled, unread: ReadonlyArray<AccountStatus>, before: number) =>
+        Effect.gen(function* () {
+          const after = yield* SynchronizedRef.get(paced.pool)
+          for (const account of unread) {
+            if (account.hold?.kind === "record-unreadable" || account.hold?.kind === "signin") continue
+            const refreshed = Option.exists(
+              Option.flatMap(Option.fromUndefinedOr(after.readings[account.credentialID]), (r) => Option.fromUndefinedOr(r.usage)),
+              (sample) => sample.at >= before,
+            )
+            if (!refreshed) yield* apply(paced.pool, paced.id, FailUsageRead.make({ credentialID: account.credentialID }))
+          }
+        })
+
       /**
        * The pace on the readings now. Both ways of quoting new work count the same fleet starts not yet in the readings.
        * Placement of an existing request does not charge its launch again: it was charged when it was admitted.
@@ -1409,14 +1431,17 @@ export const layer = (config: Config) =>
           const required = requiredScopes(listed, model)
           const unread = listed.filter((account) => Option.match(Option.fromUndefinedOr(account.hold), {
             onSome: (hold) => (hold.kind === "record-unreadable" || (dispatches && hold.kind === "signin")) && holdRecheckAt(hold) <= before,
-            onNone: () => dispatches && Option.exists(evidenceGap(account, before, required), (gap) => refreshEvidence(gap, before)),
+            onNone: () => dispatches && needsUsageRefresh(account, before, required),
           }))
           const read = Effect.forEach(unread, (account) => readUsage(paced, account.credentialID, account.hold?.kind === "record-unreadable"),
             { discard: true, concurrency: unread.length })
           // A quote leaves time for the caller's RPC. Dispatch has its own
           // overall deadline; it decides on all the outcomes in by that time.
           const deadline = Option.getOrElse(Option.filter(Option.some(DISPATCH_EVIDENCE_MS), () => work === "existing-request"), () => QUOTE_EVIDENCE_MS)
-          if (unread.length > 0) yield* read.pipe(Effect.timeoutOption(deadline))
+          if (unread.length > 0) {
+            const completed = yield* read.pipe(Effect.timeoutOption(deadline))
+            if (Option.isNone(completed)) yield* recordTimedOutReads(paced, unread, before)
+          }
         }
         const now = yield* Clock.currentTimeMillis
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
@@ -1520,12 +1545,16 @@ export const layer = (config: Config) =>
           const { id, pool } = where
           const pacedOnly = !placedPools.has(id)
           if (pacedOnly) yield* refresh(where, false).pipe(Effect.ignore)
-          const snapshot = status(yield* SynchronizedRef.get(pool), yield* Clock.currentTimeMillis, rules)
+          const now = yield* Clock.currentTimeMillis
+          const snapshot = status(yield* SynchronizedRef.get(pool), now, rules)
           const accounts = yield* Match.value(pacedOnly).pipe(
             Match.when(false, () => Effect.succeed(snapshot)),
             Match.orElse(() => Effect.forEach(snapshot, (account) => Effect.gen(function* () {
-              if (Option.isSome(Option.fromUndefinedOr(account.reading))) return { ...account, measurement: "measured" as const }
-              const failed = yield* ledger.firstReadingFailure(id, account.credentialID)
+              if (Option.isSome(Option.fromUndefinedOr(account.reading)) && !staleTracked(account, now)) return { ...account, measurement: "measured" as const }
+              const failed = yield* Option.match(Option.fromUndefinedOr(account.usageReadFailure), {
+                onSome: (failure) => Effect.succeed(Option.some(failure)),
+                onNone: () => ledger.firstReadingFailure(id, account.credentialID),
+              })
               return { ...account, measurement: "unmeasured" as const, ...Option.match(failed, {
                 onNone: () => ({}), onSome: (usageReadFailure) => ({ usageReadFailure }),
               }) }

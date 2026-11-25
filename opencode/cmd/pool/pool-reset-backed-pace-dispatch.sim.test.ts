@@ -74,7 +74,7 @@ seeded("B2: a cached login never spends another login's refund; the request goes
   }),
 )
 
-seeded("B3: a managed login with no usage read, or one read 31 minutes ago, sends nothing", ({ expect }) =>
+seeded("B3: a managed login never measured sends nothing; an idle measured login whose usage endpoint fails sends once as unmeasured, then obeys its response headers", ({ expect }) =>
   Effect.gen(function* () {
     const missing = fixture({ a: quota(0.2, 0) }, refunds)
     missing.unavailable = true
@@ -94,9 +94,16 @@ seeded("B3: a managed login with no usage read, or one read 31 minutes ago, send
     stale.reading["a"] = quota(0.85, 0)
     stale.unavailable = true
     yield* warm.world.advance(31 * 60_000)
+    // E1 (option a): after one bounded failed read, the already-measured login sends as unmeasured;
+    // its response headers report the 85% week and hold the next prompt at the even line.
+    expect(yield* warm.pace(second)).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
     yield* warm.world.prompt(second, "stale cached continuation")
     yield* warm.world.advance(10_000)
-    expect(warm.primary()).toHaveLength(1)
+    expect(warm.primary()).toHaveLength(2)
+    expect(yield* warm.pace(second)).toMatchObject({ ok: false, measured: true, reasonCode: "even-line" })
+    yield* warm.world.prompt(second, "held once response headers restore the over-line week")
+    yield* warm.world.advance(10_000)
+    expect(warm.primary()).toHaveLength(2)
   }),
 )
 
