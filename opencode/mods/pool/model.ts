@@ -30,6 +30,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
+import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
 import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
@@ -40,7 +41,7 @@ import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
 import type { ResetProvider } from "./resets.ts"
-import { AntigravityReporter, FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
+import { AntigravityReporter, FleetStore, Ledger, Limits, Logins, Owner, Peers, PeerUnreachable, PushStore, Quota, ResetsStore, Workload, type LoginsUnavailable } from "./service.ts"
 import * as PushModel from "./push.ts"
 import { used as usedOf } from "./usage-text.ts"
 import type { PushAnswer, PushRequest } from "./push.ts"
@@ -65,6 +66,7 @@ import type {
   SessionLogins,
   SessionQuery,
   StepLogin,
+  LaunchRequest,
 } from "./status.ts"
 import { OUTAGE_AFTER_MS, outage } from "./alerts.ts"
 
@@ -99,7 +101,7 @@ export interface FleetConfig {
   readonly host: string
   /** How long an admitted agent counts on the pace before its spend shows in a reading (ms). */
   readonly settleMs: number
-  /** What it counts meanwhile: a share of one account's week, 0 to 1. */
+  /** Minimum estimate per launch, as a share of one account's week; recent completed work may raise it. */
   readonly startCost: number
   /** How often the host reads each peer (ms): the plugin's instances on the host share the reads. */
   readonly pollMs: number
@@ -111,9 +113,9 @@ export interface FleetConfig {
 
 /**
  * Ten minutes covers a reading's lag: the auth plugin reads after each
- * response and the sweep every ten minutes. Half a percentage point of one
- * account's week is about an agent's first ten minutes: the orchestrate
- * skill's Codex budget measures 0.4 to 0.6 %/h per role.
+ * response and the sweep every ten minutes. Half a percentage point is the
+ * cold-start floor; completed agents of the same model family calibrate the
+ * next launch. This is a forecast, so actual work may overshoot it.
  */
 export const DEFAULT_FLEET: FleetConfig = { host: "this host", settleMs: 10 * 60_000, startCost: 0.005, pollMs: 30_000 }
 
@@ -154,6 +156,7 @@ export const poolsOf = (config: Config): ReadonlyArray<PoolId> => [
 ]
 
 export interface PlaceInput {
+  readonly priority?: boolean
   readonly providerID: string
   readonly sessionID: string
   readonly kind: RequestKind
@@ -177,6 +180,7 @@ export class Pool extends Context.Service<
      * Admitted, it goes out on an account eligible for its model, the run's pin and its cache's only when eligible.
      */
     readonly place: (input: {
+      readonly priority?: boolean
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
@@ -233,7 +237,10 @@ export class Pool extends Context.Service<
     /** The login each recorded step of a session went out on, oldest first. */
     readonly logins: (query: LoginsQuery) => Effect.Effect<SessionLogins>
     /** A new agent was admitted on the provider: it counts on the pace, here and on the peers, until it settles. */
-    readonly started: (providerID: string) => Effect.Effect<void>
+    readonly started: (providerID: string, model?: string, launchID?: string, sessionID?: string) => Effect.Effect<void>
+    /** Negotiate and durably reserve one new worker before its tool executes. */
+    readonly reserveLaunch: (input: LaunchRequest) => Effect.Effect<Pace>
+    readonly bindLaunch: (launchID: string, sessionID: string) => Effect.Effect<void>
     /** A step of a session started on the provider: the session is busy, an agent running, until it goes idle (`release`). */
     readonly stepStarted: (sessionID: string, providerID: string) => Effect.Effect<void>
     /** Providers of sessions currently busy on this host (used by fleet reports and Antigravity's concurrency gate). */
@@ -304,8 +311,6 @@ export const layer = (config: Config) =>
       const rules: Rules = { cacheLifeMs: config.cacheLifeMs }
       const decider = AccountPool(rules)
       const fleetConfig = config.fleet ?? DEFAULT_FLEET
-      // The fleet is decided one command at a time in this instance; another instance's write between a read and a record loses nothing, a start being a key of its own.
-      const fleetLock = yield* Semaphore.make(1)
       const resetsStore = yield* ResetsStore
       const owner = yield* Owner
       // The limit tally is optional: a pool built without it tallies nothing.
@@ -464,7 +469,9 @@ export const layer = (config: Config) =>
         // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
         // Held, it goes out on no login; the review has heard of the held work.
         const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
-        const policy = Option.match(auxiliary, { onNone: () => ({}), onSome: (kind) => ({ auxiliary: kind }) })
+        const policy = Option.match(auxiliary, {
+          onNone: () => ({ priority: input.priority === true }), onSome: (kind) => ({ auxiliary: kind }),
+        })
         const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
         const now = yield* Clock.currentTimeMillis
         if (Option.isNone(asked))
@@ -712,9 +719,14 @@ export const layer = (config: Config) =>
       }
 
       const release = (sessionID: string) =>
-        Effect.suspend(() => {
+        Effect.gen(function* () {
           busySessions.delete(sessionID)
-          return Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
+          const messages = new Set<string>()
+          for (const { id } of every) for (const step of yield* ledger.steps(id)) {
+            if (step.sessionID === sessionID) Option.match(Option.fromUndefinedOr(step.messageID), { onNone: () => {}, onSome: (id) => { messages.add(id) } })
+          }
+          if (messages.size > 0) yield* sendFleet(FleetModel.CompleteWork.make({ sessionID, messageIDs: [...messages] }))
+          yield* Effect.forEach(every, ({ id, pool }) => apply(pool, id, ReleaseRun.make({ sessionID })), { discard: true })
         })
 
       /** The pool that placed the session's newest request, if any did. */
@@ -747,7 +759,19 @@ export const layer = (config: Config) =>
         if (messageID !== undefined && usage !== undefined) yield* tallyStep(sessionID, messageID, usage)
         // The step's event names no model: it belongs to the pool that placed the session's newest request.
         const where = yield* newest(sessionID)
-        if (where === undefined) return
+        if (where === undefined) {
+          const named = Option.fromUndefinedOr(usage).pipe(Option.flatMap((usage) => Option.map(Option.fromUndefinedOr(usage.credentialID), (credentialID) => ({ usage, credentialID }))))
+          if (Option.isNone(named)) return
+          const measured = Option.fromUndefinedOr(poolOf(measuredBy(config, named.value.usage.providerID)))
+          if (Option.isNone(measured)) return
+          const refreshed = yield* refresh(measured.value, false).pipe(Effect.option)
+          if (Option.isNone(refreshed)) return
+          yield* apply(measured.value.pool, measured.value.id, RecordStep.make({
+            sessionID, cost, credentialID: named.value.credentialID,
+            ...Option.match(Option.fromUndefinedOr(messageID), { onNone: () => ({}), onSome: (messageID) => ({ messageID }) }),
+          }))
+          return
+        }
         yield* apply(where.pool, where.id, RecordStep.make({ sessionID, cost, ...(messageID === undefined ? {} : { messageID }) }))
       })
 
@@ -815,7 +839,7 @@ export const layer = (config: Config) =>
           const events = yield* FleetModel.Fleet.decide(state, command, yield* Clock.currentTimeMillis)
           if (events.length > 0) yield* fleetStore.record(events, fold(FleetModel.Fleet, events, state))
           return events
-        }).pipe(fleetLock.withPermits(1))
+        }).pipe(fleetStore.withState)
 
       // ── Resets ──
 
@@ -891,7 +915,7 @@ export const layer = (config: Config) =>
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
         const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends)
+        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -1337,20 +1361,39 @@ export const layer = (config: Config) =>
 
       const liftPace = Effect.fn("Pool.liftPace")(function* (
         providerID: string, model: string | undefined, dispatch: boolean | undefined, policy: DispatchPolicy, push: PushModel.Push,
-        answer: Pace, work: "new-work" | "existing-request",
+        answer: Pace, work: "new-work" | "existing-request", authority: Option.Option<FleetModel.FleetState>,
       ) {
         const reason = `the push "${push.goal}" lifts the spend-evenly hold until ${formatNotificationTime(push.endsAt)} (${answer.reason})`
         if (dispatch !== true && Option.isNone(Option.fromUndefinedOr(model))) return { ok: true, measured: true, reason } satisfies Pace
-        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work)
+        const lifted = yield* paceOf(providerID, model, true, { ...policy, liftEvenLine: true }, work, authority)
         if (!lifted.ok) return lifted
         return { ...lifted, reason } satisfies Pace
+      })
+
+      const forecast = Effect.fn("Pool.launchForecast")(function* (providerID: string, model: Option.Option<string>, now: number) {
+        const baseline = () => LaunchCost.estimate([], model, now, fleetConfig.startCost)
+        const id = Option.fromUndefinedOr(measuredBy(config, providerID))
+        const measured = Option.fromUndefinedOr(limits)
+        if (Option.isNone(measured) || Option.isNone(id)) return baseline()
+        const fleet = yield* fleetStore.read
+        const completions: Readonly<Record<string, typeof FleetModel.Completion.Type>> = Option.getOrElse(Option.fromUndefinedOr(fleet.completions), () => ({}))
+        const jobs = fleet.starts.flatMap((start) => Option.toArray(Option.all({
+          sessionID: Option.fromUndefinedOr(start.sessionID), model: Option.fromUndefinedOr(start.model),
+        }).pipe(Option.flatMap((job) => Option.fromUndefinedOr(completions[job.sessionID]).pipe(
+          Option.filter((completion) => completion.at > now - LaunchCost.DAY && completion.at <= now),
+          Option.map((completion) => ({ ...job, ...completion })),
+        )))))
+        const costs = yield* measured.value.workCosts(id.value, jobs)
+        const history = jobs.flatMap((job) => Option.toArray(Option.map(Option.fromUndefinedOr(costs[job.sessionID]), (cost) => ({ model: job.model, at: job.at, cost }))))
+        return LaunchCost.estimate(history, model, now, fleetConfig.startCost)
       })
 
       const pace = Effect.fn("Pool.pace")(function* (
         providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
         work: "new-work" | "existing-request" = "new-work",
+        authority: Option.Option<FleetModel.FleetState> = Option.none(),
       ) {
-        const paced = yield* paceOf(providerID, model, dispatch, policy, work)
+        const paced = yield* paceOf(providerID, model, dispatch, policy, work, authority)
         const id = Option.fromUndefinedOr(measuredBy(config, providerID))
         const session = Option.fromUndefinedOr(sessionID)
         // A title or other auxiliary request waits for ordinary room; it does not ask for another reset.
@@ -1372,7 +1415,7 @@ export const layer = (config: Config) =>
         // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
         // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
         const approved = Option.filter(push, (activePush) => activePush.allowance.max === 0 || used < activePush.allowance.max)
-        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work)
+        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work, authority)
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
         if (Option.isNone(resetting)) return answer
         const hard = answer.soft !== true
@@ -1418,13 +1461,15 @@ export const layer = (config: Config) =>
       const paceOf = Effect.fn("Pool.paceOf")(function* (
         providerID: string, model?: string, dispatch?: boolean, policy: DispatchPolicy = {},
         work: "new-work" | "existing-request" = "new-work",
+        liveFleet: Option.Option<FleetModel.FleetState> = Option.none(),
       ) {
         const paced = poolOf(measuredBy(config, providerID))
         if (paced === undefined) return UNPOOLED
         const authority = yield* Effect.result(ledger.withHolds(currentHolds(paced)))
         if (authority._tag === "Failure") return storeHeld(authority.failure.retryAt, yield* Clock.currentTimeMillis)
         yield* refresh(paced, false)
-        const fleet = yield* fleetStore.read
+        const storedFleet = yield* fleetStore.read
+        const fleet = Option.getOrElse(liveFleet, () => storedFleet)
         // A peer's newer readings of the same logins count here too, whichever instance on the host read the peer.
         yield* mergeReports(fleet)
         for (const credentialID of (yield* SynchronizedRef.get(paced.pool)).credentials) yield* pull(paced, credentialID)
@@ -1452,15 +1497,110 @@ export const layer = (config: Config) =>
         const accounts = status(yield* SynchronizedRef.get(paced.pool), now, rules)
         const plans = yield* plansOf(paced.id, accounts, now)
         // Every start in the fleet on a provider this pool paces counts, whichever host admitted it.
-        const starts = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
+        const pending = FleetModel.inflight(fleet, now, fleetConfig.settleMs)
           .filter((start) => work === "new-work" && measuredBy(config, start.providerID) === paced.id)
-          .map((start) => start.at)
-        const inflight = { starts, cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs }
+        const quote = yield* Effect.suspend(() => {
+          if (work === "new-work") return forecast(providerID, Option.fromUndefinedOr(model), now)
+          return Effect.succeed(LaunchCost.estimate([], Option.none(), now, fleetConfig.startCost))
+        })
+        const inflight = {
+          starts: pending.map((start) => start.at),
+          costs: pending.map((start) => Option.getOrElse(Option.fromUndefinedOr(start.cost), () => fleetConfig.startCost)),
+          cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs,
+          nextCost: Option.match(Option.filter(Option.some(quote.cost), () => work === "new-work"), { onNone: () => 0, onSome: (cost) => cost }),
+        }
         if (dispatch === true && Option.isNone(Option.fromUndefinedOr(model))) return dispatchPace(accounts, now, plans, fleetConfig.startCost, model, { ...policy, inflight })
-        return poolPace(accounts, now, inflight, model, plans, policy)
+        const answer = poolPace(accounts, now, inflight, model, plans, policy)
+        if (work === "new-work") return { ...answer, forecast: quote }
+        return answer
       })
 
-      const started = (providerID: string) => sendFleet(FleetModel.RecordStart.make({ providerID })).pipe(Effect.asVoid)
+      const launchKey = (id: string) => `${fleetConfig.host}:${id}`
+      const started = Effect.fn("Pool.started")(function* (providerID: string, model?: string, launchID?: string, sessionID?: string) {
+        const identity = Option.map(Option.fromUndefinedOr(launchID), launchKey)
+        const quote = yield* forecast(providerID, Option.fromUndefinedOr(model), yield* Clock.currentTimeMillis)
+        yield* sendFleet(FleetModel.RecordStart.make({
+          providerID, cost: quote.cost,
+          ...Option.match(identity, { onNone: () => ({}), onSome: (id) => ({ id }) }),
+          ...Option.match(Option.fromUndefinedOr(model), { onNone: () => ({}), onSome: (model) => ({ model }) }),
+        }))
+        const binding = Option.all({ id: identity, sessionID: Option.fromUndefinedOr(sessionID) })
+        if (Option.isSome(binding)) yield* sendFleet(FleetModel.BindStart.make(binding.value))
+      })
+
+      const reserveLaunch = Effect.fn("Pool.reserveLaunch")(function* (input: LaunchRequest) {
+        const poolID = Option.fromUndefinedOr(measuredBy(config, input.providerID))
+        if (Option.isNone(poolID)) return UNPOOLED
+        const provider = Option.getOrElse(resetProvider(poolID.value), () => Match.value(input.providerID).pipe(
+          Match.when("openai", () => "codex" as const), Match.orElse(() => "claude" as const),
+        ))
+        const id = launchKey(input.launchID)
+        const held = (reason: string, reasonCode: "fleet-busy" | "fleet-unavailable" = "fleet-busy") =>
+          Clock.currentTimeMillis.pipe(Effect.map((now): Pace => ({
+            ok: false, measured: true, reason, reasonCode, retryAt: nextRetryAt(now, [now + UNREAD_RETRY_MS]), admission: "held", eligible: [],
+          })))
+        const admission = Effect.gen(function* () {
+          const prior = Option.fromUndefinedOr((yield* fleetStore.starts).find((start) => start.id === id))
+          const now = yield* Clock.currentTimeMillis
+          if (Option.isSome(prior)) {
+            if (prior.value.providerID !== input.providerID || prior.value.model !== input.model || prior.value.at + fleetConfig.settleMs <= now)
+              return yield* held("the launch identity is already used or its reservation expired; decide the launch again")
+            return { ok: true as const, measured: true, reason: "this launch already has its fleet reservation", admission: "ordinary" as const }
+          }
+          const replies = yield* Effect.forEach(peers.names, (peer) => Effect.gen(function* () {
+            const report = yield* peers.report(peer)
+            if (report.launchProtocol !== 1) return yield* new PeerUnreachable({ peer, message: "has not installed negotiated launch admission" })
+            const received = yield* Clock.currentTimeMillis
+            if (Math.abs(report.at - received) > FleetModel.SKEW_MS) return yield* new PeerUnreachable({ peer, message: "clock is outside the launch agreement's tolerance" })
+            yield* sendFleet(FleetModel.TakeReport.make({ peer, report }))
+            return [peer, { report, seenAt: received }] as const
+          }), { concurrency: Math.max(1, peers.names.length) })
+          const live = { starts: yield* fleetStore.starts, peers: Object.fromEntries(replies) } satisfies FleetModel.FleetState
+          const answer = yield* pace(input.providerID, input.model, input.sessionID, true, {}, "new-work", Option.some(live))
+          if (!answer.ok) return answer
+          const cost = Option.getOrElse(Option.map(Option.fromUndefinedOr(answer.forecast), (forecast) => forecast.cost), () => fleetConfig.startCost)
+          const events = yield* FleetModel.Fleet.decide(live, FleetModel.RecordStart.make({ id, providerID: input.providerID, model: input.model, cost }), yield* Clock.currentTimeMillis)
+          for (const event of events) {
+            if (event._tag === "StartRecorded") yield* fleetStore.reserve(event.start)
+          }
+          yield* fleetStore.record(events.filter((event) => event._tag !== "StartRecorded"), live)
+          return answer
+        })
+        return yield* leases.lock(provider).withPermits(1)(Effect.gen(function* () {
+          if (peers.names.length === 0) return yield* admission
+          const requestedAt = yield* Clock.currentTimeMillis
+          const ask = { host: fleetConfig.host, id, provider, grants: [], readAt: requestedAt, requestedAt, holdMs: leaseMs }
+          const refusal = Option.fromUndefinedOr(yield* leases.begin(fleetConfig.host, ask))
+          if (Option.isSome(refusal)) return yield* held(refusal.value)
+          const granted: Array<string> = []
+          const release = Effect.gen(function* () {
+            yield* leases.finish(id)
+            yield* Effect.forEach(granted, (peer) => peers.lease(peer, Lease.LeaseRelease.make({
+              host: fleetConfig.host, id, provider, grants: [],
+            })).pipe(Effect.timeout(leaseWaitMs), Effect.ignore), { concurrency: Math.max(1, granted.length), discard: true })
+          })
+          return yield* Effect.gen(function* () {
+            const answers = yield* Effect.forEach(peers.names, (peer) => peers.lease(peer, Lease.LeaseAsk.make(ask)).pipe(
+              Effect.timeout(leaseWaitMs), Effect.option,
+              Effect.map((answer) => {
+                if (Option.exists(answer, (value) => value.granted)) granted.push(peer)
+                return { peer, answer: Option.getOrUndefined(answer) }
+              }),
+            ), { concurrency: Math.max(1, peers.names.length) })
+            const decision = Lease.verdict(answers, false)
+            if (decision._tag === "unreachable") return yield* held(`launch agreement unavailable: ${decision.peers.join(", ")}`, "fleet-unavailable")
+            if (decision._tag === "refused") return yield* held(`launch agreement held: ${decision.reasons.join("; ")}`)
+            if (!(yield* leases.hold(id))) return yield* held("another host won the launch agreement; decide again")
+            return yield* admission.pipe(Effect.timeoutOption(Math.max(1, requestedAt + leaseMs - (yield* Clock.currentTimeMillis))), Effect.flatMap((answer) => Option.match(answer, { onNone: () => held("launch agreement expired; decide again"), onSome: Effect.succeed })))
+          }).pipe(Effect.ensuring(release))
+        })).pipe(
+          Effect.catchTags({
+            LaunchStoreUnavailable: (error) => held(error.message, "fleet-unavailable"),
+            PeerUnreachable: (error) => held(`launch agreement unavailable: ${error.peer}: ${error.message}`, "fleet-unavailable"),
+            LoginsUnavailable: () => held("launch agreement has no readable quota accounts", "fleet-unavailable"),
+          }),
+        )
+      })
 
       const report = Effect.gen(function* () {
         const readings: Array<SharedReading> = []
@@ -1476,15 +1616,15 @@ export const layer = (config: Config) =>
           onNone: () => Effect.succeed(Option.none()),
           onSome: (reporter) => reporter.report.pipe(Effect.catchCause(() => Effect.succeed(Option.none()))),
         })
-        const answer = FleetModel.report(
-          yield* fleetStore.read,
+        const answer = { ...FleetModel.report(
+          { ...yield* fleetStore.read, starts: yield* fleetStore.starts.pipe(Effect.orDie) },
           fleetConfig.host,
           now,
           fleetConfig.settleMs,
           readings,
           busyNow(now),
           Option.getOrUndefined(agyReport),
-        )
+        ), launchProtocol: 1 as const }
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
@@ -1624,6 +1764,8 @@ export const layer = (config: Config) =>
         alerts,
         logins: sessionLogins,
         started,
+        reserveLaunch,
+        bindLaunch: (launchID, sessionID) => sendFleet(FleetModel.BindStart.make({ id: launchKey(launchID), sessionID })).pipe(Effect.asVoid),
         stepStarted,
         busy: Effect.map(Clock.currentTimeMillis, busyNow),
         report,

@@ -26,6 +26,7 @@
 // - Tokens are weighed two ways: raw (every token, cache reads included), and
 //   input-equivalent at the model's list price (cost ÷ input price), so cache
 //   reads do not dominate. The headline rate is per weighted Mtok.
+import { Array as Arr, Option } from "effect"
 import { limitsModel, scopeOf, type QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -394,6 +395,41 @@ export interface Tally {
   readonly cumulative: ReadonlyArray<WindowTally>
   /** The windows read with no row fitted yet, and why. */
   readonly waiting?: ReadonlyArray<Waiting>
+}
+
+/** A completed agent's recorded assistant messages, independent of its tool turns. */
+export interface WorkGroup {
+  readonly sessionID: string
+  readonly messageIDs: ReadonlyArray<string>
+}
+
+/** Convert actual token classes to an estimated share of the shared week.
+ * The measured mean is a forecast, not a provider quota bound. No fit means
+ * unknown, so a caller retains its bootstrap floor instead of learning zero.
+ */
+export const weeklyCostOf = (tally: Tally, use: Use): Option.Option<number> => {
+  const family = familyOf(use.model)
+  for (const windows of [tally.recent, tally.cumulative]) {
+    const found = Arr.findFirst(windows, (window) => window.pool === use.pool && window.window === "7d").pipe(
+      Option.flatMap((window) => Arr.findFirst(window.families, (candidate) => candidate.family === family && candidate.n > 0)),
+      Option.filter((candidate) => Number.isFinite(candidate.weighted.rate) && candidate.weighted.rate > 0),
+    )
+    if (Option.isSome(found)) return Option.some(weightedOf(use.model, use.tokens) * found.value.weighted.rate / 1e8)
+  }
+  return Option.none()
+}
+
+/** Whole agents only: missing token records or calibration cannot masquerade as cheap work. */
+export const workCosts = (tally: Tally, uses: ReadonlyMap<string, Use>, pool: string, groups: ReadonlyArray<WorkGroup>) => {
+  const costs: Record<string, number> = {}
+  for (const group of groups) {
+    const ids = [...new Set(group.messageIDs)]
+    const shares = ids.flatMap((messageID) => Option.toArray(Option.fromUndefinedOr(uses.get(messageID)).pipe(
+      Option.filter((use) => use.pool === pool), Option.flatMap((use) => weeklyCostOf(tally, use)),
+    )))
+    if (ids.length > 0 && shares.length === ids.length) costs[group.sessionID] = shares.reduce((sum, share) => sum + share, 0)
+  }
+  return costs
 }
 
 /**

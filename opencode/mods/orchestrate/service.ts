@@ -136,6 +136,8 @@ export class PoolPace extends Context.Service<
     readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<PaceReply>
     /** A new agent started on the provider: the pool counts it until its spend shows. Telling never fails. */
     readonly started: (providerID: string) => Effect.Effect<void>
+    readonly reserveLaunch: (providerID: string, model: string, sessionID: string, launchID: string) => Effect.Effect<PaceReply>
+    readonly bindLaunch: (launchID: string, sessionID: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/PoolPace") {}
 

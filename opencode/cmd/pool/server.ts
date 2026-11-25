@@ -73,18 +73,16 @@
  *   Default true. The owner approved every reset in hand ahead of time: the
  *   pool spends them on its own, Claude's and Codex's alike, and never asks
  *   (`@dotfiles/opencode-pool/claim-rule`): first a reset about to expire
- *   unused (one expiring within a day is just used, on a spent window or at
- *   its last call), then the work goes to a fresh account while one can take
- *   it, and only then a reset for held work, when the work would spend at
- *   least half of what it gives back before the window resets by itself;
- *   never for a window that resets by itself soon anyway (5-hour within 30
- *   minutes, a week within a day), at most one claim per window period per
- *   account. After a claim it reads the account again, records whether the
- *   weekly reset moved, and tells the owner once in the tray of the session
- *   that waited last (`Claimed the 5h reset on …`). `resets` answers what is
- *   being worked and the claims made, for the /pool pane. The pace raises an
- *   account's line by what a reset in hand gives back, and starts it again
- *   from a claim. A claim the pool decides on its own is made only on the account's fields read in the last 15
+ *   unused (one expiring within a day goes on exhaustion or at its six-hour
+ *   last call), then an exhausted account with running/held work, provided the
+ *   reset frees it. Anthropic preserves the weekly cadence; Codex waits for
+ *   weekly exhaustion, then redeems promptly and restarts the weekly cadence.
+ *   Every claim waits 30 minutes from its natural reset. Fresh stock schedules
+ *   existing Anthropic quota faster, without bypassing a hard limit. Refunds
+ *   rebase the line only after a successful claim's fresh observed recovery.
+ *   A later claim in the same cadence needs a fresh credit-count generation.
+ *   The owner is notified once in the latest waiting session's tray.
+ A claim the pool decides on its own is made only on the account's fields read in the last 15
  *   minutes and after its last claim (a window carried over from an older
  *   reading counts as unread), one at a time per account (its login, in any
  *   pool). Every claim, a push's too, is sent under one lock per provider
@@ -165,7 +163,7 @@ import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
 import { AntigravityReporter, FleetStore, type Ledger, type Limits, type Logins, type Owner, type Peers, type PushStore, type Quota, type ResetsStore, type Workload } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
-import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
+import { LaunchRequest, LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { STATUS } from "@dotfiles/opencode-status/status"
 
@@ -365,6 +363,7 @@ export const liveWith = (
   // The priced steps and the tally's requests, read and decoded once for every copy of the plugin in this process,
   // and written by one writer of its own (opencode/records.ts).
   const records = Records.make()
+  const fleetAuthority = FleetStoreLive.authority()
   return (
     ctx: Plugin.Context,
     options: Options,
@@ -401,7 +400,7 @@ export const liveWith = (
       LedgerLive.layer(storage, stores.steps, holds),
       peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
-      FleetStoreLive.layer(ctx.storage),
+      FleetStoreLive.layer(ctx.storage, fleetAuthority),
       // And the same resets, so a hold is worked once on the host.
       ResetsStoreLive.layer(ctx.storage),
       OwnerLive.layer(questionsHost(ctx)),
@@ -712,6 +711,15 @@ export const make = <R = never,>(
       // The old host has no concrete unsent-Step result. New hosts expose
       // the Step during routing and again at the final send hook.
       let canDeferPrimary = false
+      const priorityOf = (event: { readonly sessionID: string; readonly kind: string; readonly keepalive?: boolean }) => {
+        if ((event.kind !== "primary" && event.kind !== "compaction") || event.keepalive === true) return Effect.succeed(false)
+        const id = Schema.decodeUnknownOption(HostSessionID)(event.sessionID)
+        if (Option.isNone(id)) return Effect.succeed(false)
+        return ctx.session.get({ sessionID: id.value }).pipe(
+          Effect.map((session) => Option.isNone(Option.fromUndefinedOr(session.parentID))),
+          Effect.orElseSucceed(() => false),
+        )
+      }
       const failProposal = (scope: SendScope, reason: string, code: HoldReason, at: number) =>
         recordHeld(scope, reason, code, at).pipe(
           Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
@@ -721,10 +729,11 @@ export const make = <R = never,>(
           if (canDeferPrimary && event.kind === "primary") return Effect.void
           return gateActive(event, "known-hold", (hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.until))))
         }
-        return Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
-          Effect.flatMap(([cacheLifeMs, source]) =>
+        return Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID), priorityOf(event)]).pipe(
+          Effect.flatMap(([cacheLifeMs, source, priority]) =>
             withPool((pool) =>
               pool.place({
+                priority,
                 providerID: event.model.providerID,
                 sessionID: event.sessionID,
                 kind: event.kind,
@@ -923,6 +932,7 @@ export const make = <R = never,>(
       const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
         if (Option.isNone(decoded)) return yield* handoffUnavailable("")
         const { candidate, agent, stepID, ...request } = decoded.value
+        const priority = yield* priorityOf(request)
         const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
         const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
           recordHeld(scope, reason, reasonCode, retryAt).pipe(
@@ -942,6 +952,7 @@ export const make = <R = never,>(
           const cacheLife = Option.fromUndefinedOr(yield* agentCacheLife(agent))
           const source = Option.fromUndefinedOr(yield* cacheOf(HostSessionID.make(request.sessionID)))
           const placed = yield* pool.place({
+            priority,
             ...request,
             ...Option.match(cacheLife, { onNone: () => ({}), onSome: (cacheLifeMs) => ({ cacheLifeMs }) }),
             ...Option.match(source, { onNone: () => ({}), onSome: (cacheOf) => ({ cacheOf }) }),
@@ -998,8 +1009,21 @@ export const make = <R = never,>(
           started: (input) =>
             Option.match(decodeStartedQuery(input), {
               onNone: () => Effect.succeed({}),
-              onSome: ({ providerID }) => withPool((pool) => pool.started(providerID)).pipe(Effect.as({})),
+              onSome: ({ providerID, model, launchID, sessionID }) => withPool((pool) => pool.started(providerID, model, launchID, sessionID)).pipe(Effect.as({})),
             }),
+          reserveLaunch: (input) => Schema.decodeUnknownEffect(LaunchRequest)(input).pipe(
+            Effect.flatMap((request) => Effect.gen(function* () {
+              const integration = Option.filter(tracked(request.providerID), () => !signed(request.providerID))
+              if (Option.isSome(integration)) {
+                const tracking = yield* routeTracking(integration.value, { ...request, kind: "primary" })
+                if (Option.isSome(tracking)) return tracking.value
+              }
+              return yield* withPool((pool) => pool.reserveLaunch(request))
+            })), Effect.orDie,
+          ),
+          bindLaunch: (input) => Schema.decodeUnknownEffect(Schema.Struct({ launchID: Schema.String, sessionID: Schema.String }))(input).pipe(
+            Effect.flatMap(({ launchID, sessionID }) => withPool((pool) => pool.bindLaunch(launchID, sessionID))), Effect.as({}), Effect.orDie,
+          ),
           report: () => withPool((pool) => pool.report),
           fleet: () => withPool((pool) => pool.fleet),
           resets: () => withPool((pool) => pool.resets),

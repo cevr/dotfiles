@@ -75,7 +75,7 @@ describe("Fleet", () => {
       Story.state({ starts: [], peers: { workbox: { report: workbox(T0 - 1000), seenAt: T0 } } }),
     ))
 
-  test("forgets this host's starts after an hour, when the next one is recorded", () =>
+  test("forgets this host's old launch history when the next one is recorded", () =>
     run(
       Story.given(StartRecorded.make({ start: { providerID: "anthropic", at: T0 } })),
       Story.clock(T0 + KEEP_MS - 1),

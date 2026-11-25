@@ -9,7 +9,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
-import { Clock, Effect, Layer, Ref, Schema } from "effect"
+import { Clock, Effect, Layer, Option, Ref, Schema } from "effect"
 import type { PoolId } from "../account-pool.ts"
 import {
   emptyState,
@@ -21,6 +21,8 @@ import {
   takePeer,
   tally,
   USE_KEPT_MS,
+  workCosts,
+  type WorkGroup,
   type LimitRow,
   type LimitsState,
   type Use,
@@ -164,6 +166,14 @@ export const layer = (storage: Storage, path: string = defaultPath(), recorded: 
         )
 
       return {
+        workCosts: (pool: PoolId, groups: ReadonlyArray<WorkGroup>) => Effect.gen(function* () {
+          const at = yield* Clock.currentTimeMillis
+          for (const { messageID, use } of yield* recorded.entries) if (at - use.at < USE_KEPT_MS) uses.set(messageID, use)
+          const stored = Option.fromUndefinedOr(stateOf(readFile(path)))
+          const current = yield* Ref.get(state)
+          const shared = Option.match(stored, { onNone: () => current, onSome: (kept) => merge(kept, current) })
+          return workCosts(tally(recount(shared, [...uses.values()], at), at), uses, pool, groups)
+        }),
         use: (messageID: string, use: Use) =>
           uses.has(messageID)
             ? Effect.void
