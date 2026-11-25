@@ -1595,26 +1595,41 @@ A read happens only when asked: the tool's `read` action or
 plugin instances and processes on a host share one state file
 (`$XDG_STATE_HOME/opencode-pool/antigravity.json`, no token in it) under a lock.
 No read is made within 5 minutes of the last attempt, whoever made it, and
-failures back that off further. A failure anywhere in this code shows as an
+failures back that off further. The lock names its owner, so a holder that
+stalled past a takeover saves nothing. A state file that does not decode counts
+as an attempt just made and is kept beside it as `.undecodable`. A failure anywhere in this code shows as an
 "unknown" row and never stops or delays the pool.
 
-A personal sign-in is read only from the token files of a managed profile, as
-T3 makes one (default
+A personal sign-in is read only from the token files of a managed profile, made
+as T3 makes one (default
 `$XDG_STATE_HOME/opencode-pool/antigravity/profiles/default`; `~/.gemini` is not
-read by default). `bun cmd/pool/antigravity-read.ts --profile-env` makes that
-profile and prints the one line that signs agy in on it. A personal sign-in
-never reads the keychain. For a business sign-in, the macOS keychain is read
+read by default). One description in `mods/pool/antigravity/profile.ts` gives
+all of it: the layout, `antigravity-acp/settings.json`, the links into
+`~/.gemini`, the environment, and the launch `agy acp --gemini-dir <profile>
+--app-data-dir antigravity-acp`, with `--login` added for the sign-in.
+`bun cmd/pool/antigravity-read.ts --profile-env` makes the profile and prints the
+one line that signs agy in on it. T3's BROWSER helper and its TMPDIR are left
+out: both are local only and change nothing Google sees, but without the helper
+the sign-in may open the default browser. Every agy pane must start on this
+profile's launch line, or the token file expires about an hour after sign-in:
+nothing refreshes it, and T3 keeps it fresh by running every session on the
+profile. agy's interactive TUI, which the orchestrator's panes run, lists
+neither flag in `agy --help`. So for it the answer is "pane mode: token path
+unknown: reads unavailable", and a read needs a fresh sign-in. A personal
+sign-in never reads the keychain. For a business sign-in, the macOS keychain is read
 only with the owner's consent (`read` with `consent: true`, or `--consent`), and
 one consent buys exactly one attempt, whatever its outcome. The token it gives
 is held in memory only, so a restart, an expiry or a 401 means a new consent.
 
 The read itself is `v1internal:retrieveUserQuotaSummary`, then
 `fetchAvailableModels`, on Google's daily and production Code Assist hosts.
-Each request carries only the bearer and Antigravity's user agent, follows no
-redirect and sends no trace header (`source.test.ts` pins every request). It
-runs on Bun's fetch where T3 runs on Node's, so the TLS handshake and the
-transport's own headers (accept-encoding, connection) can differ, and the token
-refresh sets Node fetch's user agent and fetch headers itself to match T3's.
+One header rule covers every request: it sets exactly the header names T3's code
+sets (the bearer and Antigravity's user agent on the quota calls, none on the
+token refresh), and the runtime adds its own defaults. No request follows a
+redirect or sends a trace header (`source.test.ts` pins every request). It runs
+on Bun's fetch where T3 runs on Node's, so the TLS handshake and the runtime's
+default headers (user agent on the refresh, accept-encoding, connection) can
+differ.
 
 A group answers in one of these states:
 
