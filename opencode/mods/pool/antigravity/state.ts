@@ -1,8 +1,9 @@
 // What the pool holds of Antigravity's quota, and what it answers from it: the
-// last reading of the windows, the last read that failed and why, the last
-// limit an agy pane printed, and the one keychain attempt. A send or a status
-// render reads this state only; a read of Google is the reader's, on its own
-// schedule (at most once per READ_EVERY_MS, backing off on each failure).
+// last reading of the windows, the last read that failed and why, each group's
+// limit an agy pane printed, the last read attempt, the last keychain attempt
+// and an unused consent. A send or a status render reads this state only. A
+// read of Google happens only when asked (the tool's read, the read command),
+// at most once per READ_EVERY_MS after the last attempt, backing off on failure.
 // An unknown window is never unlimited and never a hold by itself: with one
 // unknown, "is it open" answers a typed unknown. Pure: no clock, no I/O.
 import { Array as Arr, Match, Option, Schema } from "effect"
@@ -14,8 +15,8 @@ export const READ_EVERY_MS = 5 * MINUTE
 /** The longest wait after failed reads. */
 export const BACKOFF_CAP_MS = 60 * MINUTE
 
-/** What a keychain attempt came to. `denied`, `failed` and `timed-out` stop further attempts until the owner asks again. */
-export const KeychainOutcome = Schema.Literals(["read", "absent", "denied", "failed", "timed-out"])
+/** What a keychain attempt came to; `started` until it answers. Each attempt uses one consent, whatever it comes to. */
+export const KeychainOutcome = Schema.Literals(["started", "read", "absent", "denied", "failed", "timed-out"])
 export type KeychainOutcome = typeof KeychainOutcome.Type
 
 /** Why a request to Google gave no reading. */
@@ -32,10 +33,14 @@ export const Why = Schema.TaggedUnion({
   NotReadableHere: {},
   /** The sign-in's token has expired and cannot be refreshed from here. */
   SignInExpired: {},
-  /** The keychain read was refused, failed or timed out: not tried again until the owner asks. */
+  /** The keychain attempt was refused, failed or timed out: none again until the owner consents again. */
   KeychainRefused: { outcome: Schema.Literals(["denied", "failed", "timed-out"]) },
-  /** The keychain is read only when the owner asks, and has not been. */
-  KeychainNotAsked: {},
+  /** No token file, and no sign-in held from a keychain read: the keychain is read only with the owner's consent. */
+  NotHeld: {},
+  /** A personal sign-in: no token file in the managed profile `profile`; it is never read from the keychain. */
+  NotSignedIn: { profile: Schema.String },
+  /** The Antigravity code itself failed here: contained, with its reason. */
+  Contained: { reason: Schema.String },
   /** Google's answer was no reading: its status when it answered. */
   RequestFailed: { why: RequestWhy, status: Schema.optionalKey(Schema.Finite) },
   /** Google answered, with no quota this reads. */
@@ -64,35 +69,47 @@ export type GroupLimit = typeof GroupLimit.Type
 export const Reading = Schema.Struct({ at: Schema.Finite, windows: Schema.Array(Window) })
 export type Reading = typeof Reading.Type
 
+/** A read of Google decided and committed under the state file's lock, before anything is sent. */
+export const Attempt = Schema.Struct({ id: Schema.String, at: Schema.Finite })
+export type Attempt = typeof Attempt.Type
+
 /** The state, as kept on disk too: no token, ever. */
 export const State = Schema.Struct({
   reading: Schema.optionalKey(Reading),
   failure: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, why: Why })),
   failures: Schema.Finite,
+  /** No read of Google before this, whoever asks: the last attempt plus READ_EVERY_MS, or its backoff. */
   nextReadAt: Schema.Finite,
+  /** The last read of Google decided, whoever made it; only its own result is kept. */
+  attempt: Schema.optionalKey(Attempt),
   /** Each group's newest pane limit; a limit naming no group is kept on every group. */
   limits: Schema.optionalKey(Schema.Array(GroupLimit)),
+  /** The last keychain attempt and what it came to (`started` until it answers). */
   keychain: Schema.optionalKey(Schema.Struct({ at: Schema.Finite, outcome: KeychainOutcome })),
-  /** When the owner last asked, through the tool, to read again (the keychain too). */
-  askedAt: Schema.optionalKey(Schema.Finite),
+  /** The owner's consent to one keychain attempt, not yet used: the attempt that uses it clears it. */
+  consentAt: Schema.optionalKey(Schema.Finite),
 })
 export type State = typeof State.Type
 
 export const EMPTY: State = { failures: 0, nextReadAt: 0 }
 
 export const Event = Schema.TaggedUnion({
-  /** A read of Google answered these windows at `at`. */
-  Read: { at: Schema.Finite, windows: Schema.Array(Window) },
-  /** A read at `at` gave no reading, for `why`. */
-  Failed: { at: Schema.Finite, why: Why },
+  /** A read was decided at `at`: the floor moves past it; with `keychain`, it uses the consent and is the one keychain attempt. */
+  Attempted: { id: Schema.String, at: Schema.Finite, keychain: Schema.Boolean },
+  /** Attempt `attempt` answered these windows at `at`. */
+  Read: { attempt: Schema.String, at: Schema.Finite, windows: Schema.Array(Window) },
+  /** Attempt `attempt` gave no reading at `at`, for `why`. */
+  Failed: { attempt: Schema.String, at: Schema.Finite, why: Why },
+  /** No read was made at `at`, for `why` (no sign-in held, say): shown, with no floor and no backoff. */
+  Unavailable: { at: Schema.Finite, why: Why },
   /** A pane printed a limit. */
   LimitSeen: { limit: SeenLimit },
   /** A pane on the group (every group when none is named) ran a turn since its limit: the limit is gone. */
   LimitCleared: { group: Schema.optionalKey(Schema.String) },
-  /** The one keychain attempt came to `outcome`. */
+  /** The keychain attempt came to `outcome`. */
   KeychainTried: { at: Schema.Finite, outcome: KeychainOutcome },
-  /** The owner asked, through the tool, to read again: the keychain too. */
-  RetryAsked: { at: Schema.Finite },
+  /** The owner consented to one keychain attempt. */
+  ConsentGiven: { at: Schema.Finite },
 })
 export type Event = typeof Event.Type
 
@@ -104,9 +121,29 @@ const withoutFailure = (state: State): State => {
   return rest
 }
 
-const withoutKeychain = (state: State): State => {
-  const { keychain: _dropped, ...rest } = state
+const withoutConsent = (state: State): State => {
+  const { consentAt: _dropped, ...rest } = state
   return rest
+}
+
+/** Whether `id` is the state's attempt: a result of any other (an older one, another process's) changes nothing. */
+const isCurrent = (state: State, id: string) => Option.exists(Option.fromUndefinedOr(state.attempt), (attempt) => attempt.id === id)
+
+const attemptAt = (state: State) => Option.getOrElse(Option.map(Option.fromUndefinedOr(state.attempt), (attempt) => attempt.at), () => 0)
+
+const ifCurrent = (state: State, id: string, next: () => State): State =>
+  Match.value(isCurrent(state, id)).pipe(
+    Match.when(true, next),
+    Match.orElse(() => state),
+  )
+
+/** An attempt uses its read's consent or drops it unused: a consent is for one read, never a later one nobody asked for. */
+const attempted = (state: State, id: string, at: number, keychain: boolean): State => {
+  const base = { ...withoutConsent(state), attempt: { id, at }, nextReadAt: at + backoffMs(state.failures) }
+  return Match.value(keychain).pipe(
+    Match.when(true, () => ({ ...base, keychain: { at, outcome: "started" as const } })),
+    Match.orElse(() => base),
+  )
 }
 
 const limitsOf = (state: State): ReadonlyArray<GroupLimit> => Option.getOrElse(Option.fromUndefinedOr(state.limits), () => [])
@@ -128,8 +165,11 @@ const namedGroups = (state: State, name: Option.Option<string>): ReadonlyArray<s
 
 export const evolve = (state: State, event: Event): State =>
   Event.match(event, {
-    Read: ({ at, windows }) => ({ ...withoutFailure(state), reading: { at, windows }, failures: 0, nextReadAt: at + READ_EVERY_MS }),
-    Failed: ({ at, why }) => ({ ...state, failure: { at, why }, failures: state.failures + 1, nextReadAt: at + backoffMs(state.failures + 1) }),
+    Attempted: ({ id, at, keychain }) => attempted(state, id, at, keychain),
+    Read: ({ attempt, at, windows }) => ifCurrent(state, attempt, () => ({ ...withoutFailure(state), reading: { at, windows }, failures: 0 })),
+    Failed: ({ attempt, at, why }) =>
+      ifCurrent(state, attempt, () => ({ ...state, failure: { at, why }, failures: state.failures + 1, nextReadAt: attemptAt(state) + backoffMs(state.failures + 1) })),
+    Unavailable: ({ at, why }) => ({ ...state, failure: { at, why } }),
     LimitSeen: ({ limit }) =>
       ({
         ...state,
@@ -149,15 +189,14 @@ export const evolve = (state: State, event: Event): State =>
       return { ...state, limits: limitsOf(state).filter((seen) => !cleared.includes(seen.group)) }
     },
     KeychainTried: ({ at, outcome }) => ({ ...state, keychain: { at, outcome } }),
-    RetryAsked: ({ at }) => ({ ...withoutKeychain(state), failures: 0, nextReadAt: at, askedAt: at }),
+    ConsentGiven: ({ at }) => ({ ...state, consentAt: at }),
   })
 
-/** Whether a read is due at `now`. */
+/** Whether a read of Google may be made at `now`: the floor after the last attempt, whoever made it. */
 export const due = (state: State, now: number) => now >= state.nextReadAt
 
-/** Whether the keychain may be tried: never again after a refusal, a failure or a timeout, until the owner asks. */
-export const keychainAllowed = (state: State) =>
-  !Option.exists(Option.fromUndefinedOr(state.keychain), (tried) => tried.outcome === "denied" || tried.outcome === "failed" || tried.outcome === "timed-out")
+/** Whether a keychain attempt may be made: only with an unused consent. */
+export const keychainAllowed = (state: State) => Option.isSome(Option.fromUndefinedOr(state.consentAt))
 
 /** A window as the pool shows it: read, or unknown with why. */
 export const Shown = Schema.TaggedUnion({ Known: { window: Window }, Unknown: { why: Why } })

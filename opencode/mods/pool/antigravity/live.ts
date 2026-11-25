@@ -1,25 +1,26 @@
-// Antigravity's quota source as the pool runs it on a host: the profile's
+// Antigravity's read authority as the pool runs it on a host: the profile's
 // files through the host's file system, the macOS keychain through the system
 // `security` tool (no native dependency: the binding T3 Code loads,
 // @napi-rs/keyring, is a native module the plugin would have to ship), the
-// state file beside the pool's other state, and Google over fetch with no
-// redirect followed. A host other than macOS has no keychain this reads: a
-// Linux workbox reads its sign-in from the profile's files, else "sign-in not
-// readable here".
+// state file beside the pool's other state under its lock file, and Google
+// over the HttpClient given, with no redirect followed. A host other than
+// macOS has no keychain this reads: a Linux workbox reads its sign-in from the
+// profile's files, else "sign-in not readable here". One authority per state
+// file in the process; building it does no I/O.
 import { readableStreamToText, spawn } from "bun"
-import { Context, Effect, FileSystem, Layer, Match, Option, Path, Redacted, Schedule, Schema } from "effect"
+import { Clock, Effect, FileSystem, Match, Option, Path, Redacted, Schedule, Schema } from "effect"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { FetchHttpClient, HttpClient } from "effect/http"
+import { envFileText, managedEnvironment, signInCommand } from "./profile.ts"
 import { type AuthMethod, AuthMethod as AuthMethodSchema, GOOGLE, userAgent } from "./reader.ts"
-import { KeychainRead, type KeychainMode, KeychainMode as KeychainModeSchema, type Places } from "./signin.ts"
-import { make, type Source, type Store } from "./source.ts"
-import { State } from "./state.ts"
+import { KeychainRead, type Places } from "./signin.ts"
+import { make, type Source, type Store, StoreFailed } from "./source.ts"
+import { EMPTY, State } from "./state.ts"
 
 /** How long the keychain read may take: long enough for the owner to answer macOS's dialog once. */
 export const KEYCHAIN_TIMEOUT_MS = 60_000
 
-/** The CLI's profile under `home`. */
-export const defaultProfile = (home: string) => `${home}/.gemini/antigravity-cli`
+/** The managed profile under the pool's state directory `state` (profile.ts): the default; ~/.gemini is never read by default. */
+export const defaultProfile = (state: string) => `${state}/opencode-pool/antigravity/profiles/default`
 
 /** The `security` tool's exit codes it answers by (Security framework: errSecItemNotFound, errSecUserCanceled, errSecInteractionNotAllowed, errSecAuthFailed). */
 const SECURITY_ABSENT = 44
@@ -38,25 +39,45 @@ const keychainOf = (code: number, out: string): KeychainRead =>
     Match.orElse(() => KeychainRead.cases.Failed.make({})),
   )
 
+
+/** Sends SIGTERM to the process group `pgid` this code started (`detached`, so it leads its own group). */
+const killGroup = (pgid: number) =>
+  Effect.try({ try: () => spawn(["/bin/kill", "-TERM", "--", `-${pgid}`], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }), catch: () => "kill failed" }).pipe(
+    Effect.flatMap((killer) => Effect.tryPromise({ try: () => killer.exited, catch: () => "kill failed" })),
+    Effect.ignore,
+  )
+
 /**
  * One read of the CLI's keychain entry on macOS (`security
- * find-generic-password -s gemini -a antigravity -w`), killed past its
- * deadline. What it prints is the secret: it goes into a Redacted at once and
- * nowhere else; what it says on stderr is not read.
+ * find-generic-password -s gemini -a antigravity -w`), in its own process
+ * group, the group killed past its deadline or on interruption. What it
+ * prints is the secret: it goes into a Redacted at once and nowhere else;
+ * what it says on stderr is not read. Any failure, a defect too, is `Failed`.
  */
 export const macKeychain: Effect.Effect<KeychainRead> = Effect.try({
   try: () =>
-    spawn(["/usr/bin/security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }),
+    spawn(["/usr/bin/security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+      detached: true,
+    }),
   catch: () => KeychainRead.cases.Failed.make({}),
 }).pipe(
   Effect.flatMap((child) =>
-    Effect.all({ code: Effect.promise(() => child.exited), out: Effect.promise(() => readableStreamToText(child.stdout)) }, { concurrency: 2 }).pipe(
+    Effect.all(
+      {
+        code: Effect.tryPromise({ try: () => child.exited, catch: () => KeychainRead.cases.Failed.make({}) }),
+        out: Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: () => KeychainRead.cases.Failed.make({}) }),
+      },
+      { concurrency: 2 },
+    ).pipe(
       Effect.map(({ code, out }) => keychainOf(code, out)),
-      Effect.onInterrupt(() => Effect.sync(() => child.kill())),
-      Effect.timeoutOrElse({ duration: KEYCHAIN_TIMEOUT_MS, orElse: () => Effect.succeed(KeychainRead.cases.TimedOut.make({})) }),
+      Effect.onInterrupt(() => killGroup(child.pid)),
+      Effect.timeoutOrElse({ duration: KEYCHAIN_TIMEOUT_MS, orElse: () => Effect.as(killGroup(child.pid), KeychainRead.cases.TimedOut.make({})) }),
     ),
   ),
-  Effect.catch((failure) => Effect.succeed(failure)),
+  Effect.catchCause(() => Effect.succeed(KeychainRead.cases.Failed.make({}))),
 )
 
 /** A host whose keychain this does not read. */
@@ -69,27 +90,34 @@ export const keychainFor = (platform: string): Effect.Effect<KeychainRead> =>
     Match.orElse(() => noKeychain),
   )
 
-/** This host as Antigravity's user agent names it: `darwin` where the macOS `security` tool is, else `linux`; and `uname -m`. */
-export const hostKind = Effect.fn("Antigravity.hostKind")(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const mac = yield* Effect.orElseSucceed(fs.exists("/usr/bin/security"), () => false)
-  const machine = yield* Effect.try({
-    try: () => spawn(["uname", "-m"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }),
-    catch: () => "unknown",
-  }).pipe(
-    Effect.flatMap((child) => Effect.promise(() => readableStreamToText(child.stdout))),
-    Effect.map((text) => Option.getOrElse(Option.liftPredicate(text.trim(), (name) => name !== ""), () => "unknown")),
-    Effect.timeoutOrElse({ duration: 2_000, orElse: () => Effect.succeed("unknown") }),
-    Effect.orElseSucceed(() => "unknown"),
-  )
-  const arch = Match.value(machine).pipe(
+/** What a machine name `uname -m` prints is, as Antigravity's user agent names it. */
+const archOf = (machine: string) =>
+  Match.value(machine).pipe(
     Match.when("x86_64", () => "x64"),
     Match.when("aarch64", () => "arm64"),
     Match.orElse((name) => name),
   )
+
+/**
+ * This host as Antigravity's user agent names it: `darwin` where the macOS
+ * `security` tool is, else `linux`; and `uname -m`. Run only by a read; any
+ * failure, a defect too, is `unknown`.
+ */
+export const hostKind = Effect.fn("Antigravity.hostKind")(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const mac = yield* fs.exists("/usr/bin/security").pipe(Effect.catchCause(() => Effect.succeed(false)))
+  const machine = yield* Effect.try({
+    try: () => spawn(["uname", "-m"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }),
+    catch: () => "unknown",
+  }).pipe(
+    Effect.flatMap((child) => Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: () => "unknown" })),
+    Effect.map((text) => Option.getOrElse(Option.liftPredicate(text.trim(), (name) => name !== ""), () => "unknown")),
+    Effect.timeoutOrElse({ duration: 2_000, orElse: () => Effect.succeed("unknown") }),
+    Effect.catchCause(() => Effect.succeed("unknown")),
+  )
   return Match.value(mac).pipe(
-    Match.when(true, () => ({ platform: "darwin", arch })),
-    Match.orElse(() => ({ platform: "linux", arch })),
+    Match.when(true, () => ({ platform: "darwin", arch: archOf(machine) })),
+    Match.orElse(() => ({ platform: "linux", arch: archOf(machine) })),
   )
 })
 
@@ -99,7 +127,7 @@ export const places = Effect.fn("Antigravity.places")(function* (keychain: Effec
   const read = (path: string) =>
     fs.exists(path).pipe(
       Effect.flatMap((there) => Match.value(there).pipe(Match.when(true, () => Effect.map(fs.readFileString(path), Option.some)), Match.orElse(() => Effect.succeed(Option.none<string>())))),
-      Effect.orElseSucceed(() => Option.none<string>()),
+      Effect.catchCause(() => Effect.succeed(Option.none<string>())),
     )
   return { read, keychain } satisfies Places
 })
@@ -108,23 +136,79 @@ const StateFile = Schema.fromJsonString(State)
 const decodeState = Schema.decodeUnknownOption(StateFile)
 const encodeState = Schema.encodeEffect(StateFile)
 
-/** The state kept in `file`, written whole through a temporary file; one that does not read is a fresh start. */
+/** A lock file this old was left by a process that died holding it: it is taken over. */
+export const LOCK_STALE_MS = 10_000
+/** How long a change waits for the lock: about 5 s, tried every 10 ms. */
+const LOCK_TRIES = 500
+
+class Held extends Schema.TaggedError<Held>()("Held", {}) {}
+
+/**
+ * The state kept in `file`, every change under the lock file `<file>.lock`
+ * (made exclusively; one older than LOCK_STALE_MS is taken over), so every
+ * process on the host changes it one at a time from what is on disk. A save
+ * is whole, through a temporary file. A state file that does not read is a
+ * fresh start. Building it does no I/O.
+ */
 export const fileStore = Effect.fn("Antigravity.fileStore")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
+  const lock = `${file}.lock`
+  const failed = (what: string) => () => new StoreFailed({ what })
   const load = fs.exists(file).pipe(
-    Effect.flatMap((there) => Match.value(there).pipe(Match.when(true, () => Effect.map(fs.readFileString(file), decodeState)), Match.orElse(() => Effect.succeed(Option.none<State>())))),
-    Effect.orElseSucceed(() => Option.none<State>()),
+    Effect.flatMap((there) =>
+      Match.value(there).pipe(
+        Match.when(true, () => Effect.map(fs.readFileString(file), (text) => Option.getOrElse(decodeState(text), () => EMPTY))),
+        Match.orElse(() => Effect.succeed(EMPTY)),
+      ),
+    ),
+    Effect.mapError(failed(`reading ${file}`)),
   )
   const save = (state: State) =>
     Effect.gen(function* () {
       const text = yield* encodeState(state)
       const temporary = `${file}.tmp`
-      yield* fs.makeDirectory(path.dirname(file), { recursive: true })
       yield* fs.writeFileString(temporary, text, { mode: 0o600 })
       yield* fs.rename(temporary, file)
-    }).pipe(Effect.catchCause((cause) => Effect.logWarning("antigravity: the state file could not be written", cause)))
-  return { load, save } satisfies Store
+    }).pipe(Effect.mapError(failed(`writing ${file}`)))
+  /** The lock taken over when it was left behind; else still held. */
+  const stale = Effect.gen(function* () {
+    const info = yield* fs.stat(lock)
+    const now = yield* Clock.currentTimeMillis
+    const age = Option.getOrElse(Option.map(info.mtime, (at) => now - at.getTime()), () => 0)
+    if (age > LOCK_STALE_MS) yield* fs.remove(lock)
+    return yield* new Held()
+  }).pipe(Effect.catchIf((error) => !(error instanceof Held), () => Effect.fail(new Held())))
+  const take = Effect.gen(function* () {
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true })
+    yield* fs.writeFileString(lock, "", { flag: "wx", mode: 0o600 }).pipe(Effect.catchCause(() => stale))
+  }).pipe(Effect.retry({ times: LOCK_TRIES, schedule: Schedule.spaced(10) }), Effect.mapError(failed(`locking ${lock}`)))
+  const release = fs.remove(lock).pipe(Effect.ignore)
+  const transact = <A, R>(step: (state: State) => Effect.Effect<readonly [State, A], never, R>) =>
+    Effect.acquireUseRelease(
+      take,
+      () => load.pipe(Effect.flatMap(step), Effect.flatMap(([next, answer]) => Effect.as(save(next), answer))),
+      () => release,
+    )
+  return { load, transact } satisfies Store
+})
+
+/**
+ * The managed profile `profile` made ready for agy's sign-in, as T3 makes it:
+ * the profile and its `antigravity-acp/` directory, 0700, and beside them the
+ * file of the environment (profile.ts) agy runs with there, 0600 (it holds no
+ * secret); the env file's path and the one line that signs in.
+ */
+export const prepareProfile = Effect.fn("Antigravity.prepareProfile")(function* (profile: string, auth: AuthMethod, ssh: Option.Option<string>) {
+  const fs = yield* FileSystem.FileSystem
+  for (const directory of [profile, `${profile}/antigravity-acp`]) {
+    yield* fs.makeDirectory(directory, { recursive: true })
+    yield* fs.chmod(directory, 0o700)
+  }
+  const envFile = `${profile}.env`
+  yield* fs.writeFileString(envFile, envFileText(managedEnvironment(profile, auth, ssh)), { mode: 0o600 })
+  yield* fs.chmod(envFile, 0o600)
+  return { envFile, signIn: signInCommand(envFile) }
 })
 
 /** Where a host's source reads and keeps its state. */
@@ -132,21 +216,18 @@ export interface LiveConfig {
   readonly profile: string
   readonly stateFile: string
   readonly auth: AuthMethod
-  readonly keychain: KeychainMode
 }
 
 /** The pool's `antigravity` option: `false` reads nothing; else where to read, all defaulted. */
 export const PoolOption = Schema.Union([
   Schema.Literal(false),
   Schema.Struct({
-    /** The CLI's profile; default `~/.gemini/antigravity-cli`. */
+    /** The CLI's profile; default the managed one, `$XDG_STATE_HOME/opencode-pool/antigravity/profiles/default`. */
     profile: Schema.optionalKey(Schema.String),
     /** The state file; default `$XDG_STATE_HOME/opencode-pool/antigravity.json`. */
     stateFile: Schema.optionalKey(Schema.String),
     /** `personal` (the daily host first, the default) or `business` (production first). */
     auth: Schema.optionalKey(AuthMethodSchema),
-    /** `ask` (the default): the keychain only once the owner asked through the tool; `auto`: on the first read. */
-    keychain: Schema.optionalKey(KeychainModeSchema),
   }),
 ])
 export type PoolOption = typeof PoolOption.Type
@@ -154,38 +235,48 @@ export type PoolOption = typeof PoolOption.Type
 /** The state file beside the pool's other state. */
 export const defaultStateFile = () => `${TuiDirs.dirs().state}/opencode-pool/antigravity.json`
 
-/** How often the reader looks whether a read is due; the state's spacing decides whether it reads. */
-const LOOK_EVERY_MS = 60_000
+/**
+ * The source as a host runs it: its files, its keychain, its state file and
+ * Google over the HttpClient given. Building it does no I/O: the host's kind
+ * is worked out by each read.
+ */
+export const liveSource = Effect.fn("Antigravity.liveSource")(function* (config: LiveConfig) {
+  const fs = yield* FileSystem.FileSystem
+  // Worked out at each read (reads are minutes apart at the least), never at build.
+  const host = Effect.provideService(hostKind(), FileSystem.FileSystem, fs)
+  return yield* make({
+    profile: config.profile,
+    places: yield* places(Effect.flatMap(host, (kind) => keychainFor(kind.platform))),
+    store: yield* fileStore(config.stateFile),
+    auth: config.auth,
+    endpoints: GOOGLE,
+    agent: Effect.map(host, (kind) => userAgent(kind.platform, kind.arch)),
+  })
+})
+
+const KEY = Symbol.for("dotfiles.opencode-pool.antigravity.v1")
+const registry: { [key: symbol]: Map<string, Source> } = globalThis
+// The first copy of this module in the process puts the one map in: every
+// plugin instance, and a re-evaluated module graph, share one authority per state file.
+registry[KEY] ??= new Map()
 
 /**
- * The pool's Antigravity source for `option` on this host (its home from tui-dirs),
- * its reader looking every minute in the plugin's scope; none when the option
- * is `false`.
+ * The pool's Antigravity source for `option` on this host (its home from
+ * tui-dirs): one per state file in the process, whatever builds it; none when
+ * the option is `false`. It does no I/O and starts nothing.
  */
 export const poolSource = Effect.fn("Antigravity.poolSource")(function* (option: PoolOption) {
   if (option === false) return Option.none<Source>()
+  const stateFile = Option.getOrElse(Option.fromUndefinedOr(option.stateFile), defaultStateFile)
+  const authorities = Option.getOrElse(Option.fromUndefinedOr(registry[KEY]), () => new Map<string, Source>())
+  const existing = Option.fromUndefinedOr(authorities.get(stateFile))
+  if (Option.isSome(existing)) return existing
   const source = yield* liveSource({
-    profile: Option.getOrElse(Option.fromUndefinedOr(option.profile), () => defaultProfile(TuiDirs.dirs().home)),
-    stateFile: Option.getOrElse(Option.fromUndefinedOr(option.stateFile), defaultStateFile),
+    profile: Option.getOrElse(Option.fromUndefinedOr(option.profile), () => defaultProfile(TuiDirs.dirs().state)),
+    stateFile,
     auth: Option.getOrElse(Option.fromUndefinedOr(option.auth), (): AuthMethod => "personal"),
-    keychain: Option.getOrElse(Option.fromUndefinedOr(option.keychain), (): KeychainMode => "ask"),
   })
-  yield* Effect.forkScoped(source.refresh.pipe(Effect.repeat(Schedule.spaced(LOOK_EVERY_MS))))
+  authorities.set(stateFile, source)
+  registry[KEY] = authorities
   return Option.some(source)
 })
-
-/** The source as a host runs it: its files, its keychain, its state file and Google over fetch, in `scope`. */
-export const liveSource = Effect.fn("Antigravity.liveSource")(function* (config: LiveConfig) {
-  const http = yield* Layer.build(FetchHttpClient.layer)
-  const host = yield* hostKind()
-  return yield* make({
-    profile: config.profile,
-    places: yield* places(keychainFor(host.platform)),
-    store: yield* fileStore(config.stateFile),
-    auth: config.auth,
-    keychain: config.keychain,
-    endpoints: GOOGLE,
-    agent: userAgent(host.platform, host.arch),
-  }).pipe(Effect.provideService(HttpClient.HttpClient, Context.get(http, HttpClient.HttpClient)))
-})
-

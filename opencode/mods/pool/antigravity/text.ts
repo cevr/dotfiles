@@ -18,8 +18,10 @@ export const whyText = (why: Why): string =>
       NoSignIn: () => "no Antigravity sign-in on this host: sign in with agy",
       NotReadableHere: () => "sign-in not readable here",
       SignInExpired: () => "sign-in expired: start an Antigravity turn",
-      KeychainRefused: ({ outcome }) => `the keychain read ${Match.value(outcome).pipe(Match.when("denied", () => "was denied"), Match.when("failed", () => "failed"), Match.orElse(() => "timed out"))}: not tried again until asked (antigravity action read)`,
-      KeychainNotAsked: () => "no sign-in file: the keychain is read only once asked (antigravity action read)",
+      KeychainRefused: ({ outcome }) => `the keychain read ${Match.value(outcome).pipe(Match.when("denied", () => "was denied"), Match.when("failed", () => "failed"), Match.orElse(() => "timed out"))}: tried again only with a new consent (antigravity read, consent)`,
+      NotHeld: () => "sign-in not held: no token file, and the keychain is read only with consent (antigravity read, consent)",
+      NotSignedIn: ({ profile }) => `sign-in not readable: sign in to the managed profile (bun cmd/pool/antigravity-read.ts --profile-env ${profile})`,
+      Contained: ({ reason }) => `the Antigravity reader failed here (${reason})`,
       RequestFailed: ({ why: reason, status }) =>
         `Google's quota read ${Match.value(reason).pipe(
           Match.when("refused", () => "was refused"),
@@ -75,13 +77,24 @@ export const windowText = (span: Span, shown: Shown): string =>
     }),
   )
 
+/** How long ago, in minutes, hours or days. */
+const ageText = (ms: number) => {
+  const minutes = Math.max(0, Math.floor(ms / 60_000))
+  return Match.value(minutes).pipe(
+    Match.when((count) => count < 1, () => "just now"),
+    Match.when((count) => count < 120, (count) => `${count} min ago`),
+    Match.when((count) => count < 48 * 60, (count) => `${Math.floor(count / 60)} h ago`),
+    Match.orElse((count) => `${Math.floor(count / (24 * 60))} days ago`),
+  )
+}
+
 const readLine = (state: State, now: number): string => {
-  const read = Option.map(Option.fromUndefinedOr(state.reading), (reading) => `read ${formatNotificationTime(reading.at)}`)
-  const failed = Option.map(Option.fromUndefinedOr(state.failure), (failure) => `last read ${formatNotificationTime(failure.at)}: ${whyText(failure.why)}`)
+  const read = Option.map(Option.fromUndefinedOr(state.reading), (reading) => `read ${formatNotificationTime(reading.at)} (${ageText(now - reading.at)})`)
+  const failed = Option.map(Option.fromUndefinedOr(state.failure), (failure) => `last attempt ${formatNotificationTime(failure.at)}: ${whyText(failure.why)}`)
   const parts = [...Option.toArray(read), ...Option.toArray(failed)]
   const next = Match.value(state.nextReadAt > now).pipe(
-    Match.when(true, () => `next read ${formatNotificationTime(state.nextReadAt)}`),
-    Match.orElse(() => "next read due now"),
+    Match.when(true, () => `next read possible ${formatNotificationTime(state.nextReadAt)}`),
+    Match.orElse(() => "a read is possible now (antigravity read)"),
   )
   return `  ${parts.join(" · ") || "not read yet"} · ${next}`
 }

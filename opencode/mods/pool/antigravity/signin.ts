@@ -9,7 +9,7 @@
 // error or answer, and is unwrapped only to set a request's header or body.
 import { Effect, Option, Redacted, Result, Schema } from "effect"
 import { Base64, Hex } from "effect/encoding"
-import { keychainAllowed, type KeychainOutcome, type State, Why } from "./state.ts"
+import { Why } from "./state.ts"
 
 /** A sign-in, its secrets redacted: one this can refresh, or a bare access token with its expiry. */
 export const SignIn = Schema.TaggedUnion({
@@ -46,10 +46,6 @@ export interface Places {
   /** One read of the CLI's keychain entry; a read that can put a dialog on the owner's screen. */
   readonly keychain: Effect.Effect<KeychainRead>
 }
-
-/** When the keychain is tried: on the first read (`auto`), or only once the owner asked through the tool (`ask`). */
-export const KeychainMode = Schema.Literals(["auto", "ask"])
-export type KeychainMode = typeof KeychainMode.Type
 
 /** A lookup's outcome: a sign-in or why there is none, and the keychain attempt it made, if it made one. */
 export const Lookup = Schema.TaggedUnion({
@@ -117,7 +113,7 @@ export const tokenFiles = (profile: string) => ({
 const refused = (outcome: "denied" | "failed" | "timed-out") =>
   Lookup.cases.Missing.make({ why: Why.cases.KeychainRefused.make({ outcome }), keychain: outcome })
 
-const fromKeychain = (read: KeychainRead): Lookup =>
+export const fromKeychain = (read: KeychainRead): Lookup =>
   KeychainRead.match(read, {
     Found: ({ secret }) =>
       Option.match(Option.flatMap(decodeGoKeyring(Redacted.value(secret)), (text) => accessOf(text, "keychain")), {
@@ -131,25 +127,10 @@ const fromKeychain = (read: KeychainRead): Lookup =>
     Unsupported: () => Lookup.cases.Missing.make({ why: Why.cases.NotReadableHere.make({}) }),
   })
 
-const lastRefusal = (state: State): Option.Option<"denied" | "failed" | "timed-out"> =>
-  Option.flatMap(Option.fromUndefinedOr(state.keychain), (tried) => {
-    const outcome: KeychainOutcome = tried.outcome
-    if (outcome === "denied" || outcome === "failed" || outcome === "timed-out") return Option.some(outcome)
-    return Option.none()
-  })
-
-/**
- * The sign-in of `profile`: its files first, then the keychain, at most once:
- * after a refusal, a failure or a timeout the keychain is not read again until
- * the owner asks (state.ts `RetryAsked`), and in `ask` mode not before.
- */
-export const lookup = Effect.fn("Antigravity.lookup")(function* (places: Places, profile: string, state: State, mode: KeychainMode) {
+/** The sign-in the profile's token files give, in T3's order: the refreshable `acp_token.json`, then the CLI's token; none when neither reads. */
+export const fromFiles = Effect.fn("Antigravity.fromFiles")(function* (places: Places, profile: string) {
   const files = tokenFiles(profile)
   const acp = Option.flatMap(yield* places.read(files.acp), refreshableOf)
-  if (Option.isSome(acp)) return Lookup.cases.Found.make({ signIn: acp.value })
-  const cli = Option.flatMap(yield* places.read(files.cli), (text) => accessOf(text, "file"))
-  if (Option.isSome(cli)) return Lookup.cases.Found.make({ signIn: cli.value })
-  if (!keychainAllowed(state)) return Lookup.cases.Missing.make({ why: Why.cases.KeychainRefused.make({ outcome: Option.getOrElse(lastRefusal(state), () => "failed") }) })
-  if (mode === "ask" && Option.isNone(Option.fromUndefinedOr(state.askedAt))) return Lookup.cases.Missing.make({ why: Why.cases.KeychainNotAsked.make({}) })
-  return fromKeychain(yield* places.keychain)
+  if (Option.isSome(acp)) return acp
+  return Option.flatMap(yield* places.read(files.cli), (text) => accessOf(text, "file"))
 })

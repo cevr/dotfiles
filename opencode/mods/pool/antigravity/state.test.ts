@@ -90,16 +90,21 @@ interface World {
 
 const read = (random: Random, world: World): World => {
   const windows = generatedWindows(random, world.now)
-  const state = evolve(world.state, Event.cases.Read.make({ at: world.now, windows }))
-  expect(due(state, world.now + READ_EVERY_MS - 1)).toBe(false)
-  expect(due(state, world.now + READ_EVERY_MS)).toBe(true)
+  const id = `read-${world.now}`
+  const floor = world.now + backoffMs(world.state.failures)
+  const state = evolve(evolve(world.state, Event.cases.Attempted.make({ id, at: world.now, keychain: false })), Event.cases.Read.make({ attempt: id, at: world.now, windows }))
+  // The floor runs from the attempt, whoever made it: never under five minutes.
+  expect(due(state, floor - 1)).toBe(false)
+  expect(due(state, floor)).toBe(true)
+  expect(floor - world.now).toBeGreaterThanOrEqual(READ_EVERY_MS)
   return { ...world, state, model: { ...world.model, readAt: Option.some(world.now), windows } }
 }
 
 const fail = (random: Random, world: World): World => {
   const before = world.state.failures
   const why = pick<Why>(random, [Why.cases.SignInExpired.make({}), Why.cases.RequestFailed.make({ why: "rate-limited", status: 429 }), Why.cases.NoQuota.make({})])
-  const state = evolve(world.state, Event.cases.Failed.make({ at: world.now, why }))
+  const id = `fail-${world.now}`
+  const state = evolve(evolve(world.state, Event.cases.Attempted.make({ id, at: world.now, keychain: false })), Event.cases.Failed.make({ attempt: id, at: world.now, why }))
   expect(state.failures).toBe(before + 1)
   expect(state.nextReadAt).toBe(world.now + Math.min(READ_EVERY_MS * 2 ** (before + 1), HOUR))
   expect(state.nextReadAt - world.now).toBeGreaterThanOrEqual(READ_EVERY_MS)
@@ -191,29 +196,45 @@ describe("Antigravity reading store", () => {
     expect(answerAt(limited, START, "gemini")).toEqual(Answer.cases.Limited.make({ until: START + HOUR, by: "limit" }))
     expect(answerAt(limited, START, "claude-gpt")._tag).toBe("Limited")
     expect(answerAt(limited, START + 2 * HOUR, "gemini")).toEqual(Answer.cases.Unmeasured.make({ why: Why.cases.NotRead.make({}), since: START + HOUR }))
-    const room = Event.cases.Read.make({
+    const roomy = Event.cases.Read.make({
+      attempt: "room",
       at: START + 3 * HOUR,
       windows: SPANS.map((span) => ({ group: "gemini", label: "Gemini", span, used: 0.3, resetAt: START + 5 * HOUR })),
     })
-    expect(gemini(evolve(limited, room), START + 3 * HOUR)).toBe("Open")
+    const room = (state: State) => evolve(evolve(state, Event.cases.Attempted.make({ id: "room", at: START + 3 * HOUR, keychain: false })), roomy)
+    expect(gemini(room(limited), START + 3 * HOUR)).toBe("Open")
     const silent = evolve(EMPTY, Event.cases.LimitSeen.make({ limit: { seenAt: START, group: "Gemini" } }))
     expect(gemini(silent, START + 30 * HOUR)).toBe("LimitedResetUnknown")
     expect(answerAt(silent, START, "claude-gpt")._tag).toBe("Unmeasured")
     expect(gemini(evolve(silent, Event.cases.LimitCleared.make({ group: "gemini" })), START)).toBe("Unmeasured")
-    expect(gemini(evolve(silent, room), START + 3 * HOUR)).toBe("Open")
+    expect(gemini(room(silent), START + 3 * HOUR)).toBe("Open")
   })
 
-  test("a keychain refusal stops every later attempt until the owner asks", () => {
-    for (const outcome of ["denied", "failed", "timed-out"] as const) {
-      const refused = evolve(EMPTY, Event.cases.KeychainTried.make({ at: START, outcome }))
-      expect(keychainAllowed(refused)).toBe(false)
-      expect(keychainAllowed(evolve(refused, Event.cases.Failed.make({ at: START + HOUR, why: Why.cases.NoSignIn.make({}) })))).toBe(false)
-      const asked = evolve(refused, Event.cases.RetryAsked.make({ at: START + HOUR }))
-      expect(keychainAllowed(asked)).toBe(true)
-      expect(asked.askedAt).toBe(START + HOUR)
-      expect(due(asked, START + HOUR)).toBe(true)
+  test("one consent buys exactly one keychain attempt, whatever it comes to", () => {
+    for (const outcome of ["read", "absent", "denied", "failed", "timed-out"] as const) {
+      expect(keychainAllowed(EMPTY)).toBe(false)
+      const consented = evolve(EMPTY, Event.cases.ConsentGiven.make({ at: START }))
+      expect(keychainAllowed(consented)).toBe(true)
+      const attempted = evolve(consented, Event.cases.Attempted.make({ id: "a", at: START, keychain: true }))
+      expect(keychainAllowed(attempted)).toBe(false)
+      expect(attempted.keychain).toEqual({ at: START, outcome: "started" })
+      const answered = evolve(attempted, Event.cases.KeychainTried.make({ at: START + MINUTE, outcome }))
+      expect(keychainAllowed(answered)).toBe(false)
+      expect(keychainAllowed(evolve(answered, Event.cases.Read.make({ attempt: "a", at: START + MINUTE, windows: [] })))).toBe(false)
+      expect(keychainAllowed(evolve(answered, Event.cases.ConsentGiven.make({ at: START + HOUR })))).toBe(true)
     }
-    for (const outcome of ["read", "absent"] as const) expect(keychainAllowed(evolve(EMPTY, Event.cases.KeychainTried.make({ at: START, outcome })))).toBe(true)
+    // A consent is for one read: an attempt from a token file drops it unused.
+    const consented = evolve(EMPTY, Event.cases.ConsentGiven.make({ at: START }))
+    expect(keychainAllowed(evolve(consented, Event.cases.Attempted.make({ id: "f", at: START, keychain: false })))).toBe(false)
+  })
+
+  test("a result is kept only while its attempt is the state's: an older one, another process's, changes nothing", () => {
+    const first = evolve(EMPTY, Event.cases.Attempted.make({ id: "first", at: START, keychain: false }))
+    const second = evolve(first, Event.cases.Attempted.make({ id: "second", at: START + 10 * MINUTE, keychain: false }))
+    const late = evolve(second, Event.cases.Read.make({ attempt: "first", at: START + 11 * MINUTE, windows: [] }))
+    expect(late).toEqual(second)
+    expect(evolve(second, Event.cases.Failed.make({ attempt: "first", at: START + 11 * MINUTE, why: Why.cases.NoQuota.make({}) }))).toEqual(second)
+    expect(evolve(second, Event.cases.Read.make({ attempt: "second", at: START + 11 * MINUTE, windows: [] })).reading).toEqual({ at: START + 11 * MINUTE, windows: [] })
   })
 
   test("the backoff doubles from five minutes to an hour", () => {

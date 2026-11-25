@@ -12,18 +12,21 @@ export const AntigravityToolInput = toolInput(
   Schema.Struct({
     action: Schema.Literals(["status", "open", "limit", "clear", "read"]).annotate({
       description:
-        "status: the windows as last read; open: is each group open now, else when; limit: record a limit a pane printed (text); clear: a pane on the group ran a turn since its limit (forget the limit); read: read now with the keychain allowed, only when the owner asked (macOS may show its keychain dialog once)",
+        "status: the windows as last read; open: is each group open now, else when; limit: record a limit a pane printed (text); clear: a pane on the group ran a turn since its limit (forget the limit); read: read Google now (at most once per 5 minutes after the last attempt; else the stored reading and when the next read is possible); with consent, also the one keychain attempt",
     }),
     text: Schema.optionalKey(Schema.String).annotate({ description: "For limit: the pane's text, e.g. \"Individual quota reached. … Resets in 1h8m38s.\"" }),
     group: Schema.optionalKey(Schema.String).annotate({ description: "A quota group (gemini, claude-gpt, or its label): open answers only it; limit records it on only it. Default every group." }),
+    consent: Schema.optionalKey(Schema.Boolean).annotate({
+      description: "For read, a business sign-in only: the owner consented to one keychain attempt (macOS may show its dialog once). Set it only when the owner asked; one consent buys exactly one attempt. A personal sign-in never reads the keychain.",
+    }),
   }),
 )
 export type AntigravityToolInput = typeof AntigravityToolInput.Type
 
 export const ANTIGRAVITY_DESCRIPTION = [
-  "Antigravity's (agy's) quota on this host, as the pool reads it from Google at most every 5 minutes: each quota group (Gemini; the shared Claude & GPT quota) with its 5-hour and weekly windows' use and reset, or why it is unknown.",
+  "Antigravity's (agy's) quota on this host, as the pool last read it from Google (only when `read` is called, at most once per 5 minutes): each quota group (Gemini; the shared Claude & GPT quota) with its 5-hour and weekly windows' use and reset, or why it is unknown.",
   "Before starting agy panes, ask `open`: a group answers open (measured: a reading with room), limited until a time, limited with its reset unknown, usable but unmeasured (no reading and no limit seen), or unknown with why (an unknown window is never open). When an agy pane prints a quota limit (\"Individual quota reached … Resets in 1h8m38s.\"), record it with `limit`, its text and the pane's group (no group: every group): the group then reads limited until that reset. Once a pane on a group with a limit of unknown reset runs a turn again, call `clear` for that group.",
-  "`read` reads now and allows the keychain: call it only when the owner asked, since macOS may show its keychain dialog once; a refusal is kept and not retried until `read` is called again.",
+  "Call `read` before starting or routing an agy pane: it reads Google with the managed profile's token files (a personal sign-in is read from them alone: with none, sign in there with `bun cmd/pool/antigravity-read.ts --profile-env`), or a sign-in this host still holds. For a business sign-in, `consent: true`, given only when the owner asked, may make the one keychain attempt that consent buys (macOS may show its dialog once); after that attempt, a restart, an expired token or a refusal, the keychain is not touched until a new consent.",
 ].join("\n\n")
 
 const OFF = "Antigravity's quota is not read on this host: the pool's antigravity option is off."
@@ -60,9 +63,8 @@ export const answer = Effect.fn("Antigravity.tool")(function* (source: Option.Op
     ),
     Match.orElse(() =>
       Effect.gen(function* () {
-        yield* agy.retry
-        yield* agy.refresh
-        return (yield* agy.lines).join("\n")
+        const read = yield* agy.read(Option.getOrElse(Option.fromUndefinedOr(input.consent), () => false))
+        return [read.note, ...read.lines].join("\n")
       }),
     ),
   )

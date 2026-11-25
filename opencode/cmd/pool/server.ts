@@ -135,6 +135,7 @@ import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, type Scope, Stream } from "effect"
 import * as BunServices from "@effect/platform-bun/BunServices"
+import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
@@ -143,7 +144,7 @@ import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
 import * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
 import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
-import * as AgyTool from "@dotfiles/opencode-pool/antigravity/tool"
+import * as AgyWiring from "@dotfiles/opencode-pool/antigravity/wiring"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
 import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -338,7 +339,8 @@ export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCreden
 
 /**
  * Antigravity's quota source for the `antigravity` option (`@dotfiles/opencode-pool/antigravity/live`):
- * in OpenCode, this host's profile, keychain (only once the owner asked) and Google; none in a
+ * in OpenCode, one authority per state file in the process, built with no I/O, which reads only when asked
+ * (the keychain only with a consent, once); none in a
  * test's pool, so no test reads a real profile or keychain.
  */
 export type AntigravityRoot = (option: AgyLive.PoolOption) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope>
@@ -492,8 +494,9 @@ export const make = (
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-      // Antigravity's quota: read in the background, answered from what was last read; no send waits on it.
-      const agy = yield* antigravity(options.antigravity)
+      // Antigravity's quota: built with no I/O, read only when asked; its rows come from what was stored, and no
+      // failure of its code reaches the pool (AgyWiring is the one boundary).
+      const agy = AgyWiring.wire(yield* antigravity(options.antigravity).pipe(Effect.catchCause(() => Effect.succeed(Option.none<AgySource.Source>()))))
 
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
@@ -834,11 +837,6 @@ export const make = (
         ),
       )
 
-      /** Antigravity's rows as last read: every row in a status, none in another action or with no source. */
-      const agyLines = Option.match(agy, { onNone: () => Effect.succeed<ReadonlyArray<string>>([]), onSome: (source) => source.lines })
-      const agyStatus = (action: string) =>
-        Option.match(Option.liftPredicate(action, (named) => named === "status"), { onNone: () => Effect.succeed<ReadonlyArray<string>>([]), onSome: () => agyLines })
-
       // The owner's session starts, reads, ends or plans a push; the calling session scopes one that names `session`.
       yield* ctx.tool.transform((editor) => {
         editor.add({
@@ -850,7 +848,7 @@ export const make = (
           execute: (input, context) =>
             withPool((pool) => pool.push({ ...input, sessionID: context.sessionID })).pipe(
               // A status names Antigravity's quota too, as last read.
-              Effect.flatMap((answer) => Effect.map(agyStatus(input.action), (lines) => ({ ...answer, text: [answer.text, ...lines].join("\n") }))),
+              Effect.flatMap((answer) => Effect.map(agy.pushText(input.action, answer.text), (text) => ({ ...answer, text }))),
               Effect.flatMap((answer) =>
                 answer.ok
                   ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
@@ -858,13 +856,7 @@ export const make = (
               ),
             ),
         })
-        editor.add({
-          name: "antigravity",
-          description: AgyTool.ANTIGRAVITY_DESCRIPTION,
-          input: AgyTool.AntigravityToolInput,
-          options: { codemode: false },
-          execute: (input) => Effect.map(AgyTool.answer(agy, input), (text) => ({ content: [{ type: "text" as const, text }] })),
-        })
+        editor.add(agy.tool)
       })
 
       // The pool's own RPC has no error to answer with: a pool whose logins
@@ -972,7 +964,7 @@ export const make = (
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
               onSome: (request) => withPool((pool) => pool.push(request)),
             }),
-          antigravity: () => Effect.map(agyLines, (lines) => ({ lines })),
+          antigravity: agy.rpc,
         })
         .pipe(Effect.orDie)
     }),
@@ -1001,5 +993,5 @@ const sessionOf = (input: unknown) =>
     : undefined
 
 export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, (option) =>
-  AgyLive.poolSource(option).pipe(Effect.provide(BunServices.layer)),
+  AgyLive.poolSource(option).pipe(Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))),
 )

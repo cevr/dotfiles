@@ -14,8 +14,9 @@ const HOUR = 3_600_000
 const GROUPS = ["gemini", "claude-gpt"]
 
 const reading = evolve(
-  EMPTY,
+  evolve(EMPTY, Event.cases.Attempted.make({ id: "r", at: NOW, keychain: false })),
   Event.cases.Read.make({
+    attempt: "r",
     at: NOW,
     windows: [
       { group: "gemini", label: "Gemini", span: "5h", used: 0.2, resetAt: NOW + HOUR },
@@ -28,7 +29,6 @@ const reading = evolve(
 
 /** A source over `state` at NOW: reads change nothing, a limit is recorded as the real source records it. */
 const fake = (state: Ref.Ref<State>, asked: Ref.Ref<number>): Source => ({
-  state: Ref.get(state),
   lines: Effect.map(Ref.get(state), (now) => statusLines(now, NOW)),
   open: (group) =>
     Effect.map(Ref.get(state), (now) =>
@@ -54,8 +54,11 @@ const fake = (state: Ref.Ref<State>, asked: Ref.Ref<number>): Source => ({
       return limit
     }),
   clear: () => Effect.void,
-  refresh: Effect.void,
-  retry: Ref.update(asked, (count) => count + 1),
+  read: (consent) =>
+    Effect.gen(function* () {
+      yield* Ref.update(asked, (count) => count + Number(consent))
+      return { note: "Read now.", lines: statusLines(yield* Ref.get(state), NOW) }
+    }),
 })
 
 const withSource = <A,>(body: (source: Source, asked: Ref.Ref<number>) => Effect.Effect<A>) =>
@@ -87,10 +90,12 @@ describe("antigravity tool", () => {
     ),
   )
 
-  it.effect("read asks the source to allow the keychain once, then shows the rows", () =>
+  it.effect("read passes the consent only when given, then shows the note and the rows", () =>
     withSource((source, asked) =>
       Effect.gen(function* () {
         const text = yield* answer(Option.some(source), { action: "read" })
+        expect(yield* Ref.get(asked)).toBe(0)
+        expect(yield* answer(Option.some(source), { action: "read", consent: true })).toStartWith("Read now.")
         expect(yield* Ref.get(asked)).toBe(1)
         expect(text).toContain("Gemini")
       }),
