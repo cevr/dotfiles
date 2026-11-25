@@ -848,6 +848,8 @@ describe("the options", () => {
       expect(yield* plugin.request()).toBe("cred-a")
       const alias = yield* start({ ...installed, paced: { ...installed.paced, sim: "anthropic" } })
       expect(yield* alias.pace("sim")).toMatchObject({ ok: true, tracking: "not-tracked-no-pool-login" })
+      const reserve = yield* Effect.flatMap(registered(alias.rpc, "dotfiles-opencode.pool"), (handlers) => registered(handlers, "reserveLaunch"))
+      expect(yield* reserve({ providerID: "sim", model: "fixture", sessionID: "parent", launchID: "alias-one" })).toMatchObject({ ok: true, measured: false, tracking: "not-tracked-no-pool-login" })
       const placedAlias = yield* start({ ...installed, providers: { ...installed.providers, sim: "anthropic" } })
       expect(yield* placedAlias.pace("sim")).toMatchObject({ ok: true, tracking: "not-tracked-no-pool-login" })
     })))
@@ -1846,7 +1848,7 @@ describe("the fleet", () => {
         const pace = yield* plugin.pace("anthropic")
         expect(pace).toMatchObject({ ok: false, measured: true })
         expect(pace.reason).toBe(
-          "the pool's weekly pace is over: its 2 accounts' weeks are at 45.0% used of 100% on average, plus 15.0% of the week counted for 3 agents started in the last 10 min; " +
+          "the pool's weekly pace is over: its 2 accounts' weeks are at 45.0% used of 100% on average, plus 15.0% of the week counted for 3 agents started in the last 10 min, plus 5.0% of the week reserved for the next agent; " +
             "the spend-evenly line averages 54.5% used of 100% now, and the start holds past it",
         )
         // It holds until the oldest start settles, sooner than the week catches up.
@@ -1864,8 +1866,8 @@ describe("the fleet", () => {
       Effect.gen(function* () {
         const state = world()
         const now = stamp()
-        state.readings.set("cred-a", week(0.5, now))
-        state.readings.set("cred-b", week(0.5, now))
+        state.readings.set("cred-a", week(0.49, now))
+        state.readings.set("cred-b", week(0.49, now))
         const plugin = yield* start({ sweepMinutes: 0, fleet: { host: "mac", startCost: 0.1 } }, state)
         expect(yield* plugin.pace("anthropic")).toMatchObject({ ok: true })
         expect(yield* plugin.started({ providerID: "anthropic" })).toEqual({})
@@ -1879,15 +1881,16 @@ describe("the fleet", () => {
         expect(report.starts.map((start) => start.providerID).sort()).toEqual(["anthropic", "openai"])
         expect(report).toEqual({
           host: "mac",
+          launchProtocol: 1,
           at: expect.any(Number),
           starts: expect.arrayContaining([
-            { providerID: "anthropic", at: expect.any(Number) },
-            { providerID: "openai", at: expect.any(Number) },
+            { providerID: "anthropic", cost: 0.1, at: expect.any(Number) },
+            { providerID: "openai", cost: 0.1, at: expect.any(Number) },
           ]),
           busy: ["anthropic"],
           readings: [
-            { pool: "anthropic", credentialID: "cred-a", reading: week(0.5, now) },
-            { pool: "anthropic", credentialID: "cred-b", reading: week(0.5, now) },
+            { pool: "anthropic", credentialID: "cred-a", reading: week(0.49, now) },
+            { pool: "anthropic", credentialID: "cred-b", reading: week(0.49, now) },
           ],
           // No step has counted yet: the limit tally tells the peer of no tokens.
           limits: { since: expect.any(Number), rows: [] },
@@ -1926,7 +1929,7 @@ describe("the fleet", () => {
         expect((yield* home.fleet).peers).toEqual([{ name: "workbox", host: "bite-cristian", seenAt: expect.any(Number), starts: 0 }])
         yield* project.started({ providerID: "anthropic" })
         expect((yield* home.fleet).starts).toBe(1)
-        expect((yield* home.report).starts).toEqual([{ providerID: "anthropic", at: expect.any(Number) }])
+        expect((yield* home.report).starts).toEqual([{ providerID: "anthropic", cost: 0.1, at: expect.any(Number) }])
         expect((yield* home.pace("anthropic")).reason).toContain("plus 5.0% of the week counted for 1 agent started in the last 10 min")
       }),
     ))
@@ -2043,7 +2046,7 @@ describe("resets on the live adapters", () => {
     const fake = startFakeChatGPT({ beforeConsumeResponse: () => reply.promise })
     const now = stamp()
     // The credit ends before the week resets: not one to keep in hand.
-    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 40, 2 * DAY))
+    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 100, 2 * DAY))
     try {
       await scenario(
         Effect.gen(function* () {
@@ -2102,7 +2105,7 @@ describe("resets on the live adapters", () => {
         const told = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
         expect(state.owner.asked).toHaveLength(1)
         expect(told).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Pool reset claimed", options: [{ label: "OK" }] })
-        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, ")
+        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (the account reached its limit: 5h 100% used, 3 agents running, 1 start held; refill the measured limit)")
         expect(told.question).toContain("1 reset left this week")
         const resets = yield* plugin.resets
         expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
@@ -2111,7 +2114,7 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
-  test("a held start with nothing else running still counts: its only account spent, the grant is claimed for the forecast, and nothing asked", () =>
+  test("a held start with nothing else running still counts: its only account spent, the grant refills the measured limit, and nothing asked", () =>
     scenario(
       Effect.gen(function* () {
         const now = stamp()

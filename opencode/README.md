@@ -1532,24 +1532,15 @@ owner approved every reset in hand ahead of time (2026-11-15), so it never
 asks whether to claim one. One pure rule decides (`claim-rule.ts`
 `decideClaim`), on each review of a pool with fresh readings (`resets.ts`).
 
-Demand is a forecast of what runs now (2026-11-15: a start is almost never
-held any more). Each account's burn per window is measured over its readings
-of the last two hours in one window period (`burn.ts`, kept in memory; a
-restart, or a spent window, falls back to the period's average, and a
-forecast on an average it lacks a measure for says so: `, burn the window's
-average (none measured yet, as after a restart)`). The pool's burn on a
-window is its open accounts' (with none open, the rate it spent the others
-at), a start held adding its share of the agents running across the fleet.
-The agents running are the sessions busy now (from a step's start until the
-session goes idle; one not heard of for an hour lost its idle event) on this
-host and on each peer that answered in the last 10 minutes (its report's
-`busy`), however long ago they started: a run of hours counts as long as it
-works. That burn, run against the room left on the accounts not spent, says
-when the pool runs out, and the pool's first natural reset says whether that
-matters. With no agent running and no start held there is no forecast. The
-readings decide which windows exist: the 5-hour one is optional (on
-2026-11-15 four of the seven Claude logins read none), and the forecast
-stands on the weekly window and Fable's own week alone.
+Each account owns its weekly cadence and is paced toward 99% use before its
+reset, with five points of launch leeway. The optional 5-hour limit and
+Fable's separate weekly limit still bind. Fresh, approved Anthropic credits
+add their known capacity to the pacing target; every usable count contributes.
+An expiry also moves the exhaustion target to six hours before that credit
+expires. Scheduling accelerates existing quota; it cannot bypass a quota or
+count an unobserved refund. Stale stock or model shares add no capacity.
+OpenAI credits add no projected weekly capacity because they restart the week.
+Burn forecasts remain advisory and do not authorize an ordinary redemption.
 
 Each usage window, the 5-hour and the weekly one on either provider, is in
 one of three states (`mods/pool/quota.ts` `WindowReading`):
@@ -1577,34 +1568,27 @@ A window that goes from reported to absent ends its hold at that read; one
 reported again binds at that read. Windows the pool does not know are shown,
 never binding; a refusal (a 429) holds whatever the readings say.
 
-Capacity is taken in this order:
+Redemption follows these rules:
 
-1. A reset about to expire unused, soonest expiry first. One that expires
-   within a day is just used, on anything it gives back: at once on a spent
-   window, else at its last call (6 hours before it expires, more than one
-   5-hour period) on the window it gives back most of. One that expires
-   later but before that window resets by itself is used once the window is
-   spent and the work would use it.
-2. A fresh account: while the forecast keeps room on the pool's accounts to
-   its first natural reset, the work goes there and no other reset is spent.
-3. Only when the pool is forecast to run out before that reset: a reset on
-   the most-used account near its limit (85% used, or its own run-out within
-   an hour), that frees the account (no other spent window still holds it),
-   when the work would use at least half of what it gives back before the
-   window resets by itself: the account whose week is freshest on a tie.
+1. Expiry first: within the last day, redeem on measured exhaustion or at the
+   six-hour last call, for any positive restoration, soonest expiry first.
+2. Otherwise, with running or held work, refill an exhausted account if the
+   reset frees it. Another fresh account or a slow burn does not veto it.
+   Shared weekly exhaustion uses the 99% safety stop; a model's own quota
+   uses 100%. Anthropic keeps its weekly deadline. A Fable reset clears its
+   own quota and subtracts its reported shared contribution, never a fixed half.
+3. OpenAI resets require weekly exhaustion, even if the 5-hour limit is spent;
+   redeem promptly with active or held work and pace against the restarted week.
+   Both providers wait if the natural weekly reset is within 30 minutes.
 
-No claim lands inside 30 minutes of the window's own reset, nor a week-long
-window's under a day before it resets (but in a reset's last day), and an
-account takes one claim per window period, each judged again right before
-it is sent. A pool weighed with the forecast running out, or a start held,
-and no claim logs the reason for each no (`pool resets: no claim on <pool>:
-…`), only when it changes. After a claim the owner is told once, in the
-waiting session's tray, in one clause: `Claimed the weekly reset on
-<account>: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z
-(the pool runs out before its reset: 7 agents running on 2 hosts, weekly
-88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this
-week; next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and
-asks nothing. A question an older pool left open is withdrawn.
+One claim runs at a time per account. After success, another claim in the
+same cadence needs fresh usage and a new observed inventory generation.
+Unchanged stock and retries keep the same request identity. The send rechecks
+the rule against the provider's fresh reading under the fleet lease.
+After redemption the owner gets one notice with the actual before/after
+usage and resets remaining; it asks nothing. A pending observation never
+supplies refund room or authorizes another claim. A question an older pool
+left open is withdrawn.
 
 `resets: { auto: false }` claims nothing on its own; `resets: false` works
 none. `pool_push` still caps or shapes spending: a push's approved resets
@@ -1613,7 +1597,8 @@ only once every fleet peer granted the provider's lease; while a peer cannot
 be reached it is recorded unsent (`not sent: no agreement, <peer>
 unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
 its properties over generated weeks of steady burn, and against the same
-weeks with no reset spent.
+weeks with no reset spent. Quint models and trace replay cover admission and
+caller-ready reset decisions; `verify-pool-pace` documents their exact bounds.
 
 ### Antigravity quota
 
@@ -4269,10 +4254,20 @@ To see what admitted a start, read its line in `~/.cache/orchestrate/opencode-ag
 The shared Claude `budget.ts` scans `~/.claude/projects` transcripts, so it
 cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same
-accounts. It holds new starts when pooled weekly use exceeds a 99% even
-weekly allowance plus five percentage points of leeway, or every available
-account is at a hold line: its 5-hour window at 90% used of 100%, or its
-week at 99% used of 100%.
+accounts. Each usable account follows its own weekly cycle: a 99% even
+weekly allowance plus five percentage points of leeway. The pace pools only
+positive room on accounts that can serve the requested model now; an
+exhausted, refused, or ahead-of-pace account cannot cancel another account's
+room. With one usable account, admission is exactly that account's pace.
+Ordinary requests go only to accounts within their own line, including when
+moving a cached session. A 5-hour window at 90% used of 100%, or a week at
+99% used of 100%, still holds that account. Fleet starts not yet reflected
+in the readings count once against the usable room.
+
+`bun scripts/verify-pool-pace.ts` checks this rule with Quint 0.34.0 and
+Apalache, rejects four broken policies, and replays generated snapshots
+against the TypeScript admission function. The model's bounds and its
+source coverage are in `.claude/skills/verify-pool-pace/SKILL.md`.
 
 Every usage figure the owner or an agent reads (the pace's hold reasons and
 latches, the reset claim notices and claim log, `pool_push` plan and status,

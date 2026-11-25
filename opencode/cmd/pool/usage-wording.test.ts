@@ -53,7 +53,7 @@ const weekOf = (used: number, burn: number) => {
   const situation = { now, held: 0, running: 7, hosts: 2, accounts: [{ credentialID: "a", windows: [{ name: "7d", used, resetAt, burn }], freeAt: Option.none() }], settling: false, pushed: false }
   return decideClaim(situation, [option])
 }
-const chosen = weekOf(0.88, 0.144)
+const chosen = weekOf(1, 0.001)
 const weighed = weekOf(0.5, 0.005)
 
 const table: ReadonlyArray<readonly [string, string]> = [
@@ -90,17 +90,17 @@ const table: ReadonlyArray<readonly [string, string]> = [
     toldText({
       kind: "weekly",
       label: "a",
-      buys: "weekly 88% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST",
+      buys: "weekly 100% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST",
       reason: ClaimVerdict.$match(chosen, { Claim: ({ step, reason }) => `${STEP_TEXT[step]}: ${reason}`, NoClaim: () => "" }),
       left: 1,
       nextExpires: now + 30 * DAY,
     }),
-    "Claimed the weekly reset on a: weekly 88% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST (the pool runs out before its reset: 7 agents running on 2 hosts, weekly 88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this week; next expires Dec 15, 2026, 7:00:00 AM EST.",
+    "Claimed the weekly reset on a: weekly 100% used of 100% → 0% used, next reset Nov 18, 2026, 7:00:00 AM EST (the account reached its limit: weekly 100% used, 7 agents running, 0 starts held; refill the measured limit). 1 reset left this week; next expires Dec 15, 2026, 7:00:00 AM EST.",
   ],
   [toldText({ kind: "weekly", label: "a", buys: fiveHourReset, left: 0 }), "Claimed the weekly reset on a: 5h 100% used of 100% → 0% used. No resets left this week."],
   [
     ClaimVerdict.$match(weighed, { Claim: () => "", NoClaim: ({ reasons }) => reasons.join("; ") }),
-    "a: 7 agents running on 2 hosts, weekly 50% used, forecast 100% in 4.2 days, reset in 3.0 days; the pool keeps room until its first reset",
+    "a: weekly at 50% used; wait for measured exhaustion",
   ],
   [
     forecastText({ pool: "anthropic", burn: 0.0085, inHand: 2, wasted: [{ pool: "anthropic", label: "a", kind: "weekly", spare: 0.99, expiresAt: now + 6 * DAY }] }) ?? "",

@@ -1,24 +1,8 @@
-// Rate-limit resets: the pool spends them itself, under a standing owner
-// approval. Every reset in hand may be claimed, as needed, and none is ever
-// asked about: when a claim pays is one pure rule (claim-rule.ts
-// `decideClaim`), and after a claim the owner is told once, in their terms
-// (`claimNotice`). A Codex reset credit restarts the account's whole week, so
-// the pool claims one when every Codex account is held by a spent window and
-// a start waits (`codexDue`). A push (push.ts) still caps or shapes what is
-// spent for the work it covers.
-//
-// Each reset has a kind (quota.ts `ResetKind`) and gives back windows
-// (`effectOf`): a Fable reset empties Fable's own week and takes Fable's part
-// of the weekly use off the weekly window, whose reset stays. Capacity is
-// taken in the rule's order: a reset about to expire unused first (one that
-// expires within a day is just used, timed onto a spent window), then a fresh
-// account (no claim while the forecast keeps room to the pool's first natural
-// reset), then a reset not about to expire, when the forecast of the work on
-// the pool (its burn, burn.ts; the agents running across the fleet; any start
-// held) runs it out before that reset, on the most-used account near its
-// limit, when the work would spend at least half of what it gives back before
-// the window resets by itself. Never for a window that resets by itself soon
-// anyway.
+// Automatic usage resets under standing owner approval: redeem and notify.
+// Measured exhaustion with work to do authorizes an ordinary refill; expiring
+// credits get first choice. Anthropic preserves the weekly deadline, Codex
+// restarts it. Fable clears its own quota and subtracts only its reported
+// contribution from the shared week. See claim-rule.ts for exact boundaries.
 //
 // Spending is guarded at three levels:
 // - Here, the decision: a claim rests only on the account's fields read
@@ -27,8 +11,8 @@
 //   account is its credential, whichever pool lists it; it takes one claim at
 //   a time, and nothing more is claimed on it until a reading newer than the
 //   claim shows what it did (`settling`). A claim is keyed by account, window
-//   and period (`expiringKey`), not credit or pool, so a window period takes
-//   one. `Review.auto: false` (the owner's kill switch) claims nothing on its
+//   and period (`expiringKey`), with a fresh inventory generation for each
+//   subsequent redemption; unchanged stock and retries retain their identity. `Review.auto: false` (the owner's kill switch) claims nothing on its
 //   own; a push's approved resets still go.
 // - The model, the send: one claim at a time per provider on the host, each
 //   judged again on a reading taken right before it (`staleReason`): the
@@ -52,11 +36,11 @@
 //
 // `Review` is the decision: it reads every pool's accounts as the pool holds
 // them now and records what is due. The model (model.ts) carries it out.
-import { Array as Arr, Effect, Match, Option, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Result, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
-import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
+import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
@@ -132,7 +116,8 @@ export const retryable = (outcome: ClaimOutcome): boolean =>
   outcome === "cooldown" || outcome === "rate-limited" || outcome === "unconfirmed" || outcome === "failed"
 
 /**
- * Why a reset is worked: the forecast runs the pool out before its reset, a
+ * Why a reset is worked: measured exhaustion (`forecast`, its persisted
+ * legacy name), a
  * reset about to expire unused, or a push the owner approved spends one of
  * its resets on a start held for lack of quota (push.ts). `held` (held work
  * no fresh account could take) and `offer` are older pools', read back only.
@@ -489,8 +474,8 @@ export const claimRequestID = (provider: ResetProvider, account: AccountStatus, 
   const kind = kindOf(provider, credit)
   const windowOf = (name: string) => account.reading?.windows.find((window) => window.name === name && accountWide(window))?.resetAt
   const period = (kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d") ?? credit.expiresAt ?? 0
-  const left = usableCredits(account, now)
-    .filter((item) => kindOf(provider, item) === kind)
+  const left = Option.getOrElse(Option.fromUndefinedOr(account.reading?.resets?.credits), () => [])
+    .filter((item) => inHand(item, now) && kindOf(provider, item) === kind)
     .reduce((total, item) => total + item.count, 0)
   return requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${Math.floor(period / KEY_BUCKET_MS)}:${left}`)
 }
@@ -914,7 +899,10 @@ const sureRestored = (give: Giveback): number =>
 const judgedGive = (weighedGives: ReadonlyArray<Giveback>, held: boolean, blocking: ReadonlyArray<QuotaWindow>, now: number): Option.Option<Giveback> => {
   const open = weighedGives.filter((give) => Option.exists(Option.fromUndefinedOr(give.resetAt), (at) => at > now))
   const most = (gives: ReadonlyArray<Giveback>) => Arr.head(gives.toSorted((left, right) => restoredOf(right) - restoredOf(left) || right.from - left.from))
-  if (!held) return most(open)
+  if (!held) {
+    const exhausted = open.filter((give) => restoredOf(give) > 0 && give.from >= Match.value(give.window).pipe(Match.when("7d", () => 0.99), Match.orElse(() => 1)))
+    return Option.orElse(most(exhausted), () => most(open))
+  }
   const relieving = open.filter((give) => restoredOf(give) > 0 && blocking.some((window) => window.name === give.window))
   if (relieving.length > 0) return most(relieving)
   return most(open)
@@ -957,7 +945,13 @@ const candidatesOf = (
       const best = Option.getOrUndefined(judgedGive(gives, held, blocking, now))
       if (best?.resetAt === undefined) return []
       const key = expiringKey(view.provider, account.credentialID, best.window, best.resetAt)
-      if (state.resets[key] !== undefined) return []
+      const requestID = claimRequestID(view.provider, account, credit, now)
+      if (state.claims.some((claim) => claim.requestID === requestID && (claim.outcome === "reset" || claim.outcome === "already-redeemed"))) return []
+      // A lower observed credit count identifies a subsequent redemption in
+      // this same cadence; a replay retains its original request and key.
+      const previous = Option.filter(Option.fromUndefinedOr(state.resets[key]), (previous) => previous.requestID !== requestID)
+      const generation = Option.match(previous, { onNone: () => key, onSome: () => `${key}:${requestID}` })
+      if (state.resets[generation] !== undefined) return []
       const length = windowMs(best.window) ?? LONG_WINDOW_MS
       const judged = (account.reading?.windows ?? []).find((window) => window.name === best.window)
       const option: ClaimOption = {
@@ -975,9 +969,10 @@ const candidatesOf = (
         frees: blocking.every((held) => !stillBlocks(held.name, gives.find((give) => give.window === held.name)?.to ?? held.utilization)),
         weekUsed: week?.utilization ?? 0,
         weekResetAt: Option.fromUndefinedOr(week?.resetAt),
+        preservesWeekly: view.provider === "claude",
       }
       // The owner reads what it is estimated to give back, with the estimate's range.
-      return [{ option, account, credit, key, gives: estimated }]
+      return [{ option, account, credit, key: generation, gives: estimated }]
     })
   })
 
@@ -1078,35 +1073,6 @@ export const sparesOf = (
 }
 
 /**
- * The spare an account's line is raised by this week: the best reset in hand,
- * or, when more of them expire before they can be spent one per week, every
- * one of those. Taken soonest to expire first, one per week from this one
- * (the next weeks begin at the weekly reset, then every 7 days); a reset that
- * expires before its week begins must go this week too, or it is lost.
- */
-export const spareThisWeek = (
-  provider: ResetProvider,
-  account: AccountStatus,
-  weekResetAt: number,
-  now: number,
-  ratios: Readonly<Record<string, Ratio>> = {},
-): number => {
-  const spares = sparesOf(provider, account, now, ratios)
-  let slot = 0
-  let due = 0
-  for (const item of spares) {
-    if (slot === 0) {
-      due += item.spare
-      slot = 1
-      continue
-    }
-    if ((item.expiresAt ?? Number.POSITIVE_INFINITY) <= weekResetAt + (slot - 1) * 7 * DAY) due += item.spare
-    else slot += 1
-  }
-  return Math.max(0, due, ...spares.map((item) => item.spare))
-}
-
-/**
  * The week's use a claim gave back, as its own readings observed it: the
  * account-wide week read right before the send and read again after the
  * answer, in the same period (its reset kept), the after reading its own (not
@@ -1153,8 +1119,9 @@ export const recoveryIn = (claim: Claim, windows: ReadonlyArray<QuotaWindow>, at
   Option.filter(Option.some(claim), (made) => made.outcome === "reset" && at > made.at && at <= made.at + OBSERVE_MS).pipe(Option.flatMap((made) => givebackIn(made, Option.some(windows))))
 
 /**
- * Each account's line (pace.ts `PacePlan`). A reset in hand adds no room: the
- * pace never spends a reset before it is claimed. Once one was claimed this
+ * Each account's line (pace.ts `PacePlan`). Fresh, approved Anthropic stock
+ * accelerates existing quota toward exhaustion and credit expiry; it never
+ * bypasses a hard quota. Once a reset was claimed this
  * week and its own readings observed the week lower after it
  * (`observedGiveback`), the line starts again there: the claim's time and the
  * week's use observed after it. A claim on this host only: a peer's claim
@@ -1168,6 +1135,7 @@ export const pacePlans = (
   claims: ReadonlyArray<Claim>,
   now: number,
   spends: ReadonlyArray<Spend> = [],
+  planCredits = false,
 ): Readonly<Record<string, PacePlan>> => {
   const plans: Record<string, PacePlan> = {}
   for (const account of accounts) {
@@ -1183,8 +1151,30 @@ export const pacePlans = (
       const spent = spends.filter((spend) => spend.claim === newest.value.key).reduce((sum, spend) => sum + spend.cost, 0)
       plans[account.credentialID] = { rebase: { ...newest.value, spent } }
     }
+    const capacity = plannedCapacity(provider, account, claims, now, planCredits)
+    if (Option.isSome(capacity)) plans[account.credentialID] = { ...plans[account.credentialID], capacity: capacity.value }
   }
   return plans
+}
+
+/** Only fresh, approved, cadence-preserving stock accelerates an existing allowance. */
+const plannedCapacity = (provider: ResetProvider, account: AccountStatus, claims: ReadonlyArray<Claim>, now: number, approved: boolean) => {
+  const reading = Option.fromUndefinedOr(account.reading)
+  const read = Option.fromUndefinedOr(readAt(account))
+  const last = Math.max(...Arr.filterMap(claims, (claim) => Result.liftPredicate(claim.at, () => claim.provider === provider && claim.credentialID === account.credentialID, () => false)), Number.NEGATIVE_INFINITY)
+  if (!approved || provider !== "claude" || Option.isNone(reading) || !Option.exists(read, (at) => at <= now && now - at < FRESH_MS && at > last)) return Option.none()
+  const observed = new Set(Arr.filterMap(claims, (claim) => Result.liftPredicate(claim.requestID, () => claim.provider === provider && claim.credentialID === account.credentialID && (claim.outcome === "reset" || claim.outcome === "already-redeemed"), () => false)))
+  const fields = reading.value
+  const fresh = { ...account, reading: { ...fields, windows: fields.windows.filter((window) => {
+    const at = Option.getOrElse(Option.fromUndefinedOr(window.at), () => fields.at)
+    return at <= now && now - at < FRESH_MS && at > last
+  }) } }
+  const stock = sparesOf(provider, fresh, now).filter(({ credit }) => !observed.has(claimRequestID(provider, account, credit, now)))
+  const extra = stock.reduce((sum, item) => sum + item.spare, 0)
+  if (extra <= 0) return Option.none()
+  const expiries = stock.flatMap((spare) => Option.toArray(Option.fromUndefinedOr(spare.expiresAt)))
+  const deadline = Option.map(Arr.head(expiries), (at) => at - LAST_CALL_MS)
+  return Option.some({ extra, ...Option.match(deadline, { onNone: () => ({}), onSome: (expiresAt) => ({ expiresAt }) }) })
 }
 
 /**
@@ -1435,10 +1425,14 @@ const pushKeys = (state: ResetsState, pools: ReadonlyArray<PoolView>, pushes: Re
     ),
   )
 
+/** Old period keys and subsequent credit-count generations share one natural deadline. */
+const withGenerations = (periods: ReadonlySet<string>, keys: ReadonlyArray<string>): ReadonlySet<string> =>
+  new Set([...periods, ...keys.filter((key) => periods.has(key.replace(/:pool-[0-9a-f]{24}$/, "")))])
+
 const review = (state: ResetsState, command: Review, now: number): ReadonlyArray<Event> => {
   const auto = command.auto !== false
   const pushes = command.pushes ?? []
-  const current = new Set([...currentKeys(command.pools, now), ...pushKeys(state, command.pools, pushes, now)])
+  const current = withGenerations(new Set([...currentKeys(command.pools, now), ...pushKeys(state, command.pools, pushes, now)]), Object.keys(state.resets))
   const events: Array<Event> = []
   let after = state
   // The accounts (credentials, whichever pool lists them) a claim is due on in this review: one each.
@@ -1539,16 +1533,20 @@ export const toldText = (reset: Pick<Reset, "kind" | "label" | "buys" | "reason"
  * undefined: send it. The provider's reading is the authority: a claim made
  * since on the account, from any pool or host, shows in it. The reset must
  * still be listed and claimable; one for held work needs a window still
- * holding the account; and any must still give back at least MIN_RESTORE of
- * a window, but a reset claimed in its last EXPIRING_MS: it is lost otherwise,
- * so it goes on anything it gives back. A claim for the forecast needs no
- * window holding the account: it goes before the account runs out.
+ * holding the account. Ordinary automatic claims (`forecast`, a persisted
+ * legacy name) must still satisfy the exhaustion rule. Automatic claims need
+ * positive restoration; explicit pushes retain their minimum restoration.
  */
 export const staleReason = (view: PoolView, account: AccountStatus, reset: Pick<Reset, "creditID" | "why" | "provider">, now: number): string | undefined => {
   const credit = usableCredits(account, now).find((item) => item.id === reset.creditID)
   if (credit === undefined) return "the reset is no longer listed as claimable"
+  if (reset.why === "forecast") {
+    const options = candidatesOf(empty, { ...view, accounts: [account] }, new Set<string>(), now, new Set<string>()).filter((candidate) => candidate.credit.id === credit.id)
+    const verdict = decideClaim({ now, held: 0, running: 1, hosts: 1, accounts: [], settling: false, pushed: false }, options.map((candidate) => candidate.option))
+    if (verdict._tag === "NoClaim") return "the account no longer has a claimable exhausted window"
+  }
   const lastDay = Option.exists(Option.fromUndefinedOr(credit.expiresAt), (at) => at - now <= EXPIRING_MS)
-  const floor = Match.value(reset.why === "expiring" && lastDay).pipe(
+  const floor = Match.value((reset.why === "expiring" && lastDay) || reset.why === "forecast").pipe(
     Match.when(true, () => Number.MIN_VALUE),
     Match.orElse(() => MIN_RESTORE),
   )

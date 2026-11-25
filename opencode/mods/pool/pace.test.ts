@@ -10,6 +10,33 @@ const minute = 60_000
 const hour = 60 * minute
 const account = (used: number, reset = now + 3.5 * day): AccountStatus => ({ credentialID: "a", live: 1, load: 0, noRoom: false, reading: { at: now, windows: [{ name: "7d", utilization: used, resetAt: reset }, { name: "5h", utilization: 0.1, resetAt: now + 3600000 }] } })
 
+test("new launches cover their own estimate and frozen estimates of earlier launches", () => {
+  const fresh = account(0.044, now + 7 * day)
+  const quote = (starts: ReadonlyArray<number>, costs: ReadonlyArray<number>, nextCost: number) =>
+    poolPace([fresh], now, { starts, costs, cost: 0.005, nextCost, settleMs: 10 * minute }, "claude-opus-5-5")
+  expect(quote([], [], 0.005).ok).toBe(true)
+  expect(quote([], [], 0.007)).toMatchObject({ ok: false, reasonCode: "even-line" })
+  expect(quote([now], [0.005], 0.005)).toMatchObject({ ok: false, reasonCode: "even-line" })
+  // A later, cheaper forecast does not reprice the launch already admitted.
+  expect(quote([now], [0.006], 0.001)).toMatchObject({ ok: false, reasonCode: "even-line" })
+})
+
+test("orchestrator priority bypasses weekly pace and safety margins but keeps evidence and hard limits", () => {
+  const send = (accounts: ReadonlyArray<AccountStatus>, model = "claude-opus-5-5") =>
+    dispatchPace(accounts, now, {}, 0.005, model, { priority: true })
+  for (const used of [0.75, 0.99, 0.999]) {
+    const accounts = [account(used)]
+    expect(dispatchPace(accounts, now, {}, 0.005, "claude-opus-5-5").ok).toBe(false)
+    expect(send(accounts)).toMatchObject({ ok: true, eligible: ["a"], admission: "ordinary" })
+  }
+  expect(send([account(1)]).ok).toBe(false)
+  expect(send([{ ...account(0.75), reading: { at: now, windows: [{ name: "5h", utilization: 1, resetAt: now + hour }, { name: "7d", utilization: 0.75, resetAt: now + day }] } }]).ok).toBe(false)
+  expect(send([{ ...account(0.75), reading: { at: now, windows: [{ name: "7d", utilization: 0.75, resetAt: now + day }] } }]).ok).toBe(false)
+  expect(send([{ ...account(0.75), hold: { kind: "signin", at: now, until: now + hour } }]).ok).toBe(false)
+  expect(send([{ ...account(0.75), reading: { at: now, windows: [{ name: "5h", utilization: 0.1, resetAt: now + hour }, { name: "7d", utilization: 0.75, resetAt: now + day }, { name: "7d:Fable", utilization: 1, resetAt: now + day }] } }], "claude-fable-5-2").ok).toBe(false)
+  expect(dispatchPace([account(0.75)], now, {}, 0.005, "claude-opus-5-5", { priority: true, auxiliary: "title" }).ok).toBe(false)
+})
+
 test("weekly-only admission needs fresh explicit absence, retains it through headers, and obeys a returning five-hour limit", () => {
   const weekly = { name: "7d", utilization: 0.2, resetAt: now + 3.5 * day }
   const absent: QuotaReading = { at: now, windows: [weekly], absent: [{ name: "5h", at: now }] }
@@ -194,7 +221,7 @@ test("the closed set of pace holds names what must change, and opens when it doe
     "model-unreported": "Use another model or login; time alone will not clear this hold",
     "reset-room": "room from a claimed reset",
     "auxiliary": "does not spend the room a claimed reset gave back",
-  } satisfies Record<Exclude<HoldReason, "logins-unavailable" | "placement-changed" | "store-unavailable" | "record-unreadable">, string>
+  } satisfies Record<Exclude<HoldReason, "logins-unavailable" | "placement-changed" | "store-unavailable" | "record-unreadable" | "fleet-busy" | "fleet-unavailable">, string>
   const observed = new Set<string>()
   for (const [offset, span] of Arr.cartesian([0, minute, 5 * minute], [15 * minute, hour, 2 * hour])) {
     const at = now + offset

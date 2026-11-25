@@ -10,24 +10,22 @@
 // the fleet (fleet.ts): each start that has not settled yet is charged a fixed
 // share of one account's week until it has, so a wave on one host holds the
 // next start on any host before the readings show it.
-import { Array as Arr, DateTime, Match, Option, Order, Schema } from "effect"
+import { Array as Arr, DateTime, Match, Option, Order, Result, Schema } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import type { RequestKind } from "./accounts.ts"
 import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
 import { accountWindow, DEFINED_MODEL_WINDOWS, limitsModel, type QuotaReading, type QuotaWindow, Reported, SCOPE_REPORT_SAMPLES, scopeOf, tracked, TRACKED_WINDOWS, windowReading, type WindowReading } from "./quota.ts"
+import { lineOf, ordinaryPlan, usedOf, weeklyPace, TARGET, WEEK, type PacePlan } from "./weekly-pace.ts"
+export { lineOf, usedOf, TARGET, type PacePlan } from "./weekly-pace.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, signInReason, tryAgainAt, used } from "./usage-text.ts"
 
 /** A share to a tenth of a percent: `0.567` → `56.7%`. */
 const tenth = (share: number) => `${(100 * share).toFixed(1)}%`
 
-const WEEK = 7 * 86400000
 const FIVE_HOURS = 5 * 3_600_000
-/** The share of a week the spend-evenly line reaches by its reset; a weekly window used this much has no room. */
-export const TARGET = 0.99
 /** A 5-hour window used this much has no room for a new start. */
 export const SHORT_5H = 0.9
-const LEEWAY = 0.05
 /** How far past a window's natural length a reset may read (a header's reset is rounded to the second). */
 const RESET_SLACK_MS = 60_000
 
@@ -103,6 +101,7 @@ export type Admission = typeof Admission.Type
 export const HoldReason = Schema.Literals([
   "store-unavailable", "logins-unavailable", "usage-unread", "model-unreported", "record-unreadable", "account-held", "model-limit", "quota-limit",
   "even-line", "reset-room", "auxiliary", "placement-changed",
+  "fleet-busy", "fleet-unavailable",
 ])
 export type HoldReason = typeof HoldReason.Type
 /** The holds a REPORTED window makes: a person is told of these before an unread login's. */
@@ -111,6 +110,7 @@ const REPORTED_LIMITS: ReadonlyArray<HoldReason> = ["model-limit", "quota-limit"
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 export const NoPoolLogin = Schema.Literal("not-tracked-no-pool-login")
 const paceFields = {
+  forecast: Schema.optionalKey(Schema.Struct({ cost: Schema.Finite, samples: Schema.Int, source: Schema.Literals(["hour", "day", "floor"]) })),
   measured: Schema.Boolean,
   reason: Schema.String,
   tracking: Schema.optionalKey(NoPoolLogin),
@@ -230,6 +230,10 @@ export interface Inflight {
   readonly starts: ReadonlyArray<number>
   readonly cost: number
   readonly settleMs: number
+  /** Frozen per-start estimates; absent entries retain the configured floor. */
+  readonly costs?: ReadonlyArray<number>
+  /** A new launch must fit its own estimate as well as starts already admitted. */
+  readonly nextCost?: number
 }
 
 export const NO_INFLIGHT: Inflight = { starts: [], cost: 0, settleMs: 0 }
@@ -257,51 +261,6 @@ const spentOwn = (account: AccountStatus, now: number, model?: string): Readonly
           Option.exists(Option.fromUndefinedOr(scopeOf(w.name)), (scope) => limitsModel(scope, id)) && w.utilization >= 1)),
       ),
   })
-
-/**
- * What a reset the pool claimed did to an account's spend-evenly line
- * (resets.ts `pacePlans`). A reset in hand moves nothing: it is room only once
- * claimed, sent once under the fleet's lease, and a fresh reading after it
- * observed the week lower than before. Once one was claimed at `rebase.at`,
- * leaving the week at `rebase.from`, the line starts again there and spends
- * the rest evenly to the weekly reset.
- */
-export interface PacePlan {
-  readonly rebase?: {
-    readonly at: number
-    readonly from: number
-    /** The claim whose room it is (`Spend.claim`). */
-    readonly key?: string
-    /** The share of the week reserved on that room by requests admitted on it (resets.ts `Spend`). */
-    readonly spent?: number
-  }
-}
-
-/**
- * The share of its week an account has used as far as the pace may know: the
- * reading's, plus, on a claim's room, every request admitted on that room
- * (`spent`) that the reading does not yet show: only the week's rise since
- * the claim's observation covers them. A reading that lags the requests sent
- * never gives their reservation back; one that shows the week risen past them
- * has covered them; one lower than the observation (more given back since)
- * covers none.
- */
-export const usedOf = (reading: number, plan?: PacePlan): number =>
-  Option.match(Option.fromUndefinedOr(plan?.rebase), {
-    onNone: () => reading,
-    onSome: (rebase) => reading + Math.max(0, (rebase.spent ?? 0) - Math.max(0, reading - rebase.from)),
-  })
-
-/** An account's spend-evenly line now: the share of its week it may have used. */
-export const lineOf = (resetAt: number, now: number, plan: PacePlan | undefined): number => {
-  const left = (resetAt - now) / WEEK
-  const rebase = plan?.rebase
-  const base =
-    rebase !== undefined && rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at
-      ? rebase.from + (TARGET - rebase.from) * ((now - rebase.at) / (resetAt - rebase.at))
-      : TARGET * (1 - left)
-  return base + LEEWAY
-}
 
 /**
  * The accounts that can take a start or a request of `model` now: not held,
@@ -434,10 +393,12 @@ function budgetPace(
       admission: "held",
     }
   }
-  const known = accounts.flatMap((a) =>
+  // Only accounts that can take this model now supply pacing room. A spent
+  // week, short-window limit or refusal contributes neither room nor debt.
+  const known = eligibleFor(accounts, now, model).flatMap((a) =>
     Match.value(accountWindow(a, "7d")).pipe(
       Match.tag("Reported", ({ window: w }) =>
-        Option.toArray(Option.map(validWeekReset(w, now), (resetAt) => ({ used: usedOf(w.utilization, plans[a.credentialID]), resetAt, plan: plans[a.credentialID] }))),
+        Option.toArray(Option.map(validWeekReset(w, now), (resetAt) => ({ credentialID: a.credentialID, used: usedOf(w.utilization, plans[a.credentialID]), resetAt, plan: plans[a.credentialID] }))),
       ),
       Match.orElse(() => []),
     ),
@@ -472,18 +433,25 @@ function budgetPace(
   })
   if (!known.length) return admitUnpaced(absentWeek, shortOnly, unmeasured, failedRead, now)
   const read = known.reduce((n, a) => n + a.used, 0)
-  const charged = inflight.starts.length * inflight.cost
-  const spent = read + charged
+  const pending = inflight.starts.reduce((sum, _at, index) => sum + Option.getOrElse(Option.fromUndefinedOr(inflight.costs?.[index]), () => inflight.cost), 0)
+  const nextCost = Option.getOrElse(Option.fromUndefinedOr(inflight.nextCost), () => 0)
+  const charged = pending + nextCost
   const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
-  const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, {}), 0)
-  if (spent > ordinary + 1e-9 && absentWeek.length > 0)
+  const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, ordinaryPlan(a.plan)), 0)
+  const weekly = weeklyPace(known, now, charged)
+  if (!weekly.ordinary && absentWeek.length > 0)
     return takenWeekless(absentWeek, `the paced ${byCount(known.length, "account's week is", "accounts' weeks are")} past the spend-evenly line, so the start goes out only where no week is reported: `)
-  if (spent <= allowance + 1e-9) {
+  if (weekly.backed) {
     // Past the even line but within one a claimed, observed reset rebased: the room is that reset's.
-    if (spent <= ordinary + 1e-9) {
+    if (weekly.ordinary) {
       if (open.length > 0 && freshOpen.length === 0)
         return { ok: true, measured: false, eligible: open.map((a) => a.credentialID), reason: failedReadText(open) }
-      return { ok: true, measured: true, reason: "the pool is within its weekly pace", admission: "ordinary" }
+      const paced = new Set(known.map((a) => a.credentialID))
+      const admitted = new Set(weekly.eligible)
+      return {
+        ok: true, measured: true, reason: "the pool has accounts within their weekly pace", admission: "ordinary",
+        eligible: Arr.filterMap(open, (a) => Result.liftPredicate(a.credentialID, (id) => !paced.has(id) || admitted.has(id), () => false)),
+      }
     }
     return {
       ok: true,
@@ -492,21 +460,23 @@ function budgetPace(
       admission: "backed",
     }
   }
-  const catchesUp = now + ((spent - allowance) * WEEK) / (known.length * TARGET)
   const settles = inflight.starts.length ? [Math.min(...inflight.starts) + inflight.settleMs + 1] : []
   // Pool-wide figures read per account, on average, so each stays out of 100%.
   const n = known.length
   const starting = inflight.starts.length
-    ? `, plus ${tenth(charged / n)} of the week counted for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
+    ? `, plus ${tenth(pending / n)} of the week counted for ${inflight.starts.length} agent${inflight.starts.length === 1 ? "" : "s"} started in the last ${Math.round(inflight.settleMs / 60_000)} min`
     : ""
+  const candidate = Option.match(Option.filter(Option.some(nextCost), (cost) => cost > 0), {
+    onNone: () => "", onSome: (cost) => `, plus ${tenth(cost / n)} of the week reserved for the next agent`,
+  })
   return {
     ok: false,
     measured: true,
     soft: true,
     reason:
-      `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}; ` +
+      `the pool's weekly pace is over: its ${n} ${byCount(n, "account's week is", "accounts' weeks are")} at ${tenth(read / n)} used of 100%${byCount(n, "", " on average")}${starting}${candidate}; ` +
       `the spend-evenly line ${byCount(n, "is", "averages")} ${tenth(allowance / n)} used of 100% now, and the start holds past it`,
-    retryAt: nextRetryAt(now, [Math.ceil(catchesUp) + 1, ...settles, ...known.map((a) => a.resetAt)]),
+    retryAt: nextRetryAt(now, [...Option.toArray(weekly.retryAt), ...settles, ...known.map((a) => a.resetAt)]),
     reasonCode: "even-line",
     admission: "held",
   }
@@ -691,6 +661,8 @@ const gapText = (gap: Gap) => Match.value(gap).pipe(Match.tagsExhaustive({
 const alternate = "Use another model or login; time alone will not clear this hold. The retry time is the next usage refresh, not an opening time."
 
 export interface DispatchPolicy {
+  /** Trusted root primary/compaction traffic may spend the worker safety margin while real quota remains. */
+  readonly priority?: boolean
   readonly auxiliary?: Exclude<RequestKind, "primary" | "compaction">
   readonly liftEvenLine?: boolean
   /** Fleet starts not yet visible in the readings, when quoting a new start; an existing request already counted its launch. */
@@ -795,12 +767,22 @@ export function dispatchPace(
   const inflight = Option.getOrElse(Option.fromUndefinedOr(policy.inflight), () => NO_INFLIGHT)
   const answer = budgetPace(fresh, now, inflight, model, plans)
   const open = eligibleFor(fresh, now, model)
+  if (policy.priority === true && Option.isNone(Option.fromUndefinedOr(policy.auxiliary))) {
+    const priority = fresh.filter((account) =>
+      Option.isNone(Option.fromUndefinedOr(blockedUntil(account, now, model))) &&
+      !TRACKED_WINDOWS.some((name) => accountWindow(account, name)._tag === "Reported" &&
+        Option.exists(windowOf(account, name), (window) => window.utilization >= 1)))
+    if (priority.length > 0) return {
+      ok: true, measured: true, admission: "ordinary", eligible: priority.map((account) => account.credentialID),
+      reason: "orchestrator priority: provider quota remains; worker weekly pace does not hold this request",
+    }
+  }
   // The pace may name fewer accounts than are open: past the even line, only those with no week to pace.
   const eligible = open.map((a) => a.credentialID).filter((id) =>
     Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) }))
   // A push can lift the even line, not the minimum evidence or any hard limit.
-  if (policy.liftEvenLine === true && eligible.length > 0 && ((!answer.ok && answer.soft === true) || answer.admission === "backed"))
-    return { ok: true, measured: true, reason: answer.reason, admission: "ordinary", eligible }
+  if (policy.liftEvenLine === true && open.length > 0 && ((!answer.ok && answer.soft === true) || answer.ok))
+    return { ok: true, measured: true, reason: answer.reason, admission: "ordinary", eligible: open.map((a) => a.credentialID) }
 
   const retry = (times: ReadonlyArray<number>) => {
     const windows = fresh.flatMap((a) => [
@@ -815,7 +797,8 @@ export function dispatchPace(
     if (gaps.length === 0) return reason
     return `${reason}; ${gaps.length} ${byCount(gaps.length, "account", "accounts")} more ${byCount(gaps.length, "has", "have")} no reading it may go out on (${needs}): ${lacking}`
   }
-  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model).retryAt))
+  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model,
+    Object.fromEntries(Object.entries(plans).map(([id, plan]) => [id, ordinaryPlan(plan)]))).retryAt))
   // A limit the read accounts REPORT is what a person is told: the unread accounts are named in its reason
   // (`reasonWithGaps`) and their next read is in its retry (`evidenceTime`), so an unread login never hides a spent week.
   // A hold of another kind keeps the remedy order, where a read comes first.

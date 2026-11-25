@@ -29,7 +29,10 @@ export const headsOf = (text: string): Result.Result<Commits, string> => {
   if (lines.length > 1) return Result.fail(`has ${lines.length} heads lines; write one, exactly ${HEADS_FORM}`)
   const match = Option.fromNullishOr(HEADS_LINE.exec(line.value))
   if (Option.isNone(match)) return Result.fail(`has a malformed heads line (<${line.value.slice(0, 160)}>); write it exactly ${HEADS_FORM}, both full commit names`)
-  return Result.succeed({ dotfiles: match.value[1], fork: match.value[2] })
+  return Option.match(Option.all({ dotfiles: Arr.get(match.value, 1), fork: Arr.get(match.value, 2) }), {
+    onNone: () => Result.fail(`has a malformed heads line; write it exactly ${HEADS_FORM}`),
+    onSome: Result.succeed,
+  })
 }
 
 /** A target the fleet records: its commits and the batch that verified them. */

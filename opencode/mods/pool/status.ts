@@ -14,6 +14,10 @@ import { QuotaReading, UsageReadFailure } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"
 import { Claim, Reset } from "./resets.ts"
 import { NoPoolLogin } from "./pace.ts"
+export const LaunchRequest = Schema.Struct({
+  providerID: Schema.String, model: Schema.String, sessionID: Schema.String, launchID: Schema.String,
+})
+export type LaunchRequest = typeof LaunchRequest.Type
 export { Hold } from "./hold.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
@@ -58,7 +62,9 @@ export const POOL_STATUS = {
       input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] },
       output: { type: "object" },
     },
-    started: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    started: { input: { type: "object", properties: { providerID: { type: "string" }, model: { type: "string" }, launchID: { type: "string" }, sessionID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    reserveLaunch: { input: Schema.toStandardSchemaV1(LaunchRequest), output: { type: "object" } },
+    bindLaunch: { input: { type: "object", properties: { launchID: { type: "string" }, sessionID: { type: "string" } }, required: ["launchID", "sessionID"] }, output: { type: "object" } },
     report: { input: { type: "object" }, output: { type: "object" } },
     fleet: { input: { type: "object" }, output: { type: "object" } },
     resets: { input: { type: "object" }, output: { type: "object" } },
@@ -208,11 +214,23 @@ export const SessionLogins = Schema.Struct({ steps: Schema.Array(StepLogin) })
 export type SessionLogins = typeof SessionLogins.Type
 
 /** The started method's question: a new agent was admitted on `providerID`. */
-export const StartedQuery = Schema.Struct({ providerID: Schema.String })
+export const StartedQuery = Schema.Struct({
+  providerID: Schema.String,
+  model: Schema.optionalKey(Schema.String),
+  launchID: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+})
 export type StartedQuery = typeof StartedQuery.Type
 
 /** A new agent admitted on `providerID` at `at` (epoch ms). */
-export const Start = Schema.Struct({ providerID: Schema.String, at: Schema.Number })
+export const Start = Schema.Struct({
+  providerID: Schema.String, at: Schema.Number,
+  id: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+  /** The estimate frozen when this launch was admitted, as a share of one week. */
+  cost: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+})
 export type Start = typeof Start.Type
 
 /** A reading of one login of the pool `pool`, as the host that took it holds it. */
@@ -230,6 +248,8 @@ export const Report = Schema.Struct({
   host: Schema.String,
   at: Schema.Number,
   starts: Schema.Array(Start),
+  /** Positive capability witness: starts are durably reserved under fleet negotiation. */
+  launchProtocol: Schema.optionalKey(Schema.Literal(1)),
   busy: Schema.optionalKey(Schema.Array(Schema.String)),
   readings: Schema.Array(SharedReading),
   /** The tokens the host sent on each open row of the limit tally (limits.ts), from a host that keeps one. */

@@ -2,10 +2,11 @@
 // one entry per page, so every read walks the pages; and over a storage that
 // fails, which the store reads as an empty fleet and writes past.
 import { expect, test } from "bun:test"
-import { Effect, type Schema } from "effect"
+import { Context, Effect, Layer, type Schema } from "effect"
 import { PollClaimed, StartRecorded } from "../fleet.ts"
 import { fleetStoreLaws } from "../laws.ts"
 import { FleetStore } from "../service.ts"
+import { it } from "effect-bun-test"
 import * as OpenCodeFleet from "./fleet.ts"
 import type { Storage } from "./ledger.ts"
 
@@ -21,6 +22,22 @@ const pagedByOne = (entries: Map<string, Schema.Json>): Storage => ({
   set: (key, value) => Effect.sync(() => void entries.set(key, value)),
   remove: (key) => Effect.sync(() => void entries.delete(key)),
 })
+
+it.effect("admission confirms a durable frozen launch, and refuses damaged or unwritable storage", () => Effect.gen(function* () {
+  const entries = new Map<string, Schema.Json>()
+  const start = { id: "mac:one", at: 1000, providerID: "anthropic", model: "claude-opus-5-5", cost: 0.02 }
+  const plugin = OpenCodeFleet.layer(pagedByOne(entries))
+  const store = Context.get(yield* Layer.build(plugin), FleetStore)
+  const reserve = store.reserve
+  expect(yield* reserve(start)).toEqual(start)
+  expect(yield* reserve({ ...start, cost: 0.001 })).toEqual(start)
+  const restarted = OpenCodeFleet.layer(pagedByOne(entries))
+  expect(yield* Context.get(yield* Layer.build(restarted), FleetStore).starts).toEqual([start])
+  entries.set("fleet/start/broken", { invalid: true })
+  expect((yield* Effect.result(reserve({ ...start, id: "mac:two" })))._tag).toBe("Failure")
+  const denied = OpenCodeFleet.layer({ ...pagedByOne(new Map()), set: () => Effect.fail("disk full") })
+  expect((yield* Effect.result(Context.get(yield* Layer.build(denied), FleetStore).reserve(start)))._tag).toBe("Failure")
+}).pipe(Effect.scoped))
 
 fleetStoreLaws("OpenCode's FleetStore", () => {
   const entries = new Map<string, Schema.Json>()

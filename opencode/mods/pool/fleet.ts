@@ -17,7 +17,7 @@ import type { AntigravityReport } from "./antigravity-report.ts"
 import { type PeerStatus, Report, type SharedReading, Start } from "./status.ts"
 
 /** How long a start is kept at all; it counts on the pace only for the settle time. */
-export const KEEP_MS = 60 * 60_000
+export const KEEP_MS = 8 * 24 * 60 * 60_000
 
 /** A peer's report may be stamped this far ahead of this host's clock and still count. */
 export const SKEW_MS = 60_000
@@ -33,11 +33,14 @@ export const Peer = Schema.Struct({
   polledAt: Schema.optionalKey(Schema.Number),
 })
 export type Peer = typeof Peer.Type
+export const Completion = Schema.Struct({ at: Schema.Finite, messageIDs: Schema.Array(Schema.String) })
 
 export const FleetState = Schema.Struct({
   /** The agents this host admitted, oldest first. */
   starts: Schema.Array(Start),
   peers: Schema.Record(Schema.String, Peer),
+  /** First terminal settlement, independently kept so a fast child can finish before it is bound. */
+  completions: Schema.optionalKey(Schema.Record(Schema.String, Completion)),
 })
 export type FleetState = typeof FleetState.Type
 
@@ -46,11 +49,22 @@ export const empty: FleetState = { starts: [], peers: {} }
 // ── RecordStart ──
 // This host admitted a new agent on a provider.
 
-export const RecordStart = Schema.TaggedStruct("RecordStart", { providerID: Schema.String })
+export const RecordStart = Schema.TaggedStruct("RecordStart", {
+  providerID: Schema.String,
+  id: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  cost: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  sessionID: Schema.optionalKey(Schema.String),
+})
 export interface RecordStart extends Schema.Schema.Type<typeof RecordStart> {}
 
 export const StartRecorded = Schema.TaggedStruct("StartRecorded", { start: Start })
 export interface StartRecorded extends Schema.Schema.Type<typeof StartRecorded> {}
+
+export const BindStart = Schema.TaggedStruct("BindStart", { id: Schema.String, sessionID: Schema.String })
+export const StartBound = Schema.TaggedStruct("StartBound", { start: Start })
+export const CompleteWork = Schema.TaggedStruct("CompleteWork", { sessionID: Schema.String, messageIDs: Schema.Array(Schema.String) })
+export const WorkCompleted = Schema.TaggedStruct("WorkCompleted", { sessionID: Schema.String, completion: Completion })
 
 /** The starts admitted at or before `before` are forgotten: they settled long ago. */
 export const StartsExpired = Schema.TaggedStruct("StartsExpired", { before: Schema.Number })
@@ -104,17 +118,34 @@ export declare namespace ClaimPoll {
 
 // ── The aggregate ──
 
-export type Command = RecordStart | TakeReport | MissPeer | ClaimPoll
-export type Event = StartRecorded | StartsExpired | PeerReported | PeerMissed | PollClaimed
+export type Command = RecordStart | typeof BindStart.Type | typeof CompleteWork.Type | TakeReport | MissPeer | ClaimPoll
+export type Event = StartRecorded | typeof StartBound.Type | typeof WorkCompleted.Type | StartsExpired | PeerReported | PeerMissed | PollClaimed
 
 export const Fleet: Decider<FleetState, Command, Event> = {
   initial: empty,
   decide: (state, command, now) => {
     switch (command._tag) {
       case "RecordStart": {
-        const recorded = StartRecorded.make({ start: { providerID: command.providerID, at: now } })
+        if (Option.exists(Option.fromUndefinedOr(command.id), (id) => state.starts.some((start) => start.id === id))) return Effect.succeed([])
+        const { _tag, ...fields } = command
+        const recorded = StartRecorded.make({ start: { ...fields, at: now } })
         const before = now - KEEP_MS
         return Effect.succeed(state.starts.some((start) => start.at <= before) ? [recorded, StartsExpired.make({ before })] : [recorded])
+      }
+      case "BindStart": {
+        const found = state.starts.find((start) => start.id === command.id)
+        return Effect.succeed(Option.match(Option.fromUndefinedOr(found), {
+          onNone: () => [],
+          onSome: (start) => {
+            if (start.sessionID === command.sessionID) return []
+            return [StartBound.make({ start: { ...start, sessionID: command.sessionID } })]
+          },
+        }))
+      }
+      case "CompleteWork": {
+        const held = Option.fromUndefinedOr(state.completions).pipe(Option.flatMap((all) => Option.fromUndefinedOr(all[command.sessionID])))
+        if (Option.isSome(held)) return Effect.succeed([])
+        return Effect.succeed([WorkCompleted.make({ sessionID: command.sessionID, completion: { at: now, messageIDs: command.messageIDs } })])
       }
       case "TakeReport": {
         const held = state.peers[command.peer]
@@ -137,8 +168,15 @@ export const Fleet: Decider<FleetState, Command, Event> = {
     switch (event._tag) {
       case "StartRecorded":
         return { ...state, starts: [...state.starts, event.start] }
+      case "StartBound":
+        return { ...state, starts: state.starts.map((start) => {
+          if (start.id === event.start.id) return event.start
+          return start
+        }) }
+      case "WorkCompleted":
+        return { ...state, completions: { ...state.completions, [event.sessionID]: event.completion } }
       case "StartsExpired":
-        return { ...state, starts: state.starts.filter((start) => start.at > event.before) }
+        return { ...state, starts: state.starts.filter((start) => start.at > event.before), ...Option.match(Option.fromUndefinedOr(state.completions), { onNone: () => ({}), onSome: (all) => ({ completions: Object.fromEntries(Object.entries(all).filter(([, completion]) => completion.at > event.before)) }) }) }
       case "PeerReported": {
         const polledAt = state.peers[event.peer]?.polledAt
         const peer = { report: event.report, seenAt: event.at, ...(polledAt === undefined ? {} : { polledAt }) }

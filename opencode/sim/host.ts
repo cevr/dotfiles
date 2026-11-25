@@ -308,9 +308,9 @@ export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", mod
 
 export class SessionNotFound extends Data.TaggedError("Session.NotFoundError")<{ readonly sessionID: string; readonly message: string }> {}
 export class CatalogNotFound extends Data.TaggedError("NotFoundError")<{ readonly message: string }> {}
-export class RpcNotFound extends Data.TaggedError("RpcNotFoundError")<{ readonly message: string }> {}
+export class RpcNotFound extends Data.TaggedError("RpcNotFoundError")<{ readonly message: string }> { readonly type = "rpc.method_not_found" }
 /** An RPC whose handler died: the call fails, as the fork's `rpc.internal`. */
-export class RpcInternal extends Data.TaggedError("RpcInternalError")<{ readonly message: string }> {}
+export class RpcInternal extends Data.TaggedError("RpcInternalError")<{ readonly message: string }> { readonly type = "rpc.internal" }
 
 /** A fault the world sets on one RPC method: its handler dies, or never answers. */
 export type RpcFault = "die" | "hang"
