@@ -19,6 +19,8 @@ Limits belong to the model and account, not to the last response: both the provi
 
 A named start and a dispatch use the same rule on the same readings and launch reservations. After two distinct successful usage responses omit a required window the login has never reported, the pool calls out the missing data as an anomaly and says to use another model or login; the retry time is an on-demand usage refresh, not a promise the login will open. Orchestrate uses the hold to fall back before starting an agent on evidence that cannot support that model.
 
+Ordinary weekly pacing belongs to each usable account's own cycle. Only positive room contributes to the fleet's launch allowance; another login's exhausted or ahead-of-pace week adds no debt. With one usable account, its solo pace decides. An ordinary request, including a cached continuation, goes only to a login within its own line. The fresh-week journey in `cmd/pool/pool-reset-backed-pace-dispatch.sim.test.ts` checks the provider's received requests, then spends the fresh login ahead of its own pace and checks that it holds again. `bun scripts/verify-pool-pace.ts` checks the bounded Quint model and its TypeScript conformance; `.claude/skills/verify-pool-pace/SKILL.md` states its scope.
+
 ## How to get to it (user POV)
 
 - Any primary request on a pooled provider: the user's prompt, an agent's turn, a compaction.

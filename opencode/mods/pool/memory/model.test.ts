@@ -93,6 +93,28 @@ const busy = (pool: Model.Pool["Service"], providerID: string) =>
 /** Let the review a held pace forked run. */
 const settle = Effect.yieldNow
 
+test("a cached run on an ahead-of-pace login moves to a fresh week despite the other accounts' spend", () =>
+  scoped(Effect.gen(function* () {
+    const now = Date.parse("2026-11-25T19:00:00Z")
+    yield* TestClock.setTime(now)
+    const ids = ["cached", "spent", "fresh"]
+    const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
+      new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]))
+    const samples = fixture.readings.get(ANTHROPIC)!
+    samples.set("cached", reading(now, { fiveHour: 0, sevenDay: 0.2 }))
+    samples.set("spent", reading(now, { fiveHour: 0, sevenDay: 1 }))
+    samples.set("fresh", reading(now, { fiveHour: 0, sevenDay: 0, weekIn: 7 * DAY }))
+    const pool = yield* fixture.pool
+    const turn = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_dynamic", kind: "primary" } as const
+    expect((yield* pool.place(turn))?.credentialID).toBe("cached")
+    yield* TestClock.adjust(1)
+    samples.set("cached", reading(now + 1, { fiveHour: 0, sevenDay: 0.94 }))
+    const next = yield* pool.place(turn)
+    expect(next?.credentialID).toBe("fresh")
+    expect((yield* pool.session({ sessionID: turn.sessionID })).account?.credentialID).toBe("fresh")
+    expect(fixture.claims).toEqual([])
+  }).pipe(Effect.provide(TestClock.layer()))))
+
 test("dispatch starts every stale read together and ends a hung evidence round with a hold", () =>
   scoped(Effect.gen(function* () {
     const ids = ["a", "b", "c", "d", "e", "f", "g"]

@@ -4255,10 +4255,20 @@ To see what admitted a start, read its line in `~/.cache/orchestrate/opencode-ag
 The shared Claude `budget.ts` scans `~/.claude/projects` transcripts, so it
 cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same
-accounts. It holds new starts when pooled weekly use exceeds a 99% even
-weekly allowance plus five percentage points of leeway, or every available
-account is at a hold line: its 5-hour window at 90% used of 100%, or its
-week at 99% used of 100%.
+accounts. Each usable account follows its own weekly cycle: a 99% even
+weekly allowance plus five percentage points of leeway. The pace pools only
+positive room on accounts that can serve the requested model now; an
+exhausted, refused, or ahead-of-pace account cannot cancel another account's
+room. With one usable account, admission is exactly that account's pace.
+Ordinary requests go only to accounts within their own line, including when
+moving a cached session. A 5-hour window at 90% used of 100%, or a week at
+99% used of 100%, still holds that account. Fleet starts not yet reflected
+in the readings count once against the usable room.
+
+`bun scripts/verify-pool-pace.ts` checks this rule with Quint 0.34.0 and
+Apalache, rejects four broken policies, and replays generated snapshots
+against the TypeScript admission function. The model's bounds and its
+source coverage are in `.claude/skills/verify-pool-pace/SKILL.md`.
 
 Every usage figure the owner or an agent reads (the pace's hold reasons and
 latches, the reset claim notices and claim log, `pool_push` plan and status,

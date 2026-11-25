@@ -7,11 +7,31 @@
 
 import { Effect, Option } from "effect"
 import { claimEffect } from "../../tests/fake-anthropic.ts"
-import { fable, fleet, fixture, HOUR, quota, readOf, refunds } from "./pool-reset-backed-pace.fixture.ts"
+import { DAY, fable, fleet, fixture, HOUR, quota, readOf, refunds } from "./pool-reset-backed-pace.fixture.ts"
 import * as World from "../../sim/world.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 
 const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace-dispatch.sim.test.ts")
+
+seeded("a fresh week sends beside spent and ahead-of-pace accounts, then holds at its own pace", ({ expect }) =>
+  Effect.gen(function* () {
+    const fresh = { ...quota(0, 0), sevenDay: { utilization: 0, resetAt: World.START + 7 * DAY } }
+    const made = fixture({ spent: quota(1, 0), ahead: quota(0.94, 0), fresh }, refunds)
+    const { world, session, pace, primary, claims } = yield* fleet(made)
+    const id = yield* session("dynamic_week")
+    expect(yield* pace(id)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["fresh"] })
+    yield* world.prompt(id, "start on the fresh weekly allowance")
+    yield* world.advance(7_000)
+    expect(primary().map((request) => request.account)).toEqual(["fresh"])
+    made.reading.fresh = { ...fresh, sevenDay: { ...fresh.sevenDay, utilization: 0.06 } }
+    yield* world.advance(7_000)
+    expect(yield* pace(id)).toMatchObject({ ok: false, reasonCode: "even-line", eligible: [] })
+    yield* world.prompt(id, "wait now that this week is ahead of its own pace")
+    yield* world.advance(7_000)
+    expect(primary().map((request) => request.account)).toEqual(["fresh"])
+    expect(claims()).toEqual([])
+  }),
+)
 
 seeded("a still-running directory observes the refund after the claiming directory closes, without a restart", ({ expect }) =>
   Effect.gen(function* () {
