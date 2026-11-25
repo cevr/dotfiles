@@ -852,4 +852,59 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
+
+  effectTest(
+    "Ruling (9) follow-up after done: pane_gone wake still fires with held count even when notifiedTurn equals worker.turn",
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME] })
+      const started = yield* h.model.start(BASE)
+      const done1 = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "done")
+      expect(done1?.turn).toBe(1)
+      const woke1 = yield* waitFor(
+        Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.some((item) => item.letter.metadata["state"] === "done"))),
+      )
+      expect(woke1).toBe(true)
+
+      // Pane exits while idle, then caller queues turn 2 via follow_up.
+      yield* h.rex.setAlive(done1?.blockId ?? "", false)
+      yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "HELD-AFTER-DONE" })
+      const gone = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone")
+      expect(gone?.pendingTurns?.length).toBe(1)
+
+      const gotGoneWake = yield* waitFor(
+        Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.some((item) => item.letter.metadata["state"] === "pane_gone"))),
+      )
+      expect(gotGoneWake).toBe(true)
+      const wakes = yield* Ref.get(h.notifier.wakes)
+      const goneWake = wakes.find((item) => item.letter.metadata["state"] === "pane_gone")
+      expect(goneWake?.letter.text).toContain("1 turn(s) held")
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "Ruling (10) done frame observed before overwrite: settles done with turn 1 answer instead of answer_not_captured",
+    Effect.gen(function* () {
+      const ourWorking = WORKING_FRAME.replace("> Reply with only the single word: pong", "> TK-w2-1")
+      const ourDone = DONE_FRAME.replace("> Reply with only the single word: pong", "> TK-w2-1").replace(
+        "  pong",
+        "  ANSWER-TK-w2-1",
+      )
+      const humanWorking = WORKING_FRAME.replace("> Reply with only the single word: pong", "> owner says hello")
+      const h = yield* makeHarness({
+        defaultScreens: [READY_FRAME, ourWorking, ourDone, humanWorking, humanWorking],
+      })
+      const started = yield* h.model.start({ ...BASE, prompt: "TK-w2-1" })
+      const gotWake = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 1)), 400)
+      expect(gotWake).toBe(true)
+
+      const wakes = yield* Ref.get(h.notifier.wakes)
+      expect(wakes).toHaveLength(1)
+      expect(wakes[0]?.letter.metadata["state"]).toBe("done")
+      expect(wakes[0]?.letter.text).toContain("ANSWER-TK-w2-1")
+      expect(wakes.some((w) => w.letter.metadata["state"] === "answer_not_captured")).toBe(false)
+      expect(started.id.length).toBeGreaterThan(0)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
 })

@@ -35,6 +35,12 @@ export const DEFAULT_MACHINE_CONFIG: MachineConfig = {
   maxWrittenIdlePolls: 3,
 }
 
+/** Observed done answer captured on pass 1 of a typed active turn before quiet confirmation finishes. */
+export interface ObservedDone {
+  readonly turn: number
+  readonly answer: string
+}
+
 /** Explicit worker state machine record: `worker` is durable; counters are per-actor runtime state. */
 export interface MachineState {
   readonly worker: PaneWorker
@@ -42,6 +48,7 @@ export interface MachineState {
   readonly idlePendingConfirm: boolean
   readonly consecutiveGone: number
   readonly consecutiveTransient: number
+  readonly observedDone?: ObservedDone
 }
 
 export const activeTurnOf = (worker: PaneWorker): Option.Option<ActiveTurn> => {
@@ -686,6 +693,17 @@ const withCapturedPrompt = (active: ActiveTurn, screen: string, adapter: Harness
   return { ...active, observedPrompt: prompt.value }
 }
 
+const withoutObservedDone = (state: MachineState): MachineState => {
+  const { observedDone: _od, ...rest } = state
+  return rest
+}
+
+const observedDoneFor = (state: MachineState, turn: number): Option.Option<string> =>
+  Option.fromUndefinedOr(state.observedDone).pipe(
+    Option.filter((od) => od.turn === turn),
+    Option.map((od) => od.answer),
+  )
+
 const enterNeedsInput = (
   state: MachineState,
   summary: string,
@@ -979,9 +997,10 @@ const confirmActiveWorking = (
     promptNewlyObserved ||
     recovered.worker.state === "needs_input" ||
     priorState === "rex_unreachable"
+  const clearedState = withoutObservedDone(recovered)
   if (!needsConfirmPersist) {
     return {
-      state: { ...recovered, sawWorking: true, idlePendingConfirm: false },
+      state: { ...clearedState, sawWorking: true, idlePendingConfirm: false },
       actions: [MachineAction.WaitQuiet()],
     }
   }
@@ -990,12 +1009,12 @@ const confirmActiveWorking = (
     phase: "confirmed",
     writtenIdlePolls: 0,
   }))
-  let nextUpdate = recovered.worker.update
-  if (recovered.worker.state === "needs_input" || priorState === "rex_unreachable") {
+  let nextUpdate = clearedState.worker.update
+  if (clearedState.worker.state === "needs_input" || priorState === "rex_unreachable") {
     nextUpdate = "running in Rex pane"
   }
   const resumed: PaneWorker = {
-    ...recovered.worker,
+    ...clearedState.worker,
     state: "working",
     update: nextUpdate,
     updatedAt: now,
@@ -1006,8 +1025,34 @@ const confirmActiveWorking = (
     }),
   }
   return {
-    state: { ...recovered, worker: resumed, sawWorking: true, idlePendingConfirm: false },
+    state: { ...clearedState, worker: resumed, sawWorking: true, idlePendingConfirm: false },
     actions: [MachineAction.Persist(), MachineAction.WaitQuiet()],
+  }
+}
+
+const observeTurnEnded = (
+  recovered: MachineState,
+  recoveredPersist: ReadonlyArray<MachineAction>,
+  active: Option.Option<ActiveTurn>,
+  screen: string,
+  adapter: HarnessAdapter,
+): TransitionResult => {
+  if (!recovered.sawWorking && recovered.worker.state !== "working") {
+    return { state: recovered, actions: [...recoveredPersist, MachineAction.WaitQuiet()] }
+  }
+  const confirmedDone =
+    Option.isSome(active) &&
+    (recovered.sawWorking || screenConfirmsWrittenTurn(screen, active.value))
+  let nextState: MachineState = { ...recovered, idlePendingConfirm: true }
+  if (confirmedDone) {
+    nextState = {
+      ...nextState,
+      observedDone: { turn: active.value.turn, answer: adapter.readLastAnswer(screen) },
+    }
+  }
+  return {
+    state: nextState,
+    actions: [...recoveredPersist, MachineAction.ConfirmIdle()],
   }
 }
 
@@ -1096,13 +1141,7 @@ const handleObserveScreen = (
   }
 
   // turnEnded holds on pass 1: confirm across waitForQuiet before settling (B1).
-  if (recovered.sawWorking || recovered.worker.state === "working") {
-    return {
-      state: { ...recovered, idlePendingConfirm: true },
-      actions: [...recoveredPersist, MachineAction.ConfirmIdle()],
-    }
-  }
-  return { state: recovered, actions: [...recoveredPersist, MachineAction.WaitQuiet()] }
+  return observeTurnEnded(recovered, recoveredPersist, active, event.screen, adapter)
 }
 
 const confirmWorkingOnIdleCheck = (state: MachineState, screen: string, now: number, adapter: HarnessAdapter): TransitionResult => {
@@ -1125,7 +1164,7 @@ const confirmWorkingOnIdleCheck = (state: MachineState, screen: string, now: num
     actions.unshift(MachineAction.Persist())
   }
   return {
-    state: { ...state, worker, sawWorking: true, idlePendingConfirm: false, consecutiveGone: 0, consecutiveTransient: 0 },
+    state: { ...withoutObservedDone(state), worker, sawWorking: true, idlePendingConfirm: false, consecutiveGone: 0, consecutiveTransient: 0 },
     actions,
   }
 }
@@ -1138,6 +1177,10 @@ const resolveOverwrittenTurn = (
 ): TransitionResult => {
   if (Option.isSome(event.resultFileAnswer)) {
     return settleDone(state, event.resultFileAnswer.value, true, event.now, event.deliveryId)
+  }
+  const savedAnswer = observedDoneFor(state, active.turn)
+  if (Option.isSome(savedAnswer)) {
+    return settleDone(state, savedAnswer.value, false, event.now, event.deliveryId)
   }
   const prior = Option.fromUndefinedOr(event.priorScreen)
   if (
@@ -1261,8 +1304,12 @@ const handleProbeGone = (
   if (activeTurnTypedOf(state.worker) && Option.isSome(event.resultFileAnswer)) {
     return settleDone(state, event.resultFileAnswer.value, true, event.now, event.deliveryId)
   }
-  const prevScreen = Option.fromUndefinedOr(event.lastScreen)
   const activeForScreen = activeTurnOf(state.worker)
+  const savedDone = Option.flatMap(activeForScreen, (at) => observedDoneFor(state, at.turn))
+  if (activeTurnTypedOf(state.worker) && Option.isSome(savedDone)) {
+    return settleDone(state, savedDone.value, false, event.now, event.deliveryId)
+  }
+  const prevScreen = Option.fromUndefinedOr(event.lastScreen)
   const prevBelongsToOther = Option.exists(
     prevScreen,
     (scr) => Option.exists(activeForScreen, (at) => screenBelongsToOtherTurn(scr, at, adapter)),
@@ -1295,7 +1342,7 @@ const handleProbeGone = (
   let nextWorker = base
   const wake = makePaneGoneWake(nextWorker, "Rex pane closed or process exited.", event.tail, event.deliveryId)
   if (isLive(state.worker.state) || pendingTurnsOf(nextWorker).length > 0) {
-    nextWorker = enqueueWakeIfDue(nextWorker, wake, true)
+    nextWorker = enqueueWakeIfDue(nextWorker, wake, false)
   }
   const actions: Array<MachineAction> = [MachineAction.Persist()]
   if (Option.isSome(nextRetryableWake(nextWorker))) {
