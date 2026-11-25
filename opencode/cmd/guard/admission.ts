@@ -1,8 +1,8 @@
-import { Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
+import { Array as Arr, Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
 import { AdmissionUnavailable, type Address, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
 import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvModel, demandOnVolume, enforceDeclaredWidth, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
-import { capacityOf, maximumRequestMemory, POLICY } from "@dotfiles/opencode-guard/host-supply"
+import { capacityOf, maximumRequestMemory, POLICY, unattested } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
 import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
@@ -14,6 +14,19 @@ const active = (lease: Lease) => lease.state === "running" || lease.state === "d
 const granting = (lease: Lease) => lease.state === "queued" || lease.state === "granted"
 const terminal = (state: string) => ["released", "expired", "cancelled", "refused"].includes(state)
 const cut = (now: number): Observation => ({ now })
+const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
+/** The controller `host status --json` names, and why when it cannot
+ * attest one: the file that was missing or out of range. */
+const controllerOf = (observation: Observation) => {
+  const attestation = envelopeOf(observation)?.attestation
+  // Only a Linux host reads its cgroup tree; the Mac's answer is unchanged.
+  const io = Option.match(Option.fromNullishOr(attestation), { onNone: () => ({}), onSome: ({ io }) => ({ io }) })
+  if (attestation?.controller === "unattested") return {
+    ...io, controller: "unattested", file: attestation.file, why: attestation.why,
+    admission: `fixed cap: ${POLICY.unattestedSlots} heavy leases at a time, FIFO, through the guard's nice + user scope launcher`,
+  }
+  return { ...io, controller: observation.sample?.qualification ?? "unavailable" }
+}
 const supplyReport = (observation: Observation) => Option.map(Option.fromNullishOr(observation.sample), (sample) => ({
   hostCpuMilli: sample.effectiveCpuMilli, managedCpuMilli: sample.envelope.cpuMilli,
   freeManagedCpuMilli: capacityOf(sample), outsideNoncriticalMilli: sample.outsideNoncriticalMilli,
@@ -130,12 +143,17 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const measured = Effect.fn("HostAdmission.meteredScopes")(function* () {
     const state = yield* ledger.inspect()
     const live = Object.values(state.leases).filter(active)
-    return yield* Effect.forEach(live, (row) => Effect.gen(function* () {
+    const scopes = yield* Effect.forEach(live, (row) => Effect.gen(function* () {
       if (Option.isNone(row.binding) || Option.isNone(row.admittedDemand)) return yield* fail("unqualified")
       const pin = yield* native.scope(row.binding.value)
-      if (Option.isNone(pin) || Option.isNone(pin.value.cgroup)) return yield* fail("unqualified")
-      return { binding: pin.value.ref, path: pin.value.cgroup.value, cpuMilli: row.admittedDemand.value.cpuMilli } satisfies Supply.MeteredScope
+      if (Option.isNone(pin)) return yield* fail("unqualified")
+      // A group-placed attempt (claimed while the host was unattested) has
+      // no cgroup to meter: its CPU counts as outside load, and its grant
+      // stays reserved, so the sample only grows more careful.
+      const demand = row.admittedDemand.value
+      return Option.map(pin.value.cgroup, (path) => ({ binding: pin.value.ref, path, cpuMilli: demand.cpuMilli }) satisfies Supply.MeteredScope)
     }))
+    return Arr.getSomes(scopes)
   })
   const measure = Effect.fn("HostAdmission.measure")(function* () {
     if (config.sample) return yield* config.sample(host, Option.map(target, ({ id }) => id))
@@ -237,7 +255,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       const row = state.leases[address.id]
       if (!row) return yield* fail("unknown-id")
       if (!granting(row)) return yield* fail("stale")
-      if (row.state === "granted") return row
+      if (row.state === "granted") return { row, observation }
       yield* waitForChange(500)
     }
   })
@@ -251,12 +269,16 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const control = yield* foregroundScope(host, foreground, (paused) => cold().pipe(
       Effect.flatMap((at) => ledger.transact({ op: "job-control", ...fence, paused }, at)), Effect.asVoid,
     ), config.onInterrupt ?? (() => {}), interrupted, config.beforeResume)
-    const work = yield* Scope.spawnOwned(Scope.payloadArgv(host, argv), config.cwd, environment, fd)
+    const payload = yield* Option.match(pin.cgroup, {
+      onSome: () => Effect.succeed(Scope.payloadArgv(host, argv)),
+      onNone: () => Scope.groupPayloadArgv(host, argv),
+    })
+    const work = yield* Scope.spawnOwned(payload, config.cwd, environment, fd)
     let stopping = false
     const stop = Effect.suspend(() => {
       if (stopping) return Effect.void
       stopping = true
-      if (host.platform === "darwin") return stopGroup.pipe(Effect.ignore)
+      if (Option.isNone(pin.cgroup)) return stopGroup.pipe(Effect.ignore)
       return Scope.stopOwnedCgroup(host, pin).pipe(Effect.catchTag("AdmissionUnavailable", () => work.stop))
     })
     const escalate = Effect.gen(function* () {
@@ -278,14 +300,14 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
 
   const claim = Effect.fn("HostAdmission.claim")(function* (
-    row: Lease, args: ReadonlyArray<string>, environment?: Readonly<Record<string, string>>,
+    row: Lease, args: ReadonlyArray<string>, placement: Scope.Placement, environment?: Readonly<Record<string, string>>,
   ) {
     if (Option.isNone(row.admittedDemand) || args.length === 0) return yield* fail("invalid-request")
     const demand = row.admittedDemand.value
     const volume = yield* Supply.volumeOf(host, config.cwd)
     if (!demand.volumeReservations.some(({ volumeId }) => volumeId === volume.id)) return yield* fail("unknown-volume")
     return yield* Effect.scoped(Effect.gen(function* () {
-      const location = yield* Scope.pinOf(host, row.id, row.generation, demand.cpuMilli, demand.memoryBytes, foreground)
+      const location = yield* Scope.pinOf(host, row.id, row.generation, demand.cpuMilli, demand.memoryBytes, foreground, placement)
       const watcher = yield* Scope.watchGroup(host, location)
       const attempt = yield* Effect.scoped(Effect.gen(function* () {
         const { fd, descriptor } = yield* Scope.armDescriptor(host, path.join(config.directory, `${location.ref}.lock`))
@@ -317,7 +339,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const attach = Effect.fn("HostAdmission.attach")(function* (socket: string) {
     const offer = yield* Scope.takeOffer(host, socket)
     const { leases } = yield* ledger.inspect()
-    return yield* attachGrant(offer, Option.fromNullishOr(leases[offer.id]), (row) => claim(row, offer.argv, offer.environment).pipe(
+    return yield* attachGrant(offer, Option.fromNullishOr(leases[offer.id]), (row) => claim(row, offer.argv, "cgroup", offer.environment).pipe(
       Effect.map((code) => Option.getOrElse(code, () => 125)),
     ))
   })
@@ -346,9 +368,13 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     address: Address, args: ReadonlyArray<string>, explain: ReturnType<typeof describeWait>,
   ) {
     for (;;) {
-      const row = yield* wait(address, explain)
-      const launch = { linux: () => Effect.scoped(linux(row, args)), darwin: () => claim(row, args) }
-      const code = yield* launch[host.platform]()
+      const { row, observation } = yield* wait(address, explain)
+      // An unattested host has no workload slice to offer a unit in: the
+      // attempt stays in this process's own group, under the guard's
+      // heavy launcher, as on the Mac.
+      const placement = Scope.placementOf(host, !unattested(envelopeOf(observation)))
+      const launch = { cgroup: () => Effect.scoped(linux(row, args)), group: () => claim(row, args, "group") }
+      const code = yield* launch[placement]()
       if (Option.isSome(code)) return code.value
       yield* waitForChange(500)
     }
@@ -381,14 +407,22 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     )))
   })
 
+  // A declared width is a scope cap only where the Linux controller
+  // attests; an unattested host models the tool's width as the Mac does.
+  const enforcedWidth = Effect.suspend(() => {
+    if (host.platform !== "linux") return Effect.succeed(false)
+    return cold().pipe(Effect.flatMap(attest), Effect.map((observation) => !unattested(envelopeOf(observation))))
+  })
+
   const hostStatus = Effect.fn("HostAdmission.hostStatus")(function* () {
-    const { sample, now, envelope } = yield* measure().pipe(Effect.flatMap(attest))
-    const limits = envelope ?? sample?.envelope
+    const observation = yield* measure().pipe(Effect.flatMap(attest))
+    const { sample, now } = observation
+    const limits = envelopeOf(observation)
     const state = yield* ledger.inspect()
     return {
       version: 1, hostId: host.hostId, bootId: host.bootId, nowBootMs: now, revision: state.revision, principal: caller.principal,
       defaultVolume: Option.getOrNull(Option.map(target, ({ id }) => id)),
-      capabilities: { pressure: sample?.pressure ?? "unknown", controller: sample?.qualification ?? "unavailable", platform: host.platform },
+      capabilities: { pressure: sample?.pressure ?? "unknown", ...controllerOf(observation), platform: host.platform },
       coresMilli: Option.getOrNull(Option.fromNullishOr(sample?.effectiveCpuMilli)),
       runnable: Option.getOrNull(Option.fromNullishOr(sample?.runnable)),
       maximumCpuMilli: limits?.cpuMilli ?? 0,
@@ -401,7 +435,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
 
   return {
-    enforcedWidth: host.platform === "linux",
+    enforcedWidth,
     hostStatus, request: (draft: Request) => request(draft).pipe(Effect.map(({ reply, observation }) => ({
       ...reply, supply: Option.getOrNull(supplyReport(observation)),
     }))), status, watch, run, attach,
@@ -417,7 +451,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       if (!row || row.owner !== address.owner || terminal(reply.state)) return yield* fail(reply.reason)
       const { demand } = row.request
       let advice = "On Linux the applied scope CPU controller enforces the reservation."
-      if (host.platform === "darwin") {
+      if (!(yield* enforcedWidth)) {
         const model = argvModel(args, Scope.localEnvironment())
         if (model.width === "invalid") return yield* fail("invalid-width")
         if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(model.width) ||

@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import { AdmissionUnavailable } from "../admission.ts"
 import { Counter, OpaqueId, type Principal } from "../admission-wire.ts"
 import { type BootHost, linuxBudget, readProcess, ref, WORKLOAD_SLICE } from "./admission.ts"
+import { DEFAULT_LIMITS, heavyArgv, ioniceAvailable, SCOPE_PROBE } from "../launcher.ts"
 import { type Actuation, issue, watchdogPlan, watchdogProgram } from "./actuation.ts"
 import { attestLinux, linuxDrain, stopLinux, type LinuxManager } from "./linux-controller.ts"
 
@@ -127,8 +128,10 @@ export const stopOwnedCgroup = Effect.fn("LaunchScope.stopOwnedCgroup")(function
 // started before the lease descriptor exists. Only a post-claim `armed`
 // order authorizes a kill. EOF thereafter means the launcher disappeared.
 const spawnWatchdog = (script: string) => spawn(["/bin/sh", "-c", script], { stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+/** A pin in a cgroup is stopped by its unit; any other (the Mac, an
+ * unattested Linux host) by its own process group's watchdog. */
 export const watchGroup = Effect.fn("LaunchScope.watchGroup")(function* (host: BootHost, pin: UnarmedPin) {
-  if (host.platform === "linux") return { arm: Effect.void, disarm: Effect.void, stop: Effect.void, onLauncherExit: Effect.void }
+  if (Option.isSome(pin.cgroup)) return { arm: Effect.void, disarm: Effect.void, stop: Effect.void, onLauncherExit: Effect.void }
   return yield* watchOwnGroup(host, pin.pid)
 })
 
@@ -326,23 +329,35 @@ export const scopeLiveness = Effect.fn("LaunchScope.scopeLiveness")(function* (h
   const descriptor = yield* Effect.scoped(descriptorLiveness(host, pin.descriptor)).pipe(Effect.orElseSucceed(() => "unknown" as const))
   if (descriptor === "held") return "live" as const
   if (descriptor === "unknown") return descriptor
-  if (host.platform === "darwin") return "gone" as const
-  if (Option.isNone(pin.cgroup)) return "unknown" as const
+  // A group-placed pin (the Mac, an unattested Linux host) has no cgroup:
+  // its released descriptor is the proof, as every member inherited it.
+  if (Option.isNone(pin.cgroup)) return "gone" as const
   return yield* linuxDrain(yield* linuxManager(), pin.cgroup.value, descriptor)
 })
 
+/** Where a claimed attempt lives: `cgroup`, the Linux workload controller's
+ * one-use unit; `group`, its own process group (the Mac, and a Linux host
+ * that cannot attest a controller). */
+export type Placement = "cgroup" | "group"
+export const placementOf = (host: BootHost, attested: boolean): Placement => {
+  if (host.platform === "linux" && attested) return "cgroup"
+  return "group"
+}
+
 export const pinOf = Effect.fn("LaunchScope.pin")(function* (
   host: BootHost, id: string, generation: number, cpuMilli: number, memoryBytes: number, foreground = Option.none<number>(),
+  placement: Placement = placementOf(host, true),
 ) {
   const sys = host.kernel.core.symbols
   const pid = sys.getpid()
-  if (host.platform === "darwin" && sys.getpgrp() !== pid &&
+  const grouped = placement === "group"
+  if (grouped && sys.getpgrp() !== pid &&
     ((sys.isatty(0) === 1 && !Option.exists(foreground, (group) => group === sys.getpgrp())) || sys.setpgid(0, 0) !== 0))
     return yield* unqualified()
   const self = yield* processIdentity(host, pid)
-  if (Option.isNone(self) || (host.platform === "darwin" && self.value.group !== pid)) return yield* unqualified()
+  if (Option.isNone(self) || (grouped && self.value.group !== pid)) return yield* unqualified()
   let cgroup = Option.none<string>()
-  if (host.platform === "linux") {
+  if (!grouped) {
     const actual = yield* attestLinux(yield* linuxManager(), unitOf(id, generation), cpuMilli, memoryBytes)
     cgroup = Option.some(actual)
   }
@@ -379,6 +394,18 @@ export const payloadArgv = (host: BootHost, argv: ReadonlyArray<string>, nice = 
   if (ionice) return [...prefix, "/usr/bin/ionice", "-c3", ...argv]
   return [...prefix, ...argv]
 }
+
+/** A group-placed attempt's payload. On Linux (a host that cannot attest
+ * its workload controller) it is the guard's own heavy launcher
+ * (`../launcher.ts`): nice, the idle IO class and, where the user manager
+ * answers its probe, a transient user scope under the guard's memory cap
+ * and CPU weight. On the Mac, `payloadArgv` as before. */
+export const groupPayloadArgv = Effect.fn("LaunchScope.groupPayload")(function* (host: BootHost, argv: ReadonlyArray<string>) {
+  if (host.platform !== "linux") return payloadArgv(host, argv)
+  const scope = yield* readProcess(["/usr/bin/systemd-run", ...SCOPE_PROBE.slice(1)]).pipe(
+    Effect.as(true), Effect.orElseSucceed(() => false))
+  return heavyArgv(argv, DEFAULT_LIMITS, { scope, ionice: ioniceAvailable() })
+})
 
 export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
   argv: ReadonlyArray<string>, cwd: string, environment?: Readonly<Record<string, string>>, inherited?: number,

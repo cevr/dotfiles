@@ -81,7 +81,7 @@ export const checkLegacyWriter = (adapter: LegacyAdapter, wire: LegacyWire) =>
       ]
       const attempt = Option.getOrThrow(Option.fromNullishOr(attempts[i % attempts.length]))
       expect(yield* why(attempt)).toBe("unavailable")
-      expect(wire.qualifiedForm("unavailable")).toBe("Retry submission when host status --json can attest the managed pool and volume.")
+      expect(wire.qualifiedForm("unavailable")).toBe("Retry once host-admit can open its ledger and read this process's identity; host status --json names any missing capability.")
       expect(yield* current.ledger.inspect()).toEqual(after)
       expect(yield* current.native.peer(`legacy-${i}`)).toBeNull()
       if (i % 2 === 1) yield* peer.intent(currentRecord, 2000)

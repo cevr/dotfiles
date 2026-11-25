@@ -171,7 +171,7 @@ const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: Readonly
   const delimiter = rest.indexOf("--")
   const payload = rest.slice(delimiter + 1)
   if (action !== "run" || delimiter < 0 || payload.length === 0 || delimiter % 2 !== 0) return yield* bad()
-  const demand = yield* checkSpec(payload, rest.slice(0, delimiter), host.enforcedWidth)
+  const demand = yield* checkSpec(payload, rest.slice(0, delimiter), yield* host.enforcedWidth)
   return yield* host.run(demand, payload, demand.advice, demand.imposed)
 })
 
