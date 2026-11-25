@@ -136,6 +136,7 @@ import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
 import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
+import * as HoldWake from "@dotfiles/opencode-pool/hold-wake"
 import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
 import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
 import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
@@ -173,6 +174,7 @@ export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 const HostSessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const HostMessageID = Schema.String.check(Schema.isStartingWith("msg_")).pipe(Schema.brand("Session.Message.ID"))
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
@@ -244,7 +246,14 @@ const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
 const decodeSendHold = Schema.decodeUnknownEffect(HeldSend)
 const sendHoldOf = Schema.decodeUnknownOption(HeldSend)
 const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
-type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
+type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly model?: string; readonly stepID?: string }
+const publicHeldSend = (hold: HeldSend): HeldSend => HeldSend.make({
+  sessionID: hold.sessionID,
+  providerID: hold.providerID,
+  reasonCode: hold.reasonCode,
+  retryAt: hold.retryAt,
+  ...Option.match(Option.fromUndefinedOr(hold.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+})
 
 /** The outside systems the model runs on. */
 export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
@@ -566,32 +575,143 @@ export const make = <R = never,>(
           })))),
         )
       })
+      // The old host has no concrete unsent-Step result. New hosts expose
+      // the Step during routing and again at the final send hook.
+      let canDeferPrimary = false
+      const sessionRole = (sessionID: string): Effect.Effect<HoldWake.SessionRole> =>
+        Schema.decodeUnknownEffect(HostSessionID)(sessionID).pipe(
+          Effect.flatMap((id) => ctx.session.get({ sessionID: id })),
+          Effect.map((session): HoldWake.SessionRole =>
+            Option.match(Option.fromUndefinedOr(session.parentID), {
+              onNone: () => "root",
+              onSome: () => "subagent",
+            }),
+          ),
+          Effect.orElseSucceed((): HoldWake.SessionRole => "gone"),
+        )
+      const paceAnswer = Effect.fn("Pool.paceAnswer")(function* (
+        provider: string,
+        model: Option.Option<string>,
+        sessionID: Option.Option<string>,
+        dispatch: Option.Option<boolean>,
+      ) {
+        const integration = Option.filter(tracked(provider), () => !signed(provider))
+        if (Option.isSome(integration)) {
+          const tracking = yield* routeTracking(integration.value, {
+            providerID: provider,
+            sessionID: Option.getOrElse(sessionID, () => ""),
+            kind: "primary",
+            model: Option.getOrElse(model, () => ""),
+          })
+          if (Option.isSome(tracking)) return tracking.value
+        }
+        return yield* withPool((pool) => pool.pace(
+          provider,
+          Option.getOrUndefined(model),
+          Option.getOrUndefined(sessionID),
+          Option.getOrUndefined(dispatch),
+        ))
+      })
       // The deadline changes what the record says, not whether it exists.
       // Reading from storage and the current clock also works after a restart,
       // without a timer, an activation scan, or a missed expiry to recover.
       const heldSend = (sessionID: string) => Effect.gen(function* () {
         const raw = Option.fromUndefinedOr(yield* ctx.storage.get(sendHoldKey(sessionID)))
         if (Option.isNone(raw)) return {}
-        const hold = yield* decodeSendHold(raw.value).pipe(Effect.orDie)
+        const hold = publicHeldSend(yield* decodeSendHold(raw.value).pipe(Effect.orDie))
         const now = yield* Clock.currentTimeMillis
         if (now >= hold.retryAt) return { state: "ended" as const, hold }
         return { state: "held" as const, hold }
       })
-      const recordHeld = (scope: SendScope, reason: string, reasonCode: HoldReason, retry: number) =>
-        Clock.currentTimeMillis.pipe(Effect.flatMap((now) => {
-          const retryAt = nextRetryAt(now, [retry])
-          const hold = HeldSend.make({
-            sessionID: scope.sessionID, providerID: scope.providerID, reasonCode, retryAt,
-            ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
-          })
-          const refusal = { ...hold, reason }
-          if (scope.kind !== "primary") return Effect.succeed(refusal)
-          // No successful/typed refusal is published before this commit.
-          return sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(Effect.as(refusal))
-        }))
+      const recordHeld = Effect.fn("Pool.recordHeld")(function* (
+        scope: SendScope,
+        reason: string,
+        reasonCode: HoldReason,
+        retry: number,
+      ) {
+        const now = yield* Clock.currentTimeMillis
+        const retryAt = nextRetryAt(now, [retry])
+        const hold = HeldSend.make({
+          sessionID: scope.sessionID,
+          providerID: scope.providerID,
+          reasonCode,
+          retryAt,
+          ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+          ...Option.match(Option.fromUndefinedOr(scope.model), { onNone: () => ({}), onSome: (model) => ({ model }) }),
+        })
+        if (scope.kind !== "primary") return { ...hold, reason }
+        let message = reason
+        if (!canDeferPrimary && Option.isNone(Option.fromUndefinedOr(scope.stepID))) {
+          const role = yield* sessionRole(scope.sessionID)
+          if (role === "subagent") message = HoldWake.appendSubagentNote(reason)
+        }
+        // No successful/typed refusal is published before this commit.
+        yield* sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold))
+        return { ...hold, reason: message }
+      })
       const removeHeld = (sessionID: string) => Effect.gen(function* () {
         const key = sendHoldKey(sessionID)
         if (Option.isSome(Option.fromUndefinedOr(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
+      })
+      const commitWakeDecision = Effect.fn("Pool.commitWakeDecision")(function* (
+        key: string,
+        expectedRetryAt: number,
+        role: HoldWake.SessionRole,
+        pace: Pace,
+      ) {
+        const current = sendHoldOf(yield* ctx.storage.get(key))
+        if (Option.isNone(current) || current.value.retryAt !== expectedRetryAt) return Option.none<string>()
+        const now = yield* Clock.currentTimeMillis
+        const decision = HoldWake.decide({ row: current.value, session: role, now, pace: Option.some(pace) })
+        if (HoldWake.Decision.guards.Hold(decision)) {
+          yield* ctx.storage.set(key, HeldSend.make({ ...current.value, retryAt: decision.retryAt }))
+          return Option.none<string>()
+        }
+        if (!HoldWake.Decision.guards.Wake(decision)) return Option.none<string>()
+        yield* ctx.storage.set(key, HeldSend.make({ ...current.value, wokenAt: now }))
+        return Option.some(HoldWake.wakeDeliveryId(current.value.sessionID, current.value.retryAt))
+      })
+      const deliverWake = Effect.fn("Pool.deliverWake")(function* (sessionID: string, deliveryID: string) {
+        const session = yield* Schema.decodeUnknownEffect(HostSessionID)(sessionID).pipe(Effect.option)
+        const id = yield* Schema.decodeUnknownEffect(HostMessageID)(deliveryID).pipe(Effect.option)
+        if (Option.isNone(session) || Option.isNone(id)) return
+        yield* ctx.session.synthetic({
+          sessionID: session.value,
+          id: id.value,
+          text: HoldWake.WAKE_TEXT,
+          description: HoldWake.WAKE_DESCRIPTION,
+          resume: true,
+        }).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+            return Effect.logWarning("pool hold-wake synthetic delivery failed", cause)
+          }),
+        )
+      })
+      const checkHeldRow = Effect.fn("Pool.checkHeldRow")(function* (key: string, row: HeldSend) {
+        const now = yield* Clock.currentTimeMillis
+        if (!HoldWake.needsCheck(row, now)) return
+        const role = yield* sessionRole(row.sessionID)
+        if (role !== "subagent") return
+        const pace = yield* paceAnswer(row.providerID, Option.fromUndefinedOr(row.model), Option.some(row.sessionID), Option.some(true))
+        const delivery = yield* sendRecords.withPermits(1)(commitWakeDecision(key, row.retryAt, role, pace))
+        if (Option.isSome(delivery)) yield* deliverWake(row.sessionID, delivery.value)
+      })
+      const wakeHeldSends = Effect.fn("Pool.wakeHeldSends")(function* () {
+        if (canDeferPrimary) return
+        let after = Option.none<string>()
+        do {
+          const page = yield* ctx.storage.scan({
+            prefix: SEND_HOLD_PREFIX,
+            ...Option.match(after, { onNone: () => ({}), onSome: (cursor) => ({ after: cursor }) }),
+          })
+          for (const { key, value } of page.entries) {
+            const row = sendHoldOf(value)
+            if (Option.isNone(row)) continue
+            yield* checkHeldRow(key, row.value)
+          }
+          after = Option.fromUndefinedOr(page.next)
+        } while (Option.isSome(after))
       })
       const pruneHeldSends = Effect.gen(function* () {
         const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
@@ -640,6 +760,17 @@ export const make = <R = never,>(
           yield* Deferred.succeed(ready, pool)
 
           yield* Effect.forkScoped(pool.follow)
+
+          // On hosts without a Step, scan held-send rows at start and every 30 s so held subagents wake once when the pool opens.
+          yield* Effect.forkScoped(
+            wakeHeldSends().pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+                return Effect.logWarning("pool hold-wake scan failed", cause)
+              }),
+              Effect.repeat(Schedule.spaced(HoldWake.WAKE_INTERVAL)),
+            ),
+          )
 
           // A notice read leaves the tray as soon as the questions change.
           if (Object.keys(resetsOf(options)).length > 0) yield* Effect.forkScoped(pool.followAnswers)
@@ -709,9 +840,6 @@ export const make = <R = never,>(
           Effect.orElseSucceed(() => undefined),
         )
 
-      // The old host has no concrete unsent-Step result. New hosts expose
-      // the Step during routing and again at the final send hook.
-      let canDeferPrimary = false
       const failProposal = (scope: SendScope, reason: string, code: HoldReason, at: number) =>
         recordHeld(scope, reason, code, at).pipe(
           Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
@@ -743,10 +871,10 @@ export const make = <R = never,>(
                 // Every account held: the request goes out on none. The host ends the turn on the pool's own words
                 // and when the first account opens; a hook declares no failure, so the refusal is its defect.
                 Effect.catchTag("AccountsHeld", (held) =>
-                  failProposal({ ...event, providerID: event.model.providerID }, heldMessage(held), "account-held", held.retryAt)),
+                  failProposal({ sessionID: event.sessionID, providerID: event.model.providerID, kind: event.kind, model: event.model.id }, heldMessage(held), "account-held", held.retryAt)),
                 // Held by the pace at its dispatch: nothing goes out and no credential is set; the turn ends on why and when.
                 Effect.catchTag("RequestHeld", (held) =>
-                  failProposal({ ...event, providerID: event.model.providerID }, requestHeldMessage(held), held.reasonCode, held.retryAt)),
+                  failProposal({ sessionID: event.sessionID, providerID: event.model.providerID, kind: event.kind, model: event.model.id }, requestHeldMessage(held), held.reasonCode, held.retryAt)),
               ),
           ),
         )
@@ -926,7 +1054,7 @@ export const make = <R = never,>(
         const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
         const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
           recordHeld(scope, reason, reasonCode, retryAt).pipe(
-            Effect.as(Handoff.cases.Held.make({ message: reason })),
+            Effect.map((hold) => Handoff.cases.Held.make({ message: hold.reason })),
           )
         const decision = yield* withPool((pool) => Effect.gen(function* () {
           if (!active) return yield* handoffUnavailable(request.sessionID)
@@ -961,18 +1089,12 @@ export const make = <R = never,>(
       })
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => Effect.gen(function* () {
-            const provider = providerOf(input)
-            const integration = Option.filter(tracked(provider), () => !signed(provider))
-            if (Option.isSome(integration)) {
-              const tracking = yield* routeTracking(integration.value, {
-                providerID: provider, sessionID: Option.getOrElse(Option.fromUndefinedOr(sessionOf(input)), () => ""),
-                kind: "primary", model: modelOf(input) ?? "",
-              })
-              if (Option.isSome(tracking)) return tracking.value
-            }
-            return yield* withPool((pool) => pool.pace(provider, modelOf(input), sessionOf(input), dispatchOf(input)))
-          }).pipe(Effect.orDie),
+          pace: (input) => paceAnswer(
+            providerOf(input),
+            Option.fromUndefinedOr(modelOf(input)),
+            Option.fromUndefinedOr(sessionOf(input)),
+            Option.some(dispatchOf(input)),
+          ).pipe(Effect.orDie),
           heldSend: ({ sessionID }) => heldSend(sessionID),
           handoff: (input) => handoff(decodeHandoff(input)),
           status: () => Effect.gen(function* () {

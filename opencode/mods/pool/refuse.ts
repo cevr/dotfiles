@@ -11,8 +11,10 @@ export const HeldSend = Schema.Struct({
   sessionID: Schema.String,
   providerID: Schema.String,
   stepID: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
   reasonCode: HoldReason,
   retryAt: Schema.Finite,
+  wokenAt: Schema.optionalKey(Schema.Finite),
 })
 export type HeldSend = typeof HeldSend.Type
 export const HeldSendAnswer = Schema.Union([

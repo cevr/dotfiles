@@ -1511,6 +1511,20 @@ or request (`<pool>/step/<at>/<session>`, `limits/use/<message>`), as an
 older pool kept them, is read too and folded into chunks in the background. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
 
+### Interim hold wake (`hold-wake`)
+
+On a host without a typed Step (`canDeferPrimary` false, pin `c6664062`), a
+held primary request still ends its turn in error. For a subagent (a session
+with a `parentID`), the pool appends `This session resumes by itself then; stop it to cancel.`
+to the refusal message, stores the request's `model` on `held-send/<sessionID>`,
+and runs a scoped scanner every 30 seconds on the Effect `Clock` (`mods/pool/hold-wake.ts`).
+At or after `retryAt`, the scanner re-checks the pool's dispatch pace: if still
+held, it advances `retryAt` without waking; if admitted, it records `wokenAt`
+and delivers one synthetic wake with a deterministic message id derived from
+`(sessionID, retryAt)` so multiple copies or restarts wake at most once. Roots
+are never woken, and the host ignores wakes for stopped sessions. The
+`pool-hold-latch` unit deletes this interim once the host holds the Step.
+
 ### Rate-limit resets
 
 The pool spends the usage-limit resets its accounts hold on its own: the

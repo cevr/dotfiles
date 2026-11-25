@@ -35,6 +35,7 @@ import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
 import { Handoff } from "@dotfiles/opencode-pool/handoff"
+import * as HoldWake from "@dotfiles/opencode-pool/hold-wake"
 import { HeldSendAnswer } from "@dotfiles/opencode-pool/refuse"
 import { DEFAULT_HOLD_MS, MAX_REFUSAL } from "@dotfiles/opencode-pool/hold"
 import { below, generator } from "../../sim/runtime.ts"
@@ -88,6 +89,9 @@ interface SessionEvent {
   }
 }
 
+/** A session missing from the stand-in host, matching OpenCode's Session.NotFoundError shape. */
+const SessionNotFound = Schema.TaggedStruct("Session.NotFoundError", { sessionID: Schema.String })
+
 /** A limit tally of the test's own, in every start's options: the live adapters otherwise keep it under the owner's XDG_STATE_HOME. */
 const scratchLimits = (root: string) => join(mkdtempSync(join(root, "pool-state-")), "limits.json")
 
@@ -123,6 +127,14 @@ interface World {
   readonly owner: OwnerTest.MemoryOwner
   /** Each subagent session's parent, by id. */
   readonly parents: Map<string, string>
+  /** Sessions missing from the host: `session.get` fails with `Session.NotFoundError`. */
+  readonly missing: Set<string>
+  /** Sessions stopped by their parent: `session.synthetic` admits the notice without waking them. */
+  readonly stopped: Set<string>
+  /** Synthetic messages delivered by the plugin, with whether the host woke the session on each. */
+  readonly synthetics: Array<{ readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean; readonly woke: boolean }>
+  /** Admitted synthetic ids (`${sessionID}\0${id}`), modelling the host's first-admission-wins reconciliation. */
+  readonly admitted: Set<string>
 }
 
 const world = (): World => ({
@@ -137,6 +149,10 @@ const world = (): World => ({
   active: new Map(),
   owner: OwnerTest.empty(),
   parents: new Map(),
+  missing: new Set(),
+  stopped: new Set(),
+  synthetics: [],
+  admitted: new Set(),
 })
 
 /** The outside systems as test layers over `state`. */
@@ -264,6 +280,7 @@ const start = <R = never,>(
       options: hostOptions,
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
+          if (state.missing.has(sessionID)) return Effect.fail(SessionNotFound.make({ sessionID }))
           const source = state.forks.get(sessionID)
           const parentID = state.parents.get(sessionID)
           return Effect.succeed({
@@ -272,6 +289,16 @@ const start = <R = never,>(
             ...(parentID === undefined ? {} : { parentID }),
           })
         },
+        synthetic: (input: { readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean }) =>
+          Effect.suspend(() => {
+            if (state.missing.has(input.sessionID)) return Effect.fail(SessionNotFound.make({ sessionID: input.sessionID }))
+            const key = Option.map(Option.fromUndefinedOr(input.id), (id) => `${input.sessionID}\0${id}`)
+            if (Option.exists(key, (value) => state.admitted.has(value))) return Effect.void
+            if (Option.isSome(key)) state.admitted.add(key.value)
+            const woke = input.resume !== false && !state.stopped.has(input.sessionID)
+            state.synthetics.push({ ...input, woke })
+            return Effect.void
+          }),
         hook: (name: string, callback: Hook) =>
           Effect.sync(() => {
             hooks[name] = callback
@@ -2312,4 +2339,95 @@ describe("Antigravity, composed as OpenCode composes the pool", () => {
         }
       }).pipe(Effect.provide(HOST_FILES)),
     ))
+})
+
+describe("interim hold-wake on hosts without a Step", () => {
+  test("a held subagent's error states it resumes by itself and stopping cancels; a root's and an auxiliary request's do not", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      state.parents.set("ses_child", "ses_root")
+      const until = 10 * MINUTE
+      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      const childError = yield* refusalOf(plugin.request("ses_child"))
+      expect(childError).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      const rootError = yield* refusalOf(plugin.request("ses_root"))
+      expect(rootError).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      const titleError = yield* refusalOf(plugin.request("ses_child", "anthropic", "title"))
+      expect(titleError).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      expect(state.storage.get("held-send/ses_child")).toMatchObject({ sessionID: "ses_child", model: model.id, retryAt: until })
+      expect(yield* plugin.heldSend("ses_child")).toEqual({
+        state: "held",
+        hold: { sessionID: "ses_child", providerID: "anthropic", reasonCode: "account-held", retryAt: until },
+      })
+      const lateHandoff = yield* plugin.handoff("cred-a", "ses_child")
+      expect(Schema.is(Handoff.cases.Held)(lateHandoff)).toBe(true)
+      if (Schema.is(Handoff.cases.Held)(lateHandoff)) expect(lateHandoff.message).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+    })))
+
+  test("a stopped subagent is not woken by the host when its hold opens, and a restart never wakes it again", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      state.parents.set("ses_stopped", "ses_root")
+      const until = 2 * MINUTE
+      state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* refusalOf(plugin.request("ses_stopped"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      state.stopped.add("ses_stopped")
+      yield* TestClock.setTime(until + MINUTE)
+      expect(state.synthetics).toHaveLength(1)
+      expect(state.synthetics[0]).toMatchObject({
+        sessionID: "ses_stopped",
+        id: HoldWake.wakeDeliveryId("ses_stopped", until),
+        text: HoldWake.WAKE_TEXT,
+        resume: true,
+        woke: false,
+      })
+      expect(state.storage.get("held-send/ses_stopped")).toMatchObject({ wokenAt: until })
+      // A fresh pool copy after restart sees wokenAt and sends nothing more.
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* TestClock.adjust(5 * MINUTE)
+      expect(state.synthetics).toHaveLength(1)
+    })))
+
+  test("wakes once with an absent 5-hour usage window, decodes legacy rows, drops gone sessions, and stays idle on hosts with a Step", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      state.parents.set("ses_legacy", "ses_root")
+      state.parents.set("ses_gone", "ses_root")
+      state.missing.add("ses_gone")
+      const until = MINUTE
+      state.readings.set("cred-a", {
+        at: until,
+        usage: { at: until, samples: 1 },
+        windows: [{ name: "7d", utilization: 0.1, resetAt: until + 72 * HOUR }],
+        absent: [{ name: "5h", at: until }],
+      })
+      state.storage.set("held-send/ses_legacy", { sessionID: "ses_legacy", providerID: "anthropic", reasonCode: "account-held", retryAt: until })
+      state.storage.set("held-send/ses_gone", { sessionID: "ses_gone", providerID: "anthropic", reasonCode: "account-held", retryAt: until })
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* TestClock.setTime(until + 30_000)
+      expect(state.synthetics).toHaveLength(1)
+      expect(state.synthetics[0]).toMatchObject({
+        sessionID: "ses_legacy",
+        id: HoldWake.wakeDeliveryId("ses_legacy", until),
+        text: HoldWake.WAKE_TEXT,
+        woke: true,
+      })
+      // On a host with a Step (`experimental.model.resolve` with `step`), hold-wake does not wake or append the note.
+      const stepped = world()
+      stepped.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      stepped.parents.set("ses_stepped", "ses_root")
+      stepped.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+      const plugin = yield* start({ sweepMinutes: 0 }, stepped, live())
+      const resolve = yield* registered(plugin.hooks, "experimental.model.resolve")
+      yield* resolve({ sessionID: "ses_stepped", agent: "build", kind: "primary", model, step: { id: "step_1" } })
+      expect(yield* refusalOf(plugin.request("ses_stepped"))).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      yield* TestClock.setTime(until + 2 * MINUTE)
+      expect(stepped.synthetics).toEqual([])
+    })))
 })
