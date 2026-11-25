@@ -257,10 +257,6 @@ export const PINS: PinTable = {
       "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
-    "await:second:follow_up@174": [
-      "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
     "await:second:follow_up@30": [
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
@@ -352,10 +348,6 @@ export const PINS: PinTable = {
     ],
     "await:second:follow_up@171": [
       "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
-    "await:second:follow_up@175": [
-      "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "await:second:follow_up@31": [
@@ -1028,10 +1020,6 @@ export const PINS: PinTable = {
       "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
-    "await:second:steer@174": [
-      "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
     "await:second:steer@30": [
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
@@ -1126,10 +1114,6 @@ export const PINS: PinTable = {
       "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
-    "await:second:steer@175": [
-      "I6 w1: at quiescence status says done/turn N but the store says done/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
     "await:second:steer@31": [
       "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
@@ -1162,10 +1146,6 @@ export const PINS: PinTable = {
     "await:second:stop@124": [
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
     ],
-    "await:second:stop@176": [
-      "I6 w1: at quiescence status says done/turn N but the store says stopped/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
   },
   "batch await:second:stop 2/4": {
     "await:second:stop@109": [
@@ -1185,10 +1165,6 @@ export const PINS: PinTable = {
     ],
     "await:second:stop@173": [
       "I6 w1: at quiescence status says done/turn N but the store says stopped/turn N",
-    ],
-    "await:second:stop@177": [
-      "I6 w1: at quiescence status says done/turn N but the store says stopped/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
   },
   "batch await:second:stop 3/4": {
@@ -1210,10 +1186,6 @@ export const PINS: PinTable = {
     "await:second:stop@126": [
       "I6 w1: at quiescence status says working/turn N but the store says stopped/turn N",
     ],
-    "await:second:stop@174": [
-      "I6 w1: at quiescence status says done/turn N but the store says stopped/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
   },
   "batch await:second:stop 4/4": {
     "await:second:stop@107": [
@@ -1231,10 +1203,6 @@ export const PINS: PinTable = {
     "await:second:stop@123": [
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
     ],
-    "await:second:stop@175": [
-      "I6 w1: at quiescence status says done/turn N but the store says stopped/turn N",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
   },
   "batch await:second:stop_close 1/4": {
     "await:second:stop_close@120": [
@@ -1244,25 +1212,16 @@ export const PINS: PinTable = {
       "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
     ],
-    "await:second:stop_close@176": [
-      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-    ],
   },
   "batch await:second:stop_close 2/4": {
     "await:second:stop_close@125": [
       "I2 w1: <tok> was refused to the caller, yet typed Nx",
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
     ],
-    "await:second:stop_close@177": [
-      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-    ],
   },
   "batch await:second:stop_close 3/4": {
     "await:second:stop_close@122": [
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
-    ],
-    "await:second:stop_close@174": [
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
   },
   "batch await:second:stop_close 4/4": {
@@ -1271,9 +1230,6 @@ export const PINS: PinTable = {
     ],
     "await:second:stop_close@123": [
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
-    ],
-    "await:second:stop_close@175": [
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
   },
   "batch crash 1/4": {
@@ -1481,17 +1437,14 @@ export const PINS: PinTable = {
       "I1 start#N (w1) did not answer within N ms",
     ],
   },
-  "batch seeds 1/3": {
+  "batch seeds 1/6": {
     "seed:1": [
       "I1 start#N (named1) did not answer within N ms",
       "I1 start#N (w1) did not answer within N ms",
-      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I6 w2: at quiescence status says needs_input/turn N but the store says needs_input/turn N",
+      "I6 w2: at quiescence status says needs_input/turn N but the store says done/turn N",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
-    ],
-    "seed:10": [
-      "I1 start#N (w2) did not answer within N ms",
+      "I8 w2: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "seed:13": [
       "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
@@ -1500,95 +1453,34 @@ export const PINS: PinTable = {
       "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
       "I8 named1: N queued turn(s) never typed though the pane is idle",
     ],
-    "seed:28": [
-      "I1 restart#N (w1) did not answer within N ms",
-      "I1 restart#N (w1) did not answer within N ms",
-      "I1 status#N (w1) did not answer within N ms",
-      "I1 steer#N (w1) did not answer within N ms",
-      "I1 stop#N (w1) did not answer within N ms",
-      "I1 stop#N (w1) did not answer within N ms",
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
-      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
-    ],
     "seed:31": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.write #N",
       "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
-      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-    ],
-    "seed:34": [
-      "I1 follow_up#N (w1) did not answer within N ms",
-      "I1 status#N (w1) did not answer within N ms",
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
     ],
     "seed:37": [
       "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
       "I3 w2 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
       "I4 w2: N distinct wakes for (turn, kind) N:needs_input",
+      "I8 w2: N queued turn(s) never typed though the pane is idle",
     ],
     "seed:43": [
       "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
-    "seed:46": [
-      "I1 reattach#N (*) did not answer within N ms",
-      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I4 named1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-      "I6 named1: at quiescence status says stopped/turn N but the store says working/turn N",
-      "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
-      "I8 named1: N queued turn(s) never typed though the pane is idle",
-    ],
     "seed:49": [
       "I1 reattach#N (*) did not answer within N ms",
     ],
-    "seed:52": [
-      "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.read #N",
-      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 w2 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
-      "I4 w2: N distinct wakes for (turn, kind) N:needs_input",
-    ],
     "seed:55": [
       "I1 start#N (named1) did not answer within N ms",
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
       "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
-    ],
-    "seed:58": [
-      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
   },
-  "batch seeds 2/3": {
-    "seed:11": [
-      "I1 status#N (named1) did not answer within N ms",
-      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 named1 turn N (<tok>, steer) was accepted but never typed and never reported \"not typed\"",
-      "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
-      "I8 named1: N queued turn(s) never typed though the pane is idle",
-      "I8 named1: N wake(s) still pending in the outbox at quiescence",
-    ],
-    "seed:17": [
-      "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-      "I5 w2: wrote \"\\e\" into <block> while it showed a permission prompt (t=N)",
-      "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
-      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
-      "I8 w1: N wake(s) still pending in the outbox at quiescence",
-      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
-    ],
+  "batch seeds 2/6": {
     "seed:2": [
       "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
     ],
     "seed:20": [
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
       "I4 w1: N distinct wakes for (turn, kind) N:needs_input",
-    ],
-    "seed:23": [
-      "I1 start#N (w2) did not answer within N ms",
-      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
-    ],
-    "seed:29": [
-      "I1 start#N (w1) did not answer within N ms",
-      "I1 start#N (w2) did not answer within N ms",
     ],
     "seed:32": [
       "I1 follow_up#N (w2) did not answer within N ms",
@@ -1604,25 +1496,11 @@ export const PINS: PinTable = {
       "I6 w1: at quiescence the store says working, but no typed turn is open in the pane",
       "I8 w1: N queued turn(s) never typed though the pane is idle",
     ],
-    "seed:41": [
-      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I4 w2 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
-      "I8 w2: N queued turn(s) never typed though the pane is idle",
-    ],
     "seed:44": [
       "I1 reattach#N (*) died with an untyped defect: Error: sim: defect injected at store.read #N",
-      "I3 w1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
-      "I3 w1 turn N (<tok>, steer) was accepted but never typed and never reported \"not typed\"",
-    ],
-    "seed:47": [
-      "I1 start#N (w1) did not answer within N ms",
-      "I4 w2 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
-    ],
-    "seed:5": [
-      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+      "I6 w1: at quiescence status says needs_input/turn N but the store says done/turn N",
+      "I6 w1: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
+      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
     ],
     "seed:50": [
       "I1 follow_up#N (w2) did not answer within N ms",
@@ -1641,21 +1519,117 @@ export const PINS: PinTable = {
       "I1 stop_close#N (w1) did not answer within N ms",
     ],
   },
-  "batch seeds 3/3": {
-    "seed:12": [
-      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
-    ],
+  "batch seeds 3/6": {
     "seed:21": [
       "I1 start#N (w2) did not answer within N ms",
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
       "I4 named1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+      "I4 w1: N distinct wakes for (turn, kind) N:needs_input",
       "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
-    ],
-    "seed:24": [
-      "I6 w1: at quiescence the store says working, but no typed turn is open in the pane",
     ],
     "seed:3": [
       "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.read #N",
+    ],
+    "seed:33": [
+      "I1 follow_up#N (w2) did not answer within N ms",
+      "I1 start#N (w1) did not answer within N ms",
+      "I1 stop_close#N (w2) did not answer within N ms",
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+    ],
+    "seed:51": [
+      "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+    ],
+    "seed:57": [
+      "I6 w1: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
+      "I6 w1: status#N says done at t=N, but turn N (<tok>) has not ended in the pane",
+      "I9 w1 turn N (<tok>) hit the usage limit at t=N, but no \"limited\" wake reported it",
+      "I9 w1 turn N (<tok>) hit the usage limit at t=N; never resumed after its reset at t=N and never reported \"not typed\"",
+    ],
+    "seed:9": [
+      "I1 reattach#N (*) did not answer within N ms",
+    ],
+  },
+  "batch seeds 4/6": {
+    "seed:10": [
+      "I1 start#N (w2) did not answer within N ms",
+    ],
+    "seed:28": [
+      "I1 restart#N (w1) did not answer within N ms",
+      "I1 restart#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
+      "I1 steer#N (w1) did not answer within N ms",
+      "I1 stop#N (w1) did not answer within N ms",
+      "I1 stop#N (w1) did not answer within N ms",
+      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+    ],
+    "seed:34": [
+      "I1 follow_up#N (w1) did not answer within N ms",
+      "I1 status#N (w1) did not answer within N ms",
+      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
+    ],
+    "seed:46": [
+      "I1 reattach#N (*) did not answer within N ms",
+      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I4 named1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+      "I6 named1: at quiescence status says stopped/turn N but the store says working/turn N",
+      "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
+      "I8 named1: N queued turn(s) never typed though the pane is idle",
+    ],
+    "seed:52": [
+      "I1 start#N (w1) died with an untyped defect: Error: sim: defect injected at store.read #N",
+      "I4 w2: N distinct wakes for (turn, kind) N:needs_input",
+    ],
+    "seed:58": [
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+    ],
+  },
+  "batch seeds 5/6": {
+    "seed:11": [
+      "I1 status#N (named1) did not answer within N ms",
+      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I3 named1 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I3 named1 turn N (<tok>, steer) was accepted but never typed and never reported \"not typed\"",
+      "I6 named1: at quiescence the store says working, but no typed turn is open in the pane",
+      "I8 named1: N queued turn(s) never typed though the pane is idle",
+      "I8 named1: N wake(s) still pending in the outbox at quiescence",
+    ],
+    "seed:17": [
+      "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+      "I5 w2: wrote \"\\e\" into <block> while it showed a permission prompt (t=N)",
+      "I6 w1: at quiescence status says working/turn N but the store says done/turn N",
+      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
+      "I8 w1: N wake(s) still pending in the outbox at quiescence",
+      "I8 w1: with faults off and the pane idle, a follow_up still fails (StoreConflict): the worker is wedged",
+    ],
+    "seed:23": [
+      "I1 start#N (w2) did not answer within N ms",
+      "I5 w1: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+    ],
+    "seed:29": [
+      "I1 start#N (w1) did not answer within N ms",
+      "I1 start#N (w2) did not answer within N ms",
+    ],
+    "seed:41": [
+      "I3 w2 turn N (<tok>, follow_up) was accepted but never typed and never reported \"not typed\"",
+      "I4 w2 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
+      "I8 w2: N queued turn(s) never typed though the pane is idle",
+    ],
+    "seed:47": [
+      "I1 start#N (w1) did not answer within N ms",
+      "I4 w2 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
+      "I6 w2: at quiescence the store says working, but no typed turn is open in the pane",
+    ],
+    "seed:5": [
+      "I5 ?: wrote \"\\e\" into <block> while it showed a trust prompt (t=N)",
+    ],
+  },
+  "batch seeds 6/6": {
+    "seed:12": [
+      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
+    ],
+    "seed:24": [
+      "I6 w1: at quiescence the store says working, but no typed turn is open in the pane",
     ],
     "seed:30": [
       "I1 follow_up#N (w1) did not answer within N ms",
@@ -1663,12 +1637,6 @@ export const PINS: PinTable = {
       "I1 stop_close#N (w1) did not answer within N ms",
       "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
       "I8 w1: N wake(s) still pending in the outbox at quiescence",
-    ],
-    "seed:33": [
-      "I1 follow_up#N (w2) did not answer within N ms",
-      "I1 start#N (w1) did not answer within N ms",
-      "I1 stop_close#N (w2) did not answer within N ms",
-      "I2 ?: pane <block> was split by the unit and is running, but no worker record owns it and no \"split result unknown\" was reported (orphan)",
     ],
     "seed:36": [
       "I1 follow_up#N (w1) did not answer within N ms",
@@ -1687,15 +1655,8 @@ export const PINS: PinTable = {
       "I6 w1: at quiescence the store says working, but no typed turn is open in the pane",
     ],
     "seed:48": [
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
       "I6 w2: done wake for turn N (<tok>) at t=N, but that turn had not ended in the pane",
-    ],
-    "seed:51": [
-      "I4 w1 turn N (<tok>) ended in the pane, but no done wake ever carried its answer",
-    ],
-    "seed:57": [
-      "I3 w1 turn N (<tok>, start) was accepted but never typed and never reported \"not typed\"",
     ],
     "seed:6": [
       "I1 start#N (w1) did not answer within N ms",
@@ -1704,9 +1665,6 @@ export const PINS: PinTable = {
       "I2 w1: the store records turn N, but the caller saw only N turn(s) accepted",
       "I6 w1: at quiescence status says done/turn N but the store says working/turn N",
       "I6 w1: at quiescence the store says working, but no typed turn is open in the pane",
-    ],
-    "seed:9": [
-      "I1 reattach#N (*) did not answer within N ms",
     ],
   },
   "scenario D12-reattach-serial-one-hang": {

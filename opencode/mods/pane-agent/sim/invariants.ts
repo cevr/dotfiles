@@ -2,6 +2,7 @@ import { Option } from "effect"
 import type { PaneWorker } from "../worker.ts"
 import { DEADLINES_MS } from "./doubles.ts"
 import { type CommandName, TICK_MS, type ToolCall, type Trace } from "./driver.ts"
+import type { EffectRecord } from "./faults.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn, type RefWorker } from "./reference.ts"
 import { answerOf, goneAt, LIMIT_MS, OWNER_BLOCK, PLACEHOLDER, PROMPT_SCREENS, type Run, STALE_CONTENT, TOKEN, type WakeRecord, type WorldState } from "./world.ts"
 
@@ -169,6 +170,73 @@ const dischargedByStop = (worker: RefWorker, turn: RefTurn, typedAt: Option.Opti
 /** Tokens whose turn met the usage limit: a "not typed" report there is about the resume (ruling 5), not the brief. */
 const limitedTokens = (world: WorldState): ReadonlySet<string> => new Set(world.runs.filter((run) => run.limited).flatMap((run) => Option.toArray(run.token)))
 
+const HELD = /(\d+) (?:queued )?turn(?:s|\(s\))? (?:(?:is|are|was|were) )?held/i
+
+const goneWakes = (trace: Trace, worker: RefWorker): ReadonlyArray<WakeRecord> => wakesOf(trace.world, worker.id).filter((wake) => stateOf(wake) === "pane_gone")
+
+/** The held count a pane_gone wake states ("N turn(s) held"), if it states one. */
+const heldCount = (wake: WakeRecord): Option.Option<number> =>
+  Option.fromNullishOr(HELD.exec(wake.letter.text)).pipe(Option.flatMap((match) => Option.fromUndefinedOr(match[1])), Option.map(Number))
+
+/**
+ * Ruling (9): a turn still queued when its pane died is HELD, not owed a report: it is accepted at quiescence when
+ * the final row is pane_gone and still queues it, the pane is gone in the world, and a pane_gone wake states the
+ * held count.
+ */
+const heldAtQuiescence = (trace: Trace, worker: RefWorker, turn: RefTurn): boolean =>
+  Option.exists(finalRow(trace, worker.id), (row) => {
+    const held = (row.pendingTurns ?? []).filter((queued) => mentions(queued.brief, turn.token)).length > 0
+    const stated = goneWakes(trace, worker).some((wake) => Option.contains(heldCount(wake), (row.pendingTurns ?? []).length))
+    return row.state === "pane_gone" && held && Option.isSome(goneAt(trace.world, row.blockId)) && stated
+  })
+
+/** Ruling (9): after a pane_gone wake, a stop must report each held turn not_typed, never drop it silently. */
+const heldAtStop = (trace: Trace, worker: RefWorker, turn: RefTurn): boolean =>
+  Option.exists(worker.stoppedAt, (stop) => turn.acceptedAt <= stop && goneWakes(trace, worker).some((wake) => wake.at <= stop))
+
+/** Ruling (9): nothing is reported not_typed at pane_gone itself; only a later stop or restart may report it. */
+const notTypedAtGone = (trace: Trace, worker: RefWorker): ReadonlyArray<Violation> =>
+  wakesOf(trace.world, worker.id)
+    .filter((wake) => stateOf(wake) === "not_typed")
+    .flatMap((wake) => {
+      const gone = goneWakes(trace, worker).filter((g) => g.at <= wake.at)
+      const answered = gone.some((g) => worker.supersedes.some((command) => command.issuedAt >= g.at && command.issuedAt <= wake.at))
+      if (gone.length === 0 || answered) return []
+      return [v(3, `${worker.key}: turn ${turnOf(wake)} was reported "not typed" at pane_gone, before any stop or restart (ruling 9)`)]
+    })
+
+/** The turn number each reply stated for a token (the shell's own commitment), for ordering overlapping calls. */
+const statedNumbers = (trace: Trace, worker: RefWorker): ReadonlyMap<string, number> =>
+  new Map([...toldNumbers(trace, worker, Infinity)].map(([n, token]) => [token, n]))
+
+/**
+ * Which of two accepted turns must be typed first: issue order when the earlier call ended before the later one
+ * began (happens-before); for overlapping calls, the turn numbers the replies stated; else the order they ended.
+ */
+const firstOf = (a: RefTurn, b: RefTurn, stated: ReadonlyMap<string, number>): boolean => {
+  if (a.acceptedAt <= b.issuedAt) return true
+  if (b.acceptedAt <= a.issuedAt) return false
+  const na = Option.fromUndefinedOr(stated.get(a.token))
+  const nb = Option.fromUndefinedOr(stated.get(b.token))
+  if (Option.isSome(na) && Option.isSome(nb)) return na.value < nb.value
+  return a.acceptedAt <= b.acceptedAt
+}
+
+const fifo = (trace: Trace, worker: RefWorker): ReadonlyArray<Violation> => {
+  const stated = statedNumbers(trace, worker)
+  const typed = worker.turns
+    .filter((turn) => turn.mode === "follow_up" || turn.mode === "start")
+    .flatMap((turn) => Option.toArray(Option.fromUndefinedOr(typings(trace.world, turn.token)[0])).map((at) => ({ turn, at })))
+  return typed.flatMap((a, i) =>
+    typed.slice(i + 1).flatMap((b) => {
+      const aFirst = firstOf(a.turn, b.turn, stated)
+      if (aFirst && b.at < a.at) return [v(3, `${worker.key}: turn ${b.turn.index} typed before turn ${a.turn.index} (not FIFO)`)]
+      if (!aFirst && a.at < b.at) return [v(3, `${worker.key}: turn ${a.turn.index} typed before turn ${b.turn.index} (not FIFO)`)]
+      return []
+    }),
+  )
+}
+
 /** 3. Every accepted turn is typed exactly once, FIFO per worker, or reported "not typed" exactly once; never both. */
 const typing = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
   [...ref.workers.values()].flatMap((worker) => {
@@ -180,17 +248,14 @@ const typing = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
       if (typed.length > 1) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) typed ${typed.length} times`))
       if (typed.length > 0 && reported > 0 && !limited.has(turn.token)) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was typed and also reported "not typed"`))
       if (reported > 1) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was reported "not typed" ${reported} times`))
-      if (!turn.certain || typed.length > 0 || dischargedByStop(worker, turn, Option.fromUndefinedOr(typed[0]))) continue
-      if (reported === 0) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}, ${turn.mode}) was accepted but never typed and never reported "not typed"`))
+      if (!turn.certain || typed.length > 0) continue
+      if (dischargedByStop(worker, turn, Option.none())) {
+        if (reported === 0 && heldAtStop(trace, worker, turn)) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}) was held while the pane was gone and dropped by stop without a "not typed" report (ruling 9)`))
+        continue
+      }
+      if (reported === 0 && !heldAtQuiescence(trace, worker, turn)) out.push(v(3, `${worker.key} turn ${turn.index} (${turn.token}, ${turn.mode}) was accepted but never typed and never reported "not typed"`))
     }
-    const queued = worker.turns.filter((turn) => turn.mode === "follow_up" || turn.mode === "start")
-    const order = queued.flatMap((turn) => Option.toArray(Option.fromUndefinedOr(typings(trace.world, turn.token)[0])).map((at) => ({ turn, at })))
-    order.slice(1).forEach((cur, i) =>
-      Option.map(Option.filter(Option.fromUndefinedOr(order[i]), (prev) => cur.at < prev.at), (prev) =>
-        out.push(v(3, `${worker.key}: turn ${cur.turn.index} typed before turn ${prev.turn.index} (not FIFO)`)),
-      ),
-    )
-    return out
+    return [...out, ...fifo(trace, worker), ...notTypedAtGone(trace, worker)]
   })
 
 const doneWakesCarrying = (trace: Trace, worker: RefWorker, token: string) =>
@@ -203,8 +268,153 @@ const doneWakesCarrying = (trace: Trace, worker: RefWorker, token: string) =>
  */
 export const SETTLE_WINDOW_MS = 60
 
-const superseded = (worker: RefWorker, turn: RefTurn, endedAt: number): boolean =>
-  worker.supersedes.some((command) => command.at >= turn.acceptedAt && command.issuedAt <= endedAt + SETTLE_WINDOW_MS)
+const READS: ReadonlyArray<string> = ["pane.read", "pane.readTail"]
+
+/** Ok reads of a block that saw its done screen in [from, to] (by any process, or only by processes alive at the end). */
+const doneReads = (trace: Trace, blockId: string, from: number, to: number, liveOnly: boolean): ReadonlyArray<EffectRecord> =>
+  trace.effects.filter(
+    (e) => READS.includes(e.boundary) && e.fault === "ok" && e.detail === `${blockId}:done` && e.at >= from && e.at <= to && (!liveOnly || !trace.world.deadProcs.has(e.proc)),
+  )
+
+/** When a run's done frame stopped being readable: the next run in that pane, the pane's death, or never. */
+const frameUntil = (trace: Trace, run: Run): number => {
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const next = trace.world.runs.filter((other) => other.blockId === run.blockId && other.startedAt >= end && other.id !== run.id).map((other) => other.startedAt)
+  return Math.min(...next, Option.getOrElse(goneAt(trace.world, run.blockId), () => Infinity))
+}
+
+/**
+ * How long a fault-free gap after a disruption gives a correct shell its chance: its bounded call returns within a
+ * read deadline, then it reads the frame and settles within the settle window. Once such a gap has passed, not
+ * having read is the shell's failure, not the fault's.
+ */
+export const OBSERVE_GAP_MS = DEADLINES_MS.readDeadline + SETTLE_WINDOW_MS
+
+/** The calls by which a shell observes a pane's turn end: its liveness, its quiet wait and its reads. */
+const OBSERVING: ReadonlyArray<string> = ["pane.read", "pane.readTail", "pane.alive", "pane.waitForQuiet"]
+
+/** Faults that still hold their call when the turn ends (a hang until its deadline, a timeout, a late landing, a crash). */
+const LASTING: ReadonlyArray<string> = ["hang", "timeout", "late", "crash"]
+
+const observes = (e: EffectRecord, blockId: string): boolean => OBSERVING.includes(e.boundary) && e.detail.startsWith(`${blockId}:`)
+
+/** The processes watching a run's pane: the last to observe it by the run's end, and every one observing it after. */
+const watchersOf = (trace: Trace, blockId: string, end: number): ReadonlySet<number> => {
+  const observing = trace.effects.filter((e) => observes(e, blockId))
+  const before = Option.fromUndefinedOr(observing.filter((e) => e.at <= end).at(-1))
+  return new Set([...Option.toArray(before), ...observing.filter((e) => e.at >= end)].map((e) => e.proc))
+}
+
+/**
+ * When a watching process died: the crash fault it took, else (a crash the driver forced, which records no fault)
+ * the first process start after its last effect, which is its recovery. A process still alive has no death.
+ */
+const deathOf = (trace: Trace, proc: number): Option.Option<number> => {
+  const crash = Option.fromUndefinedOr(trace.effects.find((e) => e.proc === proc && e.fault === "crash"))
+  if (Option.isSome(crash)) return Option.some(crash.value.at)
+  if (!trace.world.deadProcs.has(proc)) return Option.none()
+  const last = Math.max(...trace.effects.filter((e) => e.proc === proc).map((e) => e.at))
+  return Option.map(Option.fromUndefinedOr(trace.effects.find((e) => e.boundary === "process.start" && e.at >= last && e.proc !== proc)), (e) => e.at)
+}
+
+interface Disruption {
+  readonly at: number
+  readonly lasting: boolean
+}
+
+/**
+ * Adjudication 4a/4b/4c, scoped (review r5 B1): the disruptions that can keep THIS run's end from being observed are a
+ * fault on an observing call of its pane and a crash of a process watching it, while its frame showed. A fault on
+ * another worker, another pane or the store is none of them.
+ */
+const disruptionsOf = (trace: Trace, run: Run, end: number, frameEnd: number): ReadonlyArray<Disruption> => {
+  const faults = trace.effects.filter((e) => observes(e, run.blockId) && e.fault !== "ok").map((e) => ({ at: e.at, lasting: LASTING.includes(e.fault) }))
+  const deaths = [...watchersOf(trace, run.blockId, end)].flatMap((proc) => Option.toArray(deathOf(trace, proc))).map((at) => ({ at, lasting: true }))
+  return [...faults, ...deaths].filter((d) => d.at <= frameEnd).sort((a, b) => a.at - b.at)
+}
+
+/**
+ * The last disruption of the excuse chain that starts at the run's end, if one starts there. It starts with a
+ * lasting disruption still holding at the end (from a read deadline before), or with one within the settle window
+ * after it (a fault-free run settles in that window); each next one follows the last within OBSERVE_GAP_MS. The
+ * first fault-free gap longer than that ends the chain: a correct shell has read by then.
+ */
+const excuseEnd = (disruptions: ReadonlyArray<Disruption>, end: number): Option.Option<number> => {
+  const holding = disruptions.flatMap((d) => [d.at].filter(() => d.lasting && d.at >= end - DEADLINES_MS.readDeadline && d.at < end))
+  let last = Math.max(...holding, -Infinity)
+  if (holding.length === 0) last = end
+  let gap = [SETTLE_WINDOW_MS, OBSERVE_GAP_MS][Number(holding.length > 0)] ?? SETTLE_WINDOW_MS
+  let linked = holding.length > 0
+  for (const d of disruptions.filter((item) => item.at >= end)) {
+    if (d.at - last > gap) break
+    last = d.at
+    gap = OBSERVE_GAP_MS
+    linked = true
+  }
+  return Option.filter(Option.some(last), () => linked)
+}
+
+export interface Observability {
+  /** No correct shell could have observed the run's end while its frame showed (ruling 10, adjudication 4a/4b). */
+  readonly unobservable: boolean
+  /** By when a correct shell has settled the run; a stop, steer or restart issued by then races the settle (4c). Never unbounded. */
+  readonly settleBy: number
+}
+
+/**
+ * Was this turn's end unobservable to a correct shell? The ONE answer 4a, 4b and 4c use (review r5 B1). An excuse is
+ * a bounded, causally connected interval, never a flag: the chain of this pane's disruptions from the run's end
+ * (`excuseEnd`). The end was unobservable only when no ok read saw the done frame and the chain lasted until the
+ * frame was gone (the pane's death or its next run), with no gap longer than OBSERVE_GAP_MS before that. A frame
+ * still showing is never unobservable: faults stop and a correct shell reads it. A stop, steer or restart races the
+ * settle until the chain's last disruption plus OBSERVE_GAP_MS (or an ok read plus the settle window, if earlier);
+ * with no chain the window stays the fault-free 60 ms.
+ */
+export const observability = (trace: Trace, run: Run): Observability => {
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const frameEnd = frameUntil(trace, run)
+  const seen = doneReads(trace, run.blockId, end, frameEnd, false).length > 0
+  const firstLiveRead = Option.fromUndefinedOr(doneReads(trace, run.blockId, end, Infinity, true)[0])
+  const readSettle = Option.match(firstLiveRead, { onNone: () => Infinity, onSome: (e) => Math.max(e.at, end) + SETTLE_WINDOW_MS })
+  return Option.match(excuseEnd(disruptionsOf(trace, run, end, frameEnd), end), {
+    onNone: () => ({ unobservable: false, settleBy: end + SETTLE_WINDOW_MS }),
+    onSome: (last) => ({
+      unobservable: !seen && frameEnd - last <= OBSERVE_GAP_MS,
+      settleBy: Math.max(end + SETTLE_WINDOW_MS, Math.min(last + OBSERVE_GAP_MS, readSettle)),
+    }),
+  })
+}
+
+const uncapturable = (trace: Trace, run: Run): boolean => observability(trace, run).unobservable
+
+const notCapturedWakes = (trace: Trace, worker: RefWorker, turn: RefTurn): ReadonlyArray<WakeRecord> => {
+  const numbers = numbersOf(trace, worker, turn)
+  return wakesOf(trace.world, worker.id).filter((wake) => stateOf(wake) === "answer_not_captured" && numbers.has(turnOf(wake)))
+}
+
+const fileHoldsAnswer = (trace: Trace, run: Run, token: string): boolean =>
+  Option.exists(run.resultFile, (path) => Option.exists(Option.fromUndefinedOr(trace.world.files.get(path)), (entry) => entry.content.trim() === answerOf(token)))
+
+/** Ruling (10) and adjudication 4b: the truthful terminal reports for a turn whose end no read could capture. */
+const unreadReported = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): boolean => {
+  if (!uncapturable(trace, run)) return false
+  if (notCapturedWakes(trace, worker, turn).length > 0) return true
+  const end = Option.getOrElse(run.endedAt, () => 0)
+  const died = goneAt(trace.world, run.blockId)
+  return Option.isSome(died) && !fileHoldsAnswer(trace, run, turn.token) && goneWakes(trace, worker).some((wake) => wake.at >= end)
+}
+
+/** Adjudication 4c: a stop, steer or restart races the settle when issued by `settleBy` (60 ms without a disruption chain). */
+const superseded = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): boolean => {
+  const limit = observability(trace, run).settleBy
+  return worker.supersedes.some((command) => command.at >= turn.acceptedAt && command.issuedAt <= limit)
+}
+
+/** Ruling (10): a not-captured report for a turn whose end a correct shell could observe (`observability`) is false. */
+const falseNotCaptured = (trace: Trace, worker: RefWorker, turn: RefTurn, run: Run): ReadonlyArray<Violation> => {
+  if (notCapturedWakes(trace, worker, turn).length === 0 || uncapturable(trace, run)) return []
+  return [v(4, `${worker.key} turn ${turn.index} (${turn.token}) was reported "answer_not_captured", but a read saw its done frame or its pane's reads had a fault-free chance to (ruling 10)`)]
+}
 
 /** 4. One settle per turn and one wake per (turn, kind) as the receiver counts them (distinct delivery ids). */
 const wakes = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
@@ -219,7 +429,9 @@ const wakes = (trace: Trace, ref: Reference): ReadonlyArray<Violation> =>
     const undelivered = Option.exists(finalRow(trace, worker.id), (row) => row.state === "wake_undelivered")
     for (const turn of worker.turns) {
       const run = completedRun(trace.world, turn.token)
-      if (Option.isNone(run) || undelivered || superseded(worker, turn, Option.getOrElse(run.value.endedAt, () => 0))) continue
+      if (Option.isNone(run)) continue
+      out.push(...falseNotCaptured(trace, worker, turn, run.value))
+      if (undelivered || superseded(trace, worker, turn, run.value) || unreadReported(trace, worker, turn, run.value)) continue
       const done = doneWakesCarrying(trace, worker, turn.token).length
       if (done === 0) out.push(v(4, `${worker.key} turn ${turn.index} (${turn.token}) ended in the pane, but no done wake ever carried its answer`))
     }

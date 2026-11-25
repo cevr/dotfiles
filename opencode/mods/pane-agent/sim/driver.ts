@@ -4,7 +4,7 @@ import type * as Model from "../model.ts"
 import type { PaneWorker } from "../worker.ts"
 import { FAST, type Proc, type ProcEnv, spawnProc } from "./doubles.ts"
 import { type EffectRecord, type Gate, type Injector, makeGate, makeInjector, type PlannedFault, type RandomFaults } from "./faults.ts"
-import { ANCHOR, applyEvent, DEFAULT_WORLD, findPane, makeWorld, OWNER_BLOCK, type ScreenKind, tick, type World, type WorldConfig, type WorldEvent, type WorldState } from "./world.ts"
+import { ANCHOR, applyEvent, DEFAULT_WORLD, findPane, makeWorld, OWNER_BLOCK, PROMPT_SCREENS, type ScreenKind, tick, type World, type WorldConfig, WorldEvent, type WorldState } from "./world.ts"
 
 export const SESSION = "ses_sim"
 export const DIRECTORY = "/sim/repo"
@@ -95,6 +95,8 @@ export interface Trace {
   readonly calls: ReadonlyArray<ToolCall>
   readonly world: WorldState
   readonly effects: ReadonlyArray<EffectRecord>
+  /** How many effects the script's own steps recorded (await points end here; the probe and final status come after). */
+  readonly scriptEffects: number
   readonly fired: ReadonlyArray<PlannedFault>
   readonly coverage: ReadonlyMap<string, number>
   readonly boundMs: number
@@ -434,7 +436,7 @@ const probeAll = Effect.fn("Sim.probeAll")(function* (r: Runner) {
   for (const [worker, id] of yield* Ref.get(r.ids)) {
     const state = yield* r.world.get
     const row = Option.fromUndefinedOr(state.store.workers.find((w) => w.id === id))
-    const live = Option.exists(Option.flatMap(row, (w) => findPane(state, w.blockId)), (pane) => pane.alive && !pane.closed)
+    const live = Option.exists(Option.flatMap(row, (w) => findPane(state, w.blockId)), (pane) => pane.alive && !pane.closed && !PROMPT_SCREENS.includes(pane.screen))
     if (!live || !Option.exists(row, (w) => w.state === "done")) continue
     const token = `TK-probe${worker}-1`
     const call = spec(1, "follow_up", worker, Option.some(token), (model) => Effect.map(model.followUp({ parentSessionID: SESSION, id, prompt: promptOf(token) }), (w) => [w]))
@@ -452,11 +454,12 @@ const finalStatus = Effect.fn("Sim.finalStatus")(function* (r: Runner) {
 })
 
 const makeRunner = Effect.fn("Sim.makeRunner")(function* (config: SimConfig) {
-  const injector = yield* makeInjector(config.random)
+  const world = yield* makeWorld(config.world)
+  const injector = yield* makeInjector(config.random, Effect.map(world.get, (state) => state.now))
   yield* injector.plan(config.faults)
   if (Option.isSome(config.crashAt)) yield* injector.crashAt(config.crashAt.value)
   const r: Runner = {
-    world: yield* makeWorld(config.world),
+    world,
     injector,
     clock: yield* TestClock.make({ warningDelay: "10 minutes" }),
     worldScope: yield* Effect.scope,
@@ -479,7 +482,28 @@ const armGate = Effect.fn("Sim.armGate")(function* (r: Runner, at: GateAt) {
   yield* Ref.set(r.gate, Option.some({ gate, commands: at.commands, releaseAt: Option.none() }))
 })
 
-/** Runs a script on a fresh world: steps, then faults off, quiescence, the progress probe and a final status. */
+/** Adjudication 3a: a gate that has not fired by the end of the script is disarmed (one that fired is released). */
+const disarmGate = Effect.fn("Sim.disarmGate")(function* (r: Runner) {
+  const armed = yield* Ref.get(r.gate)
+  yield* r.injector.setGate(Option.none())
+  yield* Ref.set(r.gate, Option.none())
+  if (Option.isSome(armed)) yield* Deferred.succeed(armed.value.gate.release, true)
+})
+
+/**
+ * Adjudication 2a: when faults stop, the owner answers every prompt still showing (a correct shell holds turns
+ * behind a prompt and types them once it clears), then time passes; repeated while new prompts appear.
+ */
+const ownerClears = Effect.fn("Sim.ownerClears")(function* (r: Runner) {
+  for (let round = 0; round < 3; round++) {
+    const prompted = (yield* r.world.get).panes.filter((pane) => pane.alive && !pane.closed && PROMPT_SCREENS.includes(pane.screen))
+    if (prompted.length === 0 && round > 0) return
+    for (const pane of prompted) yield* r.world.update((state) => applyEvent(state, WorldEvent.ClearPrompt({ blockId: Option.some(pane.blockId) })))
+    yield* advance(r, r.config.quiesceMs)
+  }
+})
+
+/** Runs a script on a fresh world: steps, then faults off, the owner's prompt answers, quiescence, the progress probe and a final status. */
 export const runScript = (config: SimConfig, steps: ReadonlyArray<Step>): Effect.Effect<Trace> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -491,8 +515,10 @@ export const runScript = (config: SimConfig, steps: ReadonlyArray<Step>): Effect
       if (Option.isSome(config.gateAt)) yield* armGate(r, config.gateAt.value)
       for (const step of steps) yield* runStep(r, step, true)
       yield* awaitOpen(r)
+      const scriptEffects = (yield* r.injector.trace).length
+      yield* disarmGate(r)
       yield* r.injector.setFaultsOn(false)
-      yield* advance(r, config.quiesceMs)
+      yield* ownerClears(r)
       if (config.probe) yield* probeAll(r)
       yield* finalStatus(r)
       const trace: Trace = {
@@ -501,6 +527,7 @@ export const runScript = (config: SimConfig, steps: ReadonlyArray<Step>): Effect
         calls: [...(yield* Ref.get(r.calls))].sort((a, b) => a.id - b.id),
         world: yield* r.world.get,
         effects: yield* r.injector.trace,
+        scriptEffects,
         fired: yield* r.injector.fired,
         coverage: yield* r.injector.coverage,
         boundMs: config.boundMs,

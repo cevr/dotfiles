@@ -7,15 +7,15 @@ import { hangGuard } from "../../../tests/hang-guard.ts"
 import * as Service from "../service.ts"
 import type { PaneWorker } from "../worker.ts"
 import { LATE_LAND_MS, type ProcEnv, servicesLayer, TIMEOUT_MS } from "./doubles.ts"
-import { defaultConfig, runScript, type ToolCall, type Trace } from "./driver.ts"
-import { makeGate, makeInjector, type PlannedFault } from "./faults.ts"
+import { defaultConfig, runScript, TICK_MS, type CommandName, type ToolCall, type Trace } from "./driver.ts"
+import { type EffectRecord, makeGate, makeInjector, makePrng, type PlannedFault } from "./faults.ts"
 import { CORE } from "./generator.ts"
-import { checkAll, type InvariantId, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
+import { BOUND_MS, checkAll, type InvariantId, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
 import { classOf, pinDiff, pinnedRed } from "./known-red.ts"
 import { PINS } from "./pins.ts"
-import { runOne } from "./property.ts"
+import { effectCount, runOne } from "./property.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn } from "./reference.ts"
-import { configOf, HAPPY, type Scenario, SCENARIOS } from "./scenarios.ts"
+import { configOf, followUp, HAPPY, type Scenario, SCENARIOS, start, stop, wait, waitScreen } from "./scenarios.ts"
 import {
   ANCHOR,
   answerOf,
@@ -34,6 +34,7 @@ import {
   tick,
   type WakeRecord,
   WorldEvent,
+  type WorldConfig,
   type WorldState,
 } from "./world.ts"
 
@@ -272,7 +273,7 @@ describe("pane-agent-sim world doubles", () => {
           yield* store.upsertWorker(sibling, 0)
           yield* store.read()
           yield* store.upsertWorker({ ...sibling, turn: 2 }, 1)
-          const trace: Trace = { name: "i7", seed: 1, calls: [], world: yield* env.world.get, effects: [], fired: [], coverage: new Map(), boundMs: 400, workerIds: new Map(), restarts: 0 }
+          const trace: Trace = { name: "i7", seed: 1, calls: [], world: yield* env.world.get, effects: [], scriptEffects: 0, fired: [], coverage: new Map(), boundMs: 400, workerIds: new Map(), restarts: 0 }
           return of(checkAll(trace), 7)
         }).pipe(Effect.scoped)
       expect((yield* lost(true, ["save-last-read"])).map((item) => item.detail)).toEqual(["worker row pa_1 was written and later lost from the store"])
@@ -418,6 +419,12 @@ const core = (breaks: ReadonlyArray<Break>) => runOne({ ...defaultConfig("core",
 
 const of = (violations: ReadonlyArray<Violation>, id: InvariantId) => violations.filter((item) => item.invariant === id)
 
+/** Adjudication 1: I1's non-vacuity by trace mutants of the core trace (a correct shell never has to hang for it). */
+const mutateFirst = (trace: Trace, f: (call: ToolCall) => ToolCall): Trace => ({ ...trace, calls: trace.calls.map((call, i) => [call, f(call)][Number(i === 0)] ?? call) })
+const hangCall = (call: ToolCall): ToolCall => ({ ...call, outcome: "hang", endedAt: Option.none() })
+const slowCall = (call: ToolCall): ToolCall => ({ ...call, endedAt: Option.some(call.startedAt + BOUND_MS[call.command] + 3 * TICK_MS) })
+const defectCall = (call: ToolCall): ToolCall => ({ ...call, outcome: "defect", error: "Error: boom" })
+
 const withReference = (trace: Trace, mutate: (ref: Reference) => Reference) => checkAll(trace, mutate(referenceOfTrace(trace)))
 
 const dropLastTurn = (ref: Reference): Reference => ({
@@ -425,7 +432,7 @@ const dropLastTurn = (ref: Reference): Reference => ({
   workers: new Map([...ref.workers].map(([key, worker]) => [key, { ...worker, turns: worker.turns.slice(0, -1) }])),
 })
 
-const phantom: RefTurn = { index: 0, token: "TK-w1-999", mode: "follow_up", acceptedAt: 0, certain: true }
+const phantom: RefTurn = { index: 0, token: "TK-w1-999", mode: "follow_up", acceptedAt: 0, issuedAt: 0, certain: true }
 
 const phantomTurn = (ref: Reference): Reference => ({
   ...ref,
@@ -493,7 +500,7 @@ const limitTrace = (variant: LimitVariant): Trace => {
     skipPermissions: true,
   }
   const statusCall: ToolCall = { ...startCall, id: 2, command: "status", token: Option.none(), startedAt: 1_200, endedAt: Option.some(1_200), reply: [row], probe: true }
-  return { name: `limit:${variant}`, seed: 1, calls: [startCall, statusCall], world, effects: [], fired: [], coverage: new Map(), boundMs: 400, workerIds: new Map([["w1", row.id]]), restarts: 0 }
+  return { name: `limit:${variant}`, seed: 1, calls: [startCall, statusCall], world, effects: [], fired: [], coverage: new Map(), scriptEffects: 0, boundMs: 400, workerIds: new Map([["w1", row.id]]), restarts: 0 }
 }
 
 describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant reference makes each one fail", () => {
@@ -504,7 +511,7 @@ describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant
   )
 
   const cases: ReadonlyArray<readonly [InvariantId, string, Effect.Effect<ReadonlyArray<Violation>>, Effect.Effect<ReadonlyArray<Violation>>]> = [
-    [1, "a store that never answers late", Effect.map(core([]), (r) => r.violations), Effect.map(core(["hang-late-reads"]), (r) => r.violations)],
+    [1, "a trace whose first call hangs (a mutant trace, not a hanging shell)", Effect.map(core([]), (r) => r.violations), Effect.map(core([]), (r) => checkAll(mutateFirst(r.trace, hangCall)))],
     [2, "a reference that forgets the last accepted turn", Effect.map(happy([]), (r) => r.violations), Effect.map(happy([]), (r) => withReference(r.trace, dropLastTurn))],
     [3, "a reference that believes in a turn the caller never sent", Effect.map(core([]), (r) => r.violations), Effect.map(core([]), (r) => withReference(r.trace, phantomTurn))],
     [4, "a notifier that drops done wakes", Effect.map(happy([]), (r) => r.violations), Effect.map(happy(["drop-done-wakes"]), (r) => r.violations)],
@@ -581,4 +588,305 @@ describe("pane-agent-sim invariants are not vacuous: a broken double or a mutant
       hangGuard("in-memory"),
     )
   }
+})
+
+// ---- Round 5: the adjudication's corrections, each with both sides (a correct shell passes; the wrong one stays red).
+
+const NONE_FILE: WorldConfig = { ...DEFAULT_WORLD, fileModes: ["none"] }
+
+const synthCall = (id: number, command: CommandName, token: Option.Option<string>, startedAt: number, endedAt: number, reply: PaneWorker, proc = 1): ToolCall => ({
+  id,
+  proc,
+  command,
+  worker: "w1",
+  token,
+  startedAt,
+  endedAt: Option.some(endedAt),
+  outcome: "success",
+  error: "",
+  reply: [reply],
+  probe: false,
+  skipPermissions: true,
+})
+
+const wakeAt = (at: number, id: string, state: string, turn: number, text: string, blockId = ""): WakeRecord => ({
+  at,
+  proc: 1,
+  sessionID: "ses_sim",
+  letter: { id, description: "", text, metadata: { workerId: SAMPLE_WORKER.id, state, turn, blockId } },
+})
+
+const effectAt = (index: number, boundary: EffectRecord["boundary"], fault: EffectRecord["fault"], at: number, detail: string): EffectRecord => ({ index, boundary, nth: 0, proc: 1, fault, detail, at })
+
+const synth = (world: WorldState, calls: ReadonlyArray<ToolCall>, effects: ReadonlyArray<EffectRecord>, wakes: ReadonlyArray<WakeRecord>, row: PaneWorker): Trace => ({
+  name: "synth",
+  seed: 1,
+  calls,
+  world: { ...world, wakes, store: { version: 2, workers: [row], anchors: {} } },
+  effects,
+  scriptEffects: effects.length,
+  fired: [],
+  coverage: new Map(),
+  boundMs: 400,
+  workerIds: new Map([["w1", row.id]]),
+  restarts: 0,
+})
+
+/** Turn 1 typed at t=0 into a fresh pane; it ends at t=60 on the done screen (no result file unless asked). */
+const turnOneDone = (config: WorldConfig = NONE_FILE) => {
+  const [blockId, split] = applySplit(initialWorld(config), SPLIT, 1)
+  return { blockId, world: tick(typed(split, blockId, BRIEF("TK-w1-1")), 60) }
+}
+
+const startOf = (row: PaneWorker): ToolCall => synthCall(1, "start", Option.some("TK-w1-1"), 0, 0, { ...row, state: "starting", turn: 1 })
+
+describe("pane-agent-sim round 5: the adjudication's corrections", () => {
+  effectTest(
+    "1: I1 holds on the core trace and fires on each trace mutant: a hang, a reply past its bound, an untyped defect",
+    Effect.gen(function* () {
+      const base = yield* core([])
+      expect(of(base.violations, 1)).toEqual([])
+      for (const mutant of [hangCall, slowCall, defectCall]) expect(of(checkAll(mutateFirst(base.trace, mutant)), 1).length).toBeGreaterThan(0)
+    }),
+    hangGuard("in-memory"),
+  )
+
+  effectTest(
+    "2a: a turn held behind a permission prompt the owner never answers: the driver clears it when faults stop, the shell types it (I3 holds); with that typing removed, I3 stays red",
+    Effect.gen(function* () {
+      const steps = [start("w1", "TK-w1-1"), waitScreen("w1", "permission"), followUp("w1", "TK-w1-2"), wait(200)]
+      const result = yield* runOne({ ...defaultConfig("held-behind-prompt", 1), world: { ...DEFAULT_WORLD, permissionRuns: [1] } }, steps)
+      expect(result.trace.world.panes.filter((pane) => pane.alive && ["trust", "permission", "prompt"].includes(pane.screen))).toEqual([])
+      expect(of(result.violations, 3)).toEqual([])
+      const untyped = { ...result.trace, world: { ...result.trace.world, writes: result.trace.world.writes.filter((write) => !write.data.includes("TK-w1-2")) } }
+      expect(of(checkAll(untyped), 3).map((item) => item.detail).join()).toMatch(/TK-w1-2, follow_up\) was accepted but never typed/)
+    }),
+    hangGuard("in-memory"),
+  )
+
+  const ROW_GONE = ["pane_gone", "stopped"] as const
+  const QUEUED = { turn: 2, brief: "[Follow-up from the orchestrator]\n\nDo TK-w1-2.", resultFile: "/sim/run/r.md", mode: "submit" as const, queuedAt: 30 }
+  type GoneVariant = "held" | "uncounted" | "not-typed-at-gone" | "stop-silent" | "stop-reported"
+
+  /** Ruling (9): turn 2 queued while turn 1 works; the pane exits at t=80 and is never restarted. */
+  const goneTrace = (variant: GoneVariant): Trace => {
+    const { blockId, world } = turnOneDone()
+    const died = applyEvent(tick(world, 80), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
+    const stopped = variant === "stop-silent" || variant === "stop-reported"
+    const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: ROW_GONE[Number(stopped)] ?? "pane_gone", turn: 2, pendingTurns: [QUEUED].filter(() => !stopped) }
+    const calls = [
+      startOf(row),
+      synthCall(2, "follow_up", Option.some("TK-w1-2"), 30, 30, { ...row, state: "working", turn: 1, pendingTurns: [QUEUED] }),
+      ...[synthCall(3, "stop", Option.none(), 200, 205, row)].filter(() => stopped),
+    ]
+    const count = ["Pane gone: 1 turn held; restart to type it, or stop to drop it.", "Pane gone."][Number(variant === "uncounted")] ?? ""
+    const wakes = [
+      wakeAt(65, "msg_done_1", "done", 1, `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`),
+      wakeAt(85, "msg_gone", "pane_gone", 1, count, blockId),
+      ...[wakeAt(86, "msg_nt_gone", "not_typed", 2, "Turn 2 was not typed: the pane is gone")].filter(() => variant === "not-typed-at-gone"),
+      ...[wakeAt(206, "msg_nt_stop", "not_typed", 2, "Turn 2 was not typed: stopped while the pane was gone")].filter(() => variant === "stop-reported"),
+    ]
+    return synth(died, calls, [], wakes, row)
+  }
+
+  effectTest(
+    "2b (ruling 9): held turns after pane_gone: a pane_gone wake stating the held count holds them; an uncounted wake, a not_typed at pane_gone, or a stop that drops them silently stays red",
+    Effect.sync(() => {
+      expect(of(checkAll(goneTrace("held")), 3)).toEqual([])
+      expect(of(checkAll(goneTrace("stop-reported")), 3)).toEqual([])
+      expect(of(checkAll(goneTrace("uncounted")), 3).map((item) => item.detail).join()).toMatch(/never typed and never reported/)
+      expect(of(checkAll(goneTrace("not-typed-at-gone")), 3).map((item) => item.detail).join()).toMatch(/at pane_gone, before any stop or restart \(ruling 9\)/)
+      expect(of(checkAll(goneTrace("stop-silent")), 3).map((item) => item.detail).join()).toMatch(/dropped by stop without a "not typed" report \(ruling 9\)/)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "3a: await points are the script's own effects (the probe and final status come after); a gate that never fired is disarmed before faults stop",
+    Effect.gen(function* () {
+      const trace = yield* runScript(defaultConfig("core-count", 0), CORE)
+      expect(trace.scriptEffects).toBeLessThan(trace.effects.length)
+      expect(yield* effectCount(CORE)).toBe(trace.effects.slice(0, trace.scriptEffects).filter((e) => e.boundary !== "process.start").length)
+      const late = yield* runScript({ ...defaultConfig("late-gate", 0), gateAt: Option.some({ index: trace.effects.length + 50, commands: [stop("w1", false)] }) }, CORE)
+      expect(late.calls.filter((call) => call.command === "stop")).toEqual([])
+    }),
+    hangGuard("in-memory"),
+  )
+
+  /** Two follow_ups after turn 1; `first` is typed at t=100 and the other at t=110. */
+  const orderTrace = (overlap: boolean, first: string): Trace => {
+    const { blockId, world } = turnOneDone()
+    const second = ["TK-w1-2", "TK-w1-3"].find((token) => token !== first) ?? ""
+    const typedBoth = typed(typed(tick(world, 100), blockId, BRIEF(first)), blockId, BRIEF(second))
+    const later = { ...typedBoth, writes: typedBoth.writes.map((write) => ({ ...write, at: write.at + 10 * Number(write.data.includes(second)) })) }
+    const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "working", turn: 3 }
+    const calls = [
+      startOf(row),
+      synthCall(2, "follow_up", Option.some("TK-w1-2"), 70, [75, 95][Number(overlap)] ?? 75, { ...row, turn: [2, 3][Number(overlap)] ?? 2 }, 1),
+      synthCall(3, "follow_up", Option.some("TK-w1-3"), [80, 75][Number(overlap)] ?? 80, [85, 80][Number(overlap)] ?? 85, { ...row, turn: [3, 2][Number(overlap)] ?? 3 }, 2),
+    ]
+    return synth(later, calls, [], [], row)
+  }
+
+  const fifoOf = (trace: Trace) => of(checkAll(trace), 3).filter((item) => /not FIFO/.test(item.detail))
+
+  effectTest(
+    "3b: FIFO is issue order for calls that did not overlap, and the stated turn numbers for overlapping calls from two processes; sequential turns typed in reverse stay red",
+    Effect.sync(() => {
+      expect(fifoOf(orderTrace(false, "TK-w1-2"))).toEqual([])
+      expect(fifoOf(orderTrace(false, "TK-w1-3")).length).toBeGreaterThan(0)
+      expect(fifoOf(orderTrace(true, "TK-w1-3"))).toEqual([])
+      expect(fifoOf(orderTrace(true, "TK-w1-2")).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  const FAULT_NEAR_END = (blockId: string) => [effectAt(0, "pane.read", "unavailable", 62, `${blockId}:working`)]
+  const OK_DONE_READ = (blockId: string, at: number) => [effectAt(1, "pane.read", "ok", at, `${blockId}:done`)]
+  const NOT_CAPTURED = wakeAt(200, "msg_nc", "answer_not_captured", 1, `<pane-agent-result state="answer_not_captured" turn="1">\nTurn 1 ended but its answer was not captured: the pane could not be read\n</pane-agent-result>`)
+
+  // Review r5 B1: the excuse is a bounded interval of THIS pane's disruptions. The turn ends at t=60; the read path
+  // blocked through the whole window is a read hang at 62 and again at 170 (each gap under OBSERVE_GAP_MS = 160).
+  const effectBy = (index: number, boundary: EffectRecord["boundary"], fault: EffectRecord["fault"], at: number, detail: string, proc: number): EffectRecord => ({ ...effectAt(index, boundary, fault, at, detail), proc })
+  const BLOCKED = (blockId: string) => [effectAt(0, "pane.read", "hang", 62, `${blockId}:done`), effectAt(1, "pane.read", "hang", 170, `${blockId}:done`)]
+  const OTHER_PANE = () => [effectAt(0, "pane.read", "hang", 62, "block:sim-9:done"), effectAt(1, "pane.read", "hang", 170, "block:sim-9:done")]
+  const STORE = () => [effectAt(0, "store.read", "hang", 62, "read"), effectAt(1, "store.write", "timeout", 170, "write")]
+  /** The watcher (proc 1) observed the pane while it worked, then crashed at 62 on a store call. */
+  const WATCHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectAt(1, "store.read", "crash", 62, "read")]
+  /** A process that never watched this pane (proc 2) crashed at 62. */
+  const OTHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectBy(1, "store.read", "crash", 62, "read", 2)]
+
+  /** Turn 1 ends at t=60 and a human types into the pane at `humanAt`, which replaces the unread done frame. */
+  const humanTyped = (humanAt: number) => {
+    const { blockId, world } = turnOneDone()
+    return { blockId, world: applyEvent(tick(world, humanAt), WorldEvent.HumanTypes({ blockId: Option.some(blockId), text: "a human's own question" })) }
+  }
+
+  effectTest(
+    "4a (ruling 10, review r5 B1): answer_not_captured is accepted only while this pane's reads were blocked until the frame was gone; a fault then a long quiet window, a fault on another pane or the store, a frame still showing, an ok done read, no fault or silence stay red; a human's text stays red under I6",
+    Effect.sync(() => {
+      const run = (humanAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>, wakes: ReadonlyArray<WakeRecord>) => {
+        const { blockId, world } = humanTyped(humanAt)
+        const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
+        return of(checkAll(synth(world, [startOf(row)], effects(blockId), wakes, row)), 4)
+      }
+      expect(run(250, BLOCKED, [NOT_CAPTURED])).toEqual([])
+      expect(run(120, FAULT_NEAR_END, [NOT_CAPTURED])).toEqual([])
+      expect(run(400, FAULT_NEAR_END, [NOT_CAPTURED]).map((item) => item.detail).join()).toMatch(/fault-free chance to \(ruling 10\)/)
+      expect(run(400, BLOCKED, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, OTHER_PANE, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, STORE, [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, (b) => [...FAULT_NEAR_END(b), ...OK_DONE_READ(b, 70)], [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, () => [], [NOT_CAPTURED]).length).toBeGreaterThan(0)
+      expect(run(120, FAULT_NEAR_END, []).length).toBeGreaterThan(0)
+      const { blockId, world } = turnOneDone()
+      const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
+      expect(of(checkAll(synth(world, [startOf(row)], BLOCKED(blockId), [NOT_CAPTURED], row)), 4).length).toBeGreaterThan(0)
+      const human = wakeAt(200, "msg_human", "done", 1, `<pane-agent-result state="done" turn="1">\nhuman answer\n</pane-agent-result>`)
+      expect(of(checkAll(synth(humanTyped(120).world, [startOf(row)], FAULT_NEAR_END(blockId), [human], row)), 6).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "4b (review r5 B1): a truthful pane_gone stands in for the done wake only when this pane's reads were blocked or its watcher crashed until the pane exited, no read saw the done frame and no file holds the answer; a late pane_gone after a quiet window, another process's crash or a store fault stay red",
+    Effect.sync(() => {
+      const gone = (config: WorldConfig, diesAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>) => {
+        const { blockId, world } = turnOneDone(config)
+        const died = applyEvent(tick(world, diesAt), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
+        const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "pane_gone", turn: 1 }
+        return of(checkAll(synth(died, [startOf(row)], effects(blockId), [wakeAt(diesAt + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)], row)), 4)
+      }
+      expect(gone(NONE_FILE, 80, FAULT_NEAR_END)).toEqual([])
+      expect(gone(NONE_FILE, 250, BLOCKED)).toEqual([])
+      expect(gone(NONE_FILE, 150, WATCHER_CRASH)).toEqual([])
+      expect(gone(NONE_FILE, 300, FAULT_NEAR_END).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 300, WATCHER_CRASH).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, OTHER_CRASH).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, OTHER_PANE).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 150, STORE).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 80, () => []).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 80, (b) => [...FAULT_NEAR_END(b), ...OK_DONE_READ(b, 70)]).length).toBeGreaterThan(0)
+      expect(gone(DEFAULT_WORLD, 80, FAULT_NEAR_END).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "4c (review r5 B1): a stop races the settle until this pane's last disruption plus OBSERVE_GAP_MS, never unbounded; a late stop after a quiet window, a fault on another pane or the store, fault-free past 60 ms, and well after an ok done read stay red",
+    Effect.sync(() => {
+      const { blockId, world } = turnOneDone()
+      const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "stopped", turn: 1 }
+      const stopAt = (at: number, effects: ReadonlyArray<EffectRecord>) => of(checkAll(synth(world, [startOf(row), synthCall(2, "stop", Option.none(), at, at + 5, row)], effects, [], row)), 4)
+      expect(stopAt(125, FAULT_NEAR_END(blockId))).toEqual([])
+      expect(stopAt(320, BLOCKED(blockId))).toEqual([])
+      expect(stopAt(200, WATCHER_CRASH(blockId))).toEqual([])
+      expect(stopAt(300, FAULT_NEAR_END(blockId)).length).toBeGreaterThan(0)
+      expect(stopAt(400, BLOCKED(blockId)).length).toBeGreaterThan(0)
+      expect(stopAt(125, OTHER_PANE()).length).toBeGreaterThan(0)
+      expect(stopAt(125, STORE()).length).toBeGreaterThan(0)
+      expect(stopAt(125, OTHER_CRASH(blockId)).length).toBeGreaterThan(0)
+      expect(stopAt(125, []).length).toBeGreaterThan(0)
+      expect(stopAt(200, [...FAULT_NEAR_END(blockId), ...OK_DONE_READ(blockId, 65)]).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  type LazyReport = "not_captured" | "pane_gone" | "stop"
+  const LAZY_REPORTS: ReadonlyArray<LazyReport> = ["not_captured", "pane_gone", "stop"]
+  const PANE_FAULTS: ReadonlyArray<EffectRecord["fault"]> = ["hang", "timeout", "late", "unavailable", "transient", "gone", "defect"]
+  const OBSERVING_CALLS: ReadonlyArray<EffectRecord["boundary"]> = ["pane.read", "pane.readTail", "pane.alive", "pane.waitForQuiet"]
+
+  /**
+   * One generated trace: faults anywhere (this pane's observing calls, another pane, the store, a crash of the watcher
+   * or of another process) from just before the turn's end (t=60) to t=400; the frame is gone (the pane exits or a
+   * human types) at 600..799, or never. The lazy shell double reads until its first fault and never after, so it never
+   * sees the done frame, and then gives the report `report`. A correct shell had a fault-free chance from 400 on.
+   */
+  const lazyTrace = (prng: { readonly int: (bound: number) => number }, report: LazyReport) => {
+    const { blockId, world } = turnOneDone()
+    const pick = <A>(items: ReadonlyArray<A>, fallback: A): A => items[prng.int(items.length)] ?? fallback
+    const faultAt = (i: number, at: number): EffectRecord => {
+      const kind = prng.int(5)
+      if (kind === 0) return effectBy(i, "store.read", pick(["hang", "timeout", "transient"] as const, "hang"), at, "read", 1)
+      if (kind === 1) return effectBy(i, "pane.read", pick(PANE_FAULTS, "hang"), at, "block:sim-9:done", 2)
+      if (kind === 2) return effectBy(i, pick(["store.write", "notifier.wake"] as const, "store.write"), "crash", at, "write", 1 + prng.int(2))
+      return effectBy(i, pick(OBSERVING_CALLS, "pane.read"), pick(PANE_FAULTS, "hang"), at, `${blockId}:${pick(["working", "done"], "done")}`, 1)
+    }
+    const first = faultAt(1, 30 + prng.int(36))
+    const rest = Array.from({ length: prng.int(5) }, (_, i) => faultAt(i + 2, 40 + prng.int(361)))
+    const effects = [effectAt(0, "pane.read", "ok", 20, `${blockId}:working`), first, ...rest].sort((a, b) => a.at - b.at)
+    const frameAt = 600 + prng.int(200)
+    const exits = report === "pane_gone" || prng.int(3) === 0
+    const human = !exits && prng.int(2) === 0
+    const ended = tick(world, frameAt)
+    const frame = [ended, applyEvent(ended, WorldEvent.PaneExits({ blockId: Option.some(blockId) })), applyEvent(ended, WorldEvent.HumanTypes({ blockId: Option.some(blockId), text: "a human's own question" }))][Number(exits) + 2 * Number(human)] ?? ended
+    const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "done", turn: 1, notifiedTurn: 1 }
+    const reportAt = Math.max(frameAt, 600) + 10 + prng.int(100)
+    const wakes = [
+      ...[wakeAt(reportAt, "msg_nc", "answer_not_captured", 1, NOT_CAPTURED.letter.text)].filter(() => report === "not_captured"),
+      ...[wakeAt(reportAt, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)].filter(() => report === "pane_gone"),
+    ]
+    const calls = [startOf(row), ...[synthCall(2, "stop", Option.none(), reportAt, reportAt + 5, { ...row, state: "stopped" })].filter(() => report === "stop")]
+    const lazy = synth(frame, calls, effects, wakes, row)
+    const correct = synth(frame, [startOf(row)], [...effects, effectAt(99, "pane.read", "ok", 500, `${blockId}:done`)], [wakeAt(520, "msg_done", "done", 1, `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)], row)
+    return { lazy, correct }
+  }
+
+  effectTest(
+    "4a/4b/4c property (review r5 B1): over generated traces, a shell double that never reads after its first fault is always red under I4, whatever it reports; a shell that read and woke on the same traces is green",
+    Effect.gen(function* () {
+      const prng = yield* makePrng(51)
+      const ints = yield* Effect.forEach(Array.from({ length: 300 * 40 }), () => prng.next)
+      let cursor = 0
+      const draw = { int: (bound: number) => Math.floor((ints[cursor++ % ints.length] ?? 0) * bound) }
+      for (let n = 0; n < 300; n++) {
+        const report = LAZY_REPORTS[n % LAZY_REPORTS.length] ?? "not_captured"
+        const { lazy, correct } = lazyTrace(draw, report)
+        expect({ n, report, red: of(checkAll(lazy), 4).length > 0 }).toEqual({ n, report, red: true })
+        expect({ n, report, i4: of(checkAll(correct), 4) }).toEqual({ n, report, i4: [] })
+      }
+    }),
+    hangGuard("unit-law"),
+  )
 })
