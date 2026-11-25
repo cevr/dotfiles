@@ -59,7 +59,7 @@ export const qualifiedForm = (reason: Reason, storeVersion?: { readonly found: n
     case "unknown-key": return "Use only resource keys offered by host status --json."
     case "unsupported-class": return "Use an offered class from host status --json."
     case "invalid-width": return "Use a positive integer, full, or unknown for width."
-    case "unavailable": return "Retry once host-admit can open its ledger and read this process's identity; host status --json names any missing capability."
+    case "unavailable": return "Retry submission when host status --json can attest the managed pool and volume."
     default: return "Use host-admit --help and host status --json for a qualified request."
   }
 }
