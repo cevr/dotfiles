@@ -9,14 +9,25 @@ module dynamicPace {
   const FREE_STARTS: bool
   const IGNORE_LIMITS: bool
 
-  type Account = {used: int, left: int, fresh: bool, held: bool, shortOpen: bool, modelOpen: bool}
+  type Account = {used: int, left: int, fresh: bool, held: bool, shortOpen: bool, modelOpen: bool, extra: int, deadline: int}
   type State = {a: Account, b: Account, charged: int, eligible: Set[int]}
   var s: State
   val ids = Set(0, 1)
   val target = 16632
   val week = 168
   val leeway = 840
-  pure def line(a: Account): int = (168 - a.left) * 99 + 840
+  pure def line(a: Account): int = {
+    val elapsed = 168 - a.left
+    // Expand the finite coefficients so Apalache stays in linear integer arithmetic.
+    val extraPace = if (a.extra == 50) elapsed * 50 else if (a.extra == 99) elapsed * 99
+      else if (a.extra == 100) elapsed * 100 else if (a.extra == 149) elapsed * 149
+      else if (a.extra == 198) elapsed * 198 else 0
+    val paced = elapsed * 99 + extraPace + 840
+    val progress = if (a.deadline == 24) (16632 * elapsed) / 24
+      else if (a.deadline == 84) (16632 * elapsed) / 84 else (16632 * elapsed) / 160
+    val urgent = if (a.deadline == 0) 0 else if (elapsed >= a.deadline) 17472 else progress + 840
+    if (paced > urgent) paced else urgent
+  }
   pure def open(a: Account): bool = and {
     a.fresh, not(a.held), a.shortOpen, a.modelOpen, a.left > 0, a.used < 16632,
   }
@@ -37,14 +48,18 @@ module dynamicPace {
   pure def snapshot(a: Account, b: Account, charged: int): State =
     {a: a, b: b, charged: charged, eligible: decision(a, b, charged)}
   pure def single(a: Account, charged: int): bool = ready(a) and room(a) >= charged
-  pure def valid(a: Account): bool = a.used >= 0 and a.used <= 16800 and a.left >= 0 and a.left <= 168
+  pure def valid(a: Account): bool = a.used >= 0 and a.used <= 16800 and a.left >= 0 and a.left <= 168 and a.extra.in(Set(0, 50, 99, 100, 149, 198)) and a.deadline.in(Set(0, 24, 84, 160))
   pure def advance(a: Account): Account = {...a, left: if (a.left > 0) a.left - 1 else 0}
 
+  // Every integer usage/time/charge in the modeled domain is an initial
+  // snapshot. Every action constructs another snapshot in that domain.
+  // A one-transition check therefore proves closure, rather than exploring
+  // eight copies of the same history-independent admission calculation.
   action init = {
-    nondet aUse = Set(0, 840, 841, 8316, 9156, 9157, 15792, 16631, 16632, 16800).oneOf()
-    nondet bUse = Set(0, 840, 841, 8316, 9156, 9157, 15792, 16631, 16632, 16800).oneOf()
-    nondet aLeft = Set(0, 1, 8, 24, 84, 160, 168).oneOf()
-    nondet bLeft = Set(0, 1, 8, 24, 84, 160, 168).oneOf()
+    nondet aUse = 0.to(16800).oneOf()
+    nondet bUse = 0.to(16800).oneOf()
+    nondet aLeft = 0.to(168).oneOf()
+    nondet bLeft = 0.to(168).oneOf()
     nondet aFresh = Set(false, true).oneOf()
     nondet bFresh = Set(false, true).oneOf()
     nondet aHeld = Set(false, true).oneOf()
@@ -53,15 +68,19 @@ module dynamicPace {
     nondet bShort = Set(false, true).oneOf()
     nondet aModel = Set(false, true).oneOf()
     nondet bModel = Set(false, true).oneOf()
-    nondet charged = Set(0, 84, 840, 1680).oneOf()
+    nondet aExtra = Set(0, 50, 99, 100, 149, 198).oneOf()
+    nondet bExtra = Set(0, 50, 99, 100, 149, 198).oneOf()
+    nondet aDeadline = Set(0, 24, 84, 160).oneOf()
+    nondet bDeadline = Set(0, 24, 84, 160).oneOf()
+    nondet charged = 0.to(1764).oneOf()
     s' = snapshot(
-      {used: aUse, left: aLeft, fresh: aFresh, held: aHeld, shortOpen: aShort, modelOpen: aModel},
-      {used: bUse, left: bLeft, fresh: bFresh, held: bHeld, shortOpen: bShort, modelOpen: bModel}, charged)
+      {used: aUse, left: aLeft, fresh: aFresh, held: aHeld, shortOpen: aShort, modelOpen: aModel, extra: aExtra, deadline: if (aExtra == 0) 0 else aDeadline},
+      {used: bUse, left: bLeft, fresh: bFresh, held: bHeld, shortOpen: bShort, modelOpen: bModel, extra: bExtra, deadline: if (bExtra == 0) 0 else bDeadline}, charged)
   }
   action tick = s' = snapshot(advance(s.a), advance(s.b), s.charged)
   action observe = {
     nondet id = ids.oneOf()
-    nondet used = Set(0, 840, 841, 8316, 9156, 9157, 15792, 16631, 16632, 16800).oneOf()
+    nondet used = 0.to(16800).oneOf()
     nondet fresh = Set(false, true).oneOf()
     nondet held = Set(false, true).oneOf()
     nondet shortOpen = Set(false, true).oneOf()
@@ -82,7 +101,7 @@ module dynamicPace {
   action settle = all { s.charged >= 84, s' = snapshot(s.a, s.b, s.charged - 84) }
   action step = any { tick, observe, reset, start, settle, s' = s }
 
-  val healthy = {used: 0, left: 168, fresh: true, held: false, shortOpen: true, modelOpen: true}
+  val healthy = {used: 0, left: 168, fresh: true, held: false, shortOpen: true, modelOpen: true, extra: 0, deadline: 0}
   action initWitness = s' = snapshot(healthy, {...healthy, used: 15792, left: 72}, 0)
   action initFleet = s' = snapshot({...healthy, used: 9072, left: 84}, {...healthy, used: 9072, left: 84}, 168)
   action initRollover = s' = snapshot({...healthy, used: 16631, left: 1}, {...healthy, held: true}, 0)
