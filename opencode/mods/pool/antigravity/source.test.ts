@@ -569,7 +569,7 @@ describe("Antigravity read authority on a fake Google", () => {
       for (const overrides of dying) {
         const source = yield* sourceOf(setup, google.base, overrides)
         yield* setup.floorPassed
-        const exits = [
+        const exits: ReadonlyArray<Exit.Exit<unknown>> = [
           yield* Effect.exit(source.read(true)),
           yield* Effect.exit(source.read(false)),
           yield* Effect.exit(source.lines),
