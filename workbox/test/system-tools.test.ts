@@ -367,6 +367,36 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     expect(h.leftovers()).toEqual([])
   })
 
+  test("the guard's agentwork.slice and opencodecontrol.slice carry what its attestation reads (opencode/mods/guard/process/admission.ts)", () => {
+    const h = host()
+    expect(h.run("slices")).toMatchObject({ code: 0, stderr: "" })
+    const unit = (name: string) => readFileSync(join(h.root, "etc", "systemd", "user", name), "utf8")
+    expect(unit("agentwork.slice")).toBe(
+      "# Made by workbox/system-tools.sh from workbox/slices.conf: change it there.\n" +
+      "[Unit]\nDescription=Workbox run family agentwork (workbox/slices.conf)\n\n" +
+      "[Slice]\nCPUWeight=20\nCPUQuota=1200%\nIOAccounting=yes\nMemoryHigh=40%\nMemoryMax=45%\nMemorySwapMax=0\nTasksMax=8192\n",
+    )
+    expect(unit("opencodecontrol.slice")).toBe(
+      "# Made by workbox/system-tools.sh from workbox/slices.conf: change it there.\n" +
+      "[Unit]\nDescription=Workbox run family opencodecontrol (workbox/slices.conf)\n\n" +
+      "[Slice]\nCPUWeight=1000\nIOAccounting=yes\nMemoryMin=1G\nMemoryLow=2G\n",
+    )
+    // The guard's thresholds, as linuxBudget reads the cgroup files these settings write: cpu.weight 20,
+    // a finite cpu.max of at least one core, 0 < memory.high <= memory.max, a swap and a task cap; its
+    // protected sibling at cpu.weight >= 1000 with memory.min and memory.low above 0.
+    const settings = (name: string) => Object.fromEntries(unit(name).split("\n").filter((line) => line.includes("=") && !line.startsWith("Description")).map((line) => line.split("=")))
+    const work = settings("agentwork.slice")
+    expect(work.CPUWeight).toBe("20")
+    expect(Number.parseInt(work.CPUQuota ?? "0")).toBeGreaterThanOrEqual(100)
+    expect(Number.parseInt(work.MemoryHigh ?? "0")).toBeGreaterThan(0)
+    expect(Number.parseInt(work.MemoryHigh ?? "0")).toBeLessThanOrEqual(Number.parseInt(work.MemoryMax ?? "0"))
+    expect(work.MemorySwapMax).toBe("0")
+    expect(Number(work.TasksMax)).toBeGreaterThan(0)
+    const control = settings("opencodecontrol.slice")
+    expect(Number(control.CPUWeight)).toBeGreaterThanOrEqual(1000)
+    expect([control.MemoryMin, control.MemoryLow].every((value) => /^[1-9]\d*[KMGT]?$/.test(value ?? ""))).toBe(true)
+  })
+
   test("a CPU share of the threads scales with the host: 62.5%threads is 1000% on 16 threads, 2000% on 32, 125% on 2", () => {
     for (const [threads, want] of [[16, "1000%"], [32, "2000%"], [2, "125%"]] as const) {
       const h = host({ threads })

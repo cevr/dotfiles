@@ -90,7 +90,7 @@ check_sysctl() {
 # shadows the installed one: systemd reads the user's file instead of /etc/systemd/user/'s, whole, so
 # slices.conf's values (a CPU cap scaled to this host's threads) do not apply to that family.
 check_family_shadow() {
-  for family in opencode ergo bite-work personal; do
+  for family in opencode ergo bite-work personal agentwork opencodecontrol; do
     own=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$family.slice
     [ -e "$own" ] || continue
     printf 'workbox bootstrap: warning: %s shadows /etc/systemd/user/%s.slice (slices.conf): move it aside once the installed one has its values\n' "$own" "$family" >&2
