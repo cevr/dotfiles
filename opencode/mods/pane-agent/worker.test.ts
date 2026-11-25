@@ -45,6 +45,10 @@ describe("pane worker row projection", () => {
     expect(unreachable.state).toBe("blocked")
     expect(isLive("rex_unreachable")).toBe(true)
 
+    const undelivered = rowOf(sampleView({ state: "wake_undelivered", update: "wake undelivered after 5 attempts" }))
+    expect(undelivered.state).toBe("blocked")
+    expect(isLive("wake_undelivered")).toBe(false)
+
     const stopped = rowOf(sampleView({ state: "stopped", update: "stopped", endedAt: 4000 }))
     expect(stopped.state).toBe("cancelled")
     expect(stopped.ended).toBe(4000)

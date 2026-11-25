@@ -7,6 +7,7 @@ export const WORKER_STATES = [
   "working",
   "needs_input",
   "rex_unreachable",
+  "wake_undelivered",
   "pane_gone",
   "done",
   "failed",
@@ -41,6 +42,9 @@ export const PendingWake = Schema.Struct({
   description: Schema.String,
   text: Schema.String,
   metadata: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number, Schema.Boolean])),
+  attempts: Schema.optionalKey(Schema.Int),
+  undelivered: Schema.optionalKey(Schema.Boolean),
+  lastError: Schema.optionalKey(Schema.String),
 })
 export type PendingWake = typeof PendingWake.Type
 
@@ -63,9 +67,11 @@ export const PaneWorker = Schema.Struct({
   update: Schema.String,
   turn: Schema.Int,
   notifiedTurn: Schema.Int,
+  revision: Schema.optionalKey(Schema.Int),
   activeTurnTyped: Schema.optionalKey(Schema.Boolean),
   pendingTurns: Schema.optionalKey(Schema.Array(QueuedTurn)),
   pendingWake: Schema.optionalKey(PendingWake),
+  pendingWakes: Schema.optionalKey(Schema.Array(PendingWake)),
   deliveredWakes: Schema.optionalKey(Schema.Array(Schema.String)),
   startedAt: Schema.Number,
   updatedAt: Schema.Number,
@@ -86,6 +92,19 @@ export const StoreSnapshot = Schema.Struct({
 export type StoreSnapshot = typeof StoreSnapshot.Type
 
 export const EMPTY_SNAPSHOT: StoreSnapshot = { version: STORE_VERSION, workers: [], anchors: {} }
+
+export const revisionOf = (worker: PaneWorker): number =>
+  Option.getOrElse(Option.fromUndefinedOr(worker.revision), () => 0)
+
+export const pendingWakesOf = (worker: PaneWorker): ReadonlyArray<PendingWake> => {
+  const list = Option.getOrElse(Option.fromUndefinedOr(worker.pendingWakes), () => [])
+  const legacy = Option.fromUndefinedOr(worker.pendingWake)
+  if (Option.isNone(legacy)) return list
+  if (list.some((item) => item.deliveryId === legacy.value.deliveryId || item.key === legacy.value.key)) {
+    return list
+  }
+  return [legacy.value, ...list]
+}
 
 /** Public view returned over the PANE_AGENT RPC for Prime rows and Queue live state. */
 export const PaneWorkerView = Schema.Struct({
@@ -164,6 +183,7 @@ const rowStateOf = (state: WorkerState): ProjectedRow["state"] =>
     Match.when("working", () => "working" as const),
     Match.when("needs_input", () => "blocked" as const),
     Match.when("rex_unreachable", () => "blocked" as const),
+    Match.when("wake_undelivered", () => "blocked" as const),
     Match.when("pane_gone", () => "blocked" as const),
     Match.when("done", () => "done" as const),
     Match.when("failed", () => "failed" as const),

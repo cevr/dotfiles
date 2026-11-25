@@ -40,6 +40,13 @@ export class StoreFailed extends Schema.TaggedError<StoreFailed>()("StoreFailed"
   message: Schema.String,
 }) {}
 
+export class StoreConflict extends Schema.TaggedError<StoreConflict>()("StoreConflict", {
+  workerId: Schema.String,
+  expectedRevision: Schema.Int,
+  actualRevision: Schema.Int,
+  message: Schema.String,
+}) {}
+
 export class ResultReadFailed extends Schema.TaggedError<ResultReadFailed>()("ResultReadFailed", {
   path: Schema.String,
   message: Schema.String,
@@ -93,13 +100,17 @@ export class RexClient extends Context.Service<
   }
 >()("dotfiles-opencode/pane-agent/RexClient") {}
 
-/** Persistent store of pane workers and session Rex anchors. */
+/** Persistent CAS-checked store of pane workers and session Rex anchors. */
 export class WorkerStore extends Context.Service<
   WorkerStore,
   {
     readonly read: () => Effect.Effect<StoreSnapshot, StoreFailed>
     readonly write: (snapshot: StoreSnapshot) => Effect.Effect<void, StoreFailed>
-    readonly upsertWorker: (worker: PaneWorker) => Effect.Effect<StoreSnapshot, StoreFailed>
+    /** Compare-and-set worker upsert on `expectedRevision` (refuses stale writes with `StoreConflict`). */
+    readonly upsertWorker: (
+      worker: PaneWorker,
+      expectedRevision?: number,
+    ) => Effect.Effect<StoreSnapshot, StoreFailed | StoreConflict>
     readonly saveAnchor: (sessionID: string, anchor: PaneAnchor) => Effect.Effect<StoreSnapshot, StoreFailed>
   }
 >()("dotfiles-opencode/pane-agent/WorkerStore") {}

@@ -72,7 +72,12 @@ export function queues(context: Plugin.Context, family: FamilyReader) {
 
 const paneWorkerLive = (worker: PaneWorkerView): Live => {
   if (worker.state === "starting" || worker.state === "working") return { state: "running" }
-  if (worker.state === "needs_input" || worker.state === "pane_gone" || worker.state === "rex_unreachable") {
+  if (
+    worker.state === "needs_input" ||
+    worker.state === "pane_gone" ||
+    worker.state === "rex_unreachable" ||
+    worker.state === "wake_undelivered"
+  ) {
     return { state: "blocked" }
   }
   if (worker.state === "done") {

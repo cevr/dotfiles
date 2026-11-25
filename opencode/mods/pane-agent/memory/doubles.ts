@@ -11,11 +11,12 @@ import {
   RexPaneGone,
   type RexUnsupportedRevision,
   type SplitRightInput,
+  StoreConflict,
   WakeFailed,
   type WakeLetter,
   WorkerStore,
 } from "../service.ts"
-import { EMPTY_SNAPSHOT, type StoreSnapshot } from "../worker.ts"
+import { EMPTY_SNAPSHOT, type PaneWorker, revisionOf, type StoreSnapshot } from "../worker.ts"
 
 export interface MemoryPane {
   readonly sessionId: string
@@ -54,11 +55,33 @@ export const makeMemoryStore = (initial: StoreSnapshot = EMPTY_SNAPSHOT) =>
       WorkerStore.of({
         read: () => Ref.get(state),
         write: (snapshot) => Ref.set(state, snapshot),
-        upsertWorker: (worker) =>
-          Ref.updateAndGet(state, (current) => ({
+        upsertWorker: Effect.fn("MemoryStore.upsertWorker")(function* (
+          worker: PaneWorker,
+          expectedRevision?: number,
+        ) {
+          const current = yield* Ref.get(state)
+          const existing = Arr.findFirst(current.workers, (item) => item.id === worker.id)
+          const actualRevision = Option.match(existing, {
+            onNone: () => 0,
+            onSome: (found) => revisionOf(found),
+          })
+          const expectedOpt = Option.fromUndefinedOr(expectedRevision)
+          if (Option.isSome(expectedOpt) && actualRevision !== expectedOpt.value) {
+            return yield* new StoreConflict({
+              workerId: worker.id,
+              expectedRevision: expectedOpt.value,
+              actualRevision,
+              message: `Stale write rejected for worker ${worker.id}: expected revision ${expectedOpt.value}, found ${actualRevision}.`,
+            })
+          }
+          const stamped: PaneWorker = { ...worker, revision: actualRevision + 1 }
+          const next: StoreSnapshot = {
             ...current,
-            workers: [...current.workers.filter((item) => item.id !== worker.id), worker],
-          })),
+            workers: [...current.workers.filter((item) => item.id !== worker.id), stamped],
+          }
+          yield* Ref.set(state, next)
+          return next
+        }),
         saveAnchor: (sessionID, anchor) =>
           Ref.updateAndGet(state, (current) => ({
             ...current,

@@ -58,6 +58,7 @@ const formatModelError = (error: Model.ModelError): Tool.Error =>
     Match.tag("RexCallFailed", (err) => new Tool.Error({ message: `Rex ${err.operation} failed: ${err.message}`, error: err })),
     Match.tag("WorkerRejected", (err) => new Tool.Error({ message: err.reason, error: err })),
     Match.tag("StoreFailed", (err) => new Tool.Error({ message: `Pane worker store ${err.operation} failed: ${err.message}`, error: err })),
+    Match.tag("StoreConflict", (err) => new Tool.Error({ message: `Pane worker store conflict on ${err.workerId}: ${err.message}`, error: err })),
     Match.tag("ResultReadFailed", (err) => new Tool.Error({ message: `Failed to read result file ${err.path}: ${err.message}`, error: err })),
     Match.exhaustive,
   )

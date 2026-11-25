@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Context, Duration, Effect, Layer, Option, Ref } from "effect"
+import { Context, Deferred, Duration, Effect, Exit, Layer, Option, Ref } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../tests/hang-guard.ts"
 import { DONE_FRAME, PERMISSION_FRAME, READY_FRAME, TRUST_FRAME, WORKING_FRAME } from "./agy.fixture.ts"
@@ -12,7 +12,7 @@ import {
   type MemoryRexState,
 } from "./memory/doubles.ts"
 import * as Model from "./model.ts"
-import { RexCallFailed } from "./service.ts"
+import { RexCallFailed, RexClient } from "./service.ts"
 import type { StoreSnapshot } from "./worker.ts"
 
 const waitFor = (check: Effect.Effect<boolean>, maxSteps = 200) =>
@@ -189,24 +189,32 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
           workerId = started.id
           yield* results.put(BASE.resultFile, "durable-answer", started.startedAt + 10)
 
-          // Wait until at least one failed delivery attempt has been made while pendingWake stays persisted
+          // Wait until at least one failed delivery attempt has been made while pendingWakes stays persisted
           const attempted = yield* waitFor(Ref.get(notifier.attempts).pipe(Effect.map((a) => a.length >= 1)))
           expect(attempted).toBe(true)
           const snap = yield* Ref.get(store.state)
           const persisted = snap.workers.find((w) => w.id === workerId)
-          expect(persisted?.pendingWake).toBeDefined()
+          expect(persisted?.pendingWakes?.length).toBeGreaterThan(0)
           expect(persisted?.notifiedTurn).toBe(0)
         }),
       )
 
-      // Server restarts: reattach flushes pendingWake (retries with SAME deliveryId until accepted once)
+      // Server restarts: reattach flushes pendingWakes (retries with SAME deliveryId until accepted once)
       yield* Effect.scoped(
         Effect.gen(function* () {
           const services = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(shared)))
           const model = Context.get(services, Model.PaneAgentModel)
           yield* model.reattach(BASE.directory)
-          const delivered = yield* waitFor(Ref.get(notifier.wakes).pipe(Effect.map((w) => w.length === 1)))
+          const delivered = yield* waitFor(
+            Ref.get(store.state).pipe(
+              Effect.map((snap) => {
+                const found = snap.workers.find((w) => w.id === workerId)
+                return found?.notifiedTurn === 1 && (found?.pendingWakes?.length ?? 0) === 0
+              }),
+            ),
+          )
           expect(delivered).toBe(true)
+          expect((yield* Ref.get(notifier.wakes))).toHaveLength(1)
 
           // Every attempt used the exact same minted msg_ deliveryId
           const attempts = yield* Ref.get(notifier.attempts)
@@ -217,10 +225,10 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
             expect(attempt.letter.id).toBe(firstId)
           }
 
-          // After delivery, pendingWake is cleared and notifiedTurn == 1
+          // After delivery, pendingWakes is empty and notifiedTurn == 1
           const snapAfter = yield* Ref.get(store.state)
           const settled = snapAfter.workers.find((w) => w.id === workerId)
-          expect(settled?.pendingWake).toBeUndefined()
+          expect(settled?.pendingWakes).toEqual([])
           expect(settled?.notifiedTurn).toBe(1)
 
           // Pin the once-per-turn guard: if a stale working state with notifiedTurn=1 reattaches, ZERO second wake attempts occur
@@ -364,6 +372,361 @@ describe("pane-agent r1 review regressions (B1-B4, R1-R3)", () => {
       expect(wakes2).toHaveLength(2)
       expect(wakes2[1]?.letter.text).toContain('turn="2"')
       expect(wakes2[1]?.letter.text).toContain("answer-turn-2")
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+})
+
+describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
+  effectTest(
+    "E1: follow_up queued while the watcher is blocked confirming idle is NEVER lost and is typed after turn 1 settles",
+    Effect.gen(function* () {
+      const store = yield* makeMemoryStore()
+      const rex = yield* makeMemoryRex({ ...emptyRexState, defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      const results = yield* makeMemoryResults()
+      const notifier = yield* makeMemoryNotifier()
+      const armed = yield* Ref.make(false)
+      const blocked = yield* Ref.make(false)
+      const latch = yield* Deferred.make<void>()
+      const inner = yield* Layer.build(rex.layer).pipe(Effect.map((ctx) => Context.get(ctx, RexClient)))
+      const gated = Layer.succeed(
+        RexClient,
+        RexClient.of({
+          ...inner,
+          waitForQuiet: (target, opts) =>
+            Effect.gen(function* () {
+              const screen = yield* inner.read(target).pipe(Effect.orElseSucceed(() => ""))
+              if ((yield* Ref.get(armed)) && screen === DONE_FRAME) {
+                yield* Ref.set(blocked, true)
+                yield* Deferred.await(latch)
+              }
+              return yield* inner.waitForQuiet(target, opts)
+            }),
+        }),
+      )
+      const services = yield* Layer.build(
+        Model.layer(FAST).pipe(Layer.provide(Layer.mergeAll(store.layer, gated, results.layer, notifier.layer))),
+      )
+      const model = Context.get(services, Model.PaneAgentModel)
+      yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+      const started = yield* model.start(BASE)
+
+      // Let watcher observe WORKING_FRAME at least once, then arm the ConfirmIdle waitForQuiet gate.
+      yield* waitFor(Effect.succeed(false), 5)
+      yield* Ref.set(armed, true)
+      yield* rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, DONE_FRAME])
+      const isBlocked = yield* waitFor(Ref.get(blocked), 400)
+      expect(isBlocked).toBe(true)
+
+      // Queue SECOND-TASK right inside the ConfirmIdle waitForQuiet window.
+      yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "SECOND-TASK" })
+      yield* Ref.set(armed, false)
+      yield* Deferred.succeed(latch, void 0)
+
+      const typedSecond = yield* waitFor(
+        Ref.get(rex.state).pipe(Effect.map((s) => (s.panes[0]?.writes.join("") ?? "").includes("SECOND-TASK"))),
+        400,
+      )
+      expect(typedSecond).toBe(true)
+
+      const wakesAfterT1 = yield* Ref.get(notifier.wakes)
+      expect(wakesAfterT1.some((w) => w.letter.text.includes('turn="1"'))).toBe(true)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "Q1: turns queued before a pane vanishes survive pane_gone and restart in FIFO order",
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      const started = yield* h.model.start(BASE)
+      yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "QUEUED-AFTER-RESTART" })
+
+      // Pane vanishes before QUEUED-AFTER-RESTART is typed
+      yield* h.rex.setAlive(started.blockId, false)
+      const gone = yield* h.model.status("ses_p", started.id)
+      expect(gone.state).toBe("pane_gone")
+      expect(gone.pendingTurns?.length).toBe(1)
+
+      // Restart resumes the vanished turn AND preserves QUEUED-AFTER-RESTART
+      const restarted = yield* h.model.restart({
+        parentSessionID: "ses_p",
+        id: started.id,
+        prompt: "Resume vanished work.",
+      })
+      expect(restarted.pendingTurns?.length).toBe(1)
+
+      // Once resumed turn finishes, QUEUED-AFTER-RESTART is typed into the new pane!
+      yield* h.rex.setScreens(restarted.blockId, [WORKING_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME, READY_FRAME, READY_FRAME])
+      const typedQueued = yield* waitFor(
+        Ref.get(h.rex.state).pipe(
+          Effect.map((s) => {
+            const newPane = s.panes.find((p) => p.blockId === restarted.blockId)
+            return (newPane?.writes.join("") ?? "").includes("QUEUED-AFTER-RESTART")
+          }),
+        ),
+        400,
+      )
+      expect(typedQueued).toBe(true)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "Q2: wake outbox is an ordered FIFO queue; a later wake (e.g. pane_gone or turn 2) NEVER overwrites an earlier undelivered wake",
+    Effect.gen(function* () {
+      const store = yield* makeMemoryStore()
+      const rex = yield* makeMemoryRex({ ...emptyRexState, defaultScreens: [TRUST_FRAME, TRUST_FRAME, TRUST_FRAME] })
+      const results = yield* makeMemoryResults()
+      const notifier = yield* makeMemoryNotifier()
+      const shared = Layer.mergeAll(store.layer, rex.layer, results.layer, notifier.layer)
+
+      // Block wake delivery while needs_input fires AND THEN pane vanishes
+      yield* notifier.failNextWakes(20)
+
+      let workerId = ""
+      let blockId = ""
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const services = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(shared)))
+          const model = Context.get(services, Model.PaneAgentModel)
+          yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+          const started = yield* model.start(BASE)
+          expect(started.state).toBe("needs_input")
+          workerId = started.id
+          blockId = started.blockId
+
+          // Pane vanishes while needs_input wake is STILL undelivered -> pane_gone wake must queue AFTER it, not replace it!
+          yield* rex.setAlive(blockId, false)
+          yield* model.status("ses_p", workerId)
+        }),
+      )
+
+      // Server restarts with notifier healthy -> BOTH needs_input AND pane_gone wakes are delivered in FIFO order!
+      yield* notifier.failNextWakes(0)
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const services = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(shared)))
+          const model = Context.get(services, Model.PaneAgentModel)
+          yield* model.reattach(BASE.directory)
+          const deliveredBoth = yield* waitFor(
+            Ref.get(notifier.wakes).pipe(Effect.map((w) => w.length >= 2)),
+            200,
+          )
+          expect(deliveredBoth).toBe(true)
+          const wakes = yield* Ref.get(notifier.wakes)
+          expect(wakes[0]?.letter.text).toContain('state="needs_input"')
+          expect(wakes[1]?.letter.text).toContain('state="pane_gone"')
+        }),
+      )
+    }),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "Q3: an undeliverable wake stops retrying at the cap, surfaces wake_undelivered, and NEVER blocks running the next queued turn",
+    Effect.gen(function* () {
+      const store = yield* makeMemoryStore()
+      const rex = yield* makeMemoryRex({ ...emptyRexState, defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      const results = yield* makeMemoryResults()
+      const notifier = yield* makeMemoryNotifier()
+      const shared = Layer.mergeAll(store.layer, rex.layer, results.layer, notifier.layer)
+
+      // Every wake refuses permanently during turn 1 & turn 2
+      yield* notifier.failNextWakes(100)
+
+      const services = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(shared)))
+      const model = Context.get(services, Model.PaneAgentModel)
+      yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+      const started = yield* model.start(BASE)
+
+      // Queue turn 2 while turn 1 runs
+      yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "TURN-2-MUST-RUN" })
+
+      // Turn 1 finishes; its wake fails repeatedly -> MUST NOT block turn 2 from being typed!
+      yield* results.put(BASE.resultFile, "turn-1-answer", started.startedAt + 10)
+      yield* rex.setScreens(started.blockId, [DONE_FRAME, DONE_FRAME, READY_FRAME, WORKING_FRAME, DONE_FRAME, DONE_FRAME])
+
+      const turn2Typed = yield* waitFor(
+        Ref.get(rex.state).pipe(Effect.map((s) => (s.panes[0]?.writes.join("") ?? "").includes("TURN-2-MUST-RUN"))),
+        400,
+      )
+      expect(turn2Typed).toBe(true)
+
+      // After both turns hit the wake retry cap, worker surfaces wake_undelivered and stops spinning forever
+      const reachedUndelivered = yield* waitFor(
+        Ref.get(store.state).pipe(
+          Effect.map((s) => s.workers.find((w) => w.id === started.id)?.state === "wake_undelivered"),
+        ),
+        400,
+      )
+      expect(reachedUndelivered).toBe(true)
+      const attemptsAtCap = (yield* Ref.get(notifier.attempts)).length
+      expect(attemptsAtCap).toBeLessThan(30)
+
+      // Later when notifier recovers and reattach runs, BOTH undelivered wakes are delivered!
+      yield* notifier.failNextWakes(0)
+      yield* model.reattach(BASE.directory)
+      const deliveredBoth = yield* waitFor(
+        Ref.get(notifier.wakes).pipe(Effect.map((w) => w.length >= 2)),
+        200,
+      )
+      expect(deliveredBoth).toBe(true)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "CAS: two interpreters on one shared store never silently overwrite each other; stale writer fails with StoreConflict",
+    Effect.gen(function* () {
+      const store = yield* makeMemoryStore()
+      const rex = yield* makeMemoryRex({ ...emptyRexState, defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      const results = yield* makeMemoryResults()
+      const notifier = yield* makeMemoryNotifier()
+      const deps = Layer.mergeAll(store.layer, rex.layer, results.layer, notifier.layer)
+
+      const ctxA = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(deps)))
+      const ctxB = yield* Layer.build(Model.layer(FAST).pipe(Layer.provide(deps)))
+      const modelA = Context.get(ctxA, Model.PaneAgentModel)
+      const modelB = Context.get(ctxB, Model.PaneAgentModel)
+
+      yield* modelA.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+      const started = yield* modelA.start(BASE)
+
+      // Interpreter B advances the worker in the shared store (bumping revision)
+      yield* modelB.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "FROM-SERVER-B" })
+
+      // Interpreter A holds stale revision -> its write MUST fail with StoreConflict, NEVER overwriting FROM-SERVER-B!
+      const exitA = yield* Effect.exit(
+        modelA.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "STALE-FROM-A" }),
+      )
+      expect(Exit.isFailure(exitA)).toBe(true)
+      if (Exit.isFailure(exitA)) {
+        expect(String(exitA.cause)).toContain("StoreConflict")
+      }
+
+      const snap = yield* Ref.get(store.state)
+      const saved = snap.workers.find((w) => w.id === started.id)
+      expect(saved?.pendingTurns?.some((t) => t.brief.includes("FROM-SERVER-B"))).toBe(true)
+      expect(saved?.pendingTurns?.some((t) => t.brief.includes("STALE-FROM-A"))).toBe(false)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "interleaving: tool calls fired at every gated await point of the actor loop NEVER lose an accepted follow-up",
+    Effect.gen(function* () {
+      const gates = ["read", "waitForQuiet", "alive"] as const
+      for (let idx = 0; idx < 18; idx++) {
+        const gateKind = gates[idx % gates.length] ?? "waitForQuiet"
+        const withPrompt = idx % 3 === 0
+        const store = yield* makeMemoryStore()
+        let initScreens: ReadonlyArray<string> = [READY_FRAME, WORKING_FRAME, WORKING_FRAME]
+        if (withPrompt) {
+          initScreens = [TRUST_FRAME, TRUST_FRAME]
+        }
+        const rex = yield* makeMemoryRex({ ...emptyRexState, defaultScreens: initScreens })
+        const results = yield* makeMemoryResults()
+        const notifier = yield* makeMemoryNotifier()
+        const armed = yield* Ref.make(false)
+        const hitGate = yield* Ref.make(false)
+        const latch = yield* Deferred.make<void>()
+        const inner = yield* Layer.build(rex.layer).pipe(Effect.map((ctx) => Context.get(ctx, RexClient)))
+
+        const gateOnce = Effect.gen(function* () {
+          const isArmed = yield* Ref.getAndSet(armed, false)
+          if (isArmed) {
+            yield* Ref.set(hitGate, true)
+            yield* Deferred.await(latch)
+          }
+        })
+
+        const gated = Layer.succeed(
+          RexClient,
+          RexClient.of({
+            ...inner,
+            read: (t) =>
+              Effect.gen(function* () {
+                if (gateKind === "read") yield* gateOnce
+                return yield* inner.read(t)
+              }),
+            waitForQuiet: (t, opts) =>
+              Effect.gen(function* () {
+                if (gateKind === "waitForQuiet") yield* gateOnce
+                return yield* inner.waitForQuiet(t, opts)
+              }),
+            alive: (t) =>
+              Effect.gen(function* () {
+                if (gateKind === "alive") yield* gateOnce
+                return yield* inner.alive(t)
+              }),
+          }),
+        )
+
+        const services = yield* Layer.build(
+          Model.layer(FAST).pipe(Layer.provide(Layer.mergeAll(store.layer, gated, results.layer, notifier.layer))),
+        )
+        const model = Context.get(services, Model.PaneAgentModel)
+        yield* model.bindPane("ses_p", { session: "session:root", block: "block:anchor" })
+        const started = yield* model.start({ ...BASE, prompt: `TURN1-RUN-${idx}` })
+
+        // Arm the chosen I/O gate and fire two concurrent follow-ups right while the actor's paneIo is blocked
+        yield* Ref.set(armed, true)
+        const gatedReached = yield* waitFor(Ref.get(hitGate), 100)
+        expect(gatedReached).toBe(true)
+
+        yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: `FOLLOW-A-${idx}` })
+        yield* model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: `FOLLOW-B-${idx}` })
+
+        if (withPrompt) {
+          // Zero writes allowed while TRUST_FRAME is active
+          const writesWhilePrompt = (yield* Ref.get(rex.state)).panes[0]?.writes ?? []
+          expect(writesWhilePrompt).toEqual([])
+        }
+
+        // Release gate and drive pane through completion for all queued turns
+        yield* Deferred.succeed(latch, void 0)
+        let drainScreens: ReadonlyArray<string> = [
+          DONE_FRAME,
+          DONE_FRAME,
+          READY_FRAME,
+          WORKING_FRAME,
+          DONE_FRAME,
+          DONE_FRAME,
+          READY_FRAME,
+          WORKING_FRAME,
+          DONE_FRAME,
+          DONE_FRAME,
+        ]
+        if (withPrompt) {
+          drainScreens = [READY_FRAME, WORKING_FRAME, ...drainScreens]
+        }
+        yield* rex.setScreens(started.blockId, drainScreens)
+
+        const allTyped = yield* waitFor(
+          Ref.get(rex.state).pipe(
+            Effect.map((s) => {
+              const all = s.panes[0]?.writes.join("") ?? ""
+              return (
+                all.includes(`TURN1-RUN-${idx}`) &&
+                all.includes(`FOLLOW-A-${idx}`) &&
+                all.includes(`FOLLOW-B-${idx}`)
+              )
+            }),
+          ),
+          500,
+        )
+        expect(allTyped).toBe(true)
+
+        // Verify strict FIFO order in the PTY stream
+        const fullText = (yield* Ref.get(rex.state)).panes[0]?.writes.join("") ?? ""
+        const pos1 = fullText.indexOf(`TURN1-RUN-${idx}`)
+        const posA = fullText.indexOf(`FOLLOW-A-${idx}`)
+        const posB = fullText.indexOf(`FOLLOW-B-${idx}`)
+        expect(pos1).toBeGreaterThanOrEqual(0)
+        expect(posA).toBeGreaterThan(pos1)
+        expect(posB).toBeGreaterThan(posA)
+      }
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )

@@ -1,14 +1,52 @@
-import { Effect, FileSystem, Layer, Path, Random, Ref, Schema, Semaphore } from "effect"
-import { StoreFailed, WorkerStore } from "../service.ts"
-import { EMPTY_SNAPSHOT, type PaneAnchor, type PaneWorker, STORE_VERSION, StoreSnapshot } from "../worker.ts"
+import { Array as Arr, Effect, FileSystem, Layer, Option, Path, Random, Ref, Schema, Semaphore } from "effect"
+import { StoreConflict, StoreFailed, WorkerStore } from "../service.ts"
+import {
+  EMPTY_SNAPSHOT,
+  isLive,
+  PaneAnchor,
+  PaneWorker,
+  pendingWakesOf,
+  revisionOf,
+  STORE_VERSION,
+  StoreSnapshot,
+} from "../worker.ts"
 
-const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(StoreSnapshot))
+const MAX_ENDED_WORKERS = 200
+
+const RawEnvelope = Schema.Struct({
+  version: Schema.optionalKey(Schema.Int),
+  workers: Schema.Array(Schema.Unknown),
+  anchors: Schema.Record(Schema.String, PaneAnchor),
+})
+
+const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(RawEnvelope))
+const decodeWorkerOpt = Schema.decodeUnknownOption(PaneWorker)
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(StoreSnapshot))
 
 const storeFailure = (operation: string, cause: { readonly message: string }) =>
   new StoreFailed({ operation, message: cause.message })
 
-/** File-backed atomic JSON store using Effect FileSystem + Path (no node:* imports). */
+const mustRetain = (worker: PaneWorker): boolean => {
+  const turns = Option.getOrElse(Option.fromUndefinedOr(worker.pendingTurns), () => [])
+  return isLive(worker.state) || turns.length > 0 || pendingWakesOf(worker).length > 0
+}
+
+const pruneEndedWorkers = (workers: ReadonlyArray<PaneWorker>): ReadonlyArray<PaneWorker> => {
+  const retained: Array<PaneWorker> = []
+  const ended: Array<PaneWorker> = []
+  for (const worker of workers) {
+    if (mustRetain(worker)) {
+      retained.push(worker)
+    } else {
+      ended.push(worker)
+    }
+  }
+  if (ended.length <= MAX_ENDED_WORKERS) return workers
+  const keptEnded = [...ended].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_ENDED_WORKERS)
+  return [...retained, ...keptEnded]
+}
+
+/** File-backed atomic JSON store with version check, per-worker decode isolation, and CAS revisions. */
 export const layer = (file: string) =>
   Layer.effect(
     WorkerStore,
@@ -23,11 +61,30 @@ export const layer = (file: string) =>
         const exists = yield* fs.exists(file).pipe(Effect.mapError((cause) => storeFailure("exists", cause)))
         if (!exists) return EMPTY_SNAPSHOT
         const text = yield* fs.readFileString(file).pipe(Effect.mapError((cause) => storeFailure("read", cause)))
-        return yield* decodeSnapshot(text).pipe(Effect.mapError((cause) => storeFailure("decode", cause)))
+        const env = yield* decodeEnvelope(text).pipe(Effect.mapError((cause) => storeFailure("decode", cause)))
+        const ver = Option.getOrElse(Option.fromUndefinedOr(env.version), () => 1)
+        if (ver > STORE_VERSION) {
+          return yield* new StoreFailed({
+            operation: "version",
+            message: `Store file ${file} has unsupported future version ${ver} (max supported ${STORE_VERSION}).`,
+          })
+        }
+        const workers: Array<PaneWorker> = []
+        for (const entry of env.workers) {
+          const decoded = decodeWorkerOpt(entry)
+          if (Option.isSome(decoded)) {
+            workers.push(decoded.value)
+          }
+        }
+        return { version: STORE_VERSION, workers, anchors: env.anchors }
       })
 
       const writeRaw = Effect.fn("FileWorkerStore.writeRaw")(function* (snapshot: StoreSnapshot) {
-        const versioned: StoreSnapshot = { ...snapshot, version: STORE_VERSION }
+        const versioned: StoreSnapshot = {
+          version: STORE_VERSION,
+          workers: pruneEndedWorkers(snapshot.workers),
+          anchors: snapshot.anchors,
+        }
         const encoded = yield* encodeSnapshot(versioned).pipe(Effect.mapError((cause) => storeFailure("encode", cause)))
         const dir = path.dirname(file)
         yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.mapError((cause) => storeFailure("mkdir", cause)))
@@ -45,12 +102,34 @@ export const layer = (file: string) =>
         return yield* lock.withPermits(1)(writeRaw(snapshot))
       })
 
-      const upsertWorker = Effect.fn("FileWorkerStore.upsertWorker")(function* (worker: PaneWorker) {
+      const upsertWorker = Effect.fn("FileWorkerStore.upsertWorker")(function* (
+        worker: PaneWorker,
+        expectedRevision?: number,
+      ) {
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
             const current = yield* readRaw()
+            const existing = Arr.findFirst(current.workers, (item) => item.id === worker.id)
+            const actualRevision = Option.match(existing, {
+              onNone: () => 0,
+              onSome: (found) => revisionOf(found),
+            })
+            const expectedOpt = Option.fromUndefinedOr(expectedRevision)
+            if (Option.isSome(expectedOpt) && actualRevision !== expectedOpt.value) {
+              return yield* new StoreConflict({
+                workerId: worker.id,
+                expectedRevision: expectedOpt.value,
+                actualRevision,
+                message: `Stale write rejected for worker ${worker.id}: expected revision ${expectedOpt.value}, found ${actualRevision}.`,
+              })
+            }
+            const stamped: PaneWorker = { ...worker, revision: actualRevision + 1 }
             const others = current.workers.filter((item) => item.id !== worker.id)
-            const next: StoreSnapshot = { version: STORE_VERSION, anchors: current.anchors, workers: [...others, worker] }
+            const next: StoreSnapshot = {
+              version: STORE_VERSION,
+              anchors: current.anchors,
+              workers: [...others, stamped],
+            }
             yield* writeRaw(next)
             return next
           }),

@@ -2,19 +2,21 @@ import { Array as Arr, Data, Match, Option } from "effect"
 import type { HarnessAdapter } from "./adapter.ts"
 import { taskBrief } from "./prompt.ts"
 import type { WakeLetter } from "./service.ts"
-import { isLive, type PaneWorker, type PendingWake, type QueuedTurn } from "./worker.ts"
+import { isLive, type PaneWorker, type PendingWake, pendingWakesOf, type QueuedTurn } from "./worker.ts"
 
 export interface MachineConfig {
   readonly maxTransientErrors: number
   readonly confirmGoneCount: number
+  readonly maxWakeAttempts: number
 }
 
 export const DEFAULT_MACHINE_CONFIG: MachineConfig = {
   maxTransientErrors: 5,
   confirmGoneCount: 2,
+  maxWakeAttempts: 5,
 }
 
-/** Explicit worker state machine record: `worker` is durable; counters are per-watcher runtime state. */
+/** Explicit worker state machine record: `worker` is durable; counters are per-actor runtime state. */
 export interface MachineState {
   readonly worker: PaneWorker
   readonly sawWorking: boolean
@@ -63,14 +65,23 @@ export type MachineEvent = Data.TaggedEnum<{
     readonly screen: Option.Option<string>
     readonly now: number
   }
-  readonly WakeDelivered: { readonly now: number }
-  readonly WakeFailed: { readonly message: string; readonly now: number }
+  readonly RestartPane: {
+    readonly rexSessionId: string
+    readonly newBlockId: string
+    readonly cwd: string
+    readonly addDirs: ReadonlyArray<string>
+    readonly resultFile: string
+    readonly now: number
+  }
+  readonly WakeDelivered: { readonly deliveryId: string; readonly now: number }
+  readonly WakeFailed: { readonly deliveryId: string; readonly message: string; readonly now: number }
+  readonly RestartWakeRetries: { readonly now: number }
   readonly Stop: { readonly close: boolean; readonly now: number }
 }>
 
 export const MachineEvent = Data.taggedEnum<MachineEvent>()
 
-/** Effects emitted by `transition` for the runtime interpreter (`model.ts`) to execute. */
+/** Effects emitted by `transition` for the single-writer actor interpreter (`model.ts`) to execute. */
 export type MachineAction = Data.TaggedEnum<{
   readonly Persist: {}
   readonly FlushWake: {}
@@ -114,6 +125,12 @@ export const maxTurnOf = (worker: PaneWorker): number => {
   }
   return max
 }
+
+export const nextRetryableWake = (worker: PaneWorker): Option.Option<PendingWake> =>
+  Arr.findFirst(pendingWakesOf(worker), (wake) => wake.undelivered !== true)
+
+export const hasUndeliveredWakes = (worker: PaneWorker): boolean =>
+  pendingWakesOf(worker).some((wake) => wake.undelivered === true)
 
 /** Derives a distinct per-turn result file path so concurrent/queued turns never collide on one path. */
 export const turnResultFile = (basePath: string, turn: number): string => {
@@ -186,6 +203,7 @@ const makeDoneWake = (worker: PaneWorker, answer: string, fromFile: boolean, del
     state: "done",
     turn: worker.turn,
   },
+  attempts: 0,
 })
 
 const makeNeedsInputWake = (worker: PaneWorker, summary: string, tail: string, deliveryId: string): PendingWake => ({
@@ -209,6 +227,7 @@ const makeNeedsInputWake = (worker: PaneWorker, summary: string, tail: string, d
     state: "needs_input",
     turn: worker.turn,
   },
+  attempts: 0,
 })
 
 const makePaneGoneWake = (worker: PaneWorker, reason: string, tail: string, deliveryId: string): PendingWake => {
@@ -236,6 +255,7 @@ const makePaneGoneWake = (worker: PaneWorker, reason: string, tail: string, deli
       state: "pane_gone",
       turn: worker.turn,
     },
+    attempts: 0,
   }
 }
 
@@ -258,20 +278,36 @@ const makeUnreachableWake = (worker: PaneWorker, reason: string, deliveryId: str
     state: "rex_unreachable",
     turn: worker.turn,
   },
+  attempts: 0,
 })
 
-const attachWakeIfDue = (worker: PaneWorker, wake: PendingWake, terminal: boolean): PaneWorker => {
+const withPendingWakes = (worker: PaneWorker, wakes: ReadonlyArray<PendingWake>): PaneWorker => {
+  const { pendingWake: _legacy, ...rest } = worker
+  return { ...rest, pendingWakes: [...wakes] }
+}
+
+/** Appends a wake to the ordered FIFO outbox if not already delivered or queued (never replaces an earlier wake). */
+const enqueueWakeIfDue = (worker: PaneWorker, wake: PendingWake, terminal: boolean): PaneWorker => {
   const delivered = deliveredWakesOf(worker)
   if (delivered.includes(wake.key)) return worker
   if (terminal && worker.notifiedTurn >= wake.turn) return worker
-  const existing = Option.fromUndefinedOr(worker.pendingWake)
-  if (Option.isSome(existing) && existing.value.key === wake.key) return worker
-  return { ...worker, pendingWake: wake }
+  const existing = pendingWakesOf(worker)
+  if (existing.some((item) => item.key === wake.key)) return worker
+  return withPendingWakes(worker, [...existing, wake])
 }
 
-const withoutPendingWake = (worker: PaneWorker): PaneWorker => {
-  const { pendingWake: _removed, ...rest } = worker
-  return rest
+/** Keeps deliveredWakes bounded by pruning entries from turns strictly older than `notifiedTurn - 1`. */
+const pruneDeliveredWakes = (keys: ReadonlyArray<string>, notifiedTurn: number): ReadonlyArray<string> => {
+  const minTurn = notifiedTurn - 1
+  if (minTurn <= 1) return keys
+  return keys.filter((key) => {
+    const parts = key.split(":")
+    const turnPart = Option.fromUndefinedOr(parts[1])
+    if (Option.isNone(turnPart)) return true
+    const parsed = Number(turnPart.value)
+    if (!Number.isFinite(parsed)) return true
+    return parsed >= minTurn
+  })
 }
 
 const settleDone = (
@@ -291,10 +327,10 @@ const settleDone = (
     lastAnswer: answer,
   }
   const wake = makeDoneWake(base, answer, fromFile, deliveryId)
-  const nextWorker = attachWakeIfDue(base, wake, true)
+  const nextWorker = enqueueWakeIfDue(base, wake, true)
   const hasQueued = pendingTurnsOf(nextWorker).length > 0
   const actions: Array<MachineAction> = [MachineAction.Persist()]
-  if (Option.isSome(Option.fromUndefinedOr(nextWorker.pendingWake))) {
+  if (Option.isSome(nextRetryableWake(nextWorker))) {
     actions.push(MachineAction.FlushWake())
   }
   if (hasQueued) {
@@ -322,12 +358,10 @@ const enterNeedsInput = (
   deliveryId: string,
 ): TransitionResult => {
   const key = `${state.worker.id}:${state.worker.turn}:needs_input:${summary}`
-  const alreadyBlocked =
-    state.worker.state === "needs_input" &&
-    state.worker.update === summary &&
-    deliveredWakesOf(state.worker).includes(key) &&
-    Option.isNone(Option.fromUndefinedOr(state.worker.pendingWake))
-  if (alreadyBlocked) {
+  const alreadyHandled =
+    deliveredWakesOf(state.worker).includes(key) ||
+    pendingWakesOf(state.worker).some((item) => item.key === key)
+  if (state.worker.state === "needs_input" && state.worker.update === summary && alreadyHandled) {
     return {
       state: { ...state, idlePendingConfirm: false, consecutiveGone: 0, consecutiveTransient: 0 },
       actions: [MachineAction.WaitQuiet()],
@@ -341,9 +375,9 @@ const enterNeedsInput = (
     lastLines: tail,
   }
   const wake = makeNeedsInputWake(base, summary, tail, deliveryId)
-  const nextWorker = attachWakeIfDue(base, wake, false)
+  const nextWorker = enqueueWakeIfDue(base, wake, false)
   const actions: Array<MachineAction> = [MachineAction.Persist()]
-  if (Option.isSome(Option.fromUndefinedOr(nextWorker.pendingWake))) {
+  if (Option.isSome(nextRetryableWake(nextWorker))) {
     actions.push(MachineAction.FlushWake())
   }
   actions.push(MachineAction.WaitQuiet())
@@ -525,7 +559,6 @@ const handleProbeGone = (
       actions: [MachineAction.ConfirmGone()],
     }
   }
-  // Confirmed gone by second typed gone probe: settle with result file only if an active typed turn produced one.
   if (activeTurnTypedOf(state.worker) && Option.isSome(event.resultFileAnswer)) {
     return settleDone(state, event.resultFileAnswer.value, true, event.now, event.deliveryId)
   }
@@ -540,10 +573,10 @@ const handleProbeGone = (
   const wake = makePaneGoneWake(base, "Rex pane closed or process exited.", event.tail, event.deliveryId)
   let nextWorker = base
   if (isLive(state.worker.state)) {
-    nextWorker = attachWakeIfDue(base, wake, true)
+    nextWorker = enqueueWakeIfDue(base, wake, true)
   }
   const actions: Array<MachineAction> = [MachineAction.Persist()]
-  if (Option.isSome(Option.fromUndefinedOr(nextWorker.pendingWake))) {
+  if (Option.isSome(nextRetryableWake(nextWorker))) {
     actions.push(MachineAction.FlushWake())
   }
   actions.push(MachineAction.StopWatching())
@@ -580,12 +613,12 @@ const handleTransientError = (
     updatedAt: event.now,
   }
   const wake = makeUnreachableWake(base, reason, event.deliveryId)
-  const nextWorker = attachWakeIfDue(base, wake, false)
-  const hasWake = Option.isSome(Option.fromUndefinedOr(nextWorker.pendingWake))
+  const nextWorker = enqueueWakeIfDue(base, wake, false)
+  const hasRetryable = Option.isSome(nextRetryableWake(nextWorker))
   const actions: Array<MachineAction> = []
-  if (!already || hasWake) {
+  if (!already || hasRetryable) {
     actions.push(MachineAction.Persist())
-    if (hasWake) actions.push(MachineAction.FlushWake())
+    if (hasRetryable) actions.push(MachineAction.FlushWake())
   }
   actions.push(MachineAction.RetryTransient())
   return {
@@ -638,11 +671,12 @@ const handleRequestSteer = (
     Option.isNone(event.screen) || Option.isSome(adapter.needsInput(event.screen.value))
   const hasQueued = pendingTurnsOf(state.worker).length > 0
   const turnReadyForSteer =
-    (state.worker.state === "working" && activeTurnTypedOf(state.worker)) || state.worker.state === "done"
+    (state.worker.state === "working" && activeTurnTypedOf(state.worker)) ||
+    state.worker.state === "done" ||
+    state.worker.state === "wake_undelivered"
   const canSteerNow = !screenBlocked && !hasQueued && turnReadyForSteer
 
   if (!canSteerNow) {
-    // Single write gate: never write into a prompt or drop an unsent initial task; queue in order instead.
     const queued: QueuedTurn = {
       turn: nextTurn,
       brief,
@@ -684,34 +718,173 @@ const handleRequestSteer = (
   }
 }
 
+/** Renumbers carried pendingTurns sequentially after `resumedTurn` so turn ids stay strictly ascending (Q1). */
+const carryPendingTurns = (
+  carried: ReadonlyArray<QueuedTurn>,
+  resumedTurn: number,
+): ReadonlyArray<QueuedTurn> =>
+  carried.map((item, idx) => ({
+    ...item,
+    turn: resumedTurn + idx + 1,
+  }))
+
+const handleRestartPane = (
+  state: MachineState,
+  event: Extract<MachineEvent, { readonly _tag: "RestartPane" }>,
+): TransitionResult => {
+  const resumedTurn = state.worker.turn + 1
+  const carried = carryPendingTurns(pendingTurnsOf(state.worker), resumedTurn)
+  const { endedAt: _ea, ...keep } = state.worker
+  const restarted: PaneWorker = {
+    ...keep,
+    cwd: event.cwd,
+    addDirs: [...event.addDirs],
+    skipPermissions: state.worker.skipPermissions !== false,
+    rexSessionId: event.rexSessionId,
+    blockId: event.newBlockId,
+    ownedBlock: true,
+    resultFile: event.resultFile,
+    state: "working",
+    update: "restarted in Rex pane (--continue)",
+    turn: resumedTurn,
+    notifiedTurn: Math.max(state.worker.notifiedTurn, state.worker.turn),
+    activeTurnTyped: true,
+    pendingTurns: [...carried],
+    startedAt: event.now,
+    updatedAt: event.now,
+  }
+  const actions: Array<MachineAction> = [MachineAction.Persist()]
+  if (Option.isSome(nextRetryableWake(restarted))) {
+    actions.push(MachineAction.FlushWake())
+  }
+  return {
+    state: {
+      worker: restarted,
+      sawWorking: false,
+      idlePendingConfirm: false,
+      consecutiveGone: 0,
+      consecutiveTransient: 0,
+    },
+    actions,
+  }
+}
+
 const handleWakeDelivered = (
   state: MachineState,
   event: Extract<MachineEvent, { readonly _tag: "WakeDelivered" }>,
 ): TransitionResult => {
-  const pending = Option.fromUndefinedOr(state.worker.pendingWake)
-  if (Option.isNone(pending)) {
+  const wakes = pendingWakesOf(state.worker)
+  const matched = Arr.findFirst(wakes, (item) => item.deliveryId === event.deliveryId)
+  if (Option.isNone(matched)) {
     return { state, actions: [] }
   }
+  const remaining = wakes.filter((item) => item.deliveryId !== event.deliveryId)
   const delivered = deliveredWakesOf(state.worker)
   let nextDelivered = delivered
-  if (!delivered.includes(pending.value.key)) {
-    nextDelivered = [...delivered, pending.value.key]
+  if (!delivered.includes(matched.value.key)) {
+    nextDelivered = [...delivered, matched.value.key]
   }
   const isTurnTerminal =
-    pending.value.kind === "done" || pending.value.kind === "pane_gone" || pending.value.kind === "failed"
+    matched.value.kind === "done" || matched.value.kind === "pane_gone" || matched.value.kind === "failed"
   let nextNotifiedTurn = state.worker.notifiedTurn
   if (isTurnTerminal) {
-    nextNotifiedTurn = Math.max(state.worker.notifiedTurn, pending.value.turn)
+    nextNotifiedTurn = Math.max(state.worker.notifiedTurn, matched.value.turn)
+  }
+  const prunedDelivered = pruneDeliveredWakes(nextDelivered, nextNotifiedTurn)
+  let nextState = state.worker.state
+  let nextUpdate = state.worker.update
+  if (state.worker.state === "wake_undelivered" && !remaining.some((item) => item.undelivered === true)) {
+    if (matched.value.kind === "pane_gone") {
+      nextState = "pane_gone"
+      nextUpdate = "pane gone (use restart to resume with --continue)"
+    } else if (matched.value.kind === "failed") {
+      nextState = "failed"
+      nextUpdate = "failed"
+    } else {
+      nextState = "done"
+      nextUpdate = "turn finished"
+    }
   }
   const nextWorker: PaneWorker = {
-    ...withoutPendingWake(state.worker),
-    deliveredWakes: nextDelivered,
+    ...withPendingWakes(state.worker, remaining),
+    state: nextState,
+    update: nextUpdate,
+    deliveredWakes: [...prunedDelivered],
     notifiedTurn: nextNotifiedTurn,
+    updatedAt: event.now,
+  }
+  const actions: Array<MachineAction> = [MachineAction.Persist()]
+  if (Option.isSome(nextRetryableWake(nextWorker))) {
+    actions.push(MachineAction.FlushWake())
+  }
+  return {
+    state: { ...state, worker: nextWorker },
+    actions,
+  }
+}
+
+const handleWakeFailed = (
+  state: MachineState,
+  event: Extract<MachineEvent, { readonly _tag: "WakeFailed" }>,
+  config: MachineConfig,
+): TransitionResult => {
+  const wakes = pendingWakesOf(state.worker)
+  const exists = wakes.some((item) => item.deliveryId === event.deliveryId)
+  if (!exists) return { state, actions: [] }
+
+  const updatedWakes = wakes.map((item): PendingWake => {
+    if (item.deliveryId !== event.deliveryId) return item
+    const attempts = Option.getOrElse(Option.fromUndefinedOr(item.attempts), () => 0) + 1
+    if (attempts >= config.maxWakeAttempts) {
+      return { ...item, attempts, undelivered: true, lastError: event.message }
+    }
+    return { ...item, attempts, lastError: event.message }
+  })
+
+  const stillHasRetryable = updatedWakes.some((item) => item.undelivered !== true)
+  const hasAnyUndelivered = updatedWakes.some((item) => item.undelivered === true)
+  const noActiveOrQueuedWork = !isLive(state.worker.state) && pendingTurnsOf(state.worker).length === 0
+
+  let nextState = state.worker.state
+  let nextUpdate = state.worker.update
+  if (!stillHasRetryable && hasAnyUndelivered && noActiveOrQueuedWork && state.worker.state !== "stopped") {
+    nextState = "wake_undelivered"
+    nextUpdate = `wake undelivered after ${config.maxWakeAttempts} attempts (${event.message})`
+  }
+
+  const nextWorker: PaneWorker = {
+    ...withPendingWakes(state.worker, updatedWakes),
+    state: nextState,
+    update: nextUpdate,
+    updatedAt: event.now,
+  }
+  const actions: Array<MachineAction> = [MachineAction.Persist()]
+  if (stillHasRetryable) {
+    actions.push(MachineAction.FlushWake())
+  }
+  return {
+    state: { ...state, worker: nextWorker },
+    actions,
+  }
+}
+
+const handleRestartWakeRetries = (
+  state: MachineState,
+  event: Extract<MachineEvent, { readonly _tag: "RestartWakeRetries" }>,
+): TransitionResult => {
+  const wakes = pendingWakesOf(state.worker)
+  if (wakes.length === 0) return { state, actions: [] }
+  const reset = wakes.map((item): PendingWake => {
+    const { undelivered: _u, lastError: _e, ...base } = item
+    return { ...base, attempts: 0 }
+  })
+  const nextWorker: PaneWorker = {
+    ...withPendingWakes(state.worker, reset),
     updatedAt: event.now,
   }
   return {
     state: { ...state, worker: nextWorker },
-    actions: [MachineAction.Persist()],
+    actions: [MachineAction.Persist(), MachineAction.FlushWake()],
   }
 }
 
@@ -720,7 +893,7 @@ const handleStop = (
   event: Extract<MachineEvent, { readonly _tag: "Stop" }>,
 ): TransitionResult => {
   const stopped: PaneWorker = {
-    ...withoutPendingWake(state.worker),
+    ...withPendingWakes(state.worker, []),
     state: "stopped",
     update: "stopped",
     pendingTurns: [],
@@ -759,8 +932,10 @@ export const transition = (
     Match.tag("TransientError", (ev) => handleTransientError(state, ev, config)),
     Match.tag("QueueFollowUp", (ev) => handleQueueFollowUp(state, ev)),
     Match.tag("RequestSteer", (ev) => handleRequestSteer(state, ev, adapter)),
+    Match.tag("RestartPane", (ev) => handleRestartPane(state, ev)),
     Match.tag("WakeDelivered", (ev) => handleWakeDelivered(state, ev)),
-    Match.tag("WakeFailed", () => ({ state, actions: [MachineAction.RetryTransient()] })),
+    Match.tag("WakeFailed", (ev) => handleWakeFailed(state, ev, config)),
+    Match.tag("RestartWakeRetries", (ev) => handleRestartWakeRetries(state, ev)),
     Match.tag("Stop", (ev) => handleStop(state, ev)),
     Match.exhaustive,
   )
