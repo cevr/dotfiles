@@ -10,9 +10,9 @@ import { LATE_LAND_MS, type ProcEnv, servicesLayer, TIMEOUT_MS } from "./doubles
 import { defaultConfig, runScript, TICK_MS, type CommandName, type ToolCall, type Trace } from "./driver.ts"
 import { type EffectRecord, makeGate, makeInjector, makePrng, type PlannedFault } from "./faults.ts"
 import { CORE } from "./generator.ts"
-import { BOUND_MS, checkAll, type InvariantId, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
+import { BOUND_MS, checkAll, type InvariantId, OBSERVE_GAP_MS, RECOVERY_BOUND_MS, referenceOfTrace, signatureOf, type Violation } from "./invariants.ts"
 import { classOf, pinDiff, pinnedRed } from "./known-red.ts"
-import { PINS } from "./pins.ts"
+import { PINS, type PinTable } from "./pins.ts"
 import { effectCount, runOne } from "./property.ts"
 import { latestTurnAt, numberingKnown, type RefCall, type Reference, referenceOf, type RefTurn } from "./reference.ts"
 import { configOf, followUp, HAPPY, type Scenario, SCENARIOS, start, stop, wait, waitScreen } from "./scenarios.ts"
@@ -290,18 +290,28 @@ describe("pane-agent-sim pins are per violation signature (SPEC v2 ruling 7, wid
   effectTest(
     "in a job pinned for the StoreConflict wedge alone, a wedged w2 or a queued turn never typed each fail the check; the pinned set passes",
     Effect.sync(() => {
+      const check = "batch await:second:follow_up 1/4"
+      const job = "await:second:follow_up@104"
       const wedge = signatureOf({ invariant: 8, detail: WEDGE })
-      const pinned = Object.entries(PINS).flatMap(([check, jobs]) =>
-        Object.entries(jobs).filter(([, signatures]) => signatures.length === 1 && signatures[0] === wedge).map(([job]) => [check, job] as const),
-      )
-      expect(pinned.length).toBeGreaterThan(0)
-      const [check, job] = pinned[0] ?? ["", ""]
-      const pin = pinnedRed(check)
+      const table: PinTable = { [check]: { [job]: [wedge] } }
+      const pin = pinnedRed(check, table)
       expect(pinDiff(pin, { ...pin, [job]: [wedge] })).toEqual([])
       expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: WEDGE.replace("w1:", "w2:") })] }).length).toBeGreaterThan(0)
       expect(pinDiff(pin, { ...pin, [job]: [wedge, signatureOf({ invariant: 8, detail: "w1: 1 queued turn(s) never typed though the pane is idle" })] }).length).toBeGreaterThan(0)
       expect(pinDiff(pin, { ...pin, [job]: [wedge, wedge] }).length, "a second occurrence of a pinned signature (a multiset)").toBeGreaterThan(0)
       expect(pinDiff(pin, {}).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "with an empty pins table and an all-green run the comparison passes; any observed violation fails",
+    Effect.sync(() => {
+      const empty: PinTable = {}
+      const pin = pinnedRed("scenario H-alive-hang", empty)
+      expect(pin).toEqual({})
+      expect(pinDiff(pin, {})).toEqual([])
+      expect(pinDiff(pin, { "H-alive-hang": [signatureOf({ invariant: 8, detail: WEDGE })] }).length).toBeGreaterThan(0)
     }),
     hangGuard("unit-law"),
   )
@@ -755,6 +765,13 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
   const WATCHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectAt(1, "store.read", "crash", 62, "read")]
   /** A process that never watched this pane (proc 2) crashed at 62. */
   const OTHER_CRASH = (blockId: string) => [effectAt(0, "pane.read", "ok", 50, `${blockId}:working`), effectBy(1, "store.read", "crash", 62, "read", 2)]
+  const reattachCall = (id: number, startedAt: number, endedAt: Option.Option<number>, proc = 2, outcome: ToolCall["outcome"] = "success"): ToolCall => ({
+    ...synthCall(id, "reattach", Option.none(), startedAt, startedAt, SAMPLE_WORKER, proc),
+    worker: "*",
+    endedAt,
+    outcome,
+    reply: [],
+  })
 
   /** Turn 1 ends at t=60 and a human types into the pane at `humanAt`, which replaces the unread done frame. */
   const humanTyped = (humanAt: number) => {
@@ -791,17 +808,18 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
   effectTest(
     "4b (review r5 B1): a truthful pane_gone stands in for the done wake only when this pane's reads were blocked or its watcher crashed until the pane exited, no read saw the done frame and no file holds the answer; a late pane_gone after a quiet window, another process's crash or a store fault stay red",
     Effect.sync(() => {
-      const gone = (config: WorldConfig, diesAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>) => {
+      const gone = (config: WorldConfig, diesAt: number, effects: (blockId: string) => ReadonlyArray<EffectRecord>, extraCalls: ReadonlyArray<ToolCall> = []) => {
         const { blockId, world } = turnOneDone(config)
         const died = applyEvent(tick(world, diesAt), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
         const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "pane_gone", turn: 1 }
-        return of(checkAll(synth(died, [startOf(row)], effects(blockId), [wakeAt(diesAt + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)], row)), 4)
+        return of(checkAll(synth(died, [startOf(row), ...extraCalls], effects(blockId), [wakeAt(diesAt + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)], row)), 4)
       }
+      const fastReattach = [reattachCall(2, 65, Option.some(70))]
       expect(gone(NONE_FILE, 80, FAULT_NEAR_END)).toEqual([])
       expect(gone(NONE_FILE, 250, BLOCKED)).toEqual([])
-      expect(gone(NONE_FILE, 150, WATCHER_CRASH)).toEqual([])
+      expect(gone(NONE_FILE, 150, WATCHER_CRASH, fastReattach)).toEqual([])
       expect(gone(NONE_FILE, 300, FAULT_NEAR_END).length).toBeGreaterThan(0)
-      expect(gone(NONE_FILE, 300, WATCHER_CRASH).length).toBeGreaterThan(0)
+      expect(gone(NONE_FILE, 300, WATCHER_CRASH, fastReattach).length).toBeGreaterThan(0)
       expect(gone(NONE_FILE, 150, OTHER_CRASH).length).toBeGreaterThan(0)
       expect(gone(NONE_FILE, 150, OTHER_PANE).length).toBeGreaterThan(0)
       expect(gone(NONE_FILE, 150, STORE).length).toBeGreaterThan(0)
@@ -817,10 +835,11 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
     Effect.sync(() => {
       const { blockId, world } = turnOneDone()
       const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "stopped", turn: 1 }
-      const stopAt = (at: number, effects: ReadonlyArray<EffectRecord>) => of(checkAll(synth(world, [startOf(row), synthCall(2, "stop", Option.none(), at, at + 5, row)], effects, [], row)), 4)
+      const stopAt = (at: number, effects: ReadonlyArray<EffectRecord>, extraCalls: ReadonlyArray<ToolCall> = []) =>
+        of(checkAll(synth(world, [startOf(row), ...extraCalls, synthCall(9, "stop", Option.none(), at, at + 5, row)], effects, [], row)), 4)
       expect(stopAt(125, FAULT_NEAR_END(blockId))).toEqual([])
       expect(stopAt(320, BLOCKED(blockId))).toEqual([])
-      expect(stopAt(200, WATCHER_CRASH(blockId))).toEqual([])
+      expect(stopAt(200, WATCHER_CRASH(blockId), [reattachCall(2, 65, Option.some(70))])).toEqual([])
       expect(stopAt(300, FAULT_NEAR_END(blockId)).length).toBeGreaterThan(0)
       expect(stopAt(400, BLOCKED(blockId)).length).toBeGreaterThan(0)
       expect(stopAt(125, OTHER_PANE()).length).toBeGreaterThan(0)
@@ -828,6 +847,68 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
       expect(stopAt(125, OTHER_CRASH(blockId)).length).toBeGreaterThan(0)
       expect(stopAt(125, []).length).toBeGreaterThan(0)
       expect(stopAt(200, [...FAULT_NEAR_END(blockId), ...OK_DONE_READ(blockId, 65)]).length).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "N1 (review r6): a dead watcher's excuse runs from its replacement's reattach end plus OBSERVE_GAP_MS (bounded by RECOVERY_BOUND_MS when no replacement reattaches)",
+    Effect.sync(() => {
+      const { blockId, world } = turnOneDone()
+      const deadWorld: WorldState = { ...world, deadProcs: new Set([1]) }
+      const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "stopped", turn: 1 }
+      const crashAt = 62
+      // Crash at 62, late process.start (+50 -> 112), store.read hang during reattach (+100 -> 217), first ok read at 222 (crash + 160).
+      const slowRecoveryEffects = [
+        ...WATCHER_CRASH(blockId),
+        effectBy(2, "process.start", "late", crashAt, "plugin load", 2),
+        effectBy(3, "store.read", "hang", 112, "read", 2),
+      ]
+      const slowReattach = reattachCall(2, 112, Option.some(217), 2)
+      const firstRead = effectBy(4, "pane.read", "ok", 222, `${blockId}:done`, 2)
+      const stop = (at: number) => synthCall(3, "stop", Option.none(), at, at + 5, row)
+      const i4 = (calls: ReadonlyArray<ToolCall>, effects: ReadonlyArray<EffectRecord>, w: WorldState = deadWorld, wakes: ReadonlyArray<WakeRecord> = []) =>
+        of(checkAll(synth(w, calls, effects, wakes, row)), 4)
+
+      // 1. Crash + late start + reattach store hang, first read at crash+160 (222), stop just after (227) -> GREEN.
+      expect(i4([startOf(row), slowReattach, stop(crashAt + 165)], [...slowRecoveryEffects, firstRead])).toEqual([])
+      expect(i4([startOf(row), slowReattach, stop(crashAt + 163)], slowRecoveryEffects)).toEqual([])
+      // After that ok read at 222, a stop past 222 + 60 is still RED.
+      expect(i4([startOf(row), slowReattach, stop(290)], [...slowRecoveryEffects, firstRead]).length).toBeGreaterThan(0)
+
+      // 2. Replacement reattached (at 217, or quickly at 70) and then does not read within OBSERVE_GAP_MS (160 ms) -> RED.
+      expect(i4([startOf(row), slowReattach, stop(217 + OBSERVE_GAP_MS)], slowRecoveryEffects)).toEqual([])
+      expect(i4([startOf(row), slowReattach, stop(217 + OBSERVE_GAP_MS + 5)], slowRecoveryEffects).length).toBeGreaterThan(0)
+      expect(i4([startOf(row), reattachCall(2, 65, Option.some(70)), stop(70 + OBSERVE_GAP_MS + 5)], WATCHER_CRASH(blockId)).length).toBeGreaterThan(0)
+      const diedAfterReattach = applyEvent(tick(deadWorld, 217 + OBSERVE_GAP_MS + 5), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
+      expect(
+        i4([startOf(row), slowReattach], slowRecoveryEffects, diedAfterReattach, [wakeAt(217 + OBSERVE_GAP_MS + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)]).length,
+      ).toBeGreaterThan(0)
+
+      // 3. No replacement reattaches (or reattach hangs) and no read ever -> GREEN within RECOVERY_BOUND_MS, RED after.
+      expect(i4([startOf(row), stop(crashAt + RECOVERY_BOUND_MS)], WATCHER_CRASH(blockId))).toEqual([])
+      expect(i4([startOf(row), stop(crashAt + RECOVERY_BOUND_MS + 5)], WATCHER_CRASH(blockId)).length).toBeGreaterThan(0)
+      expect(i4([startOf(row), reattachCall(2, 112, Option.none(), 2, "hang"), stop(crashAt + RECOVERY_BOUND_MS + 5)], slowRecoveryEffects).length).toBeGreaterThan(0)
+      const diedAfterBound = applyEvent(tick(deadWorld, crashAt + RECOVERY_BOUND_MS + 5), WorldEvent.PaneExits({ blockId: Option.some(blockId) }))
+      expect(
+        i4([startOf(row)], WATCHER_CRASH(blockId), diedAfterBound, [wakeAt(crashAt + RECOVERY_BOUND_MS + 10, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)]).length,
+      ).toBeGreaterThan(0)
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "N2 (review r6): a transient fault on pane.alive or pane.waitForQuiet does not extend the excuse; a lasting fault on them or any fault on pane.read still does",
+    Effect.sync(() => {
+      const { blockId, world } = turnOneDone()
+      const row: PaneWorker = { ...SAMPLE_WORKER, blockId, state: "stopped", turn: 1 }
+      const stopAt125 = (effects: ReadonlyArray<EffectRecord>) =>
+        of(checkAll(synth(world, [startOf(row), synthCall(2, "stop", Option.none(), 125, 130, row)], effects, [], row)), 4)
+      expect(stopAt125([effectAt(0, "pane.alive", "transient", 62, `${blockId}:done`)]).length).toBeGreaterThan(0)
+      expect(stopAt125([effectAt(0, "pane.waitForQuiet", "transient", 62, `${blockId}:done`)]).length).toBeGreaterThan(0)
+      expect(stopAt125([effectAt(0, "pane.alive", "hang", 62, `${blockId}:done`)])).toEqual([])
+      expect(stopAt125([effectAt(0, "pane.waitForQuiet", "timeout", 62, `${blockId}:done`)])).toEqual([])
+      expect(stopAt125([effectAt(0, "pane.read", "transient", 62, `${blockId}:done`)])).toEqual([])
     }),
     hangGuard("unit-law"),
   )
@@ -867,9 +948,13 @@ describe("pane-agent-sim round 5: the adjudication's corrections", () => {
       ...[wakeAt(reportAt, "msg_nc", "answer_not_captured", 1, NOT_CAPTURED.letter.text)].filter(() => report === "not_captured"),
       ...[wakeAt(reportAt, "msg_gone", "pane_gone", 1, "Pane gone.", blockId)].filter(() => report === "pane_gone"),
     ]
-    const calls = [startOf(row), ...[synthCall(2, "stop", Option.none(), reportAt, reportAt + 5, { ...row, state: "stopped" })].filter(() => report === "stop")]
+    const reattaches = effects.flatMap((e, i) => {
+      if (e.proc !== 1 || e.fault !== "crash") return []
+      return [reattachCall(10 + i, e.at + 5, Option.some(e.at + 10), 3 + i)]
+    })
+    const calls = [startOf(row), ...reattaches, ...[synthCall(2, "stop", Option.none(), reportAt, reportAt + 5, { ...row, state: "stopped" })].filter(() => report === "stop")]
     const lazy = synth(frame, calls, effects, wakes, row)
-    const correct = synth(frame, [startOf(row)], [...effects, effectAt(99, "pane.read", "ok", 500, `${blockId}:done`)], [wakeAt(520, "msg_done", "done", 1, `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)], row)
+    const correct = synth(frame, [startOf(row), ...reattaches], [...effects, effectBy(99, "pane.read", "ok", 500, `${blockId}:done`, 3)], [wakeAt(520, "msg_done", "done", 1, `<pane-agent-result state="done" turn="1">\n${answerOf("TK-w1-1")}\n</pane-agent-result>`)], row)
     return { lazy, correct }
   }
 

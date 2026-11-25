@@ -9,6 +9,7 @@ import { ANCHOR, applyEvent, DEFAULT_WORLD, findPane, makeWorld, OWNER_BLOCK, PR
 export const SESSION = "ses_sim"
 export const DIRECTORY = "/sim/repo"
 export const TICK_MS = 5
+export const LATE_START_MS = 50
 
 /** A tool call a caller issues, from the first server (proc 1) or a second one on the same store (proc 2). */
 export type Command = Data.TaggedEnum<{
@@ -252,7 +253,7 @@ function recover(r: Runner): Effect.Effect<void> {
         yield* r.world.kill(fresh.id)
         return yield* recover(r)
       }
-      if (start.fault === "late") yield* advance(r, 50)
+      if (start.fault === "late") yield* advance(r, LATE_START_MS)
       yield* issue(r, spec(slot, "reattach", "*", Option.none(), (model) => model.reattach(DIRECTORY)))
     }
   })

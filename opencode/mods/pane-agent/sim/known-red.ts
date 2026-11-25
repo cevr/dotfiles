@@ -1,5 +1,5 @@
 import { Option } from "effect"
-import { PINS } from "./pins.ts"
+import { PINS, type PinTable } from "./pins.ts"
 import { type Fingerprint } from "./property.ts"
 
 /**
@@ -65,7 +65,7 @@ export const classOf = (signature: string): Option.Option<string> =>
   Option.map(Option.fromUndefinedOr(CLASSES.find((item) => item.pattern.test(signature))), (item) => item.name)
 
 /** The pinned red set of a check (empty when the check must be green). */
-export const pinnedRed = (key: string): Fingerprint => Option.getOrElse(Option.fromUndefinedOr(PINS[key]), () => ({}))
+export const pinnedRed = (key: string, table: PinTable = PINS): Fingerprint => Option.getOrElse(Option.fromUndefinedOr(table[key]), () => ({}))
 
 export const isPinned = (key: string): boolean => Object.keys(pinnedRed(key)).length > 0
 
