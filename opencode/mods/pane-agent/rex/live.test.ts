@@ -234,7 +234,7 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             resultFile: result2,
           })
           expect(followed.blockId).toBe(workerBlockId)
-          expect(followed.pendingTurns?.[0]?.turn ?? followed.turn).toBe(2)
+          expect(followed.pendingTurns?.[0]?.turn).toBe(2)
 
           yield* waitForWakes(notifier.wakes, 2)
           const wakes2 = yield* Ref.get(notifier.wakes)
@@ -249,7 +249,7 @@ describe("live Rex pane-agent lifecycle (simulated CLI in temporary Rex session)
             steer: true,
           })
           expect(steered.blockId).toBe(workerBlockId)
-          expect(steered.pendingTurns?.[0]?.turn ?? steered.turn).toBe(3)
+          expect(steered.pendingTurns?.[0]?.turn).toBe(3)
 
           yield* waitForWakes(notifier.wakes, 3)
           const wakes3 = yield* Ref.get(notifier.wakes)

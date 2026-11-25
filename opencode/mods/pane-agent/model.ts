@@ -545,6 +545,7 @@ interface ActorRuntime {
   lastScreen: string
   needsReload: boolean
   freshFromStore: boolean
+  needsInputPolls: number
   readonly completedIntents: Set<string>
 }
 
@@ -1164,7 +1165,14 @@ const makeModel = (config: ModelConfig = {}) =>
         return
       }
       if (mode === "retry_delay") {
-        yield* pauseFor(retryDelay)
+        let delay = retryDelay
+        if (worker.state === "needs_input") {
+          rt.needsInputPolls += 1
+          delay = computeBackoff(retryDelay, Duration.max(Duration.millis(100), pollTimeout), rt.needsInputPolls)
+        } else {
+          rt.needsInputPolls = 0
+        }
+        yield* pauseFor(delay)
         yield* offerMsg(rt.mailbox, ActorMessage.IoRetryTick({ gen }))
         return
       }
@@ -1539,10 +1547,14 @@ const makeModel = (config: ModelConfig = {}) =>
           }
           return Effect.void
         },
-        (_worker, now) =>
+        (worker, now) =>
           Effect.gen(function* () {
             const closeIntentId = yield* makeRandomToken("cl")
             const deliveryId = yield* mintDeliveryId()
+            const extraDeliveryIds: Array<string> = []
+            for (let i = 0; i < pendingTurnsOf(worker).length; i++) {
+              extraDeliveryIds.push(yield* mintDeliveryId())
+            }
             return MachineEvent.Stop({
               close: input.close === true,
               durableOutbox: true,
@@ -1550,6 +1562,7 @@ const makeModel = (config: ModelConfig = {}) =>
               ownerProc: procId,
               lastScreen: rt.lastScreen,
               deliveryId,
+              extraDeliveryIds,
               now,
             })
           }),
@@ -2010,12 +2023,19 @@ const makeModel = (config: ModelConfig = {}) =>
           IoScreenRead: (m) => handleIoScreenRead(rt, m.screen),
           IoIdleConfirmed: (m) =>
             Effect.gen(function* () {
+              const priorScreen = rt.lastScreen
               rt.lastScreen = m.screen
               const now = yield* Clock.currentTimeMillis
               const deliveryId = yield* mintDeliveryId()
               yield* applyInternalTransition(
                 rt,
-                MachineEvent.IdleConfirmed({ screen: m.screen, resultFileAnswer: m.resultFileAnswer, now, deliveryId }),
+                MachineEvent.IdleConfirmed({
+                  screen: m.screen,
+                  priorScreen,
+                  resultFileAnswer: m.resultFileAnswer,
+                  now,
+                  deliveryId,
+                }),
               )
               yield* schedulePaneIo(rt)
             }),
@@ -2119,6 +2139,7 @@ const makeModel = (config: ModelConfig = {}) =>
         lastScreen: Option.getOrElse(Option.fromUndefinedOr(worker.lastLines), () => ""),
         needsReload: false,
         freshFromStore,
+        needsInputPolls: 0,
         completedIntents: new Set(),
       }
 

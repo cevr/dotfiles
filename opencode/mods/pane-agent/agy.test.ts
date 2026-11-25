@@ -104,6 +104,12 @@ describe("agy harness adapter", () => {
     expect(agyAdapter.readLastAnswer(DONE_FRAME)).toBe("pong")
   })
 
+  test("reads the echoed prompt line above the input box from working and done frames", () => {
+    expect(agyAdapter.readLastPrompt(WORKING_FRAME)).toEqual(Option.some("Reply with only the single word: pong"))
+    expect(agyAdapter.readLastPrompt(DONE_FRAME)).toEqual(Option.some("Reply with only the single word: pong"))
+    expect(Option.isNone(agyAdapter.readLastPrompt(READY_FRAME))).toBe(true)
+  })
+
   test("detects Antigravity usage-limit quota frame with Go duration and excludes it from ready/turnEnded", () => {
     const limitFrame = [
       "",

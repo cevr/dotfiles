@@ -59,6 +59,8 @@ export interface HarnessAdapter {
   readonly interruptSequence: string
   /** Extracts the last answer text from a completed screen capture. */
   readonly readLastAnswer: (screen: string) => string
+  /** Extracts the last echoed prompt line above the input box (`> <prompt>`), if present. */
+  readonly readLastPrompt: (screen: string) => Option.Option<string>
 }
 
 import { agyAdapter } from "./agy.ts"

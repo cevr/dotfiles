@@ -53,6 +53,7 @@ export const ActiveTurn = Schema.Struct({
   sawLimitFrame: Schema.optionalKey(Schema.Boolean),
   resumeAttempted: Schema.optionalKey(Schema.Boolean),
   resumed: Schema.optionalKey(Schema.Boolean),
+  observedPrompt: Schema.optionalKey(Schema.String),
 })
 export type ActiveTurn = typeof ActiveTurn.Type
 
@@ -120,7 +121,16 @@ export type DurableIntent = typeof DurableIntent.Type
 export const PendingWake = Schema.Struct({
   deliveryId: Schema.String,
   turn: Schema.Int,
-  kind: Schema.Literals(["done", "not_typed", "limited", "needs_input", "pane_gone", "rex_unreachable", "failed"]),
+  kind: Schema.Literals([
+    "done",
+    "not_typed",
+    "answer_not_captured",
+    "limited",
+    "needs_input",
+    "pane_gone",
+    "rex_unreachable",
+    "failed",
+  ]),
   key: Schema.String,
   description: Schema.String,
   text: Schema.String,

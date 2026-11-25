@@ -182,6 +182,23 @@ const readAnswer = (screen: string): string => {
   })
 }
 
+const readPrompt = (screen: string): Option.Option<string> => {
+  const lines = nonEmptyLines(screen)
+  return Option.flatMap(lastTwoRules(lines), ([boxTop]) => {
+    const beforeBox = lines.slice(0, boxTop)
+    const lastPromptIndex = Arr.findLastIndex(beforeBox, (line) => PROMPT_LINE.test(line.trim()))
+    return Option.flatMap(lastPromptIndex, (index) =>
+      Option.flatMap(Arr.get(beforeBox, index), (line) =>
+        Option.fromNullishOr(PROMPT_LINE.exec(line.trim())).pipe(
+          Option.flatMap((m) => Option.fromUndefinedOr(m[1])),
+          Option.map((text) => text.trim()),
+          Option.filter((text) => text.length > 0),
+        ),
+      ),
+    )
+  })
+}
+
 const addDirFlags = (addDirs?: ReadonlyArray<string>): ReadonlyArray<string> => {
   const dirs = Option.fromUndefinedOr(addDirs)
   if (Option.isNone(dirs)) return []
@@ -232,4 +249,5 @@ export const agyAdapter: HarnessAdapter = {
   usageLimit: detectUsageLimit,
   interruptSequence: "\x1b",
   readLastAnswer: readAnswer,
+  readLastPrompt: readPrompt,
 }

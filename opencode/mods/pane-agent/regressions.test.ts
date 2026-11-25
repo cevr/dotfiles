@@ -784,4 +784,72 @@ describe("pane-agent r2 review regressions (E1, Q1-Q3)", () => {
     }).pipe(Effect.scoped),
     hangGuard("local-fixture"),
   )
+
+  effectTest(
+    "Ruling (9): pane_gone wake states held queued turn count and stop reports each held turn not_typed",
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ defaultScreens: [READY_FRAME, WORKING_FRAME, WORKING_FRAME] })
+      const started = yield* h.model.start(BASE)
+      const running = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "working" && w.blockId.length > 0)
+      yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "HELD-TURN-2" })
+      yield* h.model.followUp({ parentSessionID: "ses_p", id: started.id, prompt: "HELD-TURN-3" })
+
+      yield* h.rex.setAlive(running?.blockId ?? "", false)
+      yield* h.model.status("ses_p", started.id)
+      const gone = yield* waitForWorker(h.store.state, started.id, (w) => w.state === "pane_gone")
+      expect(gone?.pendingTurns?.length).toBe(2)
+
+      const gotGoneWake = yield* waitFor(
+        Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.some((item) => item.letter.metadata["state"] === "pane_gone"))),
+      )
+      expect(gotGoneWake).toBe(true)
+      const wakesBeforeStop = yield* Ref.get(h.notifier.wakes)
+      const goneWake = wakesBeforeStop.find((item) => item.letter.metadata["state"] === "pane_gone")
+      expect(goneWake?.letter.text).toContain("2 turn(s) held")
+      expect(wakesBeforeStop.some((item) => item.letter.metadata["state"] === "not_typed")).toBe(false)
+
+      // Stopping while pane_gone reports each held turn as not_typed.
+      yield* h.model.stop({ parentSessionID: "ses_p", id: started.id })
+      const gotNotTyped = yield* waitFor(
+        Ref.get(h.notifier.wakes).pipe(
+          Effect.map((w) => w.filter((item) => item.letter.metadata["state"] === "not_typed").length === 2),
+        ),
+      )
+      expect(gotNotTyped).toBe(true)
+      const notTypedWakes = (yield* Ref.get(h.notifier.wakes)).filter(
+        (item) => item.letter.metadata["state"] === "not_typed",
+      )
+      expect(notTypedWakes.some((w) => w.letter.text.includes('turn="2"') && w.letter.text.includes("Turn 2 was not typed:"))).toBe(true)
+      expect(notTypedWakes.some((w) => w.letter.text.includes('turn="3"') && w.letter.text.includes("Turn 3 was not typed:"))).toBe(true)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
+
+  effectTest(
+    "Ruling (10): when another turn overwrites an unread done frame with no result file, reports answer_not_captured and NEVER done with human text",
+    Effect.gen(function* () {
+      const ourWorking = WORKING_FRAME.replace("> Reply with only the single word: pong", "> TK-w1-1")
+      const humanWorking = WORKING_FRAME.replace("> Reply with only the single word: pong", "> owner says hello")
+      const humanDone = DONE_FRAME.replace("> Reply with only the single word: pong", "> owner says hello").replace(
+        "  pong",
+        "  human answer",
+      )
+      const h = yield* makeHarness({
+        defaultScreens: [READY_FRAME, ourWorking, humanWorking, humanDone, humanDone],
+      })
+      const started = yield* h.model.start({ ...BASE, prompt: "TK-w1-1" })
+      const gotWake = yield* waitFor(Ref.get(h.notifier.wakes).pipe(Effect.map((w) => w.length >= 1)), 400)
+      expect(gotWake).toBe(true)
+
+      const wakes = yield* Ref.get(h.notifier.wakes)
+      expect(wakes).toHaveLength(1)
+      expect(wakes[0]?.letter.metadata["state"]).toBe("answer_not_captured")
+      expect(wakes[0]?.letter.text).toContain('state="answer_not_captured"')
+      expect(wakes[0]?.letter.text).toContain('turn="1"')
+      expect(wakes[0]?.letter.text).not.toContain("human answer")
+      expect(wakes.some((w) => w.letter.metadata["state"] === "done")).toBe(false)
+      expect(started.id.length).toBeGreaterThan(0)
+    }).pipe(Effect.scoped),
+    hangGuard("local-fixture"),
+  )
 })

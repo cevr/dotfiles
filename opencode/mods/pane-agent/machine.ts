@@ -91,6 +91,7 @@ export type MachineEvent = Data.TaggedEnum<{
   }
   readonly IdleConfirmed: {
     readonly screen: string
+    readonly priorScreen?: string
     readonly resultFileAnswer: Option.Option<string>
     readonly now: number
     readonly deliveryId: string
@@ -232,6 +233,7 @@ export type MachineEvent = Data.TaggedEnum<{
     readonly ownerProc?: string
     readonly lastScreen?: string
     readonly deliveryId?: string
+    readonly extraDeliveryIds?: ReadonlyArray<string>
   }
 }>
 
@@ -394,6 +396,33 @@ export const makeNotTypedWake = (
   attempts: 0,
 })
 
+const makeAnswerNotCapturedWake = (
+  worker: PaneWorker,
+  turn: number,
+  reason: string,
+  deliveryId: string,
+): PendingWake => ({
+  deliveryId,
+  turn,
+  kind: "answer_not_captured",
+  key: `${worker.id}:${turn}:answer_not_captured`,
+  description: `${worker.role} ${worker.harness} · ${worker.unit} · turn ${turn} answer not captured`,
+  text: [
+    `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="answer_not_captured" turn="${turn}">`,
+    `Turn ${turn} ended but its answer was not captured: ${reason}`,
+    "</pane-agent-result>",
+  ].join("\n"),
+  metadata: {
+    source: "pane-agent",
+    workerId: worker.id,
+    harness: worker.harness,
+    blockId: worker.blockId,
+    state: "answer_not_captured",
+    turn,
+  },
+  attempts: 0,
+})
+
 const makeLimitedWake = (worker: PaneWorker, turn: number, resetAt: number, deliveryId: string): PendingWake => {
   const iso = formatIsoMillis(resetAt)
   return {
@@ -445,10 +474,14 @@ const makeNeedsInputWake = (worker: PaneWorker, summary: string, tail: string, d
 
 const makePaneGoneWake = (worker: PaneWorker, reason: string, tail: string, deliveryId: string): PendingWake => {
   const cwd = Option.getOrElse(Option.fromUndefinedOr(worker.cwd), () => worker.directory)
+  const held = pendingTurnsOf(worker).length
   const lines = [
     `<pane-agent-result id="${worker.id}" harness="${worker.harness}" block="${worker.blockId}" state="pane_gone" turn="${worker.turn}">`,
     `${reason} Call pane_agent({ action: "restart", id: "${worker.id}" }) to resume this worker with --continue in ${cwd}.`,
   ]
+  if (held > 0) {
+    lines.push(`${held} turn(s) held; restart to type them, or stop to drop them.`)
+  }
   if (tail.length > 0) {
     lines.push("", "Last lines from the pane:", tail)
   }
@@ -467,6 +500,7 @@ const makePaneGoneWake = (worker: PaneWorker, reason: string, tail: string, deli
       blockId: worker.blockId,
       state: "pane_gone",
       turn: worker.turn,
+      heldTurns: held,
     },
     attempts: 0,
   }
@@ -589,6 +623,67 @@ const settleDone = (
     },
     actions,
   }
+}
+
+const settleAnswerNotCaptured = (
+  state: MachineState,
+  turn: number,
+  reason: string,
+  now: number,
+  deliveryId: string,
+): TransitionResult => {
+  const hasQueued = pendingTurnsOf(state.worker).length > 0
+  const cleared = withoutActiveTurn(state.worker)
+  let nextState: PaneWorker["state"] = "done"
+  if (hasQueued) nextState = "starting"
+  const base: PaneWorker = {
+    ...cleared,
+    state: nextState,
+    update: `turn ${turn} answer not captured`,
+    updatedAt: now,
+    endedAt: now,
+  }
+  const wake = makeAnswerNotCapturedWake(base, turn, reason, deliveryId)
+  const nextWorker = enqueueWakeIfDue(base, wake, true)
+  const actions: Array<MachineAction> = [MachineAction.Persist()]
+  if (Option.isSome(nextRetryableWake(nextWorker))) {
+    actions.push(MachineAction.FlushWake())
+  }
+  if (!hasQueued) {
+    actions.push(MachineAction.StopWatching())
+  }
+  return {
+    state: {
+      worker: nextWorker,
+      sawWorking: false,
+      idlePendingConfirm: false,
+      consecutiveGone: 0,
+      consecutiveTransient: 0,
+    },
+    actions,
+  }
+}
+
+const briefTokenOf = (brief: string): Option.Option<string> =>
+  Option.fromNullishOr(/\bTK-[a-z0-9]+-\d+\b/.exec(brief)).pipe(
+    Option.flatMap((m) => Option.fromUndefinedOr(m[0])),
+  )
+
+const screenBelongsToOtherTurn = (screen: string, active: ActiveTurn, adapter: HarnessAdapter): boolean => {
+  const screenPrompt = adapter.readLastPrompt(screen)
+  if (Option.isNone(screenPrompt)) return false
+  const observed = Option.fromUndefinedOr(active.observedPrompt)
+  if (Option.isSome(observed) && screenPrompt.value !== observed.value) return true
+  const token = briefTokenOf(active.brief)
+  if (Option.isSome(token) && !screenPrompt.value.includes(token.value)) return true
+  return false
+}
+
+const withCapturedPrompt = (active: ActiveTurn, screen: string, adapter: HarnessAdapter): ActiveTurn => {
+  if (Option.isSome(Option.fromUndefinedOr(active.observedPrompt))) return active
+  const prompt = adapter.readLastPrompt(screen)
+  if (Option.isNone(prompt)) return active
+  return { ...active, observedPrompt: prompt.value }
 }
 
 const enterNeedsInput = (
@@ -872,9 +967,16 @@ const confirmActiveWorking = (
   priorState: PaneWorker["state"],
   screen: string,
   now: number,
+  adapter: HarnessAdapter,
 ): TransitionResult => {
+  const curActive = Option.fromUndefinedOr(recovered.worker.activeTurn)
+  const promptNewlyObserved =
+    Option.isSome(curActive) &&
+    Option.isNone(Option.fromUndefinedOr(curActive.value.observedPrompt)) &&
+    Option.isSome(adapter.readLastPrompt(screen))
   const needsConfirmPersist =
-    Option.exists(Option.fromUndefinedOr(recovered.worker.activeTurn), (at) => at.phase === "written") ||
+    Option.exists(curActive, (at) => at.phase === "written") ||
+    promptNewlyObserved ||
     recovered.worker.state === "needs_input" ||
     priorState === "rex_unreachable"
   if (!needsConfirmPersist) {
@@ -883,8 +985,8 @@ const confirmActiveWorking = (
       actions: [MachineAction.WaitQuiet()],
     }
   }
-  const nextActive = Option.map(Option.fromUndefinedOr(recovered.worker.activeTurn), (at): ActiveTurn => ({
-    ...at,
+  const nextActive = Option.map(curActive, (at): ActiveTurn => ({
+    ...withCapturedPrompt(at, screen, adapter),
     phase: "confirmed",
     writtenIdlePolls: 0,
   }))
@@ -980,9 +1082,17 @@ const handleObserveScreen = (
     )
   }
 
+  // Active turn is typed (`written` or `confirmed`): check if another turn (e.g. human) overwrote our screen.
+  if (Option.isSome(active) && screenBelongsToOtherTurn(event.screen, active.value, adapter)) {
+    return {
+      state: { ...recovered, idlePendingConfirm: true },
+      actions: [...recoveredPersist, MachineAction.ConfirmIdle()],
+    }
+  }
+
   // Active turn is typed (`written` or `confirmed`): check if harness is still working or shows turnEnded.
   if (!adapter.turnEnded(event.screen)) {
-    return confirmActiveWorking(recovered, state.worker.state, event.screen, event.now)
+    return confirmActiveWorking(recovered, state.worker.state, event.screen, event.now, adapter)
   }
 
   // turnEnded holds on pass 1: confirm across waitForQuiet before settling (B1).
@@ -995,9 +1105,14 @@ const handleObserveScreen = (
   return { state: recovered, actions: [...recoveredPersist, MachineAction.WaitQuiet()] }
 }
 
-const confirmWorkingOnIdleCheck = (state: MachineState, now: number): TransitionResult => {
-  const nextActive = Option.map(Option.fromUndefinedOr(state.worker.activeTurn), (at): ActiveTurn => ({
-    ...at,
+const confirmWorkingOnIdleCheck = (state: MachineState, screen: string, now: number, adapter: HarnessAdapter): TransitionResult => {
+  const curActive = Option.fromUndefinedOr(state.worker.activeTurn)
+  const promptNewlyObserved =
+    Option.isSome(curActive) &&
+    Option.isNone(Option.fromUndefinedOr(curActive.value.observedPrompt)) &&
+    Option.isSome(adapter.readLastPrompt(screen))
+  const nextActive = Option.map(curActive, (at): ActiveTurn => ({
+    ...withCapturedPrompt(at, screen, adapter),
     phase: "confirmed",
     writtenIdlePolls: 0,
   }))
@@ -1006,13 +1121,40 @@ const confirmWorkingOnIdleCheck = (state: MachineState, now: number): Transition
     onSome: (activeTurn) => ({ ...state.worker, activeTurn, updatedAt: now }),
   })
   const actions: Array<MachineAction> = [MachineAction.WaitQuiet()]
-  if (Option.exists(Option.fromUndefinedOr(state.worker.activeTurn), (a) => a.phase === "written")) {
+  if (Option.exists(curActive, (a) => a.phase === "written") || promptNewlyObserved) {
     actions.unshift(MachineAction.Persist())
   }
   return {
     state: { ...state, worker, sawWorking: true, idlePendingConfirm: false, consecutiveGone: 0, consecutiveTransient: 0 },
     actions,
   }
+}
+
+const resolveOverwrittenTurn = (
+  state: MachineState,
+  active: ActiveTurn,
+  event: Extract<MachineEvent, { readonly _tag: "IdleConfirmed" }>,
+  adapter: HarnessAdapter,
+): TransitionResult => {
+  if (Option.isSome(event.resultFileAnswer)) {
+    return settleDone(state, event.resultFileAnswer.value, true, event.now, event.deliveryId)
+  }
+  const prior = Option.fromUndefinedOr(event.priorScreen)
+  if (
+    Option.isSome(prior) &&
+    adapter.turnEnded(prior.value) &&
+    Option.isNone(adapter.needsInput(prior.value)) &&
+    !screenBelongsToOtherTurn(prior.value, active, adapter)
+  ) {
+    return settleDone(state, adapter.readLastAnswer(prior.value), false, event.now, event.deliveryId)
+  }
+  return settleAnswerNotCaptured(
+    state,
+    active.turn,
+    "pane was overwritten by another turn before a read observed its answer",
+    event.now,
+    event.deliveryId,
+  )
 }
 
 const handleUnstartedWrittenTurn = (
@@ -1074,8 +1216,11 @@ const handleIdleConfirmed = (
   if (Option.isSome(limit) && Option.isSome(active)) {
     return enterUsageLimit(state, active.value, limit.value, event.now, event.deliveryId, adapter, false, "", "")
   }
+  if (activeTurnTypedOf(state.worker) && Option.isSome(active) && screenBelongsToOtherTurn(event.screen, active.value, adapter)) {
+    return resolveOverwrittenTurn(state, active.value, event, adapter)
+  }
   if (!adapter.turnEnded(event.screen)) {
-    return confirmWorkingOnIdleCheck(state, event.now)
+    return confirmWorkingOnIdleCheck(state, event.screen, event.now, adapter)
   }
   if (!activeTurnTypedOf(state.worker)) {
     return {
@@ -1117,10 +1262,16 @@ const handleProbeGone = (
     return settleDone(state, event.resultFileAnswer.value, true, event.now, event.deliveryId)
   }
   const prevScreen = Option.fromUndefinedOr(event.lastScreen)
+  const activeForScreen = activeTurnOf(state.worker)
+  const prevBelongsToOther = Option.exists(
+    prevScreen,
+    (scr) => Option.exists(activeForScreen, (at) => screenBelongsToOtherTurn(scr, at, adapter)),
+  )
   if (
     activeTurnTypedOf(state.worker) &&
     state.sawWorking &&
     Option.isSome(prevScreen) &&
+    !prevBelongsToOther &&
     adapter.turnEnded(prevScreen.value) &&
     Option.isNone(adapter.needsInput(prevScreen.value))
   ) {
@@ -1128,10 +1279,13 @@ const handleProbeGone = (
   }
   const active = Option.fromUndefinedOr(state.worker.activeTurn)
   const untypedActive = Option.filter(active, (at) => at.phase === "intended" && at.resumed !== true)
-  const cleared = withoutActiveTurn(state.worker)
-  const cleanedOutbox = outboxOf(cleared).filter((i) => i._tag !== "TypeTurn" && i._tag !== "TypeResume")
+  const heldWorker = Option.match(untypedActive, {
+    onNone: () => withoutActiveTurn(state.worker),
+    onSome: (at) => requeueActiveTurn(state.worker, at, event.now),
+  })
+  const cleanedOutbox = outboxOf(heldWorker).filter((i) => i._tag !== "TypeTurn" && i._tag !== "TypeResume")
   const base: PaneWorker = {
-    ...withOutbox(cleared, cleanedOutbox),
+    ...withOutbox(heldWorker, cleanedOutbox),
     state: "pane_gone",
     update: "pane gone (use restart to resume with --continue)",
     updatedAt: event.now,
@@ -1139,17 +1293,8 @@ const handleProbeGone = (
     lastLines: event.tail,
   }
   let nextWorker = base
-  if (Option.isSome(untypedActive)) {
-    const ntWake = makeNotTypedWake(
-      base,
-      untypedActive.value.turn,
-      "Rex pane closed before turn could be typed",
-      `${event.deliveryId}_nt`,
-    )
-    nextWorker = enqueueWakeIfDue(nextWorker, ntWake, false)
-  }
   const wake = makePaneGoneWake(nextWorker, "Rex pane closed or process exited.", event.tail, event.deliveryId)
-  if (isLive(state.worker.state)) {
+  if (isLive(state.worker.state) || pendingTurnsOf(nextWorker).length > 0) {
     nextWorker = enqueueWakeIfDue(nextWorker, wake, true)
   }
   const actions: Array<MachineAction> = [MachineAction.Persist()]
@@ -1177,7 +1322,7 @@ const handleTransientError = (
   const nextTransient = state.consecutiveTransient + 1
   if (nextTransient < config.maxTransientErrors) {
     return {
-      state: { ...state, consecutiveTransient: nextTransient, idlePendingConfirm: false },
+      state: { ...state, consecutiveTransient: nextTransient, consecutiveGone: 0, idlePendingConfirm: false },
       actions: [MachineAction.RetryTransient()],
     }
   }
@@ -2029,6 +2174,7 @@ const handleWakeDelivered = (
   const isTurnTerminal =
     matched.value.kind === "done" ||
     matched.value.kind === "not_typed" ||
+    matched.value.kind === "answer_not_captured" ||
     matched.value.kind === "pane_gone" ||
     matched.value.kind === "failed"
   let nextNotifiedTurn = state.worker.notifiedTurn
@@ -2143,6 +2289,9 @@ const settlePendingIdleOnStop = (
   if (!state.idlePendingConfirm || !state.sawWorking || !activeTurnTypedOf(state.worker)) return state.worker
   if (Option.isNone(screenOpt) || Option.isNone(deliveryOpt)) return state.worker
   if (!adapter.turnEnded(screenOpt.value)) return state.worker
+  if (Option.exists(activeTurnOf(state.worker), (at) => screenBelongsToOtherTurn(screenOpt.value, at, adapter))) {
+    return state.worker
+  }
   const turn = Option.match(activeTurnOf(state.worker), {
     onNone: () => state.worker.turn,
     onSome: (at) => at.turn,
@@ -2153,12 +2302,32 @@ const settlePendingIdleOnStop = (
   return enqueueWakeIfDue(state.worker, wake, true)
 }
 
+const reportHeldTurnsOnStop = (
+  worker: PaneWorker,
+  event: Extract<MachineEvent, { readonly _tag: "Stop" }>,
+): PaneWorker => {
+  if (worker.state !== "pane_gone") return worker
+  const held = pendingTurnsOf(worker)
+  if (held.length === 0) return worker
+  const extras = Option.getOrElse(Option.fromUndefinedOr(event.extraDeliveryIds), () => [])
+  const fallbackBase = Option.getOrElse(Option.fromUndefinedOr(event.deliveryId), () => `stop_${event.now}`)
+  let next = worker
+  for (let i = 0; i < held.length; i++) {
+    const turn = Arr.get(held, i)
+    if (Option.isNone(turn)) continue
+    const delId = Option.getOrElse(Arr.get(extras, i), () => `${fallbackBase}_held_${turn.value.turn}`)
+    const wake = makeNotTypedWake(next, turn.value.turn, "stopped while the pane was gone", delId)
+    next = enqueueWakeIfDue(next, wake, false)
+  }
+  return next
+}
+
 const handleStop = (
   state: MachineState,
   event: Extract<MachineEvent, { readonly _tag: "Stop" }>,
   adapter: HarnessAdapter,
 ): TransitionResult => {
-  const withSettled = settlePendingIdleOnStop(state, event, adapter)
+  const withSettled = reportHeldTurnsOnStop(settlePendingIdleOnStop(state, event, adapter), event)
   const shouldClose = event.close && withSettled.ownedBlock
   const hasBlock = withSettled.blockId.length > 0
   const intents: Array<DurableIntent> = []
@@ -2175,7 +2344,11 @@ const handleStop = (
     intents.push(closeIntent)
   }
   const preservedWakes = pendingWakesOf(withSettled).filter(
-    (w) => w.kind === "done" || w.kind === "not_typed" || w.kind === "limited",
+    (w) =>
+      w.kind === "done" ||
+      w.kind === "not_typed" ||
+      w.kind === "answer_not_captured" ||
+      w.kind === "limited",
   )
   const stopped: PaneWorker = {
     ...withPendingWakes(withoutActiveTurn(withSettled), preservedWakes),
