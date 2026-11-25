@@ -73,18 +73,16 @@
  *   Default true. The owner approved every reset in hand ahead of time: the
  *   pool spends them on its own, Claude's and Codex's alike, and never asks
  *   (`@dotfiles/opencode-pool/claim-rule`): first a reset about to expire
- *   unused (one expiring within a day is just used, on a spent window or at
- *   its last call), then the work goes to a fresh account while one can take
- *   it, and only then a reset for held work, when the work would spend at
- *   least half of what it gives back before the window resets by itself;
- *   never for a window that resets by itself soon anyway (5-hour within 30
- *   minutes, a week within a day), at most one claim per window period per
- *   account. After a claim it reads the account again, records whether the
- *   weekly reset moved, and tells the owner once in the tray of the session
- *   that waited last (`Claimed the 5h reset on …`). `resets` answers what is
- *   being worked and the claims made, for the /pool pane. The pace raises an
- *   account's line by what a reset in hand gives back, and starts it again
- *   from a claim. A claim the pool decides on its own is made only on the account's fields read in the last 15
+ *   unused (one expiring within a day goes on exhaustion or at its six-hour
+ *   last call), then an exhausted account with running/held work, provided the
+ *   reset frees it. Anthropic preserves the weekly cadence; Codex waits for
+ *   weekly exhaustion, then redeems promptly and restarts the weekly cadence.
+ *   Every claim waits 30 minutes from its natural reset. Fresh stock schedules
+ *   existing Anthropic quota faster, without bypassing a hard limit. Refunds
+ *   rebase the line only after a successful claim's fresh observed recovery.
+ *   A later claim in the same cadence needs a fresh credit-count generation.
+ *   The owner is notified once in the latest waiting session's tray.
+ A claim the pool decides on its own is made only on the account's fields read in the last 15
  *   minutes and after its last claim (a window carried over from an older
  *   reading counts as unread), one at a time per account (its login, in any
  *   pool). Every claim, a push's too, is sent under one lock per provider

@@ -1,9 +1,9 @@
 // @reads all
 // @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
-// Reset-backed pace on the simulated host, each test at 20 seeds: no request
-// on the pooled provider goes out over the pool's spend-evenly line unless a
-// reset the pool claimed, sent once and observed in a fresh reading, gave the
-// room back. The planner's red controls
+// Reset-backed pace on the simulated host, each test at 20 seeds: fresh
+// approved credits schedule the existing quota before exhaustion; a hard
+// quota limit still waits for a reset sent once and observed in a fresh
+// reading. The planner's red controls
 // (tmp/orchestrate/pool-reset-backed-pace/reset-backed-pace/acceptance.sim.test.ts),
 // moved here with package imports, and the owner's incident fixture: shared
 // week 100%, Fable 68% of its own week = 34 shared points, observed after the
@@ -14,14 +14,16 @@ import { simulationRunner } from "../../sim/seed.ts"
 
 const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace-claim.sim.test.ts")
 
-seeded("a prospective Fable allowance cannot admit a start beyond even pace", ({ seed, expect }) =>
+seeded("a fresh approved Fable allowance schedules existing quota before redemption", ({ seed, expect }) =>
   Effect.gen(function* () {
-    // At midweek the ordinary line is 54.5%. A Fable window used 4–8% took at
-    // most 2–4 shared points, whatever its 50% maximum share of the week.
+    // At midweek the ordinary line is 54.5%; the fresh approved credit raises
+    // its schedule so existing quota at 72–74% can be used before redemption.
     const own = (4 + (seed >>> 0) % 5) / 100
     const { world, pace } = yield* boot(seed, quota(0.7 + own / 2, own), [fable])
     expect(world.provider().claims()).toHaveLength(0)
-    expect(yield* pace).toMatchObject({ measured: true, ok: false })
+    expect(yield* pace).toMatchObject({ measured: true, ok: true, admission: "ordinary", eligible: ["fixture"] })
+    yield* world.advance(20_000)
+    expect(world.provider().claims()).toHaveLength(0)
   }),
 )
 

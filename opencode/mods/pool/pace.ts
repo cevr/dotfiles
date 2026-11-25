@@ -15,7 +15,7 @@ import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import type { RequestKind } from "./accounts.ts"
 import { futureRetryAt, holdRecheckAt, pendingRecoveryAt, type FutureRetryAt } from "./hold.ts"
 import { accountWindow, DEFINED_MODEL_WINDOWS, limitsModel, type QuotaReading, type QuotaWindow, Reported, SCOPE_REPORT_SAMPLES, scopeOf, tracked, TRACKED_WINDOWS, windowReading, type WindowReading } from "./quota.ts"
-import { lineOf, usedOf, weeklyPace, TARGET, WEEK, type PacePlan } from "./weekly-pace.ts"
+import { lineOf, ordinaryPlan, usedOf, weeklyPace, TARGET, WEEK, type PacePlan } from "./weekly-pace.ts"
 export { lineOf, usedOf, TARGET, type PacePlan } from "./weekly-pace.ts"
 import type { AccountStatus } from "./status.ts"
 import { byCount, holdsAt, signInReason, tryAgainAt, used } from "./usage-text.ts"
@@ -429,7 +429,7 @@ function budgetPace(
   const read = known.reduce((n, a) => n + a.used, 0)
   const charged = inflight.starts.length * inflight.cost
   const allowance = known.reduce((n, a) => n + lineOf(a.resetAt, now, a.plan), 0)
-  const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, {}), 0)
+  const ordinary = known.reduce((n, a) => n + lineOf(a.resetAt, now, ordinaryPlan(a.plan)), 0)
   const weekly = weeklyPace(known, now, charged)
   if (!weekly.ordinary && absentWeek.length > 0)
     return takenWeekless(absentWeek, `the paced ${byCount(known.length, "account's week is", "accounts' weeks are")} past the spend-evenly line, so the start goes out only where no week is reported: `)
@@ -774,7 +774,8 @@ export function dispatchPace(
     if (gaps.length === 0) return reason
     return `${reason}; ${gaps.length} ${byCount(gaps.length, "account", "accounts")} more ${byCount(gaps.length, "has", "have")} no reading it may go out on (${needs}): ${lacking}`
   }
-  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model).retryAt))
+  const ordinaryCatchUp = () => Option.toArray(Option.fromUndefinedOr(budgetPace(fresh, now, inflight, model,
+    Object.fromEntries(Object.entries(plans).map(([id, plan]) => [id, ordinaryPlan(plan)]))).retryAt))
   // A limit the read accounts REPORT is what a person is told: the unread accounts are named in its reason
   // (`reasonWithGaps`) and their next read is in its retry (`evidenceTime`), so an unread login never hides a spent week.
   // A hold of another kind keeps the remedy order, where a read comes first.

@@ -7,17 +7,14 @@
 //   last call, on the window it gives back most of; never while that window
 //   resets by itself within 30 minutes. One expiring later is left without
 //   work to use it on. The owner is told after.
-// - Demand is a forecast: the pool's burn, scaled by any start held, runs its
-//   room out before the window resets by itself; a reset goes on the account
-//   near its limit when it frees the account and the work would spend at
-//   least half of what it gives back before then: early in the week, not
-//   late, and not with too little work.
+// - Ordinary resets wait for measured exhaustion and active or held work.
+//   Slow burn and another account's room never veto the refill.
 // - A Fable reset empties Fable's own week and takes Fable's part of the
 //   weekly use off the weekly window, whose reset stays.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Effect } from "effect"
 import { fold } from "@dotfiles/decider/decider"
-import { BURN_AGENTS, LAST_CALL_MS, NATURAL_MS, NEAR_MS, NEAR_USED, NOT_WORTH_MS, WORTH_SHARE } from "./claim-rule.ts"
+import { LAST_CALL_MS, NATURAL_MS } from "./claim-rule.ts"
 import { lineOf } from "./pace.ts"
 import type { QuotaWindow, ResetCredit } from "./quota.ts"
 import {
@@ -181,20 +178,15 @@ describe("use it or lose it", () => {
 const WAITED: ReadonlyArray<"WaitNoted"> = ["WaitNoted"]
 const DUE: ReadonlyArray<"ClaimDue"> = ["ClaimDue"]
 
-const forecastClaims = (left: number, used: number, running: number, held: number) => {
-  const burn = (used / Math.max(WEEK - left, HOUR / 12)) * HOUR * (1 + held / Math.max(running, BURN_AGENTS))
-  const runsOut = (running > 0 || held > 0) && (used >= 1 || ((1 - used) / burn) * HOUR < left)
-  const near = used >= NEAR_USED || ((1 - used) / burn) * HOUR <= NEAR_MS
-  const pays = Math.min(used, (burn * left) / HOUR) >= WORTH_SHARE * used
-  return runsOut && left > NOT_WORTH_MS && near && pays
-}
+const exhaustedClaims = (left: number, used: number, running: number, held: number) =>
+  (running > 0 || held > 0) && used >= 0.99 && left > 30 * MINUTE
 
 describe("claimed on demand", () => {
   /** The pool's one account, its week `used` with `left` of it to run, two weekly resets in hand, `inflight` agents running. */
   const heldView = (left: number, used: number, inflight: number) =>
     pool("claude", [account("a", [window("5h", 0.2, T0 + 3 * HOUR), window("7d", used, T0 + left)], [grant("g", T0 + 60 * DAY, { ...WEEKLY, count: 2 })])], {}, inflight)
 
-  test("over day of the week × work × use: claimed iff the forecast runs the week out before it resets, more than a day off, on an account near its limit, and the work would spend half of it back before then", () => {
+  test("over day of the week × work × use: a cadence-preserving refill follows measured exhaustion and present work, not a burn forecast", () => {
     for (const leftDays of [0.5, 1, 2, 3, 5, 6.5])
       for (const inflight of [0, 1, 3, 6])
         for (const used of [0.3, 0.5, 0.9, 0.95, 1])
@@ -202,7 +194,7 @@ describe("claimed on demand", () => {
             const left = leftDays * DAY
             const waits = Arr.filter([[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root", hard: true })] as const], () => held)
             const { events } = run([...waits, [T0, Review.make({ pools: [heldView(left, used, inflight)] })]])
-            const claimed = forecastClaims(left, used, inflight, Number(held))
+            const claimed = exhaustedClaims(left, used, inflight, Number(held))
             const label = `${leftDays} days left, ${inflight} running, used ${used}, held ${held}`
             expect(tags(events), label).toEqual([...Arr.filter(WAITED, () => held), ...Arr.filter(DUE, () => claimed)])
           }

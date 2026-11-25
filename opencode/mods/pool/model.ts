@@ -891,7 +891,7 @@ export const layer = (config: Config) =>
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
         const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends)
+        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>

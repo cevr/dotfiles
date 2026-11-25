@@ -195,9 +195,9 @@ describe("Codex resets", () => {
       Effect.gen(function* () {
         const now = stamp()
         const codex = world(config, logins)
-        codex.readings.get(OPENAI)!.set("codex-a", reading(now, { credits: [credit("credit-late", now, 20 * DAY)] }))
+        codex.readings.get(OPENAI)!.set("codex-a", reading(now, { sevenDay: 1, credits: [credit("credit-late", now, 20 * DAY)] }))
         // It expires before the week resets by itself: not one to keep in hand.
-        codex.readings.get(OPENAI)!.set("codex-b", reading(now, { credits: [credit("credit-soon", now, 2 * DAY)] }))
+        codex.readings.get(OPENAI)!.set("codex-b", reading(now, { sevenDay: 1, credits: [credit("credit-soon", now, 2 * DAY)] }))
         // The reset empties the windows and restarts the week, as Codex's does.
         codex.state.answer = (claim) => {
           codex.readings.get(OPENAI)!.set(claim.credentialID, reading(now, { fiveHour: 0, sevenDay: 0, weekIn: 7 * DAY }))
@@ -225,7 +225,7 @@ describe("Codex resets", () => {
       }),
     ))
 
-  test("one account with room: nothing is claimed", () =>
+  test("a spent Codex short window with weekly room left does not discard the week", () =>
     scoped(
       Effect.gen(function* () {
         const now = stamp()
@@ -315,7 +315,7 @@ describe("Claude resets", () => {
         yield* pool.reviewResets
         expect(claude.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "grant-1"]])
         expect(claude.owner.asked.map((question) => [question.sessionID, question.options.map((option) => option.label)])).toEqual([["ses_root", [SEEN]]])
-        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h\)\. 1 reset left this week; next expires .*\.$/)
+        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(the account reached its limit: 5h 100% used, 3 agents running, 1 start held; refill the measured limit\)\. 1 reset left this week; next expires .*\.$/)
         const status = yield* pool.resets
         expect(status.claims.map((claim) => [claim.provider, claim.outcome, claim.weekly])).toEqual([["claude", "reset", "kept"]])
         // Read, the notice leaves the tray.
@@ -378,16 +378,13 @@ describe("Claude resets", () => {
         return { claude, before: before[0] ?? 0, resets: (yield* pool.resets).resets }
       }).pipe(Effect.provide(TestClock.layer()))
 
-    test("still busy at 3 hours, the week 85% used and forecast to run out in 1.5 h, days before its reset: a grant is claimed for the forecast", () =>
+    test("still busy at 3 hours and 85% used: an ordinary reset waits for measured exhaustion", () =>
       scoped(
         Effect.gen(function* () {
           const { claude, before, resets } = yield* run(false)
-          // Not near its limit until the last read: nothing claimed before it.
           expect(before).toBe(0)
-          expect(claude.claims.map((claim) => claim.creditID)).toEqual(["grant-1"])
-          expect(resets.map((reset) => [reset.why, reset.reason])).toEqual([
-            ["forecast", "the pool runs out before its reset: 4 agents running on 1 host, weekly 85% used, forecast 100% in 2 h, reset in 2.9 days"],
-          ])
+          expect(claude.claims).toEqual([])
+          expect(resets).toEqual([])
         }),
       ))
 

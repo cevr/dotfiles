@@ -2016,7 +2016,7 @@ describe("resets on the live adapters", () => {
     const fake = startFakeChatGPT({ beforeConsumeResponse: () => reply.promise })
     const now = stamp()
     // The credit ends before the week resets: not one to keep in hand.
-    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 40, 2 * DAY))
+    fake.accounts.set("acct-1", spentAccount("access-1", "credit-1", now, 100, 2 * DAY))
     try {
       await scenario(
         Effect.gen(function* () {
@@ -2075,7 +2075,7 @@ describe("resets on the live adapters", () => {
         const told = state.owner.asked[0]! as OwnerTest.MemoryOwner["asked"][number] & { readonly plugin?: string }
         expect(state.owner.asked).toHaveLength(1)
         expect(told).toMatchObject({ sessionID: "ses_root", plugin: "dotfiles-opencode.pool", header: "Pool reset claimed", options: [{ label: "OK" }] })
-        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (the pool runs out before its reset: 1 start held, 3 agents running on 1 host, ")
+        expect(told.question).toStartWith("Claimed the full reset on Anthropic 1: 5h 100% used of 100% → 0% used (the account reached its limit: 5h 100% used, 3 agents running, 1 start held; refill the measured limit)")
         expect(told.question).toContain("1 reset left this week")
         const resets = yield* plugin.resets
         expect(resets.claims.map(({ provider, outcome, weekly }) => ({ provider, outcome, weekly }))).toEqual([
@@ -2084,7 +2084,7 @@ describe("resets on the live adapters", () => {
       }),
     ))
 
-  test("a held start with nothing else running still counts: its only account spent, the grant is claimed for the forecast, and nothing asked", () =>
+  test("a held start with nothing else running still counts: its only account spent, the grant refills the measured limit, and nothing asked", () =>
     scenario(
       Effect.gen(function* () {
         const now = stamp()

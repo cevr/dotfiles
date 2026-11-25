@@ -475,8 +475,11 @@ describe("a host's own claim (test strength, round 5)", () => {
         yield* sleep(LEASE_MS + 50)
         hosts.workbox.link = "up"
         account.claim = claim
-        // Read again: the provider has not shown the claim yet, and this reading ranks the five-hour window first: another reset's key.
-        hosts.workbox.view.snapshot = { ...left, at: stamp() }
+        // Inventory reflects the real redemption, but usage still lags and ranks
+        // the five-hour window first: the lower count makes this a new request.
+        const inventory = account.reading().resets!
+        expect(inventory.credits.map((credit) => [credit.id, credit.count])).toEqual([["g1", 1], ["g2", 0]])
+        hosts.workbox.view.snapshot = { ...left, at: stamp(), resets: inventory }
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)

@@ -52,17 +52,7 @@ test("the table runner uses the law's order and rejects a missing fixture", () =
   expect(() => assertWitnessCases(required, { first: fixture("first") })).toThrow("witness table keys")
 })
 
-// These seven failures describe known pool behavior; they are not witness controls.
 const poolFile = "mods/pool/claim-rule.test.ts"
-const poolFailures = [
-  "pool-claim-rule seed 18926016: the aggregate flags zero room even though the expiring credit is claimed",
-  "pool-claim-rule seed 18926168: spends a 5h credit after the load drops below the half-credit threshold",
-  "pool-claim-rule seed 18926350: withholds a 5h credit at zero room after demand rises",
-  "pool-claim-rule seed 18927240: withholds a 5h credit while eleven agents have no room",
-  "pool-claim-rule seed 18927416: keeps withholding a useful 5h credit across spent periods",
-  "pool-claim-rule seed 18927526: spends a 5h credit at one agent's burn",
-  "pool-claim-rule seed 31415527: withholds a 5h credit while modeled demand would use more than half",
-]
 
 type Span = { readonly start: number; readonly end: number }
 const within = (node: Span, container: Span) => node.start >= container.start && node.end <= container.end
@@ -121,13 +111,6 @@ const witnessSources = (file: string, text: string) => {
   const forbidden: Array<string> = []
   for (const member of modifiers) {
     const insideWitness = examples.some((call) => within(member, call))
-    if (!insideWitness && file === poolFile && methodOf(member) === "failing" && member.object.type === "Identifier" && member.object.name === "test") {
-      const named = Arr.map(Arr.filter(calls, (call) => call.callee === member), titleOf)
-      if (named.length === 1 && named.every((name) => poolFailures.includes(name))) {
-        allowed.push(...named)
-        continue
-      }
-    }
     if (insideWitness || [...runners, "describe", "it"].includes(nameOf(member))) {
       forbidden.push(text.slice(member.start, member.end))
     }
@@ -182,8 +165,7 @@ it.live.layer(BunServices.layer)("every named witness calls its helper in one or
     expect(guard, file).toEqual({ parsed: [], forbidden: [], notOrdinary: [] })
     const required = Arr.map(Arr.filter(coverage, ([path]) => path === file), ([, title, , law]) => [title, law] as const)
     expect(delegated.toSorted(), `${file}: every registered witness body must directly call its helper with its law and a literal fixture table`).toEqual(required.toSorted())
-    if (file === poolFile) expect(allowed.toSorted(), file).toEqual(poolFailures.toSorted())
-    else expect(allowed, file).toEqual([])
+    expect(allowed, file).toEqual([])
   }
 }))
 

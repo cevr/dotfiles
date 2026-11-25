@@ -3,7 +3,7 @@
 // resets (resets.ts `pushDue`), by value, one at a time, in its scope only;
 // the plan and the use-or-lose forecast are measured from the readings; and
 // an account's line counts every reset in hand that would expire before it
-// can be spent one per week (resets.ts `spareThisWeek`).
+// are reported individually with their expiry and cadence.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import {
@@ -32,7 +32,6 @@ import {
   type ResetsState,
   Review,
   SettleClaim,
-  spareThisWeek,
 } from "./resets.ts"
 import type { AccountStatus } from "./status.ts"
 
@@ -292,19 +291,5 @@ describe("the plan and the forecast", () => {
     const emptyText = planText(planOf({ views: [pool([])], grant: { max: 1 }, now: T0, need: { units: 1, cost: 0.1 } }))
     expect(emptyText).not.toContain("absent")
     expect(emptyText).toContain("unread")
-  })
-})
-
-describe("an account's line with several resets", () => {
-  const week = T0 + 3 * DAY
-  const at = (credits: ReadonlyArray<ResetCredit>) => account("a", [window("7d", 0.5, week)], credits)
-  test("spaced out, one per week: the best one raises the line, as before", () => {
-    expect(spareThisWeek("claude", at([grant("g1", T0 + 30 * DAY, WEEKLY), grant("g2", T0 + 60 * DAY, WEEKLY)]), week, T0)).toBeCloseTo(0.99)
-  })
-  test("two expiring before the next week begins: both raise this week's line, or one is lost", () => {
-    expect(spareThisWeek("claude", at([grant("g1", T0 + 2 * DAY, WEEKLY), grant("g2", T0 + 2 * DAY, FULL)]), week, T0)).toBeCloseTo(1.98)
-    // One this week, one next week (it begins in 3 days), the third expiring before the week after begins (in 10): two this week.
-    const three = [grant("g1", T0 + 9 * DAY, WEEKLY), grant("g2", T0 + 9 * DAY, WEEKLY), grant("g3", T0 + 9 * DAY, WEEKLY)]
-    expect(spareThisWeek("claude", at(three), week, T0)).toBeCloseTo(1.98)
   })
 })
