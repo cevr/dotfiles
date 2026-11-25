@@ -54,9 +54,11 @@ const placed = (sessionID: string, credentialID: string, at: number, kind: Reque
     Story.then(RequestPlaced.make({ sessionID, kind, credentialID, at })),
   ] as const
 
+/** Take a reading that sets no hold and keeps windows it cannot speak to (`taken`, carryOver's), and the events it brings after. */
+const readAs = (credentialID: string, value: QuotaReading, taken: QuotaReading, ...after: ReadonlyArray<Event>) =>
+  [Story.when(TakeReading.make({ credentialID, reading: value })), Story.then<Event>(ReadingTaken.make({ credentialID, reading: taken }), ...after)] as const
 /** Take a reading that sets no hold, and the events it brings after (a hold it lifts). */
-const read = (credentialID: string, value: QuotaReading, ...after: ReadonlyArray<Event>) =>
-  [Story.when(TakeReading.make({ credentialID, reading: value })), Story.then<Event>(ReadingTaken.make({ credentialID, reading: value }), ...after)] as const
+const read = (credentialID: string, value: QuotaReading, ...after: ReadonlyArray<Event>) => readAs(credentialID, value, value, ...after)
 
 /** Record a priced step of `sessionID` on `credentialID`. */
 const stepped = (sessionID: string, credentialID: string, cost: number, at: number) =>
@@ -313,7 +315,7 @@ describe("a session's cache keeps its account", () => {
       // Every account is at its share: s1 stays where its cache is.
       ...placed("s1", "a", T0 + MINUTE),
       ...released("s1"),
-      ...read("c", reading()),
+      ...read("c", reading({ windows: [{ name: "5h", utilization: 0.1, resetAt: T0 + HOUR }] })),
       // c has room again, but a still serves: s2 stays with its cache rather than write it all again on c.
       ...placed("s2", "a", T0 + MINUTE),
       ...released("s2"),
@@ -456,7 +458,10 @@ describe("an account is held", () => {
       Story.when(TakeReading.make({ credentialID: "a", reading: refusal })),
       Story.then(ReadingTaken.make({ credentialID: "a", reading: refusal, hold: { kind: "usage-limit", until: reset, at: T0, refusedUntil: reset } })),
       Story.clock(T0 + MINUTE),
-      ...read("a", reading({ at: T0 + MINUTE, status: "allowed" })),
+      // Headers that carry no window keep the spent one, with its own reading time, until it resets.
+      ...readAs("a", reading({ at: T0 + MINUTE, status: "allowed" }), reading({
+        at: T0 + MINUTE, status: "allowed", windows: [{ name: "5h", utilization: 1, resetAt: reset, at: T0 }],
+      })),
       Story.clock(reset - 1),
       ...placed("s1", "b", reset - 1),
       Story.clock(reset),
@@ -493,11 +498,69 @@ describe("an account is held", () => {
         hold: { kind: "usage-limit", until: T0 + 40 * HOUR, at: T0 + MINUTE, refusedUntil: reset },
       })),
       Story.clock(reset - MINUTE),
-      ...read("a", reading({ at: reset - MINUTE, status: "allowed" })),
+      // The week the next readings report has room; the confirmed refusal still holds until its own end.
+      ...read("a", reading({ at: reset - MINUTE, status: "allowed", windows: [{ name: "7d", utilization: 0.5, resetAt: T0 + 40 * HOUR }] })),
       ...placed("before", "b", reset - MINUTE),
       Story.clock(reset),
-      ...read("a", reading({ at: reset, status: "allowed" }), HoldCleared.make({ credentialID: "a" })),
+      ...read("a", reading({ at: reset, status: "allowed", windows: [{ name: "7d", utilization: 0.5, resetAt: T0 + 40 * HOUR }] }), HoldCleared.make({ credentialID: "a" })),
       ...placed("after", "a", reset),
+    )
+  })
+
+  test("removing a spent 5h window shrinks a window-derived hold to the remaining spent week", () => {
+    const shortReset = T0 + 5 * HOUR
+    const weekReset = T0 + 2 * HOUR
+    const bothSpent = reading({
+      at: T0,
+      windows: [
+        { name: "5h", utilization: 1, resetAt: shortReset },
+        { name: "7d", utilization: 1, resetAt: weekReset },
+      ],
+    })
+    const removed = reading({
+      at: T0 + MINUTE,
+      windows: [{ name: "7d", utilization: 1, resetAt: weekReset }],
+      absent: [{ name: "5h", at: T0 + MINUTE }],
+    })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      Story.when(TakeReading.make({ credentialID: "a", reading: bothSpent })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: bothSpent, hold: { kind: "usage-limit", until: shortReset, at: T0 } })),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: removed })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: removed, hold: { kind: "usage-limit", until: weekReset, at: T0 + MINUTE } })),
+    )
+  })
+
+  test("removing a spent 5h window never shrinks a live confirmed 429 refusal", () => {
+    const shortReset = T0 + 5 * HOUR
+    const weekReset = T0 + 2 * HOUR
+    const refused = reading({
+      at: T0,
+      status: "rejected",
+      windows: [
+        { name: "5h", utilization: 1, resetAt: shortReset },
+        { name: "7d", utilization: 1, resetAt: weekReset },
+      ],
+      refusal: { kind: "usage-limit", until: shortReset },
+    })
+    const removed = reading({
+      at: T0 + MINUTE,
+      windows: [{ name: "7d", utilization: 1, resetAt: weekReset }],
+      absent: [{ name: "5h", at: T0 + MINUTE }],
+    })
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      Story.when(TakeReading.make({ credentialID: "a", reading: refused })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: refused, hold: { kind: "usage-limit", until: shortReset, at: T0, refusedUntil: shortReset } })),
+      Story.clock(T0 + MINUTE),
+      Story.when(TakeReading.make({ credentialID: "a", reading: removed })),
+      recorded(ReadingTaken.make({ credentialID: "a", reading: removed })),
+      // Past the weekly reset, the confirmed 429 refusal still holds a until shortReset.
+      Story.clock(T0 + 3 * HOUR),
+      ...placed("s1", "b", T0 + 3 * HOUR),
     )
   })
 
@@ -576,7 +639,8 @@ describe("an account is held", () => {
       Story.clock(T0 + 3 * HOUR),
       Story.when(TakeReading.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }] } })),
       Story.then(
-        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }, rolled] } }),
+        // The 5-hour window these headers reported, which the usage read leaves unsaid, binds until its own reset.
+        ReadingTaken.make({ credentialID: "a", reading: { ...fresh, windows: [...fresh.windows, { name: "7d:Fable", utilization: 0.4 }, { at: headers.at, name: "5h", utilization: 0.1, resetAt: T0 + 4 * HOUR }, rolled] } }),
       ),
     )
   })

@@ -33,7 +33,7 @@ import { dispatchPace, evidenceGap, needsSignIn, nextRetryAt, poolPace, refreshE
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
-import { USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow } from "./quota.ts"
+import { asReading, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow } from "./quota.ts"
 import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
@@ -1460,8 +1460,10 @@ export const layer = (config: Config) =>
         if (!state.credentials.includes(shared.credentialID)) return
         const held = state.readings[shared.credentialID]
         if (held !== undefined && held.at >= shared.reading.at) return
-        yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: shared.reading }))
-        if (limits !== undefined) yield* limits.observe(target.id, shared.credentialID, shared.reading)
+        const reading = Option.fromUndefinedOr(asReading(shared.reading))
+        if (Option.isNone(reading)) return
+        yield* apply(target.pool, target.id, TakeReading.make({ credentialID: shared.credentialID, reading: reading.value }))
+        if (limits !== undefined) yield* limits.observe(target.id, shared.credentialID, reading.value)
       })
 
       const mergeReports = (fleet: FleetModel.FleetState) =>

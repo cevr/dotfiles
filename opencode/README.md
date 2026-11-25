@@ -1537,13 +1537,31 @@ readings decide which windows exist: the 5-hour one is optional (on
 2026-11-15 four of the seven Claude logins read none), and the forecast
 stands on the weekly window and Fable's own week alone.
 
-Admission also accepts an account whose usage endpoint explicitly returns
-`five_hour: null` (verified accounts during Anthropic's quota transition).
-That absence is recorded with its own reading time (`fiveHourAbsentAt`) and
-must be refreshed within 30 minutes. Partial response headers preserve its
-original time; an omitted or malformed field proves no removal, and a
-five-hour limit reported again applies immediately. The weekly pace and the
-model's own limits still apply.
+Each usage window, the 5-hour and the weekly one on either provider, is in
+one of three states (`mods/pool/quota.ts` `WindowReading`):
+
+- **Reported**: its use and reset were read. Only a reported window holds an
+  account or paces it, until its own reset.
+- **Absent**: the provider's successful usage answer says the account has no
+  such window: Anthropic's `five_hour: null` or `seven_day: null` (Ultra
+  accounts lost their 5-hour limit on 2026-11-24), a ChatGPT answer whose
+  two window slots hold no window of that length (a weekly-only plan). It
+  imposes nothing; it is read again within 30 minutes like any window. A
+  weekly-only account is paced on its week; an account with no week has
+  nothing to pace against and takes a start past the others' even line; one
+  with neither is admitted, its status saying it reports no usage windows.
+- **Unknown**: not read yet, a failed read, a missing field, or a shape the
+  reader does not know (named in the reading's `unrecognised` and the
+  status). It is never absent and never room by itself: a login waits for
+  one successful usage read in the last 30 minutes, then what that read
+  reported binds and the unknown window holds nothing more. A window a
+  response's headers leave out keeps its last reported reading until its
+  reset. An answer with no tracked window read either way is a failed read,
+  logged with its key names only.
+
+A window that goes from reported to absent ends its hold at that read; one
+reported again binds at that read. Windows the pool does not know are shown,
+never binding; a refusal (a 429) holds whatever the readings say.
 
 Capacity is taken in this order:
 

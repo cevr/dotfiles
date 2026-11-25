@@ -103,6 +103,42 @@ describe("accountRows", () => {
     expect(accountRows(decoded, now)[1]?.windows.slice(2)).toEqual(["  Codex reset · until 2026-11-20 · clears every window"])
   })
 
+  test("absent windows, no usage windows at all, unknown extra windows, and unrecognised fields are named explicitly", () => {
+    const pools = {
+      anthropic: {
+        accounts: [
+          {
+            credentialID: "ultra",
+            reading: { windows: [{ name: "7d", utilization: 0.25, resetAt: now + 3_600_000 }], absent: [{ name: "5h" }] },
+          },
+          {
+            credentialID: "none",
+            reading: { windows: [], absent: [{ name: "5h" }, { name: "7d" }] },
+          },
+          {
+            credentialID: "changed",
+            reading: {
+              windows: [
+                { name: "7d", utilization: 0.2, resetAt: now + 3_600_000 },
+                { name: "seven_day_newcomer", utilization: 1 },
+              ],
+              unrecognised: ["five_hour"],
+            },
+          },
+        ],
+      },
+    }
+    const rows = accountRows(Schema.decodeUnknownSync(PanePools)(pools), now)
+    expect(rows[0]?.windows).toEqual(["  5h none: not on this account", "  7d 25%/100% used · reset 2026-11-04 16:00Z"])
+    expect(rows[1]?.windows).toEqual(["  5h none: not on this account", "  7d none: not on this account", "  no usage windows reported"])
+    expect(rows[2]?.windows).toEqual([
+      "  5h unknown · reset unknown",
+      "  7d 20%/100% used · reset 2026-11-04 16:00Z",
+      "  seven_day_newcomer 100%/100% used · not a window the pool paces by",
+      "  usage fields not read: five_hour",
+    ])
+  })
+
   test("no pools, no rows", () => {
     expect(accountRows({})).toEqual([])
     expect(accountRows({ anthropic: { accounts: [] } })).toEqual([])

@@ -43,6 +43,11 @@ export interface FakeQuota {
    * (`weekly_scoped_shares`), as the endpoint answered on 2026-11-09.
    */
   readonly fable?: FakeWindow & { readonly ofWeekly: number }
+  /**
+   * The unified windows the account has none of (its usage answer says
+   * `five_hour: null` or `seven_day: null`): a response's headers leave them out.
+   */
+  readonly without?: ReadonlyArray<"5h" | "7d">
 }
 
 /** What one request is answered with. */
@@ -219,15 +224,26 @@ export const unifiedHeaders = (
   quota: FakeQuota,
   status: "allowed" | "allowed_warning" | "rejected",
   claim: "five_hour" | "seven_day",
-): Record<string, string> => ({
-  "anthropic-ratelimit-unified-status": status,
-  "anthropic-ratelimit-unified-representative-claim": claim,
-  "anthropic-ratelimit-unified-reset": seconds(claim === "five_hour" ? quota.fiveHour.resetAt : quota.sevenDay.resetAt),
-  "anthropic-ratelimit-unified-5h-utilization": String(quota.fiveHour.utilization),
-  "anthropic-ratelimit-unified-5h-reset": seconds(quota.fiveHour.resetAt),
-  "anthropic-ratelimit-unified-7d-utilization": String(quota.sevenDay.utilization),
-  "anthropic-ratelimit-unified-7d-reset": seconds(quota.sevenDay.resetAt),
-})
+): Record<string, string> => {
+  const windows = [
+    ["5h", quota.fiveHour],
+    ["7d", quota.sevenDay],
+  ] as const
+  const without = Array.from(quota.without || [])
+  return {
+    "anthropic-ratelimit-unified-status": status,
+    "anthropic-ratelimit-unified-representative-claim": claim,
+    "anthropic-ratelimit-unified-reset": seconds(claim === "five_hour" ? quota.fiveHour.resetAt : quota.sevenDay.resetAt),
+    ...Object.fromEntries(
+      windows
+        .filter(([name]) => !without.includes(name))
+        .flatMap(([name, window]) => [
+          [`anthropic-ratelimit-unified-${name}-utilization`, String(window.utilization)],
+          [`anthropic-ratelimit-unified-${name}-reset`, seconds(window.resetAt)],
+        ]),
+    ),
+  }
+}
 
 const sse = (events: ReadonlyArray<Record<string, unknown>>) =>
   events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join("")

@@ -67,17 +67,6 @@ const descriptors = () => readdirSync(process.platform === "linux" ? "/proc/self
   try { fstatSync(+name); return true }
   catch (error) { if (error.code === "EBADF") return false; throw error }
 }).length
-const initializeRuntime = async () => {
-  // Bun lazily duplicates its stdout/stderr sockets. Initialize them and wait for a
-  // throwaway child's native close before we measure the reader's own descriptors.
-  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => stream.write("", resolve))))
-  await new Promise((resolve, reject) => {
-    const warm = spawn("/usr/bin/true", [], { detached: true, env: {}, stdio: ["ignore", "pipe", "ignore"] })
-    warm.stdout.resume()
-    warm.once("error", reject)
-    warm.once("close", (code) => code === 0 ? resolve() : reject(new Error("warm process exited " + code)))
-  })
-}
 const backAt = async (baseline, label) => {
   const deadline = watchdog(65000)
   for (let count; (count = descriptors()) !== baseline;) {
@@ -85,6 +74,22 @@ const backAt = async (baseline, label) => {
     await new Promise((resolve) => setImmediate(resolve))
   }
   return baseline
+}
+const runWarmChild = (stdio) => new Promise((resolve, reject) => {
+  const warm = spawn("/usr/bin/true", [], { detached: true, env: {}, stdio })
+  warm.stdout?.resume()
+  warm.once("error", reject)
+  warm.once("close", (code) => code === 0 ? resolve() : reject(new Error("warm process exited " + code)))
+})
+const initializeRuntime = async () => {
+  // Bun lazily duplicates its stdout/stderr sockets and closes child pipe descriptors asynchronously
+  // after emitting "close". Initialize stdio and process spawning without a pipe first, capture the
+  // true steady-state count, then warm a piped child and wait for its native pipe fd to retire.
+  await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((resolve) => stream.write("", resolve))))
+  await runWarmChild("ignore")
+  const baseline = descriptors()
+  await runWarmChild(["ignore", "pipe", "ignore"])
+  return backAt(baseline, "runtime warmup")
 }
 `
 
@@ -101,7 +106,7 @@ import { existsSync, fstatSync, readdirSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { layer } from "${imports.inputs}"
 import { freeze } from "${imports.input}"
-const [receipts, checkout, leaf, staged, within, head, mode, good] = process.argv.slice(2)
+const [receipts, checkout, leaf, staged, within, head, mode] = process.argv.slice(2)
 ${DESCRIPTORS}
 const armed = { first: false }
 const readers = []
@@ -148,8 +153,13 @@ const gated = Layer.effect(ChildProcessSpawner.ChildProcessSpawner, Effect.gen(f
     const marker = staged + ".opened";
     const child = yield* real.spawn(ChildProcess.make(command.command, ["-e", fixture, "--", leaf, marker, mode], command.options))
     readers.push(child)
+    // Wait until the fixture actually opened the FIFO (or exited) before returning to the read deadline,
+    // so slow/overflow cannot be killed mid-exec before setting SIGTERM ignore and writing the marker.
+    yield* Effect.gen(function* () {
+      if (yield* fs.exists(marker)) return true
+      return !(yield* child.isRunning)
+    }).pipe(Effect.repeat({ until: (ready) => ready, schedule: Schedule.spaced("5 millis") }))
     if (mode === "unlinked") {
-      yield* fs.exists(marker).pipe(Effect.repeat({ until: (exists) => exists, schedule: Schedule.spaced("5 millis") }))
       yield* fs.rename(leaf, staged + ".removed")
     }
     return child
@@ -160,8 +170,7 @@ const request = { receipts: [{ head, kind: "round" }], lands: [], install: false
 const report = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const once = Effect.result(freeze(request))
-  yield* Effect.promise(initializeRuntime)
-  const before = descriptors()
+  const before = yield* Effect.promise(initializeRuntime)
   const warm = yield* once
   yield* Effect.promise(() => backAt(before, "warm production read"))
   armed.first = true
@@ -172,13 +181,14 @@ const report = Effect.gen(function* () {
   const running = yield* Effect.forEach(readers, (child) => child.isRunning)
   const after = yield* Effect.promise(() => backAt(before, mode))
   // A new read in this SAME source must work, even after a hung open was terminated.
+  // Restore the warm file by rename instead of copying a new inode (a fresh APFS write can stall read() > 500ms).
   if (mode === "parent-link") {
     yield* fs.rename(receipts, staged)
     yield* fs.rename(receipts + ".held", receipts)
-  } else if (mode !== "unlinked") {
-    yield* fs.rename(leaf, staged)
+  } else {
+    if (mode !== "unlinked") yield* fs.rename(leaf, staged)
+    yield* fs.rename(leaf + ".warm", leaf)
   }
-  yield* fs.copyFile(good, leaf)
   const recovered = yield* once
   const afterRecovery = yield* Effect.promise(() => backAt(before, mode + " recovery"))
   const words = outcome._tag === "Failure" ? "failed " + outcome.failure._tag : outcome.success.refused.map((each) => "refused " + each.reason).join(",") || "frozen"
@@ -269,10 +279,9 @@ const measure = Effect.gen(function* () {
           assert.match(result.failure.message, kind === "overflow" ? /exceeded its byte limit/ : /did not return in time/);
       }
     })
-    // First use initializes Bun's own process infrastructure. Await an unrelated child's
-    // native close before sampling, then require the production warm read to retire too.
-    yield* Effect.promise(initializeRuntime)
-    const baseline = descriptors()
+    // First use initializes Bun's own process infrastructure. Wait for a throwaway child's
+    // native pipe fd to retire before sampling, then require the production warm read to retire too.
+    const baseline = yield* Effect.promise(initializeRuntime)
     yield* read("success")
     yield* Effect.promise(() => backAt(baseline, "warm production read"))
     for (const kind of modes) {
@@ -548,12 +557,12 @@ describe("the receipt source under a real swap race", () => {
         const receipts = yield* fs.realPath(yield* Effect.as(fs.makeDirectory(path.join(root, "receipts")), path.join(root, "receipts")))
         const checkout = path.join(root, "checkout")
         const leaf = path.join(receipts, `${head}.round.json`)
-        const good = path.join(root, "good.json")
         const outside = path.join(root, "outside")
         const outsideLeaf = path.join(outside, path.basename(leaf))
         yield* fs.makeDirectory(outside)
         yield* fs.writeFileString(outsideLeaf, receiptText(checkout, outsideTree, 1))
-        yield* fs.writeFileString(good, receiptText(checkout, goodTree, 0))
+        yield* fs.writeFileString(leaf, receiptText(checkout, goodTree, 0))
+        yield* fs.readFileString(leaf)
         const child = path.join(root, "child.ts")
         yield* fs.writeFileString(
           child,
@@ -582,7 +591,6 @@ describe("the receipt source under a real swap race", () => {
         yield* Effect.forEach(matrix, ([mode, expected]) =>
           Effect.gen(function* () {
             const staged = path.join(root, mode)
-            yield* fs.copyFile(good, leaf)
             yield* Match.value(mode).pipe(
               Match.when("directory", () => fs.makeDirectory(staged).pipe(Effect.asVoid)),
               Match.when("symlink", () => fs.symlink(outsideLeaf, staged)),
@@ -595,7 +603,7 @@ describe("the receipt source under a real swap race", () => {
                 expect(made.exitCode).toBe(0)
               })),
             )
-            const ran = spawnSync(["bun", child, receipts, checkout, leaf, staged, `${WITHIN_MS}`, head, mode, good], { timeout: CHILD_MS, stdin: "ignore" })
+            const ran = spawnSync(["bun", child, receipts, checkout, leaf, staged, `${WITHIN_MS}`, head, mode], { timeout: CHILD_MS, stdin: "ignore" })
             const [words, elapsed, before, after, gated, running, recovered, started, afterRecovery, closed] = new TextDecoder().decode(ran.stdout).trim().split("\t")
             const stderr = new TextDecoder().decode(ran.stderr).slice(-500)
             expect({ mode, exit: ran.exitCode, gated, words, running, recovered, started, descriptorsLeft: Number(after) - Number(before), stderr }).toEqual({

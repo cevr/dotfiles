@@ -9,7 +9,7 @@
 // The AccountPool decider, made for the pool's rules (its cache life), and
 // each command it decides with its events and rejections, in the order a
 // request meets them.
-import { Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import {
   DEFAULT_HOLD_MS,
@@ -29,7 +29,7 @@ import {
   stepIdentity,
   WINDOW_MS,
 } from "./accounts.ts"
-import { accountWide, carryOver, QuotaReading } from "./quota.ts"
+import { carryOver, QuotaReading, TRACKED_WINDOWS, windowReading } from "./quota.ts"
 import { signInReason, tryAgainAt } from "./usage-text.ts"
 import { Hold } from "./status.ts"
 import { clampHoldEnd, holdRecheckAt, pendingRecoveryAt, RecoveryAttempt, recoveryDelay } from "./hold.ts"
@@ -284,11 +284,14 @@ const takeReading = (
     refusal !== undefined && (refusal.until === undefined || refusal.until > now)
       ? { kind: refusal.kind, until: refusal.until ?? now + DEFAULT_HOLD_MS }
       : undefined
-  // A window of one model's own (`7d:Fable`) never holds the account: the
-  // other models' requests still go out on it.
-  const exhausted = reading.windows
-    .filter((window) => accountWide(window) && window.utilization >= 1 && window.resetAt !== undefined && window.resetAt > now)
-    .reduce<number | undefined>((latest, window) => Math.max(latest ?? 0, window.resetAt ?? 0), undefined)
+  // Only a REPORTED tracked window holds the account, until its own reset: a
+  // window of one model's own (`7d:Fable`) never does (the other models'
+  // requests still go out on it), nor one the pool does not know (shown, not
+  // binding), nor an ABSENT or UNKNOWN one, which has no reset to wait for.
+  const exhausted = TRACKED_WINDOWS.flatMap((name) => Match.value(windowReading(reading, name)).pipe(
+    Match.tag("Reported", ({ window }) => Arr.filter(Option.toArray(Option.fromUndefinedOr(window.resetAt)), (resetAt) => window.utilization >= 1 && resetAt > now)),
+    Match.orElse(() => []),
+  )).reduce<number | undefined>((latest, resetAt) => Math.max(latest ?? 0, resetAt), undefined)
   const until = Math.max(refused?.until ?? 0, exhausted ?? 0)
   const current = Option.fromUndefinedOr(state.holds[credentialID])
   // A late successful title is not a sign-in. Only a new usage-endpoint
@@ -310,8 +313,23 @@ const takeReading = (
   const prior = Option.filter(current, () => !signedIn && !repaired)
   // Cached readings cannot overwrite the raw recovery row while it is still binding.
   const waitingForRecovery = Option.exists(recovered, () => !repaired)
+  const shrunk = Option.filter(
+    prior,
+    (entry) =>
+      !waitingForRecovery &&
+      entry.kind === "usage-limit" &&
+      refusalEnd(prior) <= now &&
+      command.reading.at > entry.at &&
+      until > now &&
+      until < entry.until,
+  )
   const hold = Option.match(Option.filter(Option.some(prior), () => !waitingForRecovery), {
-    onNone: () => Option.none<Hold>(), onSome: (entry) => readingHold(entry, Option.fromUndefinedOr(refused), until, now),
+    onNone: () => Option.none<Hold>(),
+    onSome: (entry) =>
+      Option.orElse(
+        Option.map(shrunk, () => Hold.make({ kind: "usage-limit", at: now, until })),
+        () => readingHold(entry, Option.fromUndefinedOr(refused), until, now),
+      ),
   })
   const lifts = Option.isNone(hold) && (signedIn || repaired ||
     (until <= now && refusalEnd(current) <= now && Option.exists(current, (hold) => hold.kind === "usage-limit" && command.reading.at > hold.at)))

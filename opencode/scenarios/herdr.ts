@@ -11,7 +11,7 @@
 // herdr heard, as JSON after `herdr heard: ` (tests/herdr.test.ts reads it).
 // Run: OPENCODE_DEV=<opencode checkout> HERDR_FAKE_SOCKET=<socket> bunx opencode-drive run scenarios/herdr.ts
 import { Console, Effect, Schedule, Schema, Stream } from "effect"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { listen } from "../mods/herdr/herdr/fake-server.ts"
 
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }

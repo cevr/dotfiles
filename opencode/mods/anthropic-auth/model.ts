@@ -27,6 +27,7 @@ import {
   type QuotaReading,
   type QuotaRefusal,
   readUsageBody,
+  usageKeys,
   refusalOf,
   retryAfterSeconds,
   SIGNIN_RETRY_MS,
@@ -312,7 +313,9 @@ export const layer = (config: Config) =>
           if (peeked !== undefined) return { type: "read", access: peeked.access, expires: peeked.expires, sourced: true }
           const now = yield* Clock.currentTimeMillis
           const read = readings.get(credentialID)
-          const fresh = read !== undefined && read.windows.length > 0 && now - read.at < USAGE_REFRESH_AFTER_MS
+          // A reading of windows counts, an account with none of them (every one ABSENT) as much.
+          const said = (reading: QuotaReading) => reading.windows.length + Option.getOrElse(Option.map(Option.fromUndefinedOr(reading.absent), (absent) => absent.length), () => 0) > 0
+          const fresh = read !== undefined && said(read) && now - read.at < USAGE_REFRESH_AFTER_MS
           if (fresh || (read?.refusal?.until ?? 0) > now) return { type: "skip" }
           // A failed resolve has published its refusal; the sweep keeps that reading.
           return yield* login(credentialID).pipe(
@@ -344,7 +347,11 @@ export const layer = (config: Config) =>
           }
           if (answer.status === "unread") return undefined
           const reading = readUsageBody(answer.body, now)
-          if (reading === undefined) return undefined
+          // A shape change is diagnosable from the key names alone; no value, no token is logged.
+          if (reading === undefined) {
+            yield* Effect.logWarning(`${LOG_PREFIX} the usage answer did not read (${usageKeys(Option.some(answer.body))}); the read counts as failed`)
+            return undefined
+          }
           // A usage read says nothing of a refusal: a held credential stays
           // held until its refusal ends.
           const previous = readings.get(credentialID)?.refusal

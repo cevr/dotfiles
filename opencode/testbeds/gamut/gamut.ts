@@ -58,6 +58,7 @@ import { fileURLToPath } from "node:url"
 import { ORCHESTRATOR, orchestrator } from "../../mods/orchestrate/role.ts"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
+import { testHostEnv } from "../../scripts/test-host.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
@@ -467,6 +468,7 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
     // A fork from source is channel local, where every flag defaults on: run at the owner's build's flags instead.
     OPENCODE_FLAGS: releaseFlags(""),
     ...NO_FREE_MODELS,
+    ...testHostEnv(),
   },
   fork,
 })
@@ -576,12 +578,12 @@ export const runEnv = (
     XDG_CACHE_HOME: join(paths.home, ".cache"),
     OPENCODE_DB: paths.db,
     OPENCODE_CONFIG_DIR: paths.config,
+    ...(offline ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
+    ...launch.env,
     // No file watches. The fork from source opens one per plugin module (hot reload, which a compiled build skips), and
     // on macOS each blocks its thread while Bun rebuilds its one FSEventStream (oven-sh/bun#43870): ~300 ms each with
     // a busy fseventsd, ~170 of them, so the TUI's plugins missed the composer wait. A run is a fixed copy; `restart` reloads.
-    OPENCODE_DISABLE_FILEWATCHER: "1",
-    ...(offline ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
-    ...launch.env,
+    ...testHostEnv(),
   }
 }
 

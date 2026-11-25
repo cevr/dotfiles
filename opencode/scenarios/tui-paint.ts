@@ -22,7 +22,7 @@
 // with loops, rendered and requests per second over its window.
 import { Array as Arr, Deferred, Effect, Option, Schedule, Schema, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()

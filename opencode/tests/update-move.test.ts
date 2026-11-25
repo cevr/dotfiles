@@ -153,7 +153,6 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
           XDG_CACHE_HOME: `${home}/.cache`,
           OPENCODE_DB: `${root}/opencode.db`,
           OPENCODE_DISABLE_MODELS_FETCH: "1",
-          OPENCODE_DISABLE_FILEWATCHER: "1",
           ...launch.env,
           // Every process the environment starts is build B; the transpiler cache off, so no file compiled under one define serves the other.
           BUN_OPTIONS: `${launch.env.BUN_OPTIONS} --define=OPENCODE_VERSION:"${INSTALLED}"`,

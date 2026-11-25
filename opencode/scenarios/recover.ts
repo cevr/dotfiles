@@ -13,13 +13,13 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { type Driver, Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
 
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }
-type Move = Parameters<OpenCodeDriver.Driver["opencode"]["session"]["move"]>[0]
+type Move = Parameters<Driver["opencode"]["session"]["move"]>[0]
 type SessionID = Move["sessionID"]
 const text = (frame: Frame) => frame.lines.map((l) => l.spans.map((s) => s.text).join("").trimEnd()).join("\n")
 
