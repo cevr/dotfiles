@@ -20,6 +20,7 @@ import { DateTime, Deferred, Duration, Effect, Exit, Fiber, FileSystem, Layer, M
 import { Base64 } from "effect/encoding"
 import { expect, it } from "effect-bun-test"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { fileStore, places as livePlaces, prepareProfile } from "./live.ts"
 import { envFileText, managedProfile, signInLine } from "./profile.ts"
 import { GOOGLE, userAgent, type Endpoints } from "./reader.ts"
@@ -162,7 +163,7 @@ const expectNoSecret = (...texts: ReadonlyArray<string>) => {
 
 /** A test on the real clock with the platform's file system, its scope closed at its end. */
 const live = <E,>(name: string, body: Effect.Effect<void, E, FileSystem.FileSystem | Scope.Scope | Path.Path | HttpClient.HttpClient>) =>
-  it.scopedLive(name, () => body.pipe(Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))), 30_000)
+  it.scopedLive(name, () => body.pipe(Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))), hangGuard("process-fixture"))
 
 const ok = () => answer(200, SUMMARY)
 const failureOf = (state: State) => Option.map(Option.fromUndefinedOr(state.failure), (failure) => failure.why)
