@@ -2,10 +2,11 @@
 // a limit an agy pane printed, asks whether a group is open and when it will
 // be, and, when the owner asks, reads now with the keychain allowed. Every
 // answer is words; none carries a token.
-import { Effect, Match, Option, Schema } from "effect"
+import { Clock, Effect, Match, Option, Schema } from "effect"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { gateText } from "./gate.ts"
+import { recordRefusalText, validateRecordAt } from "./limit.ts"
 import type { Source } from "./source.ts"
 import { openDecisionText } from "./text.ts"
 
@@ -19,7 +20,7 @@ export const AntigravityToolInput = toolInput(
     group: Schema.optionalKey(Schema.String).annotate({ description: "A quota group (gemini, claude-gpt, or its label): open/gate answers only it; record/limit records it on only it. Default every group." }),
     model: Schema.optionalKey(Schema.String).annotate({ description: "A model id (e.g. gemini-3-pro, claude-opus-4-6, gpt-5): resolved to its quota group for open/record/gate." }),
     host: Schema.optionalKey(Schema.String).annotate({ description: "For record/limit: the host whose pane printed the limit (default this host)." }),
-    at: Schema.optionalKey(Schema.Finite).annotate({ description: "For record/limit: epoch ms when the pane frame was printed (default now); frames older than their own reset are ignored." }),
+    at: Schema.optionalKey(Schema.Finite).annotate({ description: "For record/limit: epoch ms on this recording host's clock when the pane printed the frame (default now; future values are refused). Pass `at` whenever the frame is not fresh; frames older than their own reset are ignored." }),
     agent: Schema.optionalKey(Schema.String).annotate({ description: "For gate: the agent/role name starting or resuming the pane, for per-agent Gemini concurrency cap." }),
     paneId: Schema.optionalKey(Schema.String).annotate({ description: "For gate: optional stable pane/session id tracked in the host's busy set while running." }),
     resume: Schema.optionalKey(Schema.Boolean).annotate({ description: "For gate: true when resuming an existing agy pane." }),
@@ -33,7 +34,7 @@ export type AntigravityToolInput = typeof AntigravityToolInput.Type
 
 export const ANTIGRAVITY_DESCRIPTION = [
   "Antigravity's (agy's) quota on this host, as the pool last read it from Google (only when `read` is called, at most once per 5 minutes): each quota group (Gemini; the shared Claude & GPT quota) with its 5-hour and weekly windows' use and reset, or why it is unknown.",
-  "Before starting agy panes, ask `open`: a group answers open (measured: a reading with room), limited until a time, limited with its reset unknown, usable but unmeasured (no reading and no limit seen), or unknown with why (an unknown window is never open). When an agy pane prints a quota limit (\"Individual quota reached … Resets in 1h8m38s.\"), record it with `limit`, its text and the pane's group (no group: every group): the group then reads limited until that reset. Once a pane on a group with a limit of unknown reset runs a turn again, call `clear` for that group.",
+  "Before starting agy panes, ask `open`: a group answers open (measured: a reading with room), limited until a time, limited with its reset unknown, usable but unmeasured (no reading and no limit seen), or unknown with why (an unknown window is never open). When an agy pane prints a quota limit (\"Individual quota reached … Resets in 1h8m38s.\"), record it with `limit` (or `record`), its text and the pane's group (no group: every group); pass `at` (epoch ms on this host's clock) whenever the frame is not fresh (or record only newly printed frames; future `at` values are refused). Once a pane on a group with a limit of unknown reset runs a turn again, call `clear` for that group.",
   "Call `read` before starting or routing an agy pane: it reads Google with the managed profile's token files (a personal sign-in is read from them alone: with none, sign in there with `bun cmd/pool/antigravity-read.ts --profile-env`), or a sign-in this host still holds. For a business sign-in, `consent: true`, given only when the owner asked, may make the one keychain attempt that consent buys (macOS may show its dialog once); after that attempt, a restart, an expired token or a refusal, the keychain is not touched until a new consent.",
 ].join("\n\n")
 
@@ -55,21 +56,22 @@ export const answer = Effect.fn("Antigravity.tool")(function* (source: Option.Op
       ),
     ),
     Match.whenOr("limit", "record", () =>
-      Effect.map(
-        agy.record(Option.getOrElse(Option.fromUndefinedOr(input.text), () => ""), target, {
+      Effect.gen(function* () {
+        const refused = validateRecordAt(Option.fromUndefinedOr(input.at), yield* Clock.currentTimeMillis)
+        if (Option.isSome(refused)) return recordRefusalText(refused.value)
+        const limit = yield* agy.record(Option.getOrElse(Option.fromUndefinedOr(input.text), () => ""), target, {
           ...Option.match(Option.fromUndefinedOr(input.host), { onNone: () => ({}), onSome: (host) => ({ host }) }),
           ...Option.match(Option.fromUndefinedOr(input.at), { onNone: () => ({}), onSome: (at) => ({ at }) }),
-        }),
-        (limit) =>
-          Option.match(limit, {
-            onNone: () => "That text is no Antigravity quota limit: nothing recorded.",
-            onSome: (seen) =>
-              Option.match(seen.resetAt, {
-                onNone: () => "Recorded a limit with no reset time: the group reads limited, reset unknown, until a reading shows room or clear is called.",
-                onSome: (at) => `Recorded: limited until ${formatNotificationTime(at)}.`,
-              }),
-          }),
-      ),
+        })
+        return Option.match(limit, {
+          onNone: () => "That text is no Antigravity quota limit: nothing recorded.",
+          onSome: (seen) =>
+            Option.match(seen.resetAt, {
+              onNone: () => "Recorded a limit with no reset time: the group reads limited, reset unknown, until a reading shows room or clear is called.",
+              onSome: (at) => `Recorded: limited until ${formatNotificationTime(at)}.`,
+            }),
+        })
+      }),
     ),
     Match.when("gate", () =>
       Effect.map(

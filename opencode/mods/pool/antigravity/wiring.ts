@@ -5,9 +5,10 @@
 // failure, a defect, a rejected promise in a double or the real thing), the
 // pool's answer still comes, with a typed "unknown: <reason>" row in place of
 // the rows. Nothing here runs at plugin start.
-import { Array as Arr, Data, Effect, Match, Option, Schema } from "effect"
+import { Array as Arr, Clock, Data, Effect, Match, Option, Schema } from "effect"
 import { type AntigravityReport, OpenStatus } from "./fleet.ts"
 import { GateDecision, gateText } from "./gate.ts"
+import { type RecordRefusal, validateRecordAt } from "./limit.ts"
 import { type GroupAnswer, reasonOf, type Source } from "./source.ts"
 import { openDecisionText } from "./text.ts"
 import { ANTIGRAVITY_DESCRIPTION, AntigravityToolInput, answer } from "./tool.ts"
@@ -129,6 +130,7 @@ export interface Wiring {
     readonly groups?: ReadonlyArray<RpcGroupOpen>
     readonly gate?: RpcGateAnswer
     readonly recorded?: boolean
+    readonly refused?: RecordRefusal
     readonly resetAt?: number
   }>
   /** The `antigravity` tool as the plugin adds it, under the name TOOL_NAME. Its execute never fails. */
@@ -196,6 +198,8 @@ export const wire = (agy: Availability): Wiring => {
     Availability.$match(agy, {
       Present: ({ source }) =>
         Effect.gen(function* () {
+          const refused = validateRecordAt(Option.fromUndefinedOr(parsed.at), yield* Clock.currentTimeMillis)
+          if (Option.isSome(refused)) return { recorded: false, refused: refused.value, lines: yield* source.lines }
           const target = Option.orElse(Option.fromUndefinedOr(parsed.group), () => Option.fromUndefinedOr(parsed.model))
           const recorded = yield* source.record(Option.getOrElse(Option.fromUndefinedOr(parsed.text), () => ""), target, {
             ...Option.match(Option.fromUndefinedOr(parsed.host), { onNone: () => ({}), onSome: (host) => ({ host }) }),

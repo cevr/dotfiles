@@ -35,7 +35,7 @@ import {
   WireWhy,
 } from "./fleet.ts"
 import { checkStartGate, DEFAULT_GEMINI_CAP, GateDecision, type GateQuery, type GeminiCap, geminiStartProvider, type PeerBusy } from "./gate.ts"
-import { type PaneLimit, parsePaneLimits } from "./limit.ts"
+import { type PaneLimit, parsePaneLimits, validateRecordAt } from "./limit.ts"
 import { type Access, type AuthMethod, accessOf, EXPIRY_MARGIN_MS, endpointOrder, type Endpoints, ReadFailed, readQuota } from "./reader.ts"
 import { fromFiles, fromKeychain, Lookup, type Places, SignIn as SignInSchema, type SignIn } from "./signin.ts"
 import { type Answer, due, Event, evolve, groupsOf, keychainAllowed, type State, Why } from "./state.ts"
@@ -454,7 +454,9 @@ export const make = Effect.fn("Antigravity.make")(function* (options: Options) {
     record: (text, groupOrModel, recordOptions?: RecordOptions) =>
       Effect.gen(function* () {
         const at = yield* now
-        const parsed = parsePaneLimits(text, at, Option.getOrUndefined(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.at))))
+        const frameAt = Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.at))
+        if (Option.isSome(validateRecordAt(frameAt, at))) return Option.none<PaneLimit>()
+        const parsed = parsePaneLimits(text, at, Option.getOrUndefined(frameAt))
         if (parsed.length === 0) return Option.none<PaneLimit>()
         const view = yield* fleetView
         const host = Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(recordOptions), (opts) => Option.fromUndefinedOr(opts.host)), () => view.host)

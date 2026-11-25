@@ -1679,7 +1679,10 @@ wins, keyed limits take the latest reset (erring toward limited and letting a
 newer episode supersede an expired one), Error IDs (`id:*`) stay bounded in
 `seenLimitKeys`, and content-hash episode keys (`text:*`) suppress repeats only
 while live and are pruned once spent (past reset, cleared, or lifted by a later
-reading with room beyond `CLOCK_SKEW_BOUND_MS` = 5 min).
+reading with room beyond `CLOCK_SKEW_BOUND_MS` = 5 min). When recording a pane
+frame that was not printed just now, callers pass `at` (epoch ms on the
+recording host's clock; future `at` values are refused) so frames older than
+their own reset are ignored.
 
 Only one host in the fleet makes active Google reads: the lowest fresh host id
 with a readable sign-in, obeying the 5-minute floor across all hosts' merged

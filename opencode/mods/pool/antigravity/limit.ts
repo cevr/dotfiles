@@ -7,8 +7,26 @@
 // the reset is the Go duration after "Resets in" (or the RPC's
 // quotaResetDelay, retryDelay or quotaResetTimeStamp). Pure: the caller gives
 // the time the text was seen. Exported for the pane agent's adapter.
-import { Array as Arr, DateTime, Option } from "effect"
+import { Array as Arr, DateTime, Option, Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { GEMINI, SHARED } from "./quota.ts"
+
+/** Typed refusal when recording a pane limit with an invalid sighting timestamp. */
+export const RecordRefusal = Schema.TaggedUnion({
+  FutureAt: { at: Schema.Finite, now: Schema.Finite },
+})
+export type RecordRefusal = typeof RecordRefusal.Type
+
+/** Refuse an `at` timestamp strictly in the future on the recording host's clock. */
+export const validateRecordAt = (at: Option.Option<number>, now: number): Option.Option<RecordRefusal> =>
+  Option.map(Option.filter(at, (value) => value > now), (value) => RecordRefusal.cases.FutureAt.make({ at: value, now }))
+
+/** Concise words for a `RecordRefusal`. */
+export const recordRefusalText = (refusal: RecordRefusal): string =>
+  RecordRefusal.match(refusal, {
+    FutureAt: ({ at, now }) =>
+      `Refused: at (${formatNotificationTime(at)}) is in the future (now is ${formatNotificationTime(now)}); pass when the pane printed the frame on this host's clock.`,
+  })
 
 /** A usage limit seen at `seenAt`: open again at `resetAt` when the text says when (epoch ms). */
 export interface UsageLimit {

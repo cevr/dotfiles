@@ -740,6 +740,11 @@ describe("Antigravity read authority on a fake Google", () => {
       expect(saved).toContain("seenAt")
       expect(saved).toContain("workbox")
       expect(saved).toContain("id:err-gem-1")
+      // A future `at` on the recording host's clock is refused and records nothing
+      const futureAt = (yield* DateTime.now).epochMilliseconds + 60 * 60_000
+      expect(Option.isNone(yield* source.record("Individual quota reached. Resets in 2h.\nError ID: err-future-1", Option.none(), { at: futureAt }))).toBe(true)
+      const savedAfter = yield* setup.fs.readFileString(setup.stateFile)
+      expect(savedAfter).not.toContain("err-future-1")
     }),
   )
 

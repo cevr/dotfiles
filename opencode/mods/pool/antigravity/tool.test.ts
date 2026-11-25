@@ -107,11 +107,15 @@ describe("antigravity tool", () => {
     ),
   )
 
-  it.effect("a pane's limit is recorded with its reset; other text records nothing", () =>
+  it.effect("a pane's limit is recorded with its reset; other text records nothing; future `at` is refused", () =>
     withSource((source) =>
       Effect.gen(function* () {
         expect(yield* answer(Option.some(source), { action: "limit", text: "Individual quota reached. Resets in 1h8m38s." })).toStartWith("Recorded: limited until ")
         expect(yield* answer(Option.some(source), { action: "limit", text: "all good" })).toBe("That text is no Antigravity quota limit: nothing recorded.")
+        // TestClock starts at 0, so at = 60_000 is strictly in the future on this host's clock.
+        const refused = yield* answer(Option.some(source), { action: "limit", text: "Individual quota reached. Resets in 45m.", at: 60_000 })
+        expect(refused).toStartWith("Refused:")
+        expect(refused).toContain("in the future")
       }),
     ),
   )

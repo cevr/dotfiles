@@ -8,6 +8,7 @@ import { Effect, Match, Option } from "effect"
 import { expect, it } from "effect-bun-test"
 import { OpenStatus } from "./fleet.ts"
 import { GateDecision } from "./gate.ts"
+import { RecordRefusal } from "./limit.ts"
 import type { Source } from "./source.ts"
 import { Answer } from "./state.ts"
 import { Availability, availability, containedLine, failedLine, wire } from "./wiring.ts"
@@ -85,6 +86,10 @@ describe("the pool's Antigravity wiring", () => {
       })
       expect(yield* toolText(Availability.Present({ source: present }), "read")).toContain("Read now.")
       expect(yield* toolText(Availability.Present({ source: present }), "status")).toContain("antigravity / Gemini · open")
+      // RPC record with a future `at` returns a typed FutureAt refusal (TestClock starts at 0)
+      const refusedRpc = yield* agy.rpc({ action: "limit", text: "Individual quota reached. Resets in 30m.", at: 60_000 })
+      expect(refusedRpc.recorded).toBe(false)
+      expect(refusedRpc.refused).toEqual(RecordRefusal.cases.FutureAt.make({ at: 60_000, now: 0 }))
     }),
   )
 

@@ -4,7 +4,7 @@
 // quota refusal.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { durationMs, isLimit, parseLimit, parsePaneLimits } from "./limit.ts"
+import { durationMs, isLimit, parseLimit, parsePaneLimits, RecordRefusal, recordRefusalText, validateRecordAt } from "./limit.ts"
 
 const NOW = Date.parse("2026-11-25T00:37:00Z")
 
@@ -83,6 +83,15 @@ describe("Antigravity limit messages", () => {
     const noResetLater = parsePaneLimits("Individual quota reached. Please upgrade your subscription.", NOW + 25 * 60_000)
     expect(noResetFirst[0]?.key).toBe(noResetLater[0]?.key)
     expect(noResetFirst[0]?.key).toStartWith("text:")
+  })
+
+  test("validateRecordAt refuses any `at` strictly in the future with a typed FutureAt refusal and accepts now or past", () => {
+    expect(validateRecordAt(Option.none(), NOW)).toEqual(Option.none())
+    expect(validateRecordAt(Option.some(NOW), NOW)).toEqual(Option.none())
+    expect(validateRecordAt(Option.some(NOW - 60_000), NOW)).toEqual(Option.none())
+    const future = validateRecordAt(Option.some(NOW + 1), NOW)
+    expect(future).toEqual(Option.some(RecordRefusal.cases.FutureAt.make({ at: NOW + 1, now: NOW })))
+    if (Option.isSome(future)) expect(recordRefusalText(future.value)).toContain("Refused:")
   })
 })
 
