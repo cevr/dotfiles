@@ -174,7 +174,8 @@ seeded("pace: with no wakes to keep a latch, an over-limit pool refuses new agen
     expect(messages).toContain("pace holds this agent")
     // The fake pool says it opens a minute on; the latch itself is the wakes'.
     expect(messages).toContain("It opens about Nov 4, 2026, 10:01:00 AM EST [2026-11-04T15:01:00Z]")
-    expect(messages).toContain("no latch could be kept for it")
+    // It says why no latch was kept: no wakes plugin is loaded to keep one.
+    expect(messages).toMatch(/no latch could be kept for it \(the wakes could not be asked: [^)]+\)/)
     const open = yield* boot(seed, { now: WEDNESDAY, pace: "open", codex: "unpaced" })
     const openRoot = yield* open.root(ROOT_TASK)
     expect(open.children(openRoot).map((child) => child.agent).toSorted()).toEqual(["verifier", "worker"])

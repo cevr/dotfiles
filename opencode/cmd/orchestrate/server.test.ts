@@ -556,7 +556,7 @@ describe("the pace", () => {
         )
         const held = yield* plugin.call("subagent", "root", { agent: "explore" })
         expect(held.refused?.message).toBe(
-          `orchestrate: the pool's pace holds this agent. all pool accounts are held. It opens about Nov 4, 2026, 10:05:01 AM EST [2026-11-04T15:05:01Z]; no latch could be kept for it, so start it again after then. Do not poll.`,
+          `orchestrate: the pool's pace holds this agent. all pool accounts are held. It opens about Nov 4, 2026, 10:05:01 AM EST [2026-11-04T15:05:01Z]; no latch could be kept for it (no wakes), so start it again after then. Do not poll.`,
         )
         expect(plugin.logged()).toEqual([
           '{"kind":"denied","sessionID":"root","callID":"call","tool":"subagent","why":"all pool accounts are held"}',
@@ -1067,6 +1067,8 @@ describe("Opus first, Codex second", () => {
         yield* verifyReopen(plugin, entry, followUp)
         expect(asked).toEqual([])
       }),
+      // Each case has its own plugin; an open waits for the others at its opening (OPEN_GATHER_MS), so they run side by side.
+      { concurrency: cases.length },
     )), hangGuard("short-fixture"))
 
   test("Claude's pace admits it: it runs on Opus at the role's effort, and Codex is never asked", () =>

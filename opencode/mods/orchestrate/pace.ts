@@ -1,7 +1,7 @@
 // Pace: whether an account has room for one more agent now. The pool's
-// `pace` answer and the Codex admission script's both read as one; a new
-// subagent the pace holds latches, and is refused with PaceHeld only when
-// the latch cannot be kept.
+// `pace` answer and the Codex admission script's both read as one; a
+// subagent start the pace holds, new or continued, latches, and is refused
+// with PaceHeld only when the latch cannot be kept, saying why.
 import { Schema } from "effect"
 
 /** One answer about one new agent: admitted, or held with why and when it may open. */
@@ -36,11 +36,13 @@ export const PaceHold = Schema.Struct({
 })
 export interface PaceHold extends Schema.Schema.Type<typeof PaceHold> {}
 
-/** The pace holds a new subagent and no latch could be kept: whose pace, why, and when it opens (epoch ms). */
+/** The pace holds a subagent start, new or continued, and no latch could be kept: whose pace, why, when it opens (epoch ms), and why no latch. */
 export class PaceHeld extends Schema.TaggedError<PaceHeld>()("PaceHeld", {
   whose: Whose,
   reason: Schema.String,
   retryAt: Schema.Number,
+  /** Why the start could not latch: the wakes' refusal, or a child that is not the caller's. */
+  unlatched: Schema.String,
 }) {}
 
 /** A model as `provider/id`, with an optional `#variant`. */

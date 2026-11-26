@@ -159,7 +159,7 @@ export interface LatchRequest {
   readonly from: string
   readonly messageID: string
   readonly callID: string
-  /** Existing child for a held verification follow-up; otherwise a new child is made. */
+  /** The existing child a held follow-up continues; otherwise a new child is made. */
   readonly child?: string
   readonly agent: string
   readonly description: string

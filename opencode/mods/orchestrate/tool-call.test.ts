@@ -6,8 +6,9 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
+// `Story.then` by another name: a story step, not a Promise chain (effect/noPromiseChainsInTests reads any `.then` call as one).
+import { then as thenEvents } from "@dotfiles/decider/story"
 import { explain, KNOWLTON, resumesAt, SabbathRest } from "./sabbath.ts"
-import { PaceHeld } from "./pace.ts"
 import {
   CodexNeverImplements,
   type Fallback,
@@ -425,25 +426,25 @@ describe("Opus first, Codex second", () => {
     )
   })
 
-  test("a follow-up the pace holds never falls back nor makes a new agent: it is refused with when it opens, its child kept", () =>
+  test("a follow-up the pace holds never falls back nor makes a new agent: it latches on its own child until it opens", () =>
     run(
       Story.clock(now),
       Story.when(start("planner", { child: "child-1", hold: poolHold, fallback: { model: SOL } })),
-      Story.rejected(new PaceHeld({ whose: "pool", reason: "anthropic is at 95%", retryAt: now + 900_000 })),
+      thenEvents(latched({ asked: "planner", agent: "planner", reason: "kept", child: "child-1", hold: "pace", whose: "pool", why: "anthropic is at 95%", opensAt: now + 900_000, recheckAt: now + PACE_POLL_MS })),
     ))
 
   test("a held follow-up whose pace names no time opens a minute from now", () =>
     run(
       Story.clock(now),
       Story.when(start("implementor", { child: "child-1", hold: { whose: "pool", reason: "over pace" } })),
-      Story.rejected(new PaceHeld({ whose: "pool", reason: "over pace", retryAt: now + 60_000 })),
+      thenEvents(latched({ asked: "implementor", agent: "implementor", reason: "kept", child: "child-1", hold: "pace", whose: "pool", why: "over pace", opensAt: now + 60_000, recheckAt: now + 60_000 })),
     ))
 
   test("a held follow-up whose pace names a time already past opens a second from now", () =>
     run(
       Story.clock(now),
       Story.when(start("implementor", { child: "child-1", hold: { whose: "pool", reason: "over pace", retryAt: now - 5_000 } })),
-      Story.rejected(new PaceHeld({ whose: "pool", reason: "over pace", retryAt: now + 1_000 })),
+      thenEvents(latched({ asked: "implementor", agent: "implementor", reason: "kept", child: "child-1", hold: "pace", whose: "pool", why: "over pace", opensAt: now + 1_000, recheckAt: now + 1_000 })),
     ))
 
   test("a latch tries Opus first when it opens", () =>
