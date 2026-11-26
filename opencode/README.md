@@ -1562,8 +1562,19 @@ Redemption follows these rules:
 
 1. Expiry first: within the last day, redeem on measured exhaustion or at the
    six-hour last call, for any positive restoration, soonest expiry first.
-2. Otherwise, with running or held work, refill an exhausted account if the
-   reset frees it. Another fresh account or a slow burn does not veto it.
+2. Otherwise, with work waiting, refill an exhausted account if the reset
+   frees it. Work waiting is work held for want of a login (a start, or a
+   running agent's request at its dispatch), or running work when no account
+   of the pool has room. Room is a login placement would send work to now:
+   no refusal of any kind (sign-in, unauthorized, rate or usage limit, a
+   hold, a damaged record), every tracked window read in the last 30 minutes
+   or reported absent, no failed usage read since, at least one window
+   reported, and nothing spent or at the pace's hold line (`pace.ts`
+   `hasRoom`, on placement's own `takesWork`). While another account has
+   room, running work alone goes there and no reset is spent (owner law:
+   never with no work waiting). Held work stops waiting once a login read
+   after it takes it, whichever host's claim freed it. A slow burn does not
+   veto a refill.
    Shared weekly exhaustion uses the 99% safety stop; a model's own quota
    uses 100%. Anthropic keeps its weekly deadline. A Fable reset clears its
    own quota and subtracts its reported shared contribution, never a fixed half.
@@ -1576,8 +1587,11 @@ same cadence needs fresh usage and a new observed inventory generation.
 Unchanged stock and retries keep the same request identity. The send rechecks
 the rule against the provider's fresh reading under the fleet lease.
 After redemption the owner gets one notice with the actual before/after
-usage and resets remaining; it asks nothing. A pending observation never
-supplies refund room or authorizes another claim. A question an older pool
+usage and resets remaining; it asks nothing. A claim is observed once a
+reading after it shows a window it was claimed for back (the 5-hour window,
+the week, or a model's own week); until then, for at most 30 minutes, it is
+pending. A pending observation never supplies refund room or authorizes
+another claim on the pool, on that account or any other. A question an older pool
 left open is withdrawn.
 
 `resets: { auto: false }` claims nothing on its own; `resets: false` works

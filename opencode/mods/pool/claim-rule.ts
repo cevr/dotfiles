@@ -1,7 +1,8 @@
 // Automatic redemption follows measured exhaustion, never projected demand.
 // Expiring credits get first choice (last day; depleted now or six-hour last
-// call). Otherwise active/held work refills an exhausted account if the reset
-// frees it. Anthropic keeps the weekly deadline; Codex restarts it and waits
+// call). Otherwise work waiting refills an exhausted account if the reset
+// frees it: a start held, or running work when no account of the pool has
+// room (`ClaimSituation.room`); running work alone goes to an account with room. Anthropic keeps the weekly deadline; Codex restarts it and waits
 // out an unspent week or an imminent natural reset. All claims wait
 // at least 30 minutes from the judged natural reset. Forecasts below remain
 // advisory for reporting and explicit push planning.
@@ -87,6 +88,13 @@ export interface ClaimSituation {
   readonly settling: boolean
   /** A push covers the held work: its approved resets decide for it (resets.ts `pushDue`). */
   readonly pushed: boolean
+  /**
+   * An account of the pool has room now (pace.ts `hasRoom`: placement would send work there, on a
+   * trusted reading; no refusal of any kind holds it): the running work goes there, so running work
+   * alone is no work waiting for a refill; only work held is, a start or a running agent's request
+   * (owner law: never with no work waiting).
+   */
+  readonly room: boolean
 }
 
 /** Which step of the order chose, or stopped a claim. */
@@ -311,10 +319,11 @@ export const decideClaim = (situation: ClaimSituation, options: ReadonlyArray<Cl
   return Option.match(Arr.head(expiring), {
     onSome: ({ option, reason }) => claim("expiring", option, reason),
     onNone: () =>
-      Match.value({ work: working(situation), settling: situation.settling, pushed: situation.pushed }).pipe(
+      Match.value({ work: working(situation), settling: situation.settling, pushed: situation.pushed, taken: situation.room && situation.held === 0 }).pipe(
         Match.when({ work: false }, () => noClaim(Option.none(), ["no agent is running and no start is held"])),
         Match.when({ settling: true }, () => noClaim(Option.none(), ["a claim has not shown in a reading yet"])),
         Match.when({ pushed: true }, () => noClaim(Option.none(), ["a push covers the held work: its approved resets decide"])),
+        Match.when({ taken: true }, () => noClaim(Option.some<ClaimStep>("fresh"), ["an account of the pool has room for the running work, and no start is held"])),
         Match.orElse(() => forExhaustion(situation, options)),
       ),
   })

@@ -3,13 +3,24 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit } from "effect"
 import type { Json } from "./frame.ts"
-import { callable, catalog, cellValue, docsOf, contentValue, IMAGE_NOTE, notATool, plain, reachable, textOf, typeOf, whollyDisabled, withoutImages } from "./tools.ts"
+import { callable, catalog, cellValue, docsOf, contentValue, IMAGE_NOTE, notATool, plain, reachable, textOf, typeOf, actionDenied, withoutImages } from "./tools.ts"
 
-describe("whollyDisabled", () => {
-  test("follows the last matching rule, as the registry does", () => {
-    expect(whollyDisabled("execute", [{ action: "execute", resource: "*", effect: "deny" }])).toBe(true)
-    expect(whollyDisabled("execute", [{ action: "*", resource: "*", effect: "deny" }, { action: "execute", resource: "*", effect: "allow" }])).toBe(false)
-    expect(whollyDisabled("shell", [{ action: "shell", resource: "rm *", effect: "deny" }])).toBe(false)
+describe("actionDenied", () => {
+  test("a blanket rule decides; a later allow or ask for some resources reopens the action", () => {
+    expect(actionDenied("execute", [{ action: "execute", resource: "*", effect: "deny" }])).toBe(true)
+    expect(actionDenied("execute", [{ action: "*", resource: "*", effect: "deny" }, { action: "execute", resource: "*", effect: "allow" }])).toBe(false)
+    expect(actionDenied("shell", [{ action: "shell", resource: "rm *", effect: "deny" }])).toBe(false)
+    expect(actionDenied("edit", [{ action: "*", resource: "*", effect: "deny" }, { action: "edit", resource: "src/*", effect: "allow" }])).toBe(false)
+    expect(actionDenied("edit", [])).toBe(false)
+  })
+
+  test("a later narrow deny keeps a blanket deny, as the fork's PermissionPolicy.isActionDenied does", () => {
+    expect(actionDenied("shell", [{ action: "*", resource: "*", effect: "deny" }, { action: "shell", resource: "rm *", effect: "deny" }])).toBe(true)
+  })
+
+  test("`**` and `* *` are blanket resources too", () => {
+    expect(actionDenied("read", [{ action: "read", resource: "**", effect: "deny" }])).toBe(true)
+    expect(actionDenied("read", [{ action: "read", resource: "* *", effect: "deny" }])).toBe(true)
   })
 })
 
