@@ -90,8 +90,19 @@ const expiringOf = <Slot>(entry: PlacementSlot<Slot>, now: Option.Option<number>
     Option.flatMap(([used, resetAt, at]) => expiring(used, resetAt, at)),
   )
 
-/** The week that would expire most unused first; a week not read after every one read. */
-const byExpiring = Order.flip(Option.makeOrder(Order.Number))
+/**
+ * The step `expiring` is compared in: 0.05 points of the week per hour left.
+ * Two weeks within one step are equal and fall through to load, so fresh
+ * sessions still spread over equal accounts between usage readings (which
+ * `expiring` does not see change): two readings a moment apart, whose resets
+ * differ by that moment, would otherwise pile every new session on one.
+ */
+export const EXPIRING_STEP = 0.0005
+
+/** The week that would expire most unused first, in steps of `EXPIRING_STEP`; a week not read after every one read. */
+const byExpiring = Order.mapInput(Order.flip(Option.makeOrder(Order.Number)), (value: Option.Option<number>) =>
+  Option.map(value, (rate) => Math.round(rate / EXPIRING_STEP)),
+)
 
 /** The accounts in the order a run should try them; the first is the choice. */
 export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot, ...Slot[]] {

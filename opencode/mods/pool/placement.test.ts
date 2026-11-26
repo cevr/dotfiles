@@ -89,6 +89,19 @@ describe("rankPlacement", () => {
     expect(rankPlacement({ slots: [slot("soon", week(0.4, 10)), slot("ahead", week(0.8, 100))], spent: 0, sessions: 0, now: T0, preferred: "ahead" })[0]).toBe("ahead")
   })
 
+  test("weeks whose expiring share is within one step (0.05 points per hour left) are equal and placed by load, so new sessions spread over equal accounts between readings", () => {
+    const week = (resetAt: number, fields: Partial<PlacementSlot<string>> = {}) => ({ weeklyUsed: 0.01, weeklyResetAt: resetAt, ...fields })
+    // Two quiet weeks read a moment apart: their resets differ by that moment.
+    const first = rankPlacement({ slots: [slot("a", week(T0 + 72 * HOUR)), slot("b", week(T0 + 72 * HOUR + 5))], spent: 0, sessions: 0, now: T0 })
+    expect(first[0]).toBe("a")
+    // A session on the first: the next fresh session goes to the second.
+    const second = rankPlacement({ slots: [slot("a", week(T0 + 72 * HOUR, { live: 1 })), slot("b", week(T0 + 72 * HOUR + 5))], spent: 0, sessions: 0, now: T0 })
+    expect(second[0]).toBe("b")
+    // A week more than a step more expiring still goes first, whatever its load.
+    const apart = rankPlacement({ slots: [slot("a", week(T0 + 72 * HOUR, { live: 3 })), slot("b", week(T0 + 96 * HOUR))], spent: 0, sessions: 0, now: T0 })
+    expect(apart[0]).toBe("a")
+  })
+
   test("an account at its share goes after every account with room, whatever its score", () => {
     const ranked = rankPlacement({
       slots: [slot("full", { noRoom: true }), slot("busy", { live: 3 })],
