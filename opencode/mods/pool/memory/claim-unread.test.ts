@@ -7,7 +7,8 @@
 // its cause, never a claim made, and goes again once the wait it asked for has
 // passed. Nothing here reaches a provider: the claim is the memory quota's.
 import { expect } from "bun:test"
-import { Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as FleetTest from "./fleet.ts"
@@ -20,12 +21,13 @@ import * as ResetsTest from "./resets.ts"
 import * as Model from "../model.ts"
 import { type QuotaReading, unread, type UsageRead } from "../quota.ts"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
-import { hangGuard, stamp } from "../../../tests/hang-guard.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const ANTHROPIC = PoolId.make("anthropic")
 const RETRY_AFTER_MS = 2 * MINUTE
+const NOW = Date.parse("2026-11-25T22:20:00Z")
 
 /** One login, its 5-hour window spent, a grant that clears it expiring within the hour: due at once. */
 const reading = (now: number): QuotaReading => ({
@@ -43,10 +45,10 @@ const world = () => {
   const sent: Array<string> = []
   const reads: Array<"read" | "unread"> = []
   const usage = (): Effect.Effect<UsageRead> =>
-    Effect.sync(() => {
+    Effect.map(Clock.currentTimeMillis, (now) => {
       if (reads.length === 0) {
         reads.push("read")
-        return Result.succeed(reading(stamp()))
+        return Result.succeed(reading(now))
       }
       reads.push("unread")
       return unread("rate-limited", Option.some(RETRY_AFTER_MS))
@@ -78,9 +80,9 @@ const world = () => {
 effectTest("the sweep's reading stands for the check before the lease; the read right before the send rate limited: recorded unsent with its cause, no claim made, again after the wait it asked for",
   Effect.scoped(
       Effect.gen(function* () {
+        yield* TestClock.setTime(NOW)
         const fixture = world()
         const pool = yield* fixture.pool
-        const before = stamp()
         yield* pool.sweep
         // The sweep's read, then the one read right before the send: none between them.
         expect(fixture.reads).toEqual(["read", "unread"])
@@ -96,12 +98,12 @@ effectTest("the sweep's reading stands for the check before the lease; the read 
           message: "not sent: the account could not be read just before the claim (rate limited, retry-after 120 s)",
         })
         expect(reset!.outcome).toBeUndefined()
-        expect(reset!.retryAt).toBeGreaterThanOrEqual(before + RETRY_AFTER_MS)
+        expect(reset!.retryAt).toBe(NOW + RETRY_AFTER_MS)
         // Another sweep before that wait: the claim is not tried again, and no read goes out for it.
         yield* pool.sweep
         expect(fixture.reads.filter((read) => read === "unread")).toHaveLength(2)
         expect((yield* pool.resets).resets[0]).toMatchObject({ unsent: { tries: 1 } })
     }),
-  ),
+  ).pipe(Effect.provide(TestClock.layer())),
   hangGuard("in-memory"),
 )

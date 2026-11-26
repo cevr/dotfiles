@@ -145,10 +145,10 @@ describe("one identity across jitter (properties)", () => {
     const random = generator(20261126)
     const base = Date.parse("2026-01-01T00:00:00Z")
     // The jitters measured on the Mac first, then any below half an hour.
-    const measured = [-240, 485, 249, 326, 587, -642]
+    const seenOnTheMac = [-240, 485, 249, 326, 587, -642]
     for (let sample = 0; sample < 5_000; sample++) {
       const end = base + random.next(24 * 365) * HOUR
-      const jitter = () => Option.getOrElse(Arr.get(measured, sample), () => random.between(-30 * MINUTE + 1, 30 * MINUTE - 1))
+      const jitter = () => Option.getOrElse(Arr.get(seenOnTheMac, sample), () => random.between(-30 * MINUTE + 1, 30 * MINUTE - 1))
       const [mac, workbox] = [end + jitter(), end - jitter()]
       const label = `end ${end}, readings ${mac - end} ms and ${workbox - end} ms off`
       for (const provider of ["claude", "codex"] as const) {
