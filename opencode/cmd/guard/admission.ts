@@ -240,7 +240,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const observation = yield* supplyForStep()
     // The caller reads back the host's readings, not only its own sample:
     // what it explains and launches by is what the ledger decided by.
-    return yield* ledger.transact(input, observation).pipe(Effect.map((result) => ({ ...result, observation: sharedView(result.state, observation) })))
+    const result = yield* ledger.transact(input, observation)
+    // Read the clock after the transaction: another process may have
+    // recorded a newer sample than this caller's `now` while it waited.
+    const now = yield* Supply.clockOf(host)
+    return { ...result, observation: sharedView(result.state, { ...observation, now }) }
   })
 
   const request = Effect.fn("HostAdmission.request")(function* (draft: Request, owner = caller.owner) {
@@ -484,7 +488,8 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     // sampler would. `advance` also serves the queue on those readings.
     const own = yield* measure().pipe(Effect.flatMap(attest))
     const { state } = yield* ledger.transact({ op: "advance" }, own)
-    const observation = sharedView(state, own)
+    // The clock after the transaction, as in `step`: a reading is never newer than `now`.
+    const observation = sharedView(state, { ...own, now: yield* Supply.clockOf(host) })
     const { sample, now } = observation
     const offer = hostOffer(observation, Option.map(target, ({ id }) => id))
     // What a group-placed launch adds to nice for this caller, probed as
