@@ -91,7 +91,8 @@ const recoveryOf = (state: ModelState) => Option.filter(state.recovery, (r) => r
 const lineOf = (state: ModelState) =>
   Option.match(recoveryOf(state), {
     onNone: () => evenOf(state),
-    onSome: (r) => r.from + (0.99 - r.from) * ((state.now - r.at) / (state.readResetAt - r.at)) + 0.05,
+    // A claim only adds room: its line is taken only above the even one.
+    onSome: (r) => Math.max(evenOf(state), r.from + (0.99 - r.from) * ((state.now - r.at) / (state.readResetAt - r.at)) + 0.05),
   })
 /** The week as far as the pool may know it: the reading, plus the reserved shares the reading's rise since the recovery does not cover. */
 const knownOf = (state: ModelState) =>

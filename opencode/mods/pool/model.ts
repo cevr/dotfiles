@@ -30,6 +30,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
+import * as FleetPlans from "./fleet-plans.ts"
 import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
 import { dispatchPace, type HoldReason, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
@@ -55,6 +56,7 @@ const REFUSED_STATUS = new Map([
 import type {
   Alerts,
   FleetStatus,
+  PlanRecords,
   Report,
   SharedReading,
   LoginsQuery,
@@ -643,10 +645,36 @@ export const layer = (config: Config) =>
        * on the host, is taken back and the request held. Written first and read after, so of two instances that race, a
        * share either sees the other's or is seen by it; a write that failed is not read back, and holds.
        */
+      /**
+       * The records every login's line is built from, as the fleet holds them (fleet-plans.ts): this host's resets
+       * store (`own`), each peer's last report's records and whether that report is current, the two merged, and
+       * which line is in force.
+       */
+      /** What this host sends its peers of its line records: its own claims, with their observations, and its own reservations. */
+      const ownPlanRecords = Effect.map(resetsStore.read, (state): PlanRecords => FleetPlans.recordsOf(state))
+
+      const lineRecords = (now: number) =>
+        Effect.gen(function* () {
+          const own = yield* resetsStore.read
+          const fleet = yield* fleetStore.read
+          const known = peers.names.map((name): FleetPlans.PeerPlans => {
+            const peer = Option.fromUndefinedOr(fleet.peers[name])
+            return {
+              name,
+              records: Option.flatMap(peer, (held) => Option.flatMap(Option.fromUndefinedOr(held.report), (report) => Option.fromUndefinedOr(report.plans))),
+              current: Option.exists(peer, (held) =>
+                Option.isNone(Option.fromUndefinedOr(held.missed)) && Option.exists(Option.fromUndefinedOr(held.seenAt), (at) => now - at <= FleetPlans.PLANS_FRESH_MS)),
+            }
+          })
+          return { own, peers: known, ...FleetPlans.fleetRecords(FleetPlans.recordsOf(own), known) }
+        })
+
       const reserve = (where: Pooled, credentialID: string, sessionID: string) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
-          const before = yield* resetsStore.read
+          // The fleet's records: a claim's room is shared, its reservations on every host count (fleet-plans.ts).
+          const line = yield* lineRecords(now)
+          const before = { ...line.own, ...line.records }
           const refuse = (reason: string) => new RequestHeld({ sessionID, reason, reasonCode: "reset-room", retryAt: now + UNREAD_RETRY_MS })
           // The login's account and its pool's reset provider, and the claim whose room the request is admitted on.
           const found = Option.all([
@@ -666,7 +694,8 @@ export const layer = (config: Config) =>
           spendSeq += 1
           const spend: ResetsModel.Spend = { id: `${fleetConfig.host}:${sessionID}:${now}:${spendSeq}`, claim, credentialID, at: now, cost: fleetConfig.startCost }
           yield* sendResets(ResetsModel.ReserveSpend.make({ spend }))
-          if (ResetsModel.reservationHolds(yield* resetsStore.read, provider, account, now, spend.id)) return
+          const after = yield* lineRecords(now)
+          if (ResetsModel.reservationHolds({ ...after.own, ...after.records }, provider, account, now, spend.id)) return
           yield* sendResets(ResetsModel.WithdrawSpend.make({ id: spend.id }))
           return yield* refuse("the room a claimed reset gave back on the chosen login is reserved by requests admitted meanwhile")
         })
@@ -945,8 +974,8 @@ export const layer = (config: Config) =>
       const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
-        const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false, state.resets)
+        const { own, peers: known } = yield* lineRecords(now)
+        return FleetPlans.fleetPlans(provider.value, accounts, FleetPlans.recordsOf(own), known, now, config.autoClaims !== false, own.resets).plans
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -1764,7 +1793,7 @@ export const layer = (config: Config) =>
           readings,
           busyNow(now),
           Option.getOrUndefined(agyReport),
-        ), launchProtocol: 1 as const }
+        ), launchProtocol: 1 as const, plans: yield* ownPlanRecords }
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
@@ -1843,6 +1872,8 @@ export const layer = (config: Config) =>
           starts: FleetModel.ownStarts(state, now, fleetConfig.settleMs).length,
           settleMinutes: fleetConfig.settleMs / 60_000,
           peers: FleetModel.peers(state, peers.names, now, fleetConfig.settleMs),
+          // Which line the pace is on: the fleet's shared one, or the week's own while a peer cannot be read.
+          line: FleetPlans.lineText((yield* lineRecords(now)).source),
         } satisfies FleetStatus
       }).pipe(Effect.withSpan("Pool.fleet"))
 

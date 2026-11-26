@@ -347,10 +347,13 @@ describe("the pace's line", () => {
       expect(lineOf(resetAt, now, undefined)).toBeCloseTo(0.99 * (elapsed / 7) + 0.05)
       expect(lineOf(resetAt, now, {})).toBeCloseTo(0.99 * (elapsed / 7) + 0.05)
     }
-    // A claim on day one that left the week at 0: the line starts at 0 then, and spends the rest evenly to the reset.
+    // A claim on day one observed at 30%: the line starts there, and spends the rest evenly to the reset.
     const claimAt = resetAt - 6 * DAY
-    expect(lineOf(resetAt, claimAt, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.05)
-    expect(lineOf(resetAt, claimAt + 3 * DAY, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.99 / 2 + 0.05)
+    expect(lineOf(resetAt, claimAt, { rebase: { at: claimAt, from: 0.3 } })).toBeCloseTo(0.35)
+    expect(lineOf(resetAt, claimAt + 3 * DAY, { rebase: { at: claimAt, from: 0.3 } })).toBeCloseTo(0.3 + 0.69 / 2 + 0.05)
+    // One that left the week at 0, under the week's own line then, adds no room and takes none: the line stays the even one.
+    expect(lineOf(resetAt, claimAt, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.99 / 7 + 0.05)
+    expect(lineOf(resetAt, claimAt + 3 * DAY, { rebase: { at: claimAt, from: 0 } })).toBeCloseTo(0.99 * (4 / 7) + 0.05)
   })
 
   test("plans: a reset in hand moves no line; only a claim its own readings observed giving back the week re-bases its account", () => {
