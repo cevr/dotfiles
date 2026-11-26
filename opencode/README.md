@@ -352,8 +352,7 @@ only the resident location's copy acts, so a host runs one updater.
   `service ensure` races any restart for the port. The plugin answers where
   the service runs (`dotfiles-opencode.update` `placement`), and the health
   check fails a service that runs outside its scope under the user manager.
-  A Mac has no cgroups; the service runs where its TUI started it, and heavy
-  commands run at nice 10 (Shell policy).
+  A Mac has no cgroups; the service runs where its TUI started it.
 - **One handoff at a time.** The handoff marks
   `~/.local/state/opencode-update/handoff.json` with its pid before it
   names the staged build installed, and drops the mark once the build is
@@ -2513,65 +2512,37 @@ The model (the domain files at the root of `mods/guard`): `verdict.ts`
 decides a command from where it runs and which of its targets are
 repositories, `kill.ts` decides a kill from the process table, `sleep.ts` a
 subagent's sleep, `worktree.ts` a worktree add from the checkout and the warm
-sources, `heavy.ts` and `launcher.ts` pick and write a heavy
-command's launcher, and `shell-line.ts` reads a command line. `model.ts`
+sources, and `shell-line.ts` reads a command line. `model.ts`
 asks the contracts in `service.ts`: `RepoRoots` (`filesystem/`: a path
 holding `.git`), `Checkouts` (`process/`: `git`, `df`, `mount` and
 `workrift sources`), `SessionDirectories` and `Subagents` (`opencode/`),
-`Processes` (`process/`: `ps`), `Launchers` (`filesystem/`) and `Scopes`
-(`process/`: the `systemd-run` probe), with `memory/` implementations for
+and `Processes` (`process/`: `ps`), with `memory/` implementations for
 tests and the laws in `laws.ts`.
 
-### Shell policy
+### The shell
 
-A heavy command runs at a lower CPU priority and, on Linux, under a memory
-cap, so one runaway test cannot take the machine and the server down (on
-2026-11-06 one `bun test` on the workbox grew to 38.5 GB and the OpenCode
-server died with it). It is no cap on agents or on load: a light command
-runs as before, and a heavy one runs at once.
+Every command OpenCode spawns runs as written, at its caller's niceness, in its
+caller's cgroup: the guard registers no shell hook, so no launcher, `nice`,
+systemd scope or host lease stands between a call and its process. The host's
+admission gate (heavy patterns, a `nice` launcher, a Linux scope, and
+`host-admit`'s FIFO of leases) was removed on 2026-11-26: it queued and
+deadlocked checks more than it protected the host. What the host has free is
+for the orchestrator to read and size by.
 
-A command is heavy when one of its simple commands opens with a pattern of
-the `heavy` option: by default `bun test`, `bun run test`, the gate, check,
-typecheck and accept scripts, `npm`/`pnpm`/`yarn` test, `tsc`, `tsgo`,
-`tsgolint`, `vitest`, `jest`, `playwright test`, `turbo`, `go test`,
-`go build`, `go vet`, `golangci-lint` and `cargo` test, build, check,
-clippy, nextest and bench, and `du` (`heavy.ts`). `go run` and `cargo run` are not:
-what they start usually lives on, and their build is mostly cached.
-A pattern's last word also matches its `:` scripts (`bun run test:e2e`).
-The launchers agents put in front are read through, with their options and
-`VAR=value` assignments: `npx`, `bunx`, `pnpm exec`, `timeout`, `flock`,
-`setsid`, `nohup`, `env`, `nice`, `ionice` and `stdbuf`; so are the scripts
-of `sh -c`, `eval`, `flock -c` and `env -S`. The content of a script file
-(`bash gate.sh`) is not, and neither is `systemd-run`: the unit it starts
-runs outside the launcher (a service at nice 0 in a cgroup of its own), so
-the line runs as written. Workers do not wrap their checks in units of their
-own (the orchestrate protocol's Shell); how many heavy checks run on one
-machine at once is the orchestrator's to size (the orchestrate skill's
-"Heavy checks fit the machine"), not this policy's.
-
-The policy rides the shell's `create.before` hook, which sees every command
-OpenCode spawns, the user's `!` too. For a heavy one it swaps only the shell
-for a launcher of the same file name (`~/.cache/opencode/guard-launchers/<hash>/zsh`),
-which runs `exec nice -n 10 '/bin/zsh' "$@"`; on Linux with `ionice` on the
-PATH it adds `ionice -c3`, the idle I/O class, so a heavy check's disk
-reads wait behind the service's. Where `systemd-run --user
---scope` works (probed once), it runs the shell in a transient scope with
-`MemoryMax=12G` and `CPUWeight=20` (`nice` has no effect between cgroups).
-The command, its echo in the transcript and the permission check stay as
-written. The niceness adds to the caller's, up to 19. On a Mac it is `nice`
-alone: there is no memory cap. When a launcher cannot be written, the
-command runs as it would have, and a warning is logged.
+`host-admit` stays as a stub so scripts and agents that still type
+`host-admit check run … -- CMD` keep working: any form with a `--` runs what
+follows it as written and exits with its code, printing nothing of its own;
+`host-admit host status --json` answers the host's cores, load, memory and
+the disk under the working directory, read now.
 
 Options (all optional; a malformed one stops the plugin and says which):
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `home` | the user's home | the directory `~` and `$HOME` name |
-| `heavy` | the list above | the heavy commands' patterns; `[]` turns the policy off |
-| `nice` | `10` | the niceness added, 0 to 19 |
-| `memoryMax` | `12G` | the scope's `MemoryMax` (`512M`, `12G`, `50%`, `infinity`) |
-| `cpuWeight` | `20` | the scope's `CPUWeight`, 1 to 10000 |
-| `launchers` | `~/.cache/opencode/guard-launchers` | where the launchers are written |
+
+An older config's `heavy`, `nice`, `memoryMax`, `cpuWeight` and
+`launchers` are ignored.
 
 The guard does not strip secrets from a command's environment: the shell
 calls on record carry no API key to strip (the only `env -u` in them drops
@@ -2746,10 +2717,8 @@ This repository's base would set:
 git config rift.mergeCheck 'cd opencode && OPENCODE_DEV=$HOME/Developer/personal/.rifts/opencode/prime-look bun scripts/gate.ts --merge "$RIFT_LAND_BASE"'
 ```
 
-The gate and the acceptance run always run heavy, through the guard's
-launcher (`heavyArgv` in `mods/guard/launcher.ts`): `nice -n 10`, and where
-`systemd-run --user --scope` works (Linux with a user systemd), a scope with
-`MemoryMax=12G` and `CPUWeight=20`. On the Mac they run niced alone.
+The gate and the acceptance run run as written, at the land's own niceness,
+with no scope (`checkArgv` in `mods/work/process/landing.ts`).
 
 This repository's base sets:
 
@@ -3955,10 +3924,8 @@ for it with `action: "wait"`, since its turn's end hands back to its parent.
   stderr to `$XDG_STATE_HOME/opencode-job/<id>/log`, under a runner
   (`cmd/wake/job.ts`): a `systemd-run --user --unit opencode-job-<id>` unit on
   Linux (a detached process when the user manager refuses, with a warning in
-  the receipt), a detached session and process group on the Mac. `heavy` runs
-  it through the guard's launcher (`mods/guard/launcher.ts`): `nice -n 10`,
-  and where `systemd-run --user --scope` works, a scope with `MemoryMax=12G`
-  and `CPUWeight=20`; past `timeoutSeconds` (default a day, at most 7) it is
+  the receipt), a detached session and process group on the Mac. A `heavy`
+  job runs as written, as every job does; past `timeoutSeconds` (default a day, at most 7) it is
   stopped with SIGTERM, then SIGKILL 10 s later.
 - Lines the command appends to the file `$JOB_DRIP` names reach the session at
   most once a minute, without starting a turn; the rest ride on the end

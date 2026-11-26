@@ -367,7 +367,7 @@ describe("system-tools.sh slices: the run families from slices.conf", () => {
     expect(h.leftovers()).toEqual([])
   })
 
-  test("the guard's agentwork.slice and opencodecontrol.slice carry what its attestation reads (opencode/mods/guard/process/admission.ts)", () => {
+  test("agentwork.slice and opencodecontrol.slice carry their weights, caps and floors", () => {
     const h = host()
     expect(h.run("slices")).toMatchObject({ code: 0, stderr: "" })
     const unit = (name: string) => readFileSync(join(h.root, "etc", "systemd", "user", name), "utf8")

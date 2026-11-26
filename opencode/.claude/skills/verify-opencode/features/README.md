@@ -57,7 +57,7 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Host check leases](host-check-leases.md): one queue and launcher boundary for heavy checks, with scoped ownership and current host supply.
 - [Host resource ownership](host-resource-ownership.md): one durable holder frontier for bound executions, adopted owners, shared caches and observations.
 - [Work](work.md): the `work` tool and its alias `rift`: create, list, remove and land a workspace, with no worktree tools.
-- [Guard](guard.md): refused destructive commands, a subagent's long sleep, heavy commands niced.
+- [Guard](guard.md): refused destructive commands, a subagent's long sleep, every command spawned as written.
 - [Queue](queue.md): the agent's live queue, the tool, the RPC, the sidebar.
 - [Prime's panel](prime-panel.md): the background-work panel and its tabs.
 - [Prime's reply emphasis](prime-emphasis.md): `[[Word]]` chips and the queue's labels in a reply.
