@@ -150,6 +150,32 @@ describe("a worker", () => {
       }),
     ))
 
+  test("lists its bindings through kernel.bindings(), restored ones included, and keeps kernel out of them", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        yield* workers.evaluate(first, cell('const big = "x".repeat(1000); const f = () => big; const live = new WeakMap()'))
+        const snapshot = yield* workers.snapshot(first)
+        yield* workers.start(first, yield* Work)
+        expect(yield* workers.restore(first, snapshot.bindings)).toEqual(["f", "big"])
+        yield* workers.evaluate(first, cell("const fresh = 1"))
+        const listed = JSON.parse((yield* workers.evaluate(first, cell("JSON.stringify(kernel.bindings())"))).display) as ReadonlyArray<{ name: string; kind: string; bytes: number }>
+        expect(listed.map((item) => [item.name, item.kind])).toEqual([["big", "value"], ["f", "declaration"], ["fresh", "value"]])
+        expect(listed[0]!.bytes).toBeGreaterThan(1000)
+        expect(listed[1]!.bytes).toBeGreaterThan(0)
+        const unkept = yield* workers.evaluate(first, cell("const gone = new WeakMap(); JSON.stringify([kernel.bindings('gon'), kernel.bindings(/^f/).map((item) => item.name)])"))
+        expect(JSON.parse(unkept.display)).toEqual([[{ name: "gone", kind: "value", bytes: 0, unkept: "unsupported" }], ["f", "fresh"]])
+        expect((yield* workers.evaluate(first, cell("kernel.bindings(3)"))).display).toBe("TypeError: kernel.bindings takes a string or a RegExp to match the names")
+        // No cell can rebind it, and it is never a binding of its own.
+        expect((yield* workers.evaluate(first, cell("kernel = 1"))).display).toBe("TypeError: kernel is the kernel's own namespace; choose another name")
+        expect((yield* workers.evaluate(first, cell("var kernel = 2"))).ok).toBe(false)
+        expect((yield* workers.evaluate(first, cell("typeof kernel.bindings"))).display).toBe("function")
+        const names = (yield* workers.snapshot(first)).bindings.map((binding) => binding.name)
+        expect(names).not.toContain("kernel")
+        expect(names).toContain("fresh")
+      }),
+    ))
+
   test("makes a shell result a live handle whose methods call the shell tool with its id, and rebuilds one by id", () =>
     scenario(
       Effect.gen(function* () {

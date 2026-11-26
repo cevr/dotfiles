@@ -1002,8 +1002,8 @@ if (import.meta.main && parentEnv.LIFECYCLE_FIXTURE_HOME) {
         expect(result.replayed[0]).toBe(result.order.at(-1))
         expect(Number(result.replayed[1])).toBeGreaterThan(Number(result.replayed[0]))
         const lines = result.recovered.split("\n")
-        expect(lines[0]).toBe("[new kernel; restored h]")
-        const recovered = yield* successOf(lines[1]).pipe(
+        expect(lines).toHaveLength(1)
+        const recovered = yield* successOf(lines[0]).pipe(
           Effect.mapError(() => fault(`unexpected rebuilt handle reply: ${result.recovered}`)),
         )
         expect(recovered.child).toBe(result.child)

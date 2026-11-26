@@ -9,6 +9,7 @@ import { Clock, Context, Effect, FiberMap, Layer, Semaphore, SynchronizedRef } f
 import { fold } from "@dotfiles/decider/decider"
 import { CellAnswer, read, type Answer } from "./answer.ts"
 import { imageOf, MAX_IMAGE_BYTES, replyOf, type Reply } from "./attachment.ts"
+import type { SnapshotBinding } from "./frame.ts"
 import { KernelSession, LoseKernel, RecordCell, ResetKernel, StartKernel, StopKernel, type Command, type Event, type KernelSessionId, type KernelSessionState, type StopReason } from "./session.ts"
 import { Files, Sessions, Snapshots, Toolbox, Workers, type SessionUnreadable } from "./service.ts"
 
@@ -22,6 +23,15 @@ export interface Config {
 
 /** What a call interrupted under its cell records: the worker was killed with it. */
 export const ABORTED = "Aborted: the kernel worker was stopped and its state since the last call is lost"
+
+/**
+ * What a restore lost: each name the last snapshot stored that the new worker
+ * did not define, once, in the snapshot's order. A bare import has no name.
+ */
+export const lostOf = (stored: ReadonlyArray<SnapshotBinding>, restored: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const kept = new Set(restored)
+  return [...new Set(stored.map((binding) => binding.name))].filter((name) => name !== "" && !kept.has(name))
+}
 
 /** One kernel call, as the model takes it. */
 export interface Call {
@@ -114,7 +124,7 @@ export const layer = (config: Config) =>
                 yield* workers.start(session, scope.directory)
                 const stored = yield* snapshots.load(session)
                 const restored = stored.length === 0 ? [] : yield* workers.restore(session, stored)
-                yield* record(StartKernel.make({ session, stored: stored.length, restored }))
+                yield* record(StartKernel.make({ session, stored: stored.length, restored, lost: lostOf(stored, restored) }))
               }
               const result = yield* workers
                 .evaluate(session, { source: call.code, tools: tools.listing, call: tools.call })

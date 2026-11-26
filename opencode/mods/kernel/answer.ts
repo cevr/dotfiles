@@ -24,6 +24,39 @@ export interface CellAnswerState {
 
 const note = (state: CellAnswerState, text: string): CellAnswerState => ({ ...state, notes: [...state.notes, text] })
 
+/** The most characters a new kernel's notice takes. */
+export const MAX_NOTICE_CHARS = 160
+/** The most lost names a notice gives; the rest are a count. */
+const NOTICE_NAMES = 3
+/** The most unkept bindings a cell's note names; the rest are a count. */
+export const MAX_UNKEPT_NAMED = 8
+
+const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? "" : "s"}`
+
+/**
+ * A new kernel that lost bindings, in one line within `MAX_NOTICE_CHARS`: the
+ * counts, as many of the first three lost names as fit, and the call that
+ * lists what it holds. The names it restored are never listed: a session
+ * holds hundreds, and a planned restart is no news.
+ */
+export const startNotice = (restored: number, lost: ReadonlyArray<string>): string => {
+  const head = `[new kernel; ${plural(restored, "binding")} restored, ${lost.length} lost`
+  const tail = "; kernel.bindings() lists what it holds]"
+  for (let shown = Math.min(NOTICE_NAMES, lost.length); shown > 0; shown--) {
+    const rest = lost.length - shown
+    const line = `${head}: ${lost.slice(0, shown).join(", ")}${rest > 0 ? ` and ${rest} more` : ""}${tail}`
+    if (line.length <= MAX_NOTICE_CHARS) return line
+  }
+  return `${head}${tail}`
+}
+
+/** The bindings a cell made that a restart loses: at most `MAX_UNKEPT_NAMED` by name, then a count. */
+export const unkeptNote = (unkept: ReadonlyArray<{ readonly name: string; readonly reason: string }>): string => {
+  const named = unkept.slice(0, MAX_UNKEPT_NAMED).map((item) => `${item.name} (${item.reason})`)
+  const rest = unkept.length - named.length
+  return `[not kept across restarts: ${named.join(", ")}${rest > 0 ? ` … and ${rest} more` : ""}]`
+}
+
 export const CellAnswer: Fold<CellAnswerState, Event> = {
   initial: { notes: [], outcome: { _tag: "Pending" } },
   evolve: (state, event) => {
@@ -31,12 +64,11 @@ export const CellAnswer: Fold<CellAnswerState, Event> = {
       case "KernelReset":
         return note(state, "[kernel reset]")
       case "KernelStarted":
-        return event.restored === undefined ? state : note(state, `[new kernel; restored ${event.restored.join(", ")}]`)
+        return event.lost === undefined || event.lost.length === 0
+          ? state
+          : note(state, startNotice(event.restored?.length ?? 0, event.lost))
       case "CellRan": {
-        const noted =
-          event.unkept.length === 0
-            ? state
-            : note(state, `[not kept across restarts: ${event.unkept.map((item) => `${item.name} (${item.reason})`).join(", ")}]`)
+        const noted = event.unkept.length === 0 ? state : note(state, unkeptNote(event.unkept))
         return {
           ...noted,
           outcome: { _tag: "Ran", ok: event.ok, output: event.output, display: event.display, attached: event.attached ?? [] },
