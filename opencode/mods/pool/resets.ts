@@ -41,7 +41,7 @@ import { Array as Arr, Effect, Match, Option, Result, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
-import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
+import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, NATURAL_MS, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { hasRoom, type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
@@ -1208,19 +1208,47 @@ export const pacePlans = (
   return plans
 }
 
-/** Only fresh, approved, cadence-preserving stock accelerates an existing allowance. */
+/**
+ * The share of the shared week a claim of `credit` gives back to every model
+ * when the pace has run the week to its stop: all of it for a grant that
+ * empties the weekly window (effectOf), none for one that gives back a
+ * model's part (a Fable reset: it returns only what Fable spent, so pacing
+ * other models on it spends into a hole the reset does not clear), nor for one
+ * that leaves the week as it is.
+ */
+const pacedSpareOf = (credit: ResetCredit): number =>
+  Match.value(credit.givesBack !== true && Option.exists(Option.fromUndefinedOr(credit.clears), (clears) => clears.some((name) => Option.getOrElse(Option.fromUndefinedOr(CLAUDE_WINDOWS[name]), () => name) === "7d"))).pipe(
+    Match.when(true, () => TARGET_WEEK),
+    Match.orElse(() => 0),
+  )
+
+/**
+ * Only fresh, approved, cadence-preserving stock accelerates an existing
+ * allowance, and only by what its claims give back to every model at the
+ * stop (`pacedSpareOf`), while a claim at the stop can still run: claims are
+ * on (`approved`) and the week does not reset by itself within the rule's
+ * guard (claim-rule.ts `soon`: NATURAL_MS for a grant that keeps the weekly
+ * deadline).
+ */
 const plannedCapacity = (provider: ResetProvider, account: AccountStatus, claims: ReadonlyArray<Claim>, now: number, approved: boolean) => {
   const reading = Option.fromUndefinedOr(account.reading)
   const read = Option.fromUndefinedOr(readAt(account))
   const last = Math.max(...Arr.filterMap(claims, (claim) => Result.liftPredicate(claim.at, () => claim.provider === provider && claim.credentialID === account.credentialID, () => false)), Number.NEGATIVE_INFINITY)
-  if (!approved || provider !== "claude" || Option.isNone(reading) || !Option.exists(read, (at) => at <= now && now - at < FRESH_MS && at > last)) return Option.none()
+  const guarded = Option.exists(Option.flatMap(Option.fromUndefinedOr(weekly(account)), (week) => Option.fromUndefinedOr(week.resetAt)), (resetAt) => resetAt - now <= NATURAL_MS)
+  if (!approved || provider !== "claude" || guarded || Option.isNone(reading) || !Option.exists(read, (at) => at <= now && now - at < FRESH_MS && at > last)) return Option.none()
   const observed = new Set(Arr.filterMap(claims, (claim) => Result.liftPredicate(claim.requestID, () => claim.provider === provider && claim.credentialID === account.credentialID && (claim.outcome === "reset" || claim.outcome === "already-redeemed"), () => false)))
   const fields = reading.value
   const fresh = { ...account, reading: { ...fields, windows: fields.windows.filter((window) => {
     const at = Option.getOrElse(Option.fromUndefinedOr(window.at), () => fields.at)
     return at <= now && now - at < FRESH_MS && at > last
   }) } }
-  const stock = sparesOf(provider, fresh, now).filter(({ credit }) => !observed.has(claimRequestID(provider, account, credit, now)))
+  // sparesOf answers what a reset could give back at all (push.ts reads it so); the pace takes only what it gives every model.
+  // No fresh shared week, no capacity: a week carried over from an older reading shows nothing to give back.
+  if (Option.isNone(Option.fromUndefinedOr(weekly(fresh)))) return Option.none()
+  const stock = sparesOf(provider, fresh, now)
+    .filter(({ credit }) => !observed.has(claimRequestID(provider, account, credit, now)))
+    .map((item) => ({ ...item, spare: pacedSpareOf(item.credit) }))
+    .filter(({ spare }) => spare > 0)
   const extra = stock.reduce((sum, item) => sum + item.spare, 0)
   if (extra <= 0) return Option.none()
   const expiries = stock.flatMap((spare) => Option.toArray(Option.fromUndefinedOr(spare.expiresAt)))

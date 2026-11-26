@@ -45,7 +45,12 @@ const fableCredit = {
   id: "f", kind: "fable" as const, count: 1, usable: true, givesBack: true,
   expiresAt: now + 60 * day, clears: ["seven_day_overage_included"],
 }
-const account = (used = 0.7) => ({
+// A grant that empties the shared week: the stock the pace may schedule (resets.ts `pacedSpareOf`).
+const weeklyCredit = {
+  id: "w", kind: "weekly" as const, count: 1, usable: true,
+  expiresAt: now + 60 * day, clears: ["seven_day", "seven_day_overage_included"],
+}
+const account = (used = 0.7, credits: ReadonlyArray<typeof weeklyCredit | typeof fableCredit> = [weeklyCredit]) => ({
   credentialID: "a", live: 0, load: 0, noRoom: false,
   reading: {
     at: now,
@@ -54,17 +59,24 @@ const account = (used = 0.7) => ({
       { name: "5h", utilization: 0, resetAt: now + hour },
       { name: "7d:Fable", utilization: 0.6, weeklyUsed: 0.3, ofWeekly: 0.5, resetAt: now + 3.5 * day },
     ],
-    resets: { available: 1, credits: [fableCredit] },
+    resets: { available: credits.length, credits },
   },
 } satisfies AccountStatus)
 
 test("a known Anthropic credit schedules existing quota before redemption but cannot bypass exhaustion", () => {
   const fresh = account()
   const plans = pacePlans("claude", [fresh], [], now, [], true)
-  expect(plans.a?.capacity?.extra).toBe(0.5)
-  expect(lineOf(now + 3.5 * day, now, plans.a)).toBeCloseTo(0.795)
-  expect(poolPace([fresh], now, NO_INFLIGHT, "claude-fable-5-2", plans)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["a"] })
-  expect(poolPace([account(1)], now, NO_INFLIGHT, "claude-fable-5-2", plans).ok).toBe(false)
+  expect(plans.a?.capacity?.extra).toBe(0.99)
+  expect(lineOf(now + 3.5 * day, now, plans.a)).toBeCloseTo(1.04)
+  expect(poolPace([fresh], now, NO_INFLIGHT, "claude-opus-4-6", plans)).toMatchObject({ ok: true, admission: "ordinary", eligible: ["a"] })
+  expect(poolPace([account(1)], now, NO_INFLIGHT, "claude-opus-4-6", plans).ok).toBe(false)
+})
+
+test("a Fable reset gives back only Fable's part, so it schedules no other model's quota", () => {
+  const fresh = account(0.7, [fableCredit])
+  const plans = pacePlans("claude", [fresh], [], now, [], true)
+  expect(plans).toEqual({})
+  expect(poolPace([fresh], now, NO_INFLIGHT, "claude-opus-4-6", plans).ok).toBe(false)
 })
 
 test("OpenAI stock, unapproved stock and stale credit readings add no scheduled capacity", () => {
@@ -79,14 +91,14 @@ test("OpenAI stock, unapproved stock and stale credit readings add no scheduled 
 
 test("an expiring Anthropic credit schedules exhaustion before its last-call deadline", () => {
   const fresh = account()
-  const expiring = { ...fresh, reading: { ...fresh.reading, resets: { available: 1, credits: [{ ...fableCredit, expiresAt: now + day }] } } }
+  const expiring = { ...fresh, reading: { ...fresh.reading, resets: { available: 1, credits: [{ ...weeklyCredit, expiresAt: now + day }] } } }
   const plans = pacePlans("claude", [expiring], [], now, [], true)
   expect(plans.a?.capacity?.expiresAt).toBe(now + 18 * hour)
   expect(lineOf(now + 3.5 * day, now + 18 * hour, plans.a)).toBeGreaterThanOrEqual(0.99)
 })
 
 test("Fable clears its reported shared contribution, preserving unrelated weekly use and the reset date", () => {
-  const fresh = account()
+  const fresh = account(0.7, [fableCredit])
   const effect = effectOf("claude", fresh, fableCredit)
   expect(effect.find((window) => window.window === "7d")).toMatchObject({ from: 0.7, resetAt: now + 3.5 * day })
   expect(effect.find((window) => window.window === "7d")?.to).toBeCloseTo(0.4)
@@ -99,31 +111,32 @@ test("Fable clears its reported shared contribution, preserving unrelated weekly
 
 test("every approved cadence-preserving credit contributes, including two in one weekly cycle", () => {
   const fresh = account()
-  const multiple = { ...fresh, reading: { ...fresh.reading, resets: { available: 3, credits: [{ ...fableCredit, count: 3 }] } } }
-  expect(pacePlans("claude", [multiple], [], now, [], true).a?.capacity?.extra).toBe(1.5)
+  const multiple = { ...fresh, reading: { ...fresh.reading, resets: { available: 3, credits: [{ ...weeklyCredit, count: 3 }] } } }
+  expect(pacePlans("claude", [multiple], [], now, [], true).a?.capacity?.extra).toBeCloseTo(2.97, 9)
 })
 
 
-test("a carried model share does not make fresh Fable reset capacity", () => {
+test("a carried shared week does not make fresh reset capacity", () => {
   const fresh = account()
-  const staleShare = { ...fresh, reading: { ...fresh.reading, windows: fresh.reading.windows.map((window) =>
-    Match.value(window).pipe(Match.when({ name: "7d:Fable" }, (window) => ({ ...window, at: now - 16 * 60_000 })), Match.orElse((window) => window))) } }
-  expect(pacePlans("claude", [staleShare], [], now, [], true)).toEqual({})
+  const staleWeek = { ...fresh, reading: { ...fresh.reading, windows: fresh.reading.windows.map((window) =>
+    Match.value(window).pipe(Match.when({ name: "7d" }, (window) => ({ ...window, at: now - 16 * 60_000 })), Match.orElse((window) => window))) } }
+  expect(pacePlans("claude", [staleWeek], [], now, [], true)).toEqual({})
 })
 
 
 test("a successful reset whose credit stock lags contributes no phantom planned capacity", () => {
   const fresh = account()
-  const claim: Claim = { key: "claimed", pool: "anthropic", provider: "claude", credentialID: "a", label: "A", creditID: "f", requestID: claimRequestID("claude", fresh, fableCredit, now), at: now - hour, outcome: "reset", before: [], weekly: "kept" }
+  const claim: Claim = { key: "claimed", pool: "anthropic", provider: "claude", credentialID: "a", label: "A", creditID: "w", requestID: claimRequestID("claude", fresh, weeklyCredit, now), at: now - hour, outcome: "reset", before: [], weekly: "kept" }
   expect(pacePlans("claude", [fresh], [claim], now, [], true)).toEqual({})
   expect(pacePlans("claude", [fresh], [{ ...claim, outcome: "already-redeemed" }], now, [], true)).toEqual({})
-  const replenished = { ...fresh, reading: { ...fresh.reading, resets: { available: 2, credits: [{ ...fableCredit, count: 2 }] } } }
-  expect(pacePlans("claude", [replenished], [claim], now, [], true).a?.capacity?.extra).toBe(1)
+  const replenished = { ...fresh, reading: { ...fresh.reading, resets: { available: 2, credits: [{ ...weeklyCredit, count: 2 }] } } }
+  // A replenished stock is a new inventory (its count is in the claim's request id): both its resets count.
+  expect(pacePlans("claude", [replenished], [claim], now, [], true).a?.capacity?.extra).toBe(1.98)
 })
 
 test("the send-time guard rechecks exhaustion instead of spending after usage fell", () => {
-  const fresh = account(0.7)
-  const spent = account(1)
+  const fresh = account(0.7, [fableCredit])
+  const spent = account(1, [fableCredit])
   const reset = { creditID: "f", why: "forecast" as const, provider: "claude" as const }
   const view = { id: "anthropic", provider: "claude" as const, accounts: [spent], labels: {} }
   expect(staleReason(view, spent, reset, now)).toBeUndefined()
@@ -133,8 +146,8 @@ test("the send-time guard rechecks exhaustion instead of spending after usage fe
 
 test("requires-limit stock keeps its inventory identity when usability flips after redemption", () => {
   const fresh = account()
-  const claim: Claim = { key: "claimed", pool: "anthropic", provider: "claude", credentialID: "a", label: "A", creditID: "f", requestID: claimRequestID("claude", fresh, fableCredit, now), at: now - hour, outcome: "reset", before: [], weekly: "kept" }
-  const lagging = { ...fresh, reading: { ...fresh.reading, resets: { available: 1, credits: [{ ...fableCredit, usable: false, requiresLimit: true }] } } }
-  expect(claimRequestID("claude", lagging, fableCredit, now)).toBe(claim.requestID)
+  const claim: Claim = { key: "claimed", pool: "anthropic", provider: "claude", credentialID: "a", label: "A", creditID: "w", requestID: claimRequestID("claude", fresh, weeklyCredit, now), at: now - hour, outcome: "reset", before: [], weekly: "kept" }
+  const lagging = { ...fresh, reading: { ...fresh.reading, resets: { available: 1, credits: [{ ...weeklyCredit, usable: false, requiresLimit: true }] } } }
+  expect(claimRequestID("claude", lagging, weeklyCredit, now)).toBe(claim.requestID)
   expect(pacePlans("claude", [lagging], [claim], now, [], true)).toEqual({})
 })
