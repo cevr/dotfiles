@@ -1,5 +1,5 @@
 import { Array as Arr, Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
-import { AdmissionUnavailable, type Address, hostOffer, type Input, type Lease, type Observation, volumeShortfall } from "@dotfiles/opencode-guard/admission"
+import { AdmissionUnavailable, type Address, hostOffer, type Input, type Lease, type Observation, sharedView, type View, volumeStatus } from "@dotfiles/opencode-guard/admission"
 import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvModel, demandOnVolume, enforceDeclaredWidth, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
 import { capacityOf, POLICY, unattested } from "@dotfiles/opencode-guard/host-supply"
@@ -238,7 +238,9 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
   const step = Effect.fn("HostAdmission.step")(function* (input: Input) {
     const observation = yield* supplyForStep()
-    return yield* ledger.transact(input, observation).pipe(Effect.map((result) => ({ ...result, observation })))
+    // The caller reads back the host's readings, not only its own sample:
+    // what it explains and launches by is what the ledger decided by.
+    return yield* ledger.transact(input, observation).pipe(Effect.map((result) => ({ ...result, observation: sharedView(result.state, observation) })))
   })
 
   const request = Effect.fn("HostAdmission.request")(function* (draft: Request, owner = caller.owner) {
@@ -454,27 +456,36 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     return cold().pipe(Effect.flatMap(attest), Effect.map((observation) => !unattested(envelopeOf(observation))))
   })
 
-  // Whether the sample measured the executing volume's free space, and if
-  // not, the read that failed: a measured host's disk ceiling rests on it.
-  const diskOf = Effect.fn("HostAdmission.diskOf")(function* (sample: Observation["sample"]): Effect.fn.Return<Readonly<Record<string, string>>, never, FileSystem.FileSystem> {
+  // What the host's readings say of the executing volume, by the rule
+  // admission decides by, whichever process read it; with no reading, the
+  // read that failed. Every caller prints the same answer.
+  const diskOf = Effect.fn("HostAdmission.diskOf")(function* (view: View): Effect.fn.Return<Readonly<Record<string, string | number>>, never, FileSystem.FileSystem> {
     if (Option.isNone(target)) return { disk: "unknown-volume" }
-    if (!sample) return { disk: "unsampled" }
-    const reading = sample.volumes[target.value.id]
-    // The disk rule's own words: a full volume makes every lease wait `disk`.
-    if (reading) return Option.match(volumeShortfall(reading), {
-      onNone: () => ({ disk: "measured" }),
-      onSome: (why) => ({ disk: "full", diskWhy: `${why}; leases on it wait (disk)` }),
-    })
+    const reading = volumeStatus(view, target.value.id)
+    const unread = { admit: "the capped path admits under its cap", wait: "leases on it wait" }[reading.unread]
+    switch (reading.kind) {
+      // The disk rule's own words: a full volume makes every lease wait `disk`.
+      case "full": return { disk: "full", diskWhy: `${reading.why}; leases on it wait (disk)`, diskReadAgoMs: reading.ageMs }
+      case "room": return { disk: "measured", diskReadAgoMs: reading.ageMs }
+      case "expired": return { disk: "unmeasured", diskReadAgoMs: reading.ageMs,
+        diskWhy: `the host's last reading of it is ${reading.ageMs} ms old, past its ${reading.boundMs} ms bound; ${unread}` }
+      case "none": break
+    }
+    if (!view.sample) return { disk: "unsampled" }
     const why = yield* Supply.volumeOf(host, config.cwd).pipe(
-      Effect.as("this sample could not read it; a second read could"),
+      Effect.as("no sample this boot has read it; a second read could"),
       Effect.catchTag("AdmissionUnavailable", ({ detail }) => Effect.succeed(detail ?? "unreadable")))
     return { disk: "unmeasured", diskWhy: why }
   })
 
   const hostStatus = Effect.fn("HostAdmission.hostStatus")(function* () {
-    const observation = yield* measure().pipe(Effect.flatMap(attest))
+    // Status records its own sample, if it won the slot, then answers from
+    // the host's readings: a caller that lost the slot says what the
+    // sampler would. `advance` also serves the queue on those readings.
+    const own = yield* measure().pipe(Effect.flatMap(attest))
+    const { state } = yield* ledger.transact({ op: "advance" }, own)
+    const observation = sharedView(state, own)
     const { sample, now } = observation
-    const state = yield* ledger.inspect()
     const offer = hostOffer(observation, Option.map(target, ({ id }) => id))
     // What a group-placed launch adds to nice for this caller, probed as
     // the launch probes it: a caller with no user manager on its bus runs
@@ -484,8 +495,10 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     return {
       version: 1, hostId: host.hostId, bootId: host.bootId, nowBootMs: now, revision: state.revision, principal: caller.principal,
       defaultVolume: Option.getOrNull(offer.defaultVolume),
-      capabilities: { pressure: sample?.pressure ?? "unknown", ...controllerOf(observation, launcher), ...(yield* diskOf(sample)), platform: host.platform },
+      capabilities: { pressure: sample?.pressure ?? "unknown", ...controllerOf(observation, launcher), ...(yield* diskOf(observation)), platform: host.platform },
       coresMilli: Option.getOrNull(Option.fromNullishOr(sample?.effectiveCpuMilli)),
+      // How old the host's newest sample is, whoever took it.
+      sampleAgoMs: Option.getOrNull(Option.map(Option.fromNullishOr(sample), ({ at }) => now - at)),
       runnable: Option.getOrNull(Option.fromNullishOr(sample?.runnable)),
       maximumCpuMilli: offer.maximumCpuMilli,
       freeManagedCpuMilli: Option.getOrNull(Option.map(Option.fromNullishOr(sample), capacityOf)),

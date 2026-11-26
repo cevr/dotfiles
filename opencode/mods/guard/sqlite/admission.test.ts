@@ -411,6 +411,26 @@ it.scoped("an aged reading and a changed canonical disk floor do not start a res
   }).pipe(Effect.provide(BunServices.layer)),
 )
 
+it.scoped("the host's last reading is ledger state: a connection without a sample, and one opened later, decide on it", () =>
+  Effect.gen(function* () {
+    const { a, b, file } = yield* fixture
+    const at = (freeBytes: number, now: number) => supply({ now,
+      overrides: { volumes: { "volume-a": { capacityBytes: 64 * 2 ** 30, freeBytes, freeInodes: 10_000, metadataFreeBytes: 2 ** 30, diskFloorBytes: 6 * 2 ** 30 } } } })
+    const full = yield* a.ledger.transact(first("a"), at(0, 1000))
+    expect(full.reply).toMatchObject({ state: "queued", reason: "disk" })
+    const id = full.reply.id ?? "missing"
+    // b lost the sampler slot: no sample, no envelope of its own.
+    const loser = yield* b.ledger.transact({ op: "status", id, owner: owner("a") }, { now: 1200 })
+    expect(loser.reply).toMatchObject({ state: "queued", reason: "disk" })
+    const room = yield* a.ledger.transact({ op: "status", id, owner: owner("a") }, at(40 * 2 ** 30, 1400))
+    expect(room.reply.state).toBe("granted")
+    const later = yield* open(file, HOST)
+    expect((yield* later.ledger.inspect()).readings?.volumes["volume-a"]?.at).toBe(1400)
+    const claimed = yield* later.ledger.transact({ op: "claim", id, owner: owner("a"), generation: 1, binding: "scope-a" }, { now: 1600 })
+    expect(claimed.reply.state).toBe("running")
+  }).pipe(Effect.provide(BunServices.layer)),
+)
+
 const observation = (seq: number): Holder => holderOf({
   version: 1, ...HOST, resourceId: `resource-${seq}`, incarnation: "incarnation", holderId: `holder-${seq}`,
   revision: Option.none(), kind: "file-set", owner: UNKNOWN_OWNER, relation: "observation", parentResourceId: Option.none(),

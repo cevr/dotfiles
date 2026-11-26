@@ -90,11 +90,12 @@ describe("the disk rule over generated readings", () => {
         const freeBytes = pick(next, [0, 1, POLICY.diskFloorBytes - 1, POLICY.diskFloorBytes, POLICY.diskFloorBytes + GiB, 90 * GiB] as const)
         const metadataFreeBytes = pick(next, [0, POLICY.minMetadataBytes - 1, POLICY.minMetadataBytes, 4 * GiB] as const)
         const bytes = pick(next, [0, 1, GiB, 50 * GiB] as const)
-        const read = pick(next, ["reading", "no-volume", "stale", "no-sample"] as const)
+        const read = pick(next, ["reading", "no-volume", "stale", "aged", "no-sample"] as const)
         const forBoth = (envelope: HostEnvelope): Observation => {
           const full = observed(envelope, freeBytes, metadataFreeBytes)
           if (read === "no-sample") return { now: full.now, envelope }
           if (read === "stale") return { ...full, now: full.now + POLICY.freshnessMs * 2 }
+          if (read === "aged") return { ...full, now: full.now + POLICY.readingMs + 1 }
           if (read === "no-volume" && full.sample) return { ...full, sample: { ...full.sample, volumes: {} } }
           return full
         }
@@ -102,19 +103,24 @@ describe("the disk rule over generated readings", () => {
         const fixed = decide(forBoth(capped), bytes)
         const sampled = decide(forBoth(measuredHost), bytes)
         seen.add(`${read}:${room}`)
+        const byRoom = pick(() => Number(room) / 2, ["disk", "granted"] as const)
         const expected = {
-          reading: { capped: pick(() => Number(room) / 2, ["disk", "granted"] as const), measured: pick(() => Number(room) / 2, ["disk", "granted"] as const) },
+          reading: { capped: byRoom, measured: byRoom },
           // No reading of the volume: the capped path admits under its cap
           // (status says unsampled/unmeasured); the measured path waits.
           "no-volume": { capped: "granted", measured: "disk" },
-          stale: { capped: "granted", measured: "stale-sample" },
+          // Past freshness the measured path waits; the capped path holds to
+          // the host's last reading until `readingMs`, then (aged) the
+          // volume is unmeasured and admits (wb-admit2-findings-r2.md, B3).
+          stale: { capped: byRoom, measured: "stale-sample" },
+          aged: { capped: "granted", measured: "stale-sample" },
           "no-sample": { capped: "granted", measured: "unavailable" },
         }[read]
         expect({ read, room, bytes, freeBytes, metadataFreeBytes, capped: String(fixed.reason), measured: String(sampled.reason) })
           .toEqual({ read, room, bytes, freeBytes, metadataFreeBytes, ...expected })
         expect([fixed.state, sampled.state].includes("refused")).toBe(false)
       }
-      expect(seen.size).toBe(8)
+      expect(seen.size).toBe(10)
     }))
 })
 
