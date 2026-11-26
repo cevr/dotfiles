@@ -177,20 +177,16 @@ export type Unsent = typeof Unsent.Type
 /** A claim not sent goes again this long after its first unsent try, twice as long after each next one, up to UNSENT_RETRY_MAX_MS. */
 export const UNSENT_RETRY_MS = 10 * MINUTE
 export const UNSENT_RETRY_MAX_MS = 2 * HOUR
-/** The least wait after a rate-limited read, whatever its `retry-after` says. */
-export const UNSENT_RETRY_MIN_MS = MINUTE
 
 /**
- * When a claim not sent goes again: a read the endpoint rate limited, once
- * the wait it asked for (`retry-after`) has passed, else on bounded
- * exponential back-off over its unsent tries (`tries`, from 1). Never on a
- * fixed beat. `asked` is the rate-limited read's wait, none for any other.
+ * When a claim not sent goes again, whatever the cause: the longer of the
+ * wait its endpoint asked for (`asked`, a `retry-after`) and the back-off of
+ * its unsent tries in a row (`tries`, from 1): UNSENT_RETRY_MS, doubling
+ * with each try, capped at UNSENT_RETRY_MAX_MS. The cap bounds the back-off
+ * only: an endpoint's longer wait is never cut. Never on a fixed beat.
  */
 export const unsentRetryAt = (now: number, tries: number, asked: Option.Option<number> = Option.none()): number =>
-  now +
-  Option.getOrElse(Option.map(asked, (wait) => Math.max(wait, UNSENT_RETRY_MIN_MS)), () =>
-    Math.min(UNSENT_RETRY_MS * 2 ** Math.max(tries - 1, 0), UNSENT_RETRY_MAX_MS),
-  )
+  now + Math.max(Option.getOrElse(asked, () => 0), Math.min(UNSENT_RETRY_MS * 2 ** Math.max(tries - 1, 0), UNSENT_RETRY_MAX_MS))
 
 const CAUSES: Readonly<Record<UnreadCause, string>> = {
   "rate-limited": "rate limited",
@@ -597,11 +593,12 @@ const claimRequestIDs = (provider: ResetProvider, account: AccountStatus, credit
 const requestOf = (provider: ResetProvider, account: AccountStatus, credit: ResetCredit, now: number) => {
   const kind = kindOf(provider, credit)
   const windowOf = (name: string) => account.reading?.windows.find((window) => window.name === name && accountWide(window))?.resetAt
-  const end = (kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d") ?? credit.expiresAt ?? 0
+  const period = Option.fromUndefinedOr((kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d"))
+  const end = Option.getOrElse(period, () => credit.expiresAt ?? 0)
   const left = Option.getOrElse(Option.fromUndefinedOr(account.reading?.resets?.credits), () => [])
     .filter((item) => inHand(item, now) && kindOf(provider, item) === kind)
     .reduce((total, item) => total + item.count, 0)
-  return { end, id: (period: string) => requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${period}:${left}`) }
+  return { end, read: Option.isSome(period), id: (period: string) => requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${period}:${left}`) }
 }
 
 // ── Words ──
@@ -889,7 +886,37 @@ const allSpent = (accounts: ReadonlyArray<AccountStatus>, now: number) =>
  * back (a stop mid-claim) once RETRY_MS has passed.
  */
 const retries = (reset: Reset, current: ReadonlySet<string>) =>
-  (reset.stage === "failed" || reset.stage === "claiming") && reset.attempts < MAX_ATTEMPTS && current.has(reset.key)
+  (reset.stage === "failed" || reset.stage === "claiming") && sends(reset) < MAX_ATTEMPTS && current.has(reset.key)
+
+/**
+ * A record the build before 2026-11-26 left of tries none of which went out:
+ * it recorded a try not sent as a claim, `failed` or `nothing-to-reset`,
+ * its message `not sent: …` or `backed off: …`, and noted every send
+ * (`NoteSend`, `sentAt`, since 2026-11-11, longer ago than any record still
+ * kept for a running period). One with a send noted may have sent any of its
+ * tries: it is taken as it reads, never tried past its limit.
+ */
+const legacyUnsent = (reset: Reset): boolean =>
+  Predicate.isUndefined(reset.sentAt) &&
+  Predicate.isUndefined(reset.unsent) &&
+  (reset.outcome === "failed" || reset.outcome === "nothing-to-reset") &&
+  Option.exists(Option.fromUndefinedOr(reset.message), (message) => /^(not sent|backed off): /.test(message))
+
+/** The tries of a claim that reached the provider: its attempts, none for an old record's tries never sent (`legacyUnsent`). */
+const sends = (reset: Reset): number => Number(!legacyUnsent(reset)) * reset.attempts
+
+/**
+ * Whether a claim whose last try was not sent because it no longer paid
+ * (`stale`, or an old record's guard, `nothing-to-reset` never sent) may be
+ * decided again, as itself: nothing from the provider closed it, it has
+ * tries left, and its back-off has passed. The review decides it again only
+ * when the rule finds it worth claiming once more.
+ */
+const reopens = (reset: Reset, now: number): boolean =>
+  reset.stage === "settled" &&
+  (reset.unsent?.why === "stale" || legacyUnsent(reset)) &&
+  sends(reset) < MAX_ATTEMPTS &&
+  now >= Option.getOrElse(Option.fromUndefinedOr(reset.retryAt), () => reset.at + RETRY_MS)
 
 /** Whether the pool claims a reset on its own: every claim but a push's, which the owner approved with the push. */
 const automatic = (reset: Pick<Reset, "yes">) => reset.yes !== true
@@ -906,7 +933,7 @@ const lastClaimAt = (state: ResetsState, credentialID: string): number | undefin
   const times = [
     ...state.claims.filter((claim) => onAccount(claim, credentialID)).map((claim) => claim.at),
     ...Object.values(state.resets)
-      .filter((reset) => onAccount(reset, credentialID) && reset.attempts > 0)
+      .filter((reset) => onAccount(reset, credentialID) && sends(reset) > 0)
       .map((reset) => reset.at),
   ]
   return times.length === 0 ? undefined : Math.max(...times)
@@ -1036,20 +1063,29 @@ const currentKeys = (pools: ReadonlyArray<PoolView>, now: number): ReadonlySet<s
  * The key a claim of a period takes, and whether that claim was worked
  * already. Of the keys a record of the period may be under (`keys`, the
  * claim's own first), the one a record holds, else its own; the claim is
- * worked when a record under any of them, or a generation of one, carries
- * one of its request ids (`ids`, its own first). A record of the period
+ * worked when any record carries one of its request ids (`ids`, its own
+ * first), under whichever key it was decided. A record of the period
  * with another request id is an earlier inventory's: this claim is the
  * subsequent redemption, the generation `<key>:<its request id>`.
  */
-const periodRecord = (state: ResetsState, keys: Arr.NonEmptyReadonlyArray<string>, ids: Arr.NonEmptyReadonlyArray<string>): Option.Option<string> => {
-  const records = keys.flatMap((key) => [key, ...ids.map((id) => `${key}:${id}`)]).flatMap((key) => Option.toArray(Option.fromUndefinedOr(state.resets[key])))
-  if (records.some((record) => ids.includes(record.requestID))) return Option.none()
-  return Option.some(
-    Option.match(Arr.findFirst(keys, (key) => Predicate.isNotUndefined(state.resets[key])), {
+const periodRecord = (
+  state: ResetsState,
+  keys: Arr.NonEmptyReadonlyArray<string>,
+  ids: Arr.NonEmptyReadonlyArray<string>,
+  now: number,
+): Option.Option<{ readonly key: string; readonly reopened: Option.Option<Reset> }> => {
+  // This claim recorded already, under whichever window's key it was ranked by (one request id is one claim): worked, unless its
+  // last try never went out and it may go again (`reopens`), as itself.
+  const own = Object.values(state.resets).filter((record) => ids.includes(record.requestID))
+  if (own.length > 0)
+    return Option.map(Option.filter(Arr.head(own), () => own.every((record) => reopens(record, now))), (record) => ({ key: record.key, reopened: Option.some(record) }))
+  return Option.some({
+    key: Option.match(Arr.findFirst(keys, (key) => Predicate.isNotUndefined(state.resets[key])), {
       onNone: () => Arr.headNonEmpty(keys),
       onSome: (key) => `${key}:${Arr.headNonEmpty(ids)}`,
     }),
-  )
+    reopened: Option.none(),
+  })
 }
 
 // ── The standing allowance ──
@@ -1083,6 +1119,8 @@ interface Candidate {
   readonly credit: ResetCredit
   readonly key: string
   readonly gives: ReadonlyArray<Giveback>
+  /** The record of this claim whose last try never went out, decided again as itself (`reopens`). */
+  readonly reopened: Option.Option<Reset>
 }
 
 const restoredOf = (give: Giveback) => give.from - give.to
@@ -1159,13 +1197,15 @@ const candidatesOf = (
       const gives = weighed(estimated, held)
       const best = Option.getOrUndefined(judgedGive(gives, held, blocking, now))
       if (best?.resetAt === undefined) return []
+      // Decided only on a reading that shows the period its request id names: one decided with that window unread would name the claim otherwise.
+      if (!requestOf(view.provider, account, credit, now).read) return []
       const ids = claimRequestIDs(view.provider, account, credit, now)
       if (state.claims.some((claim) => ids.includes(claim.requestID) && (claim.outcome === "reset" || claim.outcome === "already-redeemed"))) return []
       // A lower observed credit count identifies a subsequent redemption in
       // this same cadence; a replay retains its original request and key.
-      const found = periodRecord(state, expiringKeys(view.provider, account.credentialID, best.window, best.resetAt), ids)
+      const found = periodRecord(state, expiringKeys(view.provider, account.credentialID, best.window, best.resetAt), ids, now)
       if (Option.isNone(found)) return []
-      const generation = found.value
+      const { key: generation, reopened } = found.value
       const length = windowMs(best.window) ?? LONG_WINDOW_MS
       const judged = (account.reading?.windows ?? []).find((window) => window.name === best.window)
       const option: ClaimOption = {
@@ -1186,7 +1226,7 @@ const candidatesOf = (
         preservesWeekly: view.provider === "claude",
       }
       // The owner reads what it is estimated to give back, with the estimate's range.
-      return [{ option, account, credit, key: generation, gives: estimated }]
+      return [{ option, account, credit, key: generation, gives: estimated, reopened }]
     })
   })
 
@@ -1198,9 +1238,24 @@ const leftAfter = (account: AccountStatus, credit: ResetCredit, now: number): Pi
   return Arr.match(expiries, { onEmpty: () => left, onNonEmpty: (all) => ({ ...left, nextExpires: Math.min(...all) }) })
 }
 
+/**
+ * A claim decided again (`reopens`) keeps what makes it itself: its key, its
+ * request (the provider's dedupe), its sends (`sends`), its last send and its
+ * unsent tries (the back-off). The rest is the new decision's.
+ */
+const asItself = (fresh: Reset, reopened: Option.Option<Reset>): Reset =>
+  Option.match(reopened, {
+    onNone: () => fresh,
+    onSome: (record): Reset => {
+      const kept = { ...fresh, key: record.key, requestID: record.requestID, attempts: sends(record) }
+      const withSent = Option.match(Option.fromUndefinedOr(record.sentAt), { onNone: () => kept, onSome: (at) => ({ ...kept, sentAt: at }) })
+      return Option.match(Option.fromUndefinedOr(record.unsent), { onNone: () => withSent, onSome: (last) => ({ ...withSent, unsent: last }) })
+    },
+  })
+
 /** The claim the rule chose, as the model sends it. */
 const ruleClaim = (view: PoolView, chosen: Candidate, step: ClaimStep, reason: string, now: number): ClaimDue => {
-  const reset = resetOf(view, chosen.account, chosen.credit, chosen.key, step === "expiring" ? "expiring" : "forecast", "claiming", now)
+  const reset = asItself(resetOf(view, chosen.account, chosen.credit, chosen.key, step === "expiring" ? "expiring" : "forecast", "claiming", now), chosen.reopened)
   return ClaimDue.make({
     reset: { ...reset, buys: buysOf(chosen.gives), reason: `${STEP_TEXT[step]}: ${reason}`, judged: [chosen.option.forecast], ...leftAfter(chosen.account, chosen.credit, now) },
   })
@@ -1375,6 +1430,7 @@ export const pacePlans = (
   now: number,
   spends: ReadonlyArray<Spend> = [],
   planCredits = false,
+  resets: ResetsState["resets"] = {},
 ): Readonly<Record<string, PacePlan>> => {
   const plans: Record<string, PacePlan> = {}
   for (const account of accounts) {
@@ -1390,7 +1446,7 @@ export const pacePlans = (
       const spent = spends.filter((spend) => spend.claim === newest.value.key).reduce((sum, spend) => sum + spend.cost, 0)
       plans[account.credentialID] = { rebase: { ...newest.value, spent } }
     }
-    const capacity = plannedCapacity(provider, account, claims, now, planCredits)
+    const capacity = plannedCapacity(provider, account, claims, resets, now, planCredits)
     if (Option.isSome(capacity)) plans[account.credentialID] = { ...plans[account.credentialID], capacity: capacity.value }
   }
   return plans
@@ -1418,7 +1474,15 @@ const pacedSpareOf = (credit: ResetCredit): number =>
  * guard (claim-rule.ts `soon`: NATURAL_MS for a grant that keeps the weekly
  * deadline).
  */
-const plannedCapacity = (provider: ResetProvider, account: AccountStatus, claims: ReadonlyArray<Claim>, now: number, approved: boolean) => {
+const plannedCapacity = (
+  provider: ResetProvider,
+  account: AccountStatus,
+  claims: ReadonlyArray<Claim>,
+  // The reset records, tries not sent among them: given for the planned-capacity follow-up, read by no rule yet.
+  _resets: ResetsState["resets"],
+  now: number,
+  approved: boolean,
+) => {
   const reading = Option.fromUndefinedOr(account.reading)
   const read = Option.fromUndefinedOr(readAt(account))
   const last = Math.max(...Arr.filterMap(claims, (claim) => Result.liftPredicate(claim.at, () => claim.provider === provider && claim.credentialID === account.credentialID, () => false)), Number.NEGATIVE_INFINITY)
@@ -1500,7 +1564,7 @@ const awaitingOn = (state: ResetsState, credentialID: string, now: number): bool
  */
 export const reservationHolds = (state: ResetsState, provider: ResetProvider, account: AccountStatus, now: number, id: string): boolean =>
   (state.spends ?? []).some((spend) => spend.id === id) &&
-  Option.exists(roomLeft(account, now, pacePlans(provider, [account], state.claims, now, state.spends)[account.credentialID]), (room) => room >= -1e-9)
+  Option.exists(roomLeft(account, now, pacePlans(provider, [account], state.claims, now, state.spends, false, state.resets)[account.credentialID]), (room) => room >= -1e-9)
 
 // ── A push's resets ──
 
@@ -1667,11 +1731,15 @@ const pushDue = (
       const until = blockedUntil(account, now, model)
       if (until === undefined) return []
       const keys = pushKeysNear(grant.id, account.credentialID, until)
-      if (keys.some((near) => state.resets[near] !== undefined)) return []
-      const key = Arr.headNonEmpty(keys)
+      // This push's claim recorded already: worked, unless its last try never went out and it may go again (`reopens`), as itself, on its credit.
+      const recorded = keys.flatMap((near) => Option.toArray(Option.fromUndefinedOr(state.resets[near])))
+      if (!recorded.every((record) => reopens(record, now))) return []
+      const reopened = Arr.head(recorded)
+      const key = Option.match(reopened, { onNone: () => Arr.headNonEmpty(keys), onSome: (record) => record.key })
       return pushOptions(view, account, grant, now, model)
         .filter((option) => !spentWeek || option.weekly >= MIN_RESTORE)
-        .map((option) => ({ option, key }))
+        .filter((option) => Option.match(reopened, { onNone: () => true, onSome: (record) => record.creditID === option.credit.id }))
+        .map((option) => ({ option, key, reopened }))
     })
   const best = [
     ...(covering === undefined || held === undefined ? [] : candidates(held.model, false)),
@@ -1680,7 +1748,7 @@ const pushDue = (
     rankPush(left.option, right.option),
   )[0]
   if (best === undefined) return []
-  const reset = resetOf(view, best.option.account, best.option.credit, best.key, "push", "claiming", now)
+  const reset = asItself(resetOf(view, best.option.account, best.option.credit, best.key, "push", "claiming", now), best.reopened)
   return [
     ClaimDue.make({
       reset: { ...reset, yes: true, push: grant.id, buys: buysOf(best.option.gives), judged: best.option.gives.filter((give) => restoredOf(give) > 0).map((give) => give.window) },
@@ -1721,7 +1789,8 @@ const review = (state: ResetsState, command: Review, now: number): ReadonlyArray
     const account = accountOf(reset)
     if (automatic(reset) && (!auto || account === undefined || freshView(state, account, now) === undefined)) continue
     claiming.add(reset.credentialID)
-    events.push(ClaimDue.make({ reset: { ...reset, stage: "claiming", at: now } }))
+    // An old record's tries never sent count as none (`sends`).
+    events.push(ClaimDue.make({ reset: { ...reset, stage: "claiming", at: now, attempts: sends(reset) } }))
   }
   for (const view of command.pools) {
     const due = poolDue(after, command, view, current, now, claiming)
@@ -1778,9 +1847,12 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
 }
 
 /**
- * A claim not sent (`SettleUnsent`), on the claim in flight under `key`: a
- * stale one settles, any other goes again at `unsentRetryAt`. No claim is
- * recorded and no attempt is spent: nothing reached the provider.
+ * A claim not sent (`SettleUnsent`), on the claim in flight under `key`. No
+ * claim is recorded and no attempt is spent: nothing reached the provider,
+ * so nothing closes it. Any cause waits `unsentRetryAt`; then a stale one
+ * (no longer worth it when it was judged) is decided again, as itself, only
+ * once a review finds it worth claiming again (`reopens`), any other goes
+ * again as it was.
  */
 const settleUnsent = (state: ResetsState, command: SettleUnsent, now: number): ReadonlyArray<Event> =>
   Option.match(Option.filter(Option.fromUndefinedOr(state.resets[command.key]), (reset) => reset.stage === "claiming"), {
@@ -1791,10 +1863,9 @@ const settleUnsent = (state: ResetsState, command: SettleUnsent, now: number): R
         onNone: () => ({ why: command.why, tries }),
         onSome: (cause) => ({ why: command.why, tries, cause }),
       })
-      if (command.why === "stale") return [ClaimUnsent.make({ key: command.key, at: now, stage: "settled", unsent, message: command.message })]
-      // Only a rate-limited read's wait is the endpoint's to set.
-      const asked = Option.filter(Option.fromUndefinedOr(command.retryAfterMs), () => command.cause === "rate-limited")
-      return [ClaimUnsent.make({ key: command.key, at: now, stage: "failed", unsent, message: command.message, retryAt: unsentRetryAt(now, tries, asked) })]
+      const stage = Match.value(command.why).pipe(Match.when("stale", (): Stage => "settled"), Match.orElse((): Stage => "failed"))
+      const retryAt = unsentRetryAt(now, tries, Option.fromUndefinedOr(command.retryAfterMs))
+      return [ClaimUnsent.make({ key: command.key, at: now, stage, unsent, message: command.message, retryAt })]
     },
   })
 

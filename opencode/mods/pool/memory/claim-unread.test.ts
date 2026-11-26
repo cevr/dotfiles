@@ -26,7 +26,8 @@ import { hangGuard } from "../../../tests/hang-guard.ts"
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const ANTHROPIC = PoolId.make("anthropic")
-const RETRY_AFTER_MS = 2 * MINUTE
+// Longer than the first back-off (10 minutes): the wait the endpoint asked for stands.
+const RETRY_AFTER_MS = 25 * MINUTE
 const NOW = Date.parse("2026-11-25T22:20:00Z")
 
 /** One login, its 5-hour window spent, a grant that clears it expiring within the hour: due at once. */
@@ -95,7 +96,7 @@ effectTest("the sweep's reading stands for the check before the lease; the read 
           stage: "failed",
           attempts: 0,
           unsent: { why: "unread", cause: "rate-limited", tries: 1 },
-          message: "not sent: the account could not be read just before the claim (rate limited, retry-after 120 s)",
+          message: "not sent: the account could not be read just before the claim (rate limited, retry-after 1500 s)",
         })
         expect(reset!.outcome).toBeUndefined()
         expect(reset!.retryAt).toBe(NOW + RETRY_AFTER_MS)

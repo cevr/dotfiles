@@ -641,7 +641,7 @@ export const layer = (config: Config) =>
             Arr.findFirst(status(yield* SynchronizedRef.get(where.pool), now, rules), (item) => item.credentialID === credentialID),
           ]).pipe(
             Option.flatMap(([provider, account]) =>
-              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends)[credentialID]).pipe(
+              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends, false, before.resets)[credentialID]).pipe(
                 Option.flatMap((plan) => Option.fromUndefinedOr(plan.rebase)),
                 Option.flatMap((rebase) => Option.fromUndefinedOr(rebase.key)),
                 Option.map((claim) => ({ provider, account, claim })),
@@ -933,7 +933,7 @@ export const layer = (config: Config) =>
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
         const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false)
+        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false, state.resets)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>

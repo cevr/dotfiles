@@ -21,7 +21,7 @@
 // restart; here, beside the memory layers, for the Effect test runner the
 // pool's domain folder does not import.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Schema } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { hangGuard } from "../../../tests/hang-guard.ts"
@@ -47,7 +47,6 @@ import {
   SettleClaim,
   SettleUnsent,
   UNSENT_RETRY_MAX_MS,
-  UNSENT_RETRY_MIN_MS,
   UNSENT_RETRY_MS,
   unsentRetryAt,
 } from "../resets.ts"
@@ -297,21 +296,50 @@ describe("a try not sent is no claim", () => {
   )
 
   effectTest(
-    "a rate-limited read goes again once the wait it asked for has passed (at least UNSENT_RETRY_MIN_MS); without one, on the back-off",
+    "the wait before the next try is the longer of what the endpoint asked and the back-off of its tries (the back-off capped, the endpoint's wait never cut)",
     Effect.gen(function* () {
       const { state, key } = yield* decided
-      const asked = (yield* run([[now, SettleUnsent.make({ key, why: "unread", cause: "rate-limited", retryAfterMs: 7 * MINUTE, message: "not sent" })]], state)).state
-      expect(asked.resets[key]!.retryAt).toBe(now + 7 * MINUTE)
-      const brief = (yield* run([[now, SettleUnsent.make({ key, why: "unread", cause: "rate-limited", retryAfterMs: 1_000, message: "not sent" })]], state)).state
-      expect(brief.resets[key]!.retryAt).toBe(now + UNSENT_RETRY_MIN_MS)
-      const silent = (yield* run([[now, SettleUnsent.make({ key, why: "unread", cause: "rate-limited", message: "not sent" })]], state)).state
-      expect(silent.resets[key]!.retryAt).toBe(now + UNSENT_RETRY_MS)
+      const settle = (retryAfterMs: Option.Option<number>) =>
+        Effect.map(
+          run([[now, SettleUnsent.make({ key, why: "unread", cause: "rate-limited", message: "not sent", ...Option.match(retryAfterMs, { onNone: () => ({}), onSome: (wait) => ({ retryAfterMs: wait }) }) })]], state),
+          (after) => after.state.resets[key]!.retryAt! - now,
+        )
+      expect(yield* settle(Option.some(25 * MINUTE))).toBe(25 * MINUTE)
+      expect(yield* settle(Option.some(1_000))).toBe(UNSENT_RETRY_MS)
+      expect(yield* settle(Option.none())).toBe(UNSENT_RETRY_MS)
+      expect(yield* settle(Option.some(3 * HOUR))).toBe(3 * HOUR)
     }),
     hangGuard("unit-law"),
   )
 
   effectTest(
-    "held back, or a peer unreachable: unsent, to go again; the send-time check finding it no longer pays: settled unsent, never a provider's nothing-to-reset",
+    "a login that keeps answering rate limited with a short retry-after is tried less and less often, up to the cap (the review's P2: twelve tries a minute apart)",
+    Effect.gen(function* () {
+      // A window period long enough for every try: twelve back-offs run past a day's 5-hour period.
+      const long = (at: number) => spent("claude", now + 20 * HOUR, at)
+      const first = yield* run([[now, Review.make({ pools: [long(now)] })]])
+      const key = (yield* Effect.fromOption(Arr.head(dues(first.events)))).key
+      let state = first.state
+      let at = now
+      const waits: Array<number> = []
+      for (let tries = 1; tries <= 12; tries++) {
+        state = (yield* run([[at, SettleUnsent.make({ key, why: "unread", cause: "rate-limited", retryAfterMs: 1_000, message: "not sent" })]], state)).state
+        const retryAt = state.resets[key]!.retryAt!
+        waits.push((retryAt - at) / MINUTE)
+        // Not a minute later, as the endpoint's retry-after alone would have it; at its back-off, the same claim.
+        expect(dues((yield* run([[at + MINUTE, Review.make({ pools: [long(at + MINUTE)] })]], state)).events)).toEqual([])
+        at = retryAt
+        const again = yield* run([[at, Review.make({ pools: [long(at)] })]], state)
+        expect(dues(again.events).map((due) => due.key)).toEqual([key])
+        state = again.state
+      }
+      expect(waits).toEqual([10, 20, 40, 80, 120, 120, 120, 120, 120, 120, 120, 120])
+    }),
+    hangGuard("unit-law"),
+  )
+
+  effectTest(
+    "held back, or a peer unreachable: unsent, to go again; the send-time check finding it no longer pays: unsent, never a provider's nothing-to-reset, and decided again as itself once it pays, no sooner than its back-off",
     Effect.gen(function* () {
       for (const why of ["backed-off", "unreachable"] as const) {
         const { state, key } = yield* decided
@@ -319,14 +347,19 @@ describe("a try not sent is no claim", () => {
         expect(after.resets[key]).toMatchObject({ stage: "failed", attempts: 0, unsent: { why, tries: 1 }, retryAt: now + UNSENT_RETRY_MS })
         expect(after.claims).toEqual([])
       }
-      const { state, key } = yield* decided
+      const { state, key, requestID } = yield* decided
       const stale = yield* run([[now, SettleUnsent.make({ key, why: "stale", message: "not sent: the reset is no longer listed as claimable" })]], state)
-      expect(stale.state.resets[key]).toMatchObject({ stage: "settled", unsent: { why: "stale" }, message: "not sent: the reset is no longer listed as claimable" })
+      expect(stale.state.resets[key]).toMatchObject({ stage: "settled", attempts: 0, unsent: { why: "stale", tries: 1 }, retryAt: now + UNSENT_RETRY_MS, message: "not sent: the reset is no longer listed as claimable" })
       expect(stale.state.resets[key]!.outcome).toBeUndefined()
       expect(stale.state.claims).toEqual([])
       expect(stale.events.some((event) => event._tag === "OwnerTold")).toBe(false)
-      // The same period, later: that claim is not decided again.
-      expect((yield* review(now + 3 * RETRY_MS, stale.state)).dues).toEqual([])
+      // The same period, before its back-off: not decided again, nor while the credit is unlisted.
+      expect((yield* review(now + UNSENT_RETRY_MS - 1, stale.state)).dues).toEqual([])
+      const unlisted = { ...view(now + UNSENT_RETRY_MS), accounts: view(now + UNSENT_RETRY_MS).accounts.map((account) => ({ ...account, reading: { ...account.reading!, resets: { available: 0, credits: [] } } })) }
+      expect(dues((yield* run([[now + UNSENT_RETRY_MS, Review.make({ pools: [unlisted] })]], stale.state)).events)).toEqual([])
+      // Listed and worth it again after its back-off: decided again, as itself, its attempts and tries kept.
+      const again = yield* review(now + UNSENT_RETRY_MS, stale.state)
+      expect(again.dues.map((due) => [due.key, due.requestID, due.attempts, due.unsent?.tries])).toEqual([[key, requestID, 0, 1]])
     }),
     hangGuard("unit-law"),
   )
@@ -378,4 +411,142 @@ describe("the check before a claim stands on the sweep's reading when it is fres
     // The claim being judged is not its own last claim.
     expect(Option.isSome(reusableReading({ ...Resets.initial, resets: { k: { ...other, key: "k", stage: "claiming", at: now } } }, reset, reading(now - 20_000), now))).toBe(true)
   })
+})
+
+describe("a reset in hand is never lost unused by the pool's own bookkeeping", () => {
+  const start = Date.parse("2026-11-26T10:00:00Z")
+  const weekEnd = Date.parse("2026-11-28T14:00:00.326Z")
+  const expiresAt = start + 5 * HOUR
+  const grant: ResetCredit = { id: "g1", count: 1, usable: true, expiresAt, clears: ["five_hour", "seven_day"], kind: "full", requiresLimit: false }
+  /** The week spent, no 5-hour window read (any window may be absent), the grant listed or not, work running. */
+  const expiring = (at: number, listed: boolean, windows: ReadonlyArray<QuotaReading["windows"][number]> = [{ name: "7d", utilization: 1, resetAt: weekEnd }]): PoolView => {
+    const reading: QuotaReading = { at, windows, resets: { available: Number(listed), credits: [grant].filter(() => listed) } }
+    return { id: "anthropic", provider: "claude", accounts: [{ credentialID: "a", live: 0, load: 0, noRoom: false, reading }], labels: { a: "1" }, running: 1 }
+  }
+  const first = Effect.gen(function* () {
+    const decided = yield* run([[start, Review.make({ pools: [expiring(start, true)] })]])
+    const due = yield* Effect.fromOption(Arr.head(dues(decided.events)))
+    return { state: decided.state, due }
+  })
+
+  effectTest(
+    "the review's P1: the grant found unlisted at the send, then listed again and expiring: claimed before it expires, as the same claim",
+    Effect.gen(function* () {
+      const { state: decided, due } = yield* first
+      let state = (yield* run([[start, SettleUnsent.make({ key: due.key, why: "stale", message: "not sent: the reset is no longer listed as claimable" })]], decided)).state
+      const later: Array<readonly [string, string]> = []
+      for (let at = start + 10 * MINUTE; at < expiresAt; at += 10 * MINUTE) {
+        const next = yield* run([[at, Review.make({ pools: [expiring(at, true)] })]], state)
+        state = next.state
+        for (const reset of dues(next.events)) {
+          later.push([reset.key, reset.requestID])
+          state = (yield* run([[at, NoteSend.make({ key: reset.key })], [at, SettleClaim.make({ key: reset.key, outcome: "reset", before: [] })]], state)).state
+        }
+      }
+      expect(later).toEqual([[due.key, due.requestID]])
+    }),
+    hangGuard("unit-law"),
+  )
+
+  /** A record as the build before this one left it: its tries recorded as failed claims, `not sent: …`, whether or not one went out. */
+  const oldRecord = (due: Reset, sent: boolean, stage: "failed" | "settled"): Reset => {
+    const { unsent: _unsent, retryAt: _retryAt, ...rest } = due
+    const outcome = Match.value(stage).pipe(Match.when("failed", () => "failed" as const), Match.orElse(() => "nothing-to-reset" as const))
+    const old: Reset = { ...rest, stage, at: start, attempts: MAX_ATTEMPTS, outcome, message: "not sent: the account could not be read just before the claim" }
+    return Match.value(sent).pipe(Match.when(true, (): Reset => ({ ...old, sentAt: start - HOUR })), Match.orElse(() => old))
+  }
+
+  effectTest(
+    "an old store: a record whose tries never went out (no send noted) goes again as itself; one with a send noted, its count unknown, stays closed",
+    Effect.gen(function* () {
+      const { due } = yield* first
+      const at = start + RETRY_MS
+      const after = (record: Reset) =>
+        Effect.map(run([[at, Review.make({ pools: [expiring(at, true)] })]], Schema.decodeUnknownSync(ResetsState)(Schema.encodeSync(ResetsState)({ ...Resets.initial, resets: { [record.key]: record } }))), (decided) =>
+          dues(decided.events).map((reset) => [reset.key, reset.requestID]),
+        )
+      for (const stage of ["failed", "settled"] as const) {
+        expect([stage, yield* after(oldRecord(due, false, stage))]).toEqual([stage, [[due.key, due.requestID]]])
+        expect([stage, yield* after(oldRecord(due, true, stage))]).toEqual([stage, []])
+      }
+      // A provider's answer closes it, old or new.
+      expect(yield* after({ ...oldRecord(due, true, "settled"), message: "nothing to reset" })).toEqual([])
+      expect(yield* after({ ...oldRecord(due, false, "settled"), outcome: "reset", message: "reset" })).toEqual([])
+    }),
+    hangGuard("unit-law"),
+  )
+
+  type Random = ReturnType<typeof generator>
+  /** A history's start: the store the old build left (the first try recorded `not sent`, as a failure or as nothing to reset), else this build's stale try. */
+  const opening = (decided: ResetsState, due: Reset, old: boolean, random: Random) =>
+    Match.value(old).pipe(
+      Match.when(true, () =>
+        Effect.succeed({
+          state: { ...Resets.initial, resets: { [due.key]: { ...oldRecord(due, false, (["failed", "settled"] as const)[random.next(2)]!), attempts: 1 + random.next(MAX_ATTEMPTS) } } },
+          next: start + RETRY_MS,
+        }),
+      ),
+      Match.orElse(() =>
+        Effect.map(run([[start, SettleUnsent.make({ key: due.key, why: "stale", message: "not sent" })]], decided), (after) => ({ state: after.state, next: after.state.resets[due.key]!.retryAt! })),
+      ),
+    )
+  /** One review's reading: the grant listed or not; any window may be absent, the 5-hour one often, once in a while the week too (nothing to judge on). */
+  const readAt = (at: number, random: Random) => {
+    const listed = random.next(4) !== 0
+    const week = random.next(8) !== 0
+    const windows = [{ name: "7d", utilization: 1, resetAt: weekEnd }, { name: "5h", utilization: 0.4, resetAt: at + 2 * HOUR }].filter((window) =>
+      Match.value(window.name).pipe(Match.when("7d", () => week), Match.orElse(() => random.next(2) === 0)),
+    )
+    return { listed, week, windows }
+  }
+  /** What became of a try: not sent (no longer worth it, or rate limited with any wait asked), else sent and answered failed or reset. */
+  const settleTry = (state: ResetsState, reset: Reset, at: number, random: Random) =>
+    Match.value(random.next(5)).pipe(
+      Match.when(0, () => Effect.map(run([[at, SettleUnsent.make({ key: reset.key, why: "stale", message: "not sent" })]], state), (after) => ({ state: after.state, sent: false, closed: false }))),
+      Match.when(1, () =>
+        Effect.map(run([[at, SettleUnsent.make({ key: reset.key, why: "unread", cause: "rate-limited", retryAfterMs: random.next(30) * MINUTE, message: "not sent" })]], state), (after) => ({ state: after.state, sent: false, closed: false })),
+      ),
+      Match.orElse(() => {
+        const outcome = (["failed", "failed", "reset"] as const)[random.next(3)]!
+        return Effect.map(run([[at, NoteSend.make({ key: reset.key })], [at, SettleClaim.make({ key: reset.key, outcome, before: [] })]], state), (after) => ({ state: after.state, sent: true, closed: outcome === "reset" }))
+      }),
+    )
+
+  effectTest(
+    "generated histories (the grant listed, unlisted a while, listed again; windows unread; tries sent, unsent or answered; restarts; an old store): a claimable grant is tried once its wait has passed, under one identity, sent at most MAX_ATTEMPTS times",
+    Effect.gen(function* () {
+      const random = generator(1126)
+      for (let sample = 0; sample < 300; sample++) {
+        const { state: decided, due } = yield* first
+        // Half the histories start on a store the old build left: the first try recorded `not sent`, as a failure or as nothing to reset.
+        const old = random.next(2) === 0
+        let { state, next } = yield* opening(decided, due, old, random)
+        let sends = 0
+        let closed = false
+        let missed: Array<number> = []
+        const ids = new Set([due.requestID])
+        const keys = new Set([due.key])
+        for (let at = start + random.next(5) * MINUTE + MINUTE; at < expiresAt - 10 * MINUTE; at += 5 * MINUTE + random.next(10) * MINUTE) {
+          const { listed, week, windows } = readAt(at, random)
+          const decidedNow = yield* run([[at, Review.make({ pools: [expiring(at, listed, windows)] })]], state)
+          state = decidedNow.state
+          const tried = dues(decidedNow.events)
+          if (listed && week && !closed && sends < MAX_ATTEMPTS && at >= next && tried.length === 0) missed = [...missed, at]
+          for (const reset of tried) {
+            ids.add(reset.requestID)
+            keys.add(reset.key)
+            const fate = yield* settleTry(state, reset, at, random)
+            state = fate.state
+            sends += Number(fate.sent)
+            closed = closed || fate.closed
+            next = Option.getOrElse(Option.fromUndefinedOr(state.resets[reset.key]!.retryAt), () => at + RETRY_MS)
+          }
+          if (random.next(3) === 0) state = restart(state)
+        }
+        const label = `sample ${sample}, old store ${old}`
+        expect([label, missed, [...keys], [...ids], sends <= MAX_ATTEMPTS]).toEqual([label, [], [due.key], [due.requestID], true])
+      }
+    }),
+    hangGuard("in-memory"),
+  )
 })
