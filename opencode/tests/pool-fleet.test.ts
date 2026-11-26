@@ -11,7 +11,7 @@
 // B's pace must hold a new agent for A's wave, before any reading shows it,
 // name the unreachable peer, and carry no token across.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../testbeds/anthropic-auth.ts"
@@ -272,7 +272,8 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         expect(rows[2]?.text).toContain("host-c · unreachable since ")
         expect(rows[2]?.text).toContain("Connection refused; the pace goes on without it")
 
-        // The readings say B is within its pace; A's two starts at 5% each put it over. The pace is measured as soon as
+        // The readings say B is within its pace; A's two starts at 5% each put it over, and the quote charges the next
+        // agent its own launch estimate too (mods/pool/launch-admission.md: the former quote omitted it). The pace is measured as soon as
         // one account's reading is in, and B reads its two accounts one poll apart (a loaded host spreads them further),
         // so wait for the pace that counts both: what the assertion below is about.
         const pace = (await until(
@@ -288,7 +289,7 @@ describe.skipIf(!ready)("the fleet across two real OpenCode servers (real report
         )) as { ok: boolean; reason: string; retryAt?: number }
         expect(pace.ok).toBe(false)
         expect(pace.reason).toBe(
-          "the pool's weekly pace is over: its 2 accounts' weeks are at 50.0% used of 100% on average, plus 5.0% of the week counted for 2 agents started in the last 10 min; " +
+          "the pool's weekly pace is over: its 2 accounts' weeks are at 50.0% used of 100% on average, plus 5.0% of the week counted for 2 agents started in the last 10 min, plus 2.5% of the week reserved for the next agent; " +
             "the spend-evenly line averages 54.5% used of 100% now, and the start holds past it",
         )
         expect(pace.retryAt).toBeGreaterThan(stamp())

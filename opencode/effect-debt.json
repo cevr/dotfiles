@@ -755,7 +755,7 @@
     "mods/pool/service.ts": {"effect/noNullish":4},
     "mods/pool/spend-authority.test.ts": {"complexity":1,"effect/maxCognitiveComplexity":1,"effect/noConditionalEmptyObjectSpread":1,"effect/noGlobals":1,"effect/noNullish":5,"effect/noRuntimeTypeof":2,"effect/noTernary":20},
     "mods/pool/ssh/lease.ts": {"effect/noAs":1,"effect/noAsyncFunction":6,"effect/noGlobals":10,"effect/noNullish":4,"effect/noRuntimeTypeof":3,"effect/noUnsafeDictionaryType":1},
-    "mods/pool/ssh/peers.test.ts": {"effect/noAsyncFunction":8,"effect/noEffectRunInTests":1,"effect/noGlobals":8,"effect/noNodeBuiltinImport":2,"effect/noNullish":1,"effect/noTernary":1,"effect/noTestLifecycleHooks":1},
+    "mods/pool/ssh/peers.test.ts": {"effect/noAsyncFunction":8,"effect/noEffectRunInTests":1,"effect/noGlobals":6,"effect/noNodeBuiltinImport":2,"effect/noNullish":1,"effect/noTernary":1,"effect/noTestLifecycleHooks":1},
     "mods/pool/ssh/peers.ts": {"effect/noAsyncFunction":2,"effect/noGlobals":6,"effect/noNewPromise":1,"effect/noNullish":4,"effect/preferServiceOf":1},
     "mods/pool/ssh/push.ts": {"effect/noAs":1,"effect/noAsyncFunction":6,"effect/noGlobals":10,"effect/noNullish":4,"effect/noRuntimeTypeof":3,"effect/noUnsafeDictionaryType":1},
     "mods/pool/ssh/report.ts": {"effect/noAsyncFunction":6,"effect/noGlobals":10,"effect/noNullish":4,"effect/noRuntimeTypeof":3,"effect/noUnsafeDictionaryType":1},

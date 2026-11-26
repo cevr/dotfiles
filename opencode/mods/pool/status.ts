@@ -230,6 +230,12 @@ export const Start = Schema.Struct({
   sessionID: Schema.optionalKey(Schema.String),
   /** The estimate frozen when this launch was admitted, as a share of one week. */
   cost: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  /**
+   * The launching host does not pace this provider, so it set no price. A host that paces the provider counts the
+   * launch at its own launch estimate for the model (launch-admission.md). A start with neither field comes from an
+   * older host and counts at the reader's floor.
+   */
+  unpaced: Schema.optionalKey(Schema.Literal(true)),
 })
 export type Start = typeof Start.Type
 
