@@ -1,5 +1,5 @@
-// The entries and notices in the plugin's storage: `wake:<id>` and
-// `notice:<delivery>`. `layer` reads them through a plain view of the storage,
+// The entries, notices and handles in the plugin's storage: `wake:<id>`,
+// `notice:<delivery>` and `handle:<id>`. `layer` reads them through a plain view of the storage,
 // so the laws run it over a stand-in; `fromContext` takes the view from the
 // plugin context.
 //
@@ -12,6 +12,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Effect, Layer, Option, Schema } from "effect"
 import { WakeStore } from "../service.ts"
+import { Handle } from "../handle.ts"
 import { Entry, Notice } from "../wake.ts"
 
 /** The plugin's storage, as the plugin context provides it. */
@@ -28,6 +29,7 @@ export interface Storage {
 
 export const ENTRY = "wake:"
 export const NOTICE = "notice:"
+export const HANDLE = "handle:"
 /** How many keys one scan asks for. */
 export const PAGE = 200
 
@@ -35,6 +37,8 @@ const decodeEntry = Schema.decodeUnknownOption(Entry)
 const decodeNotice = Schema.decodeUnknownOption(Notice)
 const encodeEntry = Schema.encodeSync(Schema.toCodecJson(Entry))
 const encodeNotice = Schema.encodeSync(Schema.toCodecJson(Notice))
+const decodeHandle = Schema.decodeUnknownOption(Handle)
+const encodeHandle = Schema.encodeSync(Schema.toCodecJson(Handle))
 
 export const layer = (storage: Storage) => {
   /** Every key under `prefix`. */
@@ -65,8 +69,27 @@ export const layer = (storage: Storage) => {
     ),
     writeNotice: (notice) => storage.set(`${NOTICE}${notice.delivery}`, encodeNotice(notice)),
     removeNotice: (delivery) => storage.remove(`${NOTICE}${delivery}`),
+    handles: keys(HANDLE).pipe(
+      Effect.flatMap((found) => Effect.forEach(found, (key) => storage.get(key).pipe(Effect.map(decodeHandle)))),
+      Effect.map((handles) => handles.flatMap(Option.toArray)),
+    ),
+    writeHandle: (handle) => storage.set(`${HANDLE}${handle.id}`, encodeHandle(handle)),
+    removeHandle: (id) => storage.remove(`${HANDLE}${id}`),
+    nextEpoch: (server, location) =>
+      Effect.gen(function* () {
+        const key = `${EPOCH}${server}/${location}`
+        const last = Option.getOrElse(decodeEpoch(yield* storage.get(key)), () => 0)
+        // A write that dies (a full disk, a locked database: sim/faults.ts) does not stop the plugin's start: this
+        // instance still outranks every earlier one, and only the next one, at the same epoch, will not retire its calls.
+        yield* storage.set(key, last + 1).pipe(Effect.catchCause((cause) => Effect.logWarning("wake: the instance's epoch was not kept", { key, cause: String(cause) })))
+        return last + 1
+      }),
   })
 }
+
+/** An instance's epoch in its server and location, under `epoch:<server>/<location>`. */
+export const EPOCH = "epoch:"
+const decodeEpoch = Schema.decodeUnknownOption(Schema.Int)
 
 /** The entries in the plugin context's storage. */
 export const fromContext = (ctx: Plugin.Context) => layer(ctx.storage)

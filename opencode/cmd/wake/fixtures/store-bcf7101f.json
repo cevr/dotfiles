@@ -1,0 +1,399 @@
+{
+  "head": "bcf7101f",
+  "now": 61000,
+  "directory": "/work/app",
+  "ids": {
+    "once": "wd1ixoc",
+    "hourly": "w21txe9",
+    "fresh": "wj6530j",
+    "disk": "w36ow0q",
+    "reviews": "wf2bolv",
+    "job": "joj9i8w",
+    "latch": "whw27wc",
+    "child": "ses_000000000001",
+    "cut": "w18ngk3"
+  },
+  "firing": {
+    "delivery": "msg_000000000002"
+  },
+  "world": {
+    "store": {
+      "entries": {
+        "$map": [
+          [
+            "wd1ixoc",
+            {
+              "kind": "alarm",
+              "id": "wd1ixoc",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "Dec 4: renew the certificate.",
+              "setAt": 0,
+              "dueAt": 600000
+            }
+          ],
+          [
+            "w21txe9",
+            {
+              "kind": "alarm",
+              "id": "w21txe9",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "Check the queue.",
+              "setAt": 0,
+              "dueAt": 300000,
+              "everySeconds": 3600
+            }
+          ],
+          [
+            "wj6530j",
+            {
+              "kind": "alarm",
+              "id": "wj6530j",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "hours",
+              "setAt": 0,
+              "dueAt": 900000,
+              "newSession": {
+                "directory": "/work/other",
+                "prompt": "Check today's hours."
+              }
+            }
+          ],
+          [
+            "w36ow0q",
+            {
+              "kind": "monitor",
+              "id": "w36ow0q",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "The disk is nearly full.",
+              "setAt": 0,
+              "command": "df -h /",
+              "cwd": "/work/app",
+              "intervalSeconds": 30,
+              "until": "9[0-9]%",
+              "deadline": 1200000
+            }
+          ],
+          [
+            "wf2bolv",
+            {
+              "kind": "monitor",
+              "id": "wf2bolv",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "A review changed.",
+              "setAt": 0,
+              "command": "gh pr list",
+              "cwd": "/work/app",
+              "intervalSeconds": 60,
+              "deadline": 86400000,
+              "repeat": "change",
+              "seen": "3d38e2a5"
+            }
+          ],
+          [
+            "joj9i8w",
+            {
+              "kind": "job",
+              "id": "joj9i8w",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "Read the gate's result.",
+              "setAt": 0,
+              "command": "bun run gate",
+              "cwd": "/work/app",
+              "heavy": false,
+              "timeoutSeconds": 86400,
+              "dripped": 0,
+              "drippedAt": 0,
+              "generation": 1
+            }
+          ],
+          [
+            "whw27wc",
+            {
+              "kind": "latch",
+              "id": "whw27wc",
+              "sessionID": "ses_a",
+              "directory": "/work/app",
+              "setAt": 0,
+              "child": "ses_000000000001",
+              "subagent": {
+                "agent": "implementor",
+                "description": "Add the export",
+                "prompt": "Add the CSV export to the report page.",
+                "model": "anthropic/claude-opus#high",
+                "from": "build",
+                "messageID": "msg_parent",
+                "callID": "call_1"
+              },
+              "hold": "pace",
+              "reason": "anthropic's 5h window is at 92% used of 100%",
+              "opensAt": 600000,
+              "recheckAt": 120000,
+              "context": {
+                "background": false
+              }
+            }
+          ],
+          [
+            "w18ngk3",
+            {
+              "kind": "alarm",
+              "id": "w18ngk3",
+              "sessionID": "ses_b",
+              "directory": "/work/app",
+              "mode": "wake",
+              "note": "Merge when green.",
+              "setAt": 0,
+              "dueAt": 60000,
+              "firing": {
+                "delivery": "msg_000000000002",
+                "text": "⏰ Wake w18ngk3 fired: the alarm you set at Dec 31, 1969, 7:00:00 PM EST, due Dec 31, 1969, 7:01:00 PM EST.\nNote: Merge when green.",
+                "description": "wake w18ngk3 · Merge when green.",
+                "metadata": {
+                  "source": "wake",
+                  "id": "w18ngk3",
+                  "kind": "alarm",
+                  "mode": "wake",
+                  "setAt": 0,
+                  "tick": 60000,
+                  "firedAt": 60000,
+                  "lateMs": 0
+                },
+                "firedAt": 60000,
+                "tick": 60000
+              }
+            }
+          ]
+        ]
+      },
+      "notices": {
+        "$map": []
+      },
+      "broken": {
+        "$set": []
+      }
+    },
+    "sessions": {
+      "inboxes": {
+        "$map": [
+          [
+            "ses_a",
+            []
+          ],
+          [
+            "ses_b",
+            []
+          ],
+          [
+            "ses_000000000001",
+            []
+          ]
+        ]
+      },
+      "parents": {
+        "$map": [
+          [
+            "ses_000000000001",
+            "ses_a"
+          ]
+        ]
+      },
+      "started": {
+        "$map": []
+      },
+      "refusing": {
+        "$map": []
+      },
+      "children": {
+        "$map": [
+          [
+            "ses_000000000001",
+            {
+              "sessionID": "ses_000000000001",
+              "parentID": "ses_a",
+              "directory": "/work/app",
+              "title": "Add the export",
+              "agent": "implementor",
+              "model": "anthropic/claude-opus#high",
+              "mark": {
+                "hold": "pace",
+                "reason": "anthropic's 5h window is at 92% used of 100%",
+                "opensAt": 600000,
+                "recheckAt": 120000,
+                "at": 0
+              }
+            }
+          ]
+        ]
+      },
+      "minted": 2
+    },
+    "jobs": {
+      "jobs": {
+        "$map": [
+          [
+            "opencode-wake-wd1ixoc",
+            {
+              "job": {
+                "id": "wd1ixoc",
+                "title": "opencode-wake-wd1ixoc",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "10 19 31 12 *",
+                "recurring": false
+              }
+            }
+          ],
+          [
+            "opencode-wake-w21txe9",
+            {
+              "job": {
+                "id": "w21txe9",
+                "title": "opencode-wake-w21txe9",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "5 * * * *",
+                "recurring": true
+              }
+            }
+          ],
+          [
+            "opencode-wake-wj6530j",
+            {
+              "job": {
+                "id": "wj6530j",
+                "title": "opencode-wake-wj6530j",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "15 19 31 12 *",
+                "recurring": false
+              }
+            }
+          ],
+          [
+            "opencode-wake-w36ow0q",
+            {
+              "job": {
+                "id": "w36ow0q",
+                "title": "opencode-wake-w36ow0q",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "20 19 31 12 *",
+                "recurring": false
+              }
+            }
+          ],
+          [
+            "opencode-wake-wf2bolv",
+            {
+              "job": {
+                "id": "wf2bolv",
+                "title": "opencode-wake-wf2bolv",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "0 19 1 1 *",
+                "recurring": false
+              }
+            }
+          ],
+          [
+            "opencode-wake-whw27wc",
+            {
+              "job": {
+                "id": "whw27wc",
+                "title": "opencode-wake-whw27wc",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "10 19 31 12 *",
+                "recurring": false
+              }
+            }
+          ],
+          [
+            "opencode-wake-w18ngk3",
+            {
+              "job": {
+                "id": "w18ngk3",
+                "title": "opencode-wake-w18ngk3",
+                "directory": "/work/app"
+              },
+              "schedule": {
+                "cron": "1 19 31 12 *",
+                "recurring": false
+              }
+            }
+          ]
+        ]
+      }
+    },
+    "runner": {
+      "jobs": {
+        "$map": [
+          [
+            "joj9i8w",
+            {
+              "spec": {
+                "id": "joj9i8w",
+                "sessionID": "ses_a",
+                "directory": "/work/app",
+                "command": "bun run gate",
+                "cwd": "/work/app",
+                "note": "Read the gate's result.",
+                "heavy": false,
+                "timeoutSeconds": 86400,
+                "setAt": 0,
+                "generation": 1
+              },
+              "run": {
+                "state": "running",
+                "startedAt": 0
+              },
+              "log": "",
+              "drip": ""
+            }
+          ]
+        ]
+      },
+      "killed": [],
+      "how": "detached",
+      "killEnds": true,
+      "reads": 2,
+      "watched": {
+        "$map": []
+      },
+      "watches": true,
+      "launches": {
+        "$map": [
+          [
+            "joj9i8w",
+            "claimed"
+          ]
+        ]
+      },
+      "deliveries": {
+        "$map": []
+      },
+      "faults": {
+        "skip": 0,
+        "fail": 0
+      }
+    }
+  }
+}
