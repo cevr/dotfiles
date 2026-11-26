@@ -182,7 +182,7 @@ const replayResets = Effect.fn("PoolProof.replayResets")(function* (evidence: st
     for (const raw of trace.states) {
       const state = yield* Schema.decodeUnknownEffect(ResetState)(raw[key.value])
       const r = state.r
-      const verdict = decideClaim({ now: NOW, held: Number(r.work), running: 0, hosts: 1, accounts: [], settling: false, pushed: false }, resetOptions(r))
+      const verdict = decideClaim({ now: NOW, held: Number(r.work), running: 0, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, resetOptions(r))
       if ((verdict._tag === "Claim") !== state.claim)
         return yield* new VerificationFailed({ message: `${name}: reset policy mismatch at ${snapshots}: ${r.kind} week=${number(r.week)}, own=${number(r.fable)}, got ${verdict._tag}` })
       if (!fableMatches(state)) return yield* new VerificationFailed({ message: `${name}: Fable refund mismatch at ${snapshots}` })

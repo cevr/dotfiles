@@ -6,11 +6,13 @@
 // one claim; and a claim that did not go through goes again as the same
 // claim. After a claim the owner is told once.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Array as Arr, Effect, Option } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as Story from "@dotfiles/decider/story"
 import type { ResetCredit } from "./quota.ts"
 import {
+  awaitingObservation,
+  type ClaimDue,
   type Command,
   type Event,
   expiringKey,
@@ -388,6 +390,35 @@ describe("Claude", () => {
       [T0, Review.make({ pools: [codex([weekless])] })],
     ])
     expect(tags(events)).toEqual(["WaitNoted"])
+  })
+
+  test("a 5-hour refill is observed once a reading after it shows its 5-hour window back; then another spent account is refilled only for work the refilled one cannot take", () => {
+    const spent = (id: string) => account(id, { fiveHour: 1, sevenDay: 0.4, credits: [claudeGrant(`grant-${id}`)] })
+    const both = claude([spent("cred-a"), spent("cred-b")])
+    // Both accounts spent, three agents running, a start held: one is refilled.
+    const first = run([[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })], [T0, Review.make({ pools: [both] })]])
+    const due = Option.getOrThrow(Arr.findFirst(first.events, (event): event is ClaimDue => event._tag === "ClaimDue"))
+    const refilled = due.reset.credentialID
+    const other = ["cred-a", "cred-b"].filter((id) => id !== refilled).join("")
+    const before = spent(refilled).reading?.windows ?? []
+    // The reading right after the answer: the 5-hour window back, the week as it was.
+    const after = account(refilled, { fiveHour: 0, fiveHourResetsIn: MINUTE + 5 * HOUR, sevenDay: 0.4 }).reading?.windows ?? []
+    const settled = run([[T0 + MINUTE, SettleClaim.make({ key: due.reset.key, outcome: "reset", before, after })]], first.state)
+    // The window the claim was for shows its recovery: observed, not pending for OBSERVE_MS.
+    expect(Option.isNone(awaitingObservation(settled.state.claims, "claude", refilled, T0 + 2 * MINUTE))).toBe(true)
+    // The next sweep: the refilled account has room, the other is still spent.
+    const next = readAt(
+      claude([account(refilled, { fiveHour: 0, fiveHourResetsIn: 5 * HOUR, sevenDay: 0.4, credits: [claudeGrant(`grant-${refilled}`, { count: 1 })] }), spent(other)]),
+      T0 + 2 * MINUTE,
+    )
+    // Running work alone goes to the refilled account, and the start held before the claim was the claim's to answer:
+    // no work waits for the other, nothing claimed.
+    const running = run([[T0 + 2 * MINUTE, Review.make({ pools: [next] })]], settled.state)
+    expect(tags(running.events)).toEqual([])
+    // A start held on that reading, which the refilled account could not take: the other spent account is refilled, at once.
+    const held = run([[T0 + 3 * MINUTE, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })], [T0 + 3 * MINUTE, Review.make({ pools: [next] })]], settled.state)
+    expect(tags(held.events)).toEqual(["WaitNoted", "ClaimDue"])
+    expect(held.events.find((event) => event._tag === "ClaimDue")).toMatchObject({ reset: { credentialID: other, creditID: `grant-${other}`, why: "forecast" } })
   })
 })
 

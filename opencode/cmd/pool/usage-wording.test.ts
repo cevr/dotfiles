@@ -50,7 +50,7 @@ const weekOf = (used: number, burn: number) => {
     weekUsed: used,
     weekResetAt: Option.some(resetAt),
   }
-  const situation = { now, held: 0, running: 7, hosts: 2, accounts: [{ credentialID: "a", windows: [{ name: "7d", used, resetAt, burn }], freeAt: Option.none() }], settling: false, pushed: false }
+  const situation = { now, held: 0, running: 7, hosts: 2, accounts: [{ credentialID: "a", windows: [{ name: "7d", used, resetAt, burn }], freeAt: Option.none() }], settling: false, pushed: false, room: false }
   return decideClaim(situation, [option])
 }
 const chosen = weekOf(1, 0.001)
