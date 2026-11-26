@@ -6,29 +6,36 @@ import { availableParallelism, totalmem } from "node:os"
 import { type Attestation, hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
 import { type Actuation, issue } from "./actuation.ts"
 
-const absent = () => new AdmissionUnavailable({ reason: "unavailable" })
+const absent = (detail?: string) => new AdmissionUnavailable({
+  reason: "unavailable", ...Option.match(Option.fromNullishOr(detail), { onNone: () => ({}), onSome: (cause) => ({ detail: cause }) }),
+})
+const because = (detail: string) => () => absent(detail)
 export const readProcess = Effect.fn("HostSupply.readProcess")(function* (argv: ReadonlyArray<string>) {
+  const shown = argv.join(" ")
   const child = yield* Effect.try({
     try: () => spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: {
       LC_ALL: "C",
       XDG_RUNTIME_DIR: env["XDG_RUNTIME_DIR"],
       DBUS_SESSION_BUS_ADDRESS: env["DBUS_SESSION_BUS_ADDRESS"],
     } }),
-    catch: absent,
+    catch: because(`${shown}: cannot start`),
   })
   const port: Actuation = { dispatch: (intent) => Effect.sync(() => {
     if (intent.target === "retained-child" && Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode))
       child.kill("SIGTERM")
   }) }
   const [code, out] = yield* Effect.all([
-    Effect.tryPromise({ try: () => child.exited, catch: absent }),
-    Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: absent }),
+    Effect.tryPromise({ try: () => child.exited, catch: because(`${shown}: no exit status`) }),
+    Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: because(`${shown}: unreadable output`) }),
   ], { concurrency: 2 }).pipe(
     Effect.onInterrupt(() => issue(port, [{ target: "retained-child", signal: "TERM" }])),
     Effect.timeout(1000),
-    Effect.mapError(absent),
+    Effect.mapError((error) => {
+      if (error instanceof AdmissionUnavailable) return error
+      return absent(`${shown}: no answer within 1 s`)
+    }),
   )
-  if (code !== 0) return yield* absent()
+  if (code !== 0) return yield* absent(`${shown}: exit ${code}`)
   return out.trim()
 })
 
@@ -91,11 +98,11 @@ export type Kernel = ReturnType<typeof openKernel>
 export const bootHost = Effect.fn("HostSupply.identity")(function* () {
   const fs = yield* FileSystem.FileSystem
   const system = yield* readProcess(["/usr/bin/uname", "-s"])
-  if (system !== "Darwin" && system !== "Linux") return yield* absent()
+  if (system !== "Darwin" && system !== "Linux") return yield* absent(`uname -s answers ${system}, neither Darwin nor Linux`)
   const systems = { Darwin: "darwin", Linux: "linux" } as const
   const platform = systems[system]
   const sysctl = (key: string) => readProcess(["/usr/sbin/sysctl", "-n", key])
-  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(absent), Effect.map((text) => text.trim()))
+  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(because(`cannot read ${file}`)), Effect.map((text) => text.trim()))
   const identities = {
     darwin: () => Effect.all([
       readProcess(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]).pipe(
@@ -106,8 +113,8 @@ export const bootHost = Effect.fn("HostSupply.identity")(function* () {
     linux: () => Effect.all([read("/etc/machine-id"), read("/proc/sys/kernel/random/boot_id")], { concurrency: 2 }),
   }
   const [host, boot] = yield* identities[platform]()
-  if (!/^[a-f\d-]{32,36}$/iu.test(host) || !/^[a-f\d-]{32,36}$/iu.test(boot)) return yield* absent()
-  const kernel = yield* Effect.acquireRelease(Effect.try({ try: () => openKernel(platform), catch: absent }), (kernel) =>
+  if (!/^[a-f\d-]{32,36}$/iu.test(host) || !/^[a-f\d-]{32,36}$/iu.test(boot)) return yield* absent("no machine or boot identity")
+  const kernel = yield* Effect.acquireRelease(Effect.try({ try: () => openKernel(platform), catch: because("cannot load the kernel symbols") }), (kernel) =>
     Effect.sync(() => {
       if (Option.isSome(kernel.mach)) kernel.mach.value.close()
       if (Option.isSome(kernel.linux)) kernel.linux.value.close()
@@ -138,7 +145,7 @@ export const darwinTicks = (kernel: Kernel, at: number): Option.Option<Ticks> =>
 
 export const clockOf = Effect.fn("HostSupply.clock")(function* (host: BootHost) {
   const at = yield* Effect.sync(host.kernel.now)
-  if (Option.isNone(at)) return yield* absent()
+  if (Option.isNone(at)) return yield* absent("no boot clock")
   return at.value
 })
 
@@ -146,14 +153,15 @@ const DF = "/bin/df"
 const last = (text: string) => text.split("\n").at(-1)?.trim().split(/\s+/u)
 export const volumeIdentity = Effect.fn("HostSupply.volumeIdentity")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
-  const cwd = yield* fs.realPath(path).pipe(Effect.mapError(absent))
+  const cwd = yield* fs.realPath(path).pipe(Effect.mapError(because(`cannot resolve the working directory ${path}`)))
   const data = yield* readProcess([DF, "-kP", cwd])
   const fields = last(data)
   const totalBlocks = scalar(fields?.[1])
   const freeBlocks = scalar(fields?.[3])
   const mount = fields?.slice(5).join(" ")
-  if (!fields?.[0] || !mount || Option.isNone(freeBlocks) || Option.isNone(totalBlocks)) return yield* absent()
-  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(absent))
+  if (!fields?.[0] || !mount || Option.isNone(freeBlocks) || Option.isNone(totalBlocks))
+    return yield* absent(`${DF} -kP ${cwd}: no device, size and mount line`)
+  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(because(`cannot stat ${cwd}`)))
   return { cwd, id: ref("volume", `${stat.dev}:${fields[0]}`), object: mount,
     capacityBytes: totalBlocks.value * 1024, freeBytes: freeBlocks.value * 1024, diskFloorBytes: POLICY.diskFloorBytes }
 })
@@ -166,7 +174,7 @@ const sampleVolume = Effect.fn("HostSupply.sampleVolume")(function* (host: BootH
   const inodeIndex = { darwin: 6, linux: 3 }
   let freeInodes: Option.Option<Volume["freeInodes"]> = scalar(nodeFields?.[inodeIndex[host.platform]])
   if (fsType === "btrfs") freeInodes = Option.some("dynamic")
-  if (Option.isNone(freeInodes)) return yield* absent()
+  if (Option.isNone(freeInodes)) return yield* absent(`${DF} -ki ${cwd}: no free inode count`)
   // A Linux btrfs mount's metadata budget is not interchangeable with its
   // data budget. Unknown metadata is fail-closed rather than assumed free.
   let metadataFreeBytes = freeBytes
@@ -174,14 +182,26 @@ const sampleVolume = Effect.fn("HostSupply.sampleVolume")(function* (host: BootH
   const sample: Volume = { capacityBytes, freeBytes, freeInodes: freeInodes.value, metadataFreeBytes, diskFloorBytes }
   return { id, sample, object }
 })
+/** The volume's sample, for `host status` to name why a sample lacks it.
+ * A launch needs only `volumeIdentity`: free space is admission's decision. */
 export const volumeOf = (host: BootHost, path: string) =>
   volumeIdentity(path).pipe(Effect.flatMap((volume) => sampleVolume(host, volume)))
 
+/** Unallocated-chunk-blind metadata headroom from `btrfs filesystem usage -b`:
+ * the sum of Size - Used over its `Metadata,<profile>:` lines. btrfs-progs 5.x
+ * and later end each line with the percentage used, "(70.83%)"; older ones
+ * end at the number. Either is the same budget. */
+export const btrfsMetadataHeadroom = (raw: string): Option.Option<number> => {
+  const totals = [...raw.matchAll(/^\s*Metadata,[^:\n]*:\s*Size:\s*(\d+),\s*Used:\s*(\d+)(?:\s+\(\d+(?:\.\d+)?%\))?\s*$/gmu)]
+  if (totals.length === 0) return Option.none()
+  return Option.some(totals.reduce((headroom, [, size, used]) => headroom + Math.max(0, Number(size) - Number(used)), 0))
+}
+
 const linuxMetadata = Effect.fn("HostSupply.linuxMetadata")(function* (cwd: string) {
-  const raw = yield* readProcess(["/usr/bin/btrfs", "filesystem", "usage", "-b", cwd])
-  const totals = [...raw.matchAll(/^\s*Metadata,.*?Size:\s*(\d+),\s*Used:\s*(\d+)\s*$/gmu)]
-  if (totals.length === 0) return yield* absent()
-  return totals.reduce((headroom, [, size, used]) => headroom + Math.max(0, Number(size) - Number(used)), 0)
+  const argv = ["/usr/bin/btrfs", "filesystem", "usage", "-b", cwd]
+  const headroom = btrfsMetadataHeadroom(yield* readProcess(argv))
+  if (Option.isNone(headroom)) return yield* absent(`${argv.join(" ")}: no Metadata Size/Used line`)
+  return headroom.value
 })
 
 export const cgroupOf = (raw: string) => {
@@ -405,12 +425,12 @@ export interface MeteredScope {
 
 const counterOf = Effect.fn("HostSupply.counter")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
-  return yield* fs.readFileString(`${path}/cpu.stat`).pipe(Effect.mapError(absent), Effect.map((text) => cpuField(text, "usage_usec")))
+  return yield* fs.readFileString(`${path}/cpu.stat`).pipe(Effect.mapError(because(`cannot read ${path}/cpu.stat`)), Effect.map((text) => cpuField(text, "usage_usec")))
 })
 
 const checkedCounter = Effect.fn("HostSupply.scopedCounter")(function* (scope: MeteredScope) {
   const fs = yield* FileSystem.FileSystem
-  const read = (entry: string) => fs.readFileString(`${scope.path}/${entry}`).pipe(Effect.mapError(absent))
+  const read = (entry: string) => fs.readFileString(`${scope.path}/${entry}`).pipe(Effect.mapError(because(`cannot read ${scope.path}/${entry}`)))
   const [quota, stat, current, events, cpu, memory, io] = yield* Effect.all([
     read("cpu.max"), read("cpu.stat"), read("memory.current"), read("memory.events"),
     read("cpu.pressure"), read("memory.pressure"), read("io.pressure"),
@@ -434,7 +454,7 @@ const swapPages = (text: string) => Option.map(Option.all([cpuField(text, "pswpi
 
 const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, scopes: ReadonlyArray<MeteredScope>) {
   const fs = yield* FileSystem.FileSystem
-  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(absent))
+  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(because(`cannot read ${p}`)))
   const { budget, attestation } = yield* linuxBudget(hostSources())
   const { memoryLimit, ...limits } = yield* linuxEffective(hostSources(), budget)
   const metered = Option.match(budget, {
@@ -463,7 +483,7 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
     memKB: memField(mem, "MemAvailable"), totalKB: memField(mem, "MemTotal"), cpuPSI: psi(cpu, "some"), memPSI: psi(memory, "some"), ioPSI: psi(io, "some"),
     swap: delta(swapPages(vmBefore), swapPages(vmAfter)),
   })
-  if (Option.isNone(fields) || end <= start) return yield* absent()
+  if (Option.isNone(fields) || end <= start) return yield* absent("/proc stat, meminfo, pressure or vmstat lacks a field the sample needs")
   const { before, after, runnable, memKB, totalKB, cpuPSI, memPSI, ioPSI, swap } = fields.value
   const usage = usageAfter.map((after, i) => {
     const [before = Option.none()] = usageBefore.slice(i)
@@ -509,7 +529,7 @@ const darwinSupply = Effect.fn("HostSupply.darwin")(function* (host: BootHost) {
     physical: Option.filter(scalar(stats.match(/system has (\d+) \(/iu)?.[1]), positive),
     pages: Option.all(pages),
   })
-  if (Option.isNone(fields) || !/\bused = [\d.]+[KMG]/u.test(swap)) return yield* absent()
+  if (Option.isNone(fields) || !/\bused = [\d.]+[KMG]/u.test(swap)) return yield* absent("vm_stat, memory_pressure or sysctl lacks a field the sample needs")
   const { before: startTicks, after, cores, level, headroom, physical, pages: growth } = fields.value
   return {
     before: startTicks, after, hostCpuMilli: cores * 1000, effectiveCpuMilli: cores * 1000,
@@ -527,7 +547,7 @@ const darwinLimits = Effect.fn("HostSupply.darwinLimits")(function* () {
     readProcess(["/usr/sbin/sysctl", "-n", "hw.activecpu"]), readProcess(["/usr/sbin/sysctl", "-n", "hw.memsize"]),
   ], { concurrency: 2 })
   const capacity = Option.all([scalar(cpu), scalar(memory)])
-  if (Option.isNone(capacity)) return yield* absent()
+  if (Option.isNone(capacity)) return yield* absent("sysctl hw.activecpu or hw.memsize is not a count")
   const [cores, totalMemoryBytes] = capacity.value
   return { effectiveCpuMilli: cores * 1000, totalMemoryBytes, controllerAvailable: true }
 })

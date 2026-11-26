@@ -7,8 +7,10 @@ import { DEFAULT_LIMITS, heavyArgv, ioniceAvailable, SCOPE_PROBE } from "../laun
 import { type Actuation, issue, watchdogPlan, watchdogProgram } from "./actuation.ts"
 import { attestLinux, linuxDrain, stopLinux, type LinuxManager } from "./linux-controller.ts"
 
-const unavailable = () => new AdmissionUnavailable({ reason: "unavailable" })
+const unavailable = (detail: string) => new AdmissionUnavailable({ reason: "unavailable", detail })
 const unqualified = () => new AdmissionUnavailable({ reason: "unqualified" })
+/** An unqualified launch step, naming the step. */
+const refuse = (detail: string) => () => new AdmissionUnavailable({ reason: "unqualified", detail })
 
 interface ProcessIdentity {
   readonly pid: number
@@ -74,7 +76,7 @@ const equalDescriptor = (a: Descriptor, b: Descriptor) => a.device === b.device 
 const openDescriptor = (host: BootHost, file: string) => Effect.acquireRelease(
   Effect.suspend(() => {
     const fd = host.kernel.core.symbols.open(cString(file), privateOpen[host.platform])
-    if (fd < 0) return Effect.fail(unavailable())
+    if (fd < 0) return Effect.fail(unavailable(`cannot open the lease lock ${file}`))
     return Effect.succeed(fd)
   }),
   (fd) => Effect.sync(() => { host.kernel.core.symbols.close(fd) }),
@@ -86,10 +88,10 @@ const openDescriptor = (host: BootHost, file: string) => Effect.acquireRelease(
 export const armDescriptor = Effect.fn("LaunchScope.armDescriptor")(function* (host: BootHost, file: string) {
   const fs = yield* FileSystem.FileSystem
   const sys = host.kernel.core.symbols
-  yield* Effect.scoped(fs.open(file, { flag: "wx", mode: 0o600, noFollow: true })).pipe(Effect.mapError(unqualified))
+  yield* Effect.scoped(fs.open(file, { flag: "wx", mode: 0o600, noFollow: true })).pipe(Effect.mapError(refuse(`cannot create the lease lock ${file}`)))
   const fd = yield* openDescriptor(host, file)
   const stamp = descriptorOf(host, file, fd)
-  if (Option.isNone(stamp) || sys.flock(fd, flockExclusiveNonblocking) !== 0) return yield* unqualified()
+  if (Option.isNone(stamp) || sys.flock(fd, flockExclusiveNonblocking) !== 0) return yield* refuse(`cannot lock the lease lock ${file}`)()
   return { fd, descriptor: stamp.value }
 })
 
@@ -141,11 +143,11 @@ export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (
   host: BootHost, leader: number, spawnNative: typeof spawnWatchdog = spawnWatchdog,
 ) {
   const sys = host.kernel.core.symbols
-  if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* unqualified()
+  if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* refuse("this process does not lead its own process group")()
   const dispatch = watchdogPlan({ source: "pipe", armed: true, order: "eof" })
   let waitForExit = false
   const watcher = yield* Effect.acquireRelease(
-    Effect.try({ try: () => spawnNative(watchdogProgram(dispatch)), catch: unqualified }),
+    Effect.try({ try: () => spawnNative(watchdogProgram(dispatch)), catch: refuse("cannot start the group watchdog (/bin/sh)") }),
     (child) => Effect.sync(() => {
       if (waitForExit) child.unref()
       else child.stdin.end()
@@ -165,8 +167,8 @@ export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (
     Effect.sync(() => watcher.stdout.getReader()),
     (reader) => Effect.tryPromise({ try: () => reader.read(), catch: unqualified }),
     (reader) => Effect.sync(() => reader.releaseLock()),
-  ).pipe(Effect.timeout(1000), Effect.mapError(unqualified))
-  if (ack.done || new TextDecoder().decode(ack.value) !== "ready\n") return yield* unqualified()
+  ).pipe(Effect.timeout(1000), Effect.mapError(refuse("the group watchdog did not answer ready within 1 s")))
+  if (ack.done || new TextDecoder().decode(ack.value) !== "ready\n") return yield* refuse("the group watchdog did not answer ready")()
   const stop = send("stop").pipe(Effect.catchTag("AdmissionUnavailable", () => Effect.suspend(() => {
       // The group is still pinned by *this* live leader. A fresh in-group
       // sender is safe even if the original watcher was independently lost.
@@ -224,7 +226,8 @@ export const callerOf = Effect.fn("LaunchScope.caller")(function* (host: BootHos
   const core = host.kernel.core.symbols
   const pid = core.getppid()
   const identity = yield* processIdentity(host, pid)
-  if (Option.isNone(identity) || identity.value.uid !== core.getuid()) return yield* unavailable()
+  if (Option.isNone(identity) || identity.value.uid !== core.getuid())
+    return yield* unavailable(`cannot read the calling process's identity (pid ${pid}) as this user`)
   const scopeId = ref("peer", `${host.bootId}:${identity.value.uid}:${identity.value.pid}:${identity.value.start}`)
   const principal: Principal = { kind: "external-runner", scopeId, epoch: identity.value.start }
   return { principal, owner: scopeId, ...identity.value }
@@ -353,9 +356,9 @@ export const pinOf = Effect.fn("LaunchScope.pin")(function* (
   const grouped = placement === "group"
   if (grouped && sys.getpgrp() !== pid &&
     ((sys.isatty(0) === 1 && !Option.exists(foreground, (group) => group === sys.getpgrp())) || sys.setpgid(0, 0) !== 0))
-    return yield* unqualified()
+    return yield* refuse("cannot lead a process group of its own (setpgid failed, or the terminal's foreground group is another)")()
   const self = yield* processIdentity(host, pid)
-  if (Option.isNone(self) || (grouped && self.value.group !== pid)) return yield* unqualified()
+  if (Option.isNone(self) || (grouped && self.value.group !== pid)) return yield* refuse(`cannot read its own identity as group leader (pid ${pid})`)()
   let cgroup = Option.none<string>()
   if (!grouped) {
     const actual = yield* attestLinux(yield* linuxManager(), unitOf(id, generation), cpuMilli, memoryBytes)
@@ -402,9 +405,19 @@ export const payloadArgv = (host: BootHost, argv: ReadonlyArray<string>, nice = 
  * and CPU weight. On the Mac, `payloadArgv` as before. */
 export const groupPayloadArgv = Effect.fn("LaunchScope.groupPayload")(function* (host: BootHost, argv: ReadonlyArray<string>) {
   if (host.platform !== "linux") return payloadArgv(host, argv)
+  const { scope, ionice } = yield* groupLauncher()
+  return heavyArgv(argv, DEFAULT_LIMITS, { scope: Option.isNone(scope), ionice })
+})
+
+/** What the Linux group launcher adds to `nice` for this caller: a
+ * transient user scope where `systemd-run --user --scope` answers (scope
+ * is none), else the probe's failure (a login session with no user
+ * manager on its bus, say); the launch then runs niced without one. */
+export const groupLauncher = Effect.fn("LaunchScope.groupLauncher")(function* () {
   const scope = yield* readProcess(["/usr/bin/systemd-run", ...SCOPE_PROBE.slice(1)]).pipe(
-    Effect.as(true), Effect.orElseSucceed(() => false))
-  return heavyArgv(argv, DEFAULT_LIMITS, { scope, ionice: ioniceAvailable() })
+    Effect.as(Option.none<string>()),
+    Effect.catchTag("AdmissionUnavailable", ({ detail }) => Effect.succeed(Option.some(detail ?? "systemd-run --user --scope failed"))))
+  return { scope, ionice: ioniceAvailable() }
 })
 
 export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
@@ -416,7 +429,7 @@ export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
       if (Predicate.isNumber(inherited)) return spawn([...argv], { ...base, stdio: ["inherit", "inherit", "inherit", inherited] })
       return spawn([...argv], { ...base, stdio: ["inherit", "inherit", "inherit"] })
     },
-    catch: unavailable,
+    catch: (error) => unavailable(`cannot start ${argv[0] ?? "the command"}: ${String(error)}`),
   })
   const port: Actuation = {
     dispatch: (intent) => Effect.sync(() => {
@@ -425,7 +438,7 @@ export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
     }),
   }
   return {
-    exited: Effect.tryPromise({ try: () => child.exited, catch: unavailable }),
+    exited: Effect.tryPromise({ try: () => child.exited, catch: () => unavailable(`${argv[0] ?? "the command"}: no exit status`) }),
     stop: issue(port, [{ target: "retained-child", signal: "TERM" }]),
   }
 })

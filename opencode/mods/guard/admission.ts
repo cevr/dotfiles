@@ -1,6 +1,6 @@
 import { Context, Effect, Option, Predicate, Result, Schema } from "effect"
-import { Counter, Demand, normalizeRequest, OpaqueId, Phase, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
-import { capacityOf, freeHostCpu, type HostEnvelope, POLICY, runnableLimit, type Supply, unattested, usableVolume } from "./host-supply.ts"
+import { Counter, Demand, normalizeRequest, OpaqueId, Phase, purposeKeys, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
+import { capacityOf, freeHostCpu, type HostEnvelope, maximumRequestMemory, POLICY, runnableLimit, type Supply, unattested, usableVolume } from "./host-supply.ts"
 
 export const Lease = Schema.Struct({
   id: OpaqueId,
@@ -64,6 +64,9 @@ interface Outcome {
 export class AdmissionUnavailable extends Schema.TaggedError<AdmissionUnavailable>()("AdmissionUnavailable", {
   reason: Reason,
   storeVersion: Schema.optionalKey(Schema.Struct({ found: Counter, supported: Counter })),
+  /** The read or step that failed, in words: a refusal names its own
+   * cause, never only the generic form of its reason. */
+  detail: Schema.optionalKey(Schema.String),
 }) {}
 
 /** Persistence serializes each operation, including use of the sampled clock,
@@ -246,9 +249,30 @@ const fixedCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>
 const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
 const fixedLimit = (observation: Observation) => Option.filter(Option.fromNullishOr(envelopeOf(observation)), unattested)
 
+/** What `host status --json` offers a request: the same envelope, read by
+ * the same rule `feasibility` admits by. A class offered here, asked within
+ * these maxima on this volume with these keys, is queued or granted, never
+ * refused (process/status-admission.test.ts). */
+export const hostOffer = (observation: Observation, volume: Option.Option<string>) => {
+  const limit = envelopeOf(observation)
+  // No CPU, or a reservation the host cannot hold (Linux needs one), is no offer.
+  const offered = Option.filter(Option.fromNullishOr(limit), (envelope) =>
+    envelope.cpuMilli > 0 && (!envelope.needsMemoryReservation || maximumRequestMemory(envelope) > 0))
+  return {
+    defaultVolume: volume,
+    maximumCpuMilli: limit?.cpuMilli ?? 0,
+    maximumMemoryBytes: Option.getOrElse(Option.map(Option.fromNullishOr(limit), maximumRequestMemory), () => 0),
+    // A class whose own resource key the host lacks is no offer: its request
+    // would be refused `unknown-key`.
+    offeredClasses: Option.getOrElse(Option.map(offered, ({ purposes, keys }) =>
+      purposes.filter((purpose) => purposeKeys[purpose].every((key) => keys.includes(key)))), (): ReadonlyArray<Request["purpose"]> => []),
+    resourceKeys: limit?.keys ?? [],
+  }
+}
+
 const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {
   const { demand } = request
-  if (!limit.purposes.includes(request.purpose) || limit.cpuMilli <= 0) return Option.some("unsupported-class")
+  if (!hostOffer({ now: 0, envelope: limit }, Option.none()).offeredClasses.includes(request.purpose)) return Option.some("unsupported-class")
   if (demand.keys.some((key) => !limit.keys.includes(key))) return Option.some("unknown-key")
   if (demand.volumeReservations.some(({ volumeId }) => !Object.hasOwn(limit.volumes, volumeId))) return Option.some("unknown-volume")
   return fits(staticCeilings({ ...demand, cpuMilli: cpuDemand(demand, limit.cpuMilli) }, limit, [], "memory-limit"))

@@ -1,8 +1,8 @@
 import { Array as Arr, Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
-import { AdmissionUnavailable, type Address, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
+import { AdmissionUnavailable, type Address, hostOffer, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
 import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvModel, demandOnVolume, enforceDeclaredWidth, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
-import { capacityOf, maximumRequestMemory, POLICY, unattested } from "@dotfiles/opencode-guard/host-supply"
+import { capacityOf, POLICY, unattested } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
 import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
@@ -17,13 +17,21 @@ const cut = (now: number): Observation => ({ now })
 const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
 /** The controller `host status --json` names, and why when it cannot
  * attest one: the file that was missing or out of range. */
-const controllerOf = (observation: Observation) => {
+const controllerOf = (observation: Observation, launcher: Option.Option<Effect.Success<ReturnType<typeof Scope.groupLauncher>>>) => {
   const attestation = envelopeOf(observation)?.attestation
   // Only a Linux host reads its cgroup tree; the Mac's answer is unchanged.
   const io = Option.match(Option.fromNullishOr(attestation), { onNone: () => ({}), onSome: ({ io }) => ({ io }) })
-  if (attestation?.controller === "unattested") return {
-    ...io, controller: "unattested", file: attestation.file, why: attestation.why,
-    admission: `fixed cap: ${POLICY.unattestedSlots} heavy leases at a time, FIFO, through the guard's nice + user scope launcher`,
+  if (attestation?.controller === "unattested") {
+    const scope = Option.flatMap(launcher, ({ scope }) => scope)
+    const through = Option.match(scope, {
+      onNone: () => "the guard's nice + user scope launcher",
+      onSome: (why) => `nice alone: no user scope for this caller (${why})`,
+    })
+    return {
+      ...io, controller: "unattested", file: attestation.file, why: attestation.why,
+      admission: `fixed cap: ${POLICY.unattestedSlots} heavy leases at a time, FIFO, through ${through}`,
+      launcher: Option.match(scope, { onNone: () => "nice + user scope", onSome: () => "nice" }),
+    }
   }
   return { ...io, controller: observation.sample?.qualification ?? "unavailable" }
 }
@@ -304,7 +312,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   ) {
     if (Option.isNone(row.admittedDemand) || args.length === 0) return yield* fail("invalid-request")
     const demand = row.admittedDemand.value
-    const volume = yield* Supply.volumeOf(host, config.cwd)
+    // Which volume the attempt runs on, not how full it is: free space was
+    // the ledger's decision at admission. Re-sampling here made a launch
+    // depend on a read that status and admission never needed (btrfs
+    // metadata on the workbox).
+    const volume = yield* Supply.volumeIdentity(config.cwd)
     if (!demand.volumeReservations.some(({ volumeId }) => volumeId === volume.id)) return yield* fail("unknown-volume")
     return yield* Effect.scoped(Effect.gen(function* () {
       const location = yield* Scope.pinOf(host, row.id, row.generation, demand.cpuMilli, demand.memoryBytes, foreground, placement)
@@ -387,7 +399,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     if (Option.isNone(target)) return yield* fail("unknown-volume")
     const pid = host.kernel.core.symbols.getpid()
     const self = yield* Scope.processIdentity(host, pid)
-    if (Option.isNone(self)) return yield* fail("unavailable")
+    if (Option.isNone(self)) return yield* new AdmissionUnavailable({ reason: "unavailable", detail: `cannot read this process's identity (pid ${pid})` })
     const owner = Supply.ref("waiter", `${host.bootId}:${self.value.pid}:${self.value.start}`)
     yield* native.remember(owner, self.value.pid, self.value.start)
     let reservation = demandOnVolume(demand, target.value.id)
@@ -414,23 +426,40 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     return cold().pipe(Effect.flatMap(attest), Effect.map((observation) => !unattested(envelopeOf(observation))))
   })
 
+  // Whether the sample measured the executing volume's free space, and if
+  // not, the read that failed: a measured host's disk ceiling rests on it.
+  const diskOf = Effect.fn("HostAdmission.diskOf")(function* (sample: Observation["sample"]): Effect.fn.Return<Readonly<Record<string, string>>, never, FileSystem.FileSystem> {
+    if (Option.isNone(target)) return { disk: "unknown-volume" }
+    if (!sample) return { disk: "unsampled" }
+    if (Object.hasOwn(sample.volumes, target.value.id)) return { disk: "measured" }
+    const why = yield* Supply.volumeOf(host, config.cwd).pipe(
+      Effect.as("this sample could not read it; a second read could"),
+      Effect.catchTag("AdmissionUnavailable", ({ detail }) => Effect.succeed(detail ?? "unreadable")))
+    return { disk: "unmeasured", diskWhy: why }
+  })
+
   const hostStatus = Effect.fn("HostAdmission.hostStatus")(function* () {
     const observation = yield* measure().pipe(Effect.flatMap(attest))
     const { sample, now } = observation
-    const limits = envelopeOf(observation)
     const state = yield* ledger.inspect()
+    const offer = hostOffer(observation, Option.map(target, ({ id }) => id))
+    // What a group-placed launch adds to nice for this caller, probed as
+    // the launch probes it: a caller with no user manager on its bus runs
+    // niced without a scope, and status says so.
+    let launcher = Option.none<Effect.Success<ReturnType<typeof Scope.groupLauncher>>>()
+    if (host.platform === "linux" && unattested(envelopeOf(observation))) launcher = Option.some(yield* Scope.groupLauncher())
     return {
       version: 1, hostId: host.hostId, bootId: host.bootId, nowBootMs: now, revision: state.revision, principal: caller.principal,
-      defaultVolume: Option.getOrNull(Option.map(target, ({ id }) => id)),
-      capabilities: { pressure: sample?.pressure ?? "unknown", ...controllerOf(observation), platform: host.platform },
+      defaultVolume: Option.getOrNull(offer.defaultVolume),
+      capabilities: { pressure: sample?.pressure ?? "unknown", ...controllerOf(observation, launcher), ...(yield* diskOf(sample)), platform: host.platform },
       coresMilli: Option.getOrNull(Option.fromNullishOr(sample?.effectiveCpuMilli)),
       runnable: Option.getOrNull(Option.fromNullishOr(sample?.runnable)),
-      maximumCpuMilli: limits?.cpuMilli ?? 0,
+      maximumCpuMilli: offer.maximumCpuMilli,
       freeManagedCpuMilli: Option.getOrNull(Option.map(Option.fromNullishOr(sample), capacityOf)),
       outsideNoncriticalMilli: Option.getOrNull(Option.fromNullishOr(sample?.outsideNoncriticalMilli)),
-      maximumMemoryBytes: Option.getOrElse(Option.map(Option.fromNullishOr(limits), maximumRequestMemory), () => 0),
-      offeredClasses: limits?.purposes ?? [],
-      resourceKeys: limits?.keys ?? [],
+      maximumMemoryBytes: offer.maximumMemoryBytes,
+      offeredClasses: offer.offeredClasses,
+      resourceKeys: offer.resourceKeys,
     }
   })
 
