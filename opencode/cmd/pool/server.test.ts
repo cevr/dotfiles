@@ -145,10 +145,11 @@ interface World {
    * `fails` of them fail before the host admits anything, `hang` holds a call after the host admitted it (the pool
    * never hears back), and `scans` counts the pool's reads of its held-send rows.
    */
-  readonly wakeAccess: { calls: number; fails: number; hang: boolean; scans: number; down: boolean }
+  readonly wakeAccess: { calls: number; fails: number; hang: boolean; scans: number; down: boolean; lookups: boolean }
   /**
    * Where the plugin's held-send rows live: in `storage` by default, or in a file other processes write too
-   * (`sqliteRows`). `down` fails the host's `session.get` and `session.synthetic` as a host that cannot answer does.
+   * (`sqliteRows`). `down` fails the host's `session.get` and `session.synthetic` as a host that cannot answer does; `lookups` fails
+   * `session.get` alone.
    */
   rows: HeldRows
 }
@@ -204,7 +205,7 @@ const world = (): World => {
     stopped: new Set(),
     synthetics: [],
     admitted: new Set(),
-    wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0, down: false },
+    wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0, down: false, lookups: false },
     rows: mapRows(storage),
   }
 }
@@ -341,7 +342,7 @@ const start = <R = never,>(
       options: hostOptions,
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
-          if (state.wakeAccess.down) return Effect.fail(HostDown.make({ sessionID }))
+          if (state.wakeAccess.down || state.wakeAccess.lookups) return Effect.fail(HostDown.make({ sessionID }))
           if (state.missing.has(sessionID)) return Effect.fail(SessionNotFound.make({ sessionID }))
           const source = state.forks.get(sessionID)
           const parentID = state.parents.get(sessionID)
@@ -2734,10 +2735,10 @@ describe("interim hold-wake laws", () => {
     return state
   }
 
-  // (1) Truth to the parent. The host is down (it answers neither `session.get` nor `session.synthetic`) or refuses
-  // every delivery, for any time, and the pool restarts at any point: once the host is back, the child is woken once,
+  // (1) Truth to the parent. The host is down (it answers neither `session.get` nor `session.synthetic`), cannot say
+  // what a session is (`session.get` fails, a delivery would go), or refuses every delivery, for any time, and the pool restarts at any point: once the host is back, the child is woken once,
   // within the longest back-off and a minute.
-  const OUTAGES = ["host down", "deliveries refused"] as const
+  const OUTAGES = ["host down", "session lookups failing", "deliveries refused"] as const
   const RESTARTS = ["no restart", "a restart while down", "a restart after recovery"] as const
   const DURATIONS = [0, 45 * MINUTE, 6 * HOUR] as const
   for (const outage of OUTAGES)
@@ -2752,6 +2753,7 @@ describe("interim hold-wake laws", () => {
             const plugin = yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(first))
             expect(yield* refusalOf(plugin.request("ses_child"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
             if (duration > 0 && outage === "host down") state.wakeAccess.down = true
+            if (duration > 0 && outage === "session lookups failing") state.wakeAccess.lookups = true
             if (duration > 0 && outage === "deliveries refused") state.wakeAccess.fails = 1_000_000
             yield* advance(until - (yield* Clock.currentTimeMillis) + duration, 5 * MINUTE)
             const later = yield* Scope.make()
@@ -2760,6 +2762,7 @@ describe("interim hold-wake laws", () => {
               yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
             }
             state.wakeAccess.down = false
+            state.wakeAccess.lookups = false
             state.wakeAccess.fails = 0
             if (restart === "a restart after recovery") {
               yield* Scope.close(first, Exit.void)
