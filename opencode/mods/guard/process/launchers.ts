@@ -3,12 +3,14 @@ import { Effect, FileSystem, Option, Path, Predicate, Schema } from "effect"
 import { AdmissionUnavailable } from "../admission.ts"
 import { Counter, OpaqueId, type Principal } from "../admission-wire.ts"
 import { type BootHost, linuxBudget, readProcess, ref, WORKLOAD_SLICE } from "./admission.ts"
-import { DEFAULT_LIMITS, heavyArgv, ioniceAvailable, SCOPE_PROBE } from "../launcher.ts"
+import { DEFAULT_LIMITS, heavyArgv, ioniceAvailable } from "../launcher.ts"
+import { probeScope, SCOPE_PROBE_TIMEOUT_MS } from "./scope-probe.ts"
 import { type Actuation, issue, watchdogPlan, watchdogProgram } from "./actuation.ts"
 import { attestLinux, linuxDrain, stopLinux, type LinuxManager } from "./linux-controller.ts"
 
-const unavailable = () => new AdmissionUnavailable({ reason: "unavailable" })
-const unqualified = () => new AdmissionUnavailable({ reason: "unqualified" })
+const unavailable = (detail: string) => new AdmissionUnavailable({ reason: "unavailable", detail })
+/** An unqualified launch step, naming the step. */
+const refuse = (detail: string) => () => new AdmissionUnavailable({ reason: "unqualified", detail })
 
 interface ProcessIdentity {
   readonly pid: number
@@ -74,7 +76,7 @@ const equalDescriptor = (a: Descriptor, b: Descriptor) => a.device === b.device 
 const openDescriptor = (host: BootHost, file: string) => Effect.acquireRelease(
   Effect.suspend(() => {
     const fd = host.kernel.core.symbols.open(cString(file), privateOpen[host.platform])
-    if (fd < 0) return Effect.fail(unavailable())
+    if (fd < 0) return Effect.fail(unavailable(`cannot open the lease lock ${file}`))
     return Effect.succeed(fd)
   }),
   (fd) => Effect.sync(() => { host.kernel.core.symbols.close(fd) }),
@@ -86,10 +88,10 @@ const openDescriptor = (host: BootHost, file: string) => Effect.acquireRelease(
 export const armDescriptor = Effect.fn("LaunchScope.armDescriptor")(function* (host: BootHost, file: string) {
   const fs = yield* FileSystem.FileSystem
   const sys = host.kernel.core.symbols
-  yield* Effect.scoped(fs.open(file, { flag: "wx", mode: 0o600, noFollow: true })).pipe(Effect.mapError(unqualified))
+  yield* Effect.scoped(fs.open(file, { flag: "wx", mode: 0o600, noFollow: true })).pipe(Effect.mapError(refuse(`cannot create the lease lock ${file}`)))
   const fd = yield* openDescriptor(host, file)
   const stamp = descriptorOf(host, file, fd)
-  if (Option.isNone(stamp) || sys.flock(fd, flockExclusiveNonblocking) !== 0) return yield* unqualified()
+  if (Option.isNone(stamp) || sys.flock(fd, flockExclusiveNonblocking) !== 0) return yield* refuse(`cannot lock the lease lock ${file}`)()
   return { fd, descriptor: stamp.value }
 })
 
@@ -104,20 +106,20 @@ export const descriptorLiveness = Effect.fn("LaunchScope.descriptorLiveness")(fu
 
 const linuxManager = Effect.fn("LaunchScope.manager")(function* () {
   const fs = yield* FileSystem.FileSystem
-  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(unqualified))
+  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(refuse(`cannot read ${file}`)))
   return {
     workloadRoot: linuxBudget().pipe(Effect.flatMap(({ budget }) => Option.match(budget, {
-      onNone: () => Effect.fail(unqualified()), onSome: ({ control }) => Effect.succeed(control),
+      onNone: () => Effect.fail(refuse(`no attested ${WORKLOAD_SLICE} to place the unit in`)()), onSome: ({ control }) => Effect.succeed(control),
     }))),
     currentGroup: read("/proc/self/cgroup"),
     read,
-    exists: (file) => fs.exists(file).pipe(Effect.mapError(unqualified)),
+    exists: (file) => fs.exists(file).pipe(Effect.mapError(refuse(`cannot test ${file}`))),
     stop: (unit) => readProcess(["/usr/bin/systemctl", "--user", "--no-block", "stop", unit]).pipe(Effect.asVoid),
   } satisfies LinuxManager<FileSystem.FileSystem>
 })
 
 export const stopOwnedCgroup = Effect.fn("LaunchScope.stopOwnedCgroup")(function* (host: BootHost, pin: ProcessPin) {
-  if (host.platform !== "linux" || Option.isNone(pin.cgroup)) return yield* unqualified()
+  if (host.platform !== "linux" || Option.isNone(pin.cgroup)) return yield* refuse("only a Linux attempt placed in its own cgroup unit is stopped by that unit")()
   // This process still inhabits the exact one-use unit; its native binding
   // cannot refer to a future reuse. The user manager drives KillMode,
   // including members that changed their POSIX group.
@@ -141,43 +143,43 @@ export const watchOwnGroup = Effect.fn("LaunchScope.watchOwnGroup")(function* (
   host: BootHost, leader: number, spawnNative: typeof spawnWatchdog = spawnWatchdog,
 ) {
   const sys = host.kernel.core.symbols
-  if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* unqualified()
+  if (sys.getpid() !== leader || sys.getpgrp() !== leader) return yield* refuse("this process does not lead its own process group")()
   const dispatch = watchdogPlan({ source: "pipe", armed: true, order: "eof" })
   let waitForExit = false
   const watcher = yield* Effect.acquireRelease(
-    Effect.try({ try: () => spawnNative(watchdogProgram(dispatch)), catch: unqualified }),
+    Effect.try({ try: () => spawnNative(watchdogProgram(dispatch)), catch: refuse("cannot start the group watchdog (/bin/sh)") }),
     (child) => Effect.sync(() => {
       if (waitForExit) child.unref()
       else child.stdin.end()
     }),
   )
   const send = (line: string) => Effect.suspend(() => {
-    if (Number.isInteger(watcher.exitCode) || watcher.signalCode) return Effect.fail(unqualified())
+    if (Number.isInteger(watcher.exitCode) || watcher.signalCode) return Effect.fail(refuse("the group watchdog has exited")())
     return Effect.try({
       try: () => {
         watcher.stdin.write(`${line}\n`)
         watcher.stdin.flush()
       },
-      catch: unqualified,
+      catch: refuse("cannot write to the group watchdog"),
     })
   })
   const ack = yield* Effect.acquireUseRelease(
     Effect.sync(() => watcher.stdout.getReader()),
-    (reader) => Effect.tryPromise({ try: () => reader.read(), catch: unqualified }),
+    (reader) => Effect.tryPromise({ try: () => reader.read(), catch: refuse("cannot read the group watchdog's answer") }),
     (reader) => Effect.sync(() => reader.releaseLock()),
-  ).pipe(Effect.timeout(1000), Effect.mapError(unqualified))
-  if (ack.done || new TextDecoder().decode(ack.value) !== "ready\n") return yield* unqualified()
+  ).pipe(Effect.timeout(1000), Effect.mapError(refuse("the group watchdog did not answer ready within 1 s")))
+  if (ack.done || new TextDecoder().decode(ack.value) !== "ready\n") return yield* refuse("the group watchdog did not answer ready")()
   const stop = send("stop").pipe(Effect.catchTag("AdmissionUnavailable", () => Effect.suspend(() => {
       // The group is still pinned by *this* live leader. A fresh in-group
       // sender is safe even if the original watcher was independently lost.
-    if (!Number.isInteger(watcher.exitCode) && !watcher.signalCode) return Effect.fail(unqualified())
+    if (!Number.isInteger(watcher.exitCode) && !watcher.signalCode) return Effect.fail(refuse("the group watchdog is lost while it still runs")())
     const plan = watchdogPlan({ source: "leader", ownGroup: sys.getpgrp() === leader, watchdog: "gone" })
-    if (plan.length === 0) return Effect.fail(unqualified())
+    if (plan.length === 0) return Effect.fail(refuse("no leader-side stop plan for this group")())
     return Effect.try({ try: () => {
       const replacement = spawnNative(watchdogProgram(plan))
       replacement.stdin.write("armed\nstop\n")
       replacement.stdin.end()
-    }, catch: unqualified })
+    }, catch: refuse("cannot start a replacement group watchdog (/bin/sh)") })
   })))
   return { arm: send("armed"), disarm: send("drained").pipe(Effect.ignore), stop, onLauncherExit: Effect.sync(() => { waitForExit = true }) }
 })
@@ -224,7 +226,8 @@ export const callerOf = Effect.fn("LaunchScope.caller")(function* (host: BootHos
   const core = host.kernel.core.symbols
   const pid = core.getppid()
   const identity = yield* processIdentity(host, pid)
-  if (Option.isNone(identity) || identity.value.uid !== core.getuid()) return yield* unavailable()
+  if (Option.isNone(identity) || identity.value.uid !== core.getuid())
+    return yield* unavailable(`cannot read the calling process's identity (pid ${pid}) as this user`)
   const scopeId = ref("peer", `${host.bootId}:${identity.value.uid}:${identity.value.pid}:${identity.value.start}`)
   const principal: Principal = { kind: "external-runner", scopeId, epoch: identity.value.start }
   return { principal, owner: scopeId, ...identity.value }
@@ -353,9 +356,9 @@ export const pinOf = Effect.fn("LaunchScope.pin")(function* (
   const grouped = placement === "group"
   if (grouped && sys.getpgrp() !== pid &&
     ((sys.isatty(0) === 1 && !Option.exists(foreground, (group) => group === sys.getpgrp())) || sys.setpgid(0, 0) !== 0))
-    return yield* unqualified()
+    return yield* refuse("cannot lead a process group of its own (setpgid failed, or the terminal's foreground group is another)")()
   const self = yield* processIdentity(host, pid)
-  if (Option.isNone(self) || (grouped && self.value.group !== pid)) return yield* unqualified()
+  if (Option.isNone(self) || (grouped && self.value.group !== pid)) return yield* refuse(`cannot read its own identity as group leader (pid ${pid})`)()
   let cgroup = Option.none<string>()
   if (!grouped) {
     const actual = yield* attestLinux(yield* linuxManager(), unitOf(id, generation), cpuMilli, memoryBytes)
@@ -402,9 +405,19 @@ export const payloadArgv = (host: BootHost, argv: ReadonlyArray<string>, nice = 
  * and CPU weight. On the Mac, `payloadArgv` as before. */
 export const groupPayloadArgv = Effect.fn("LaunchScope.groupPayload")(function* (host: BootHost, argv: ReadonlyArray<string>) {
   if (host.platform !== "linux") return payloadArgv(host, argv)
-  const scope = yield* readProcess(["/usr/bin/systemd-run", ...SCOPE_PROBE.slice(1)]).pipe(
-    Effect.as(true), Effect.orElseSucceed(() => false))
-  return heavyArgv(argv, DEFAULT_LIMITS, { scope, ionice: ioniceAvailable() })
+  const { scope, ionice } = yield* groupLauncher()
+  return heavyArgv(argv, DEFAULT_LIMITS, { scope: scope.kind === "scope", ionice })
+})
+
+/** What the Linux group launcher adds to `nice` for this caller. Status
+ * and each launch decide by this one function: a launch whose probe finds
+ * no scope, or times out (`probeScope`, bounded by SCOPE_PROBE_TIMEOUT_MS),
+ * runs niced without one, under the same cap; status reports which
+ * (`capabilities.launcher`), and for a timed-out probe says each launch
+ * probes again. */
+export const groupLauncher = Effect.fn("LaunchScope.groupLauncher")(function* () {
+  const scope = yield* probeScope((argv) => readProcess(argv, SCOPE_PROBE_TIMEOUT_MS * 2))
+  return { scope, ionice: ioniceAvailable() }
 })
 
 export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
@@ -416,7 +429,7 @@ export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
       if (Predicate.isNumber(inherited)) return spawn([...argv], { ...base, stdio: ["inherit", "inherit", "inherit", inherited] })
       return spawn([...argv], { ...base, stdio: ["inherit", "inherit", "inherit"] })
     },
-    catch: unavailable,
+    catch: (error) => unavailable(`cannot start ${argv[0] ?? "the command"}: ${String(error)}`),
   })
   const port: Actuation = {
     dispatch: (intent) => Effect.sync(() => {
@@ -425,7 +438,7 @@ export const spawnOwned = Effect.fn("LaunchScope.spawn")(function* (
     }),
   }
   return {
-    exited: Effect.tryPromise({ try: () => child.exited, catch: unavailable }),
+    exited: Effect.tryPromise({ try: () => child.exited, catch: () => unavailable(`${argv[0] ?? "the command"}: no exit status`) }),
     stop: issue(port, [{ target: "retained-child", signal: "TERM" }]),
   }
 })
@@ -458,10 +471,10 @@ export const offerToService = Effect.fn("LaunchScope.offer")(function* (host: Bo
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = runtimeParent(host)
-  const stat = yield* fs.lstat(root).pipe(Effect.mapError(unqualified))
+  const stat = yield* fs.lstat(root).pipe(Effect.mapError(refuse(`cannot stat ${root}`)))
   if (stat.type !== "Directory" || (stat.mode & 0o077) !== 0 || Option.getOrUndefined(stat.uid) !== host.kernel.core.symbols.getuid())
-    return yield* unqualified()
-  const directory = yield* fs.makeTempDirectoryScoped({ directory: root, prefix: "host-admit-" }).pipe(Effect.mapError(unqualified))
+    return yield* refuse(`${root} is not this user's private runtime directory (0700, owned by uid ${host.kernel.core.symbols.getuid()})`)()
+  const directory = yield* fs.makeTempDirectoryScoped({ directory: root, prefix: "host-admit-" }).pipe(Effect.mapError(refuse(`cannot make the offer directory under ${root}`)))
   const socket = path.join(directory, "start")
   const encoded = encodeOffer(offer)
   if (encoded.length > MAX_OFFER) return yield* new AdmissionUnavailable({ reason: "invalid-request" })
@@ -474,7 +487,7 @@ export const offerToService = Effect.fn("LaunchScope.offer")(function* (host: Bo
         peer.end(encoded)
       } } })
     },
-    catch: unqualified,
+    catch: refuse(`cannot listen on ${socket}`),
   }), (server) => Effect.sync(() => server.stop(true)))
   return socket
 })
@@ -490,15 +503,15 @@ const receive = (socket: string) => Effect.callback<string, AdmissionUnavailable
       data: (each, bytes) => {
         text += decoder.decode(bytes, { stream: true })
         if (text.length > MAX_OFFER) {
-          resume(Effect.fail(unqualified()))
+          resume(Effect.fail(refuse(`the offer on ${socket} is over ${MAX_OFFER} bytes`)()))
           each.end()
         }
       },
       end: () => resume(Effect.succeed(text + decoder.decode())),
-      connectError: () => resume(Effect.fail(unqualified())),
-      error: () => resume(Effect.fail(unqualified())),
+      connectError: () => resume(Effect.fail(refuse(`cannot connect to ${socket}`)())),
+      error: () => resume(Effect.fail(refuse(`the offer socket ${socket} failed`)())),
     },
-  }).catch(() => resume(Effect.fail(unqualified())))
+  }).catch(() => resume(Effect.fail(refuse(`cannot connect to ${socket}`)())))
   return Effect.sync(() => { if (Option.isSome(peer)) peer.value.end() })
 })
 
@@ -508,10 +521,13 @@ export const takeOffer = Effect.fn("LaunchScope.takeOffer")(function* (host: Boo
   const directory = path.dirname(socket)
   const parent = runtimeParent(host)
   if (host.platform !== "linux" || path.dirname(directory) !== parent || path.basename(socket) !== "start" ||
-    !path.basename(directory).startsWith("host-admit-")) return yield* unqualified()
-  const stat = yield* fs.lstat(directory).pipe(Effect.mapError(unqualified))
+    !path.basename(directory).startsWith("host-admit-")) return yield* refuse(`${socket} is not a host-admit offer socket in this user's runtime directory`)()
+  const stat = yield* fs.lstat(directory).pipe(Effect.mapError(refuse(`cannot stat ${directory}`)))
   if (stat.type !== "Directory" || (stat.mode & 0o077) !== 0 || Option.getOrUndefined(stat.uid) !== host.kernel.core.symbols.getuid())
-    return yield* unqualified()
-  const text = yield* receive(socket).pipe(Effect.timeout(1000), Effect.mapError(unqualified))
-  return yield* decodeOffer(text).pipe(Effect.mapError(unqualified))
+    return yield* refuse(`${directory} is not a private directory of this user`)()
+  const text = yield* receive(socket).pipe(Effect.timeout(1000), Effect.mapError((error) => {
+    if (error instanceof AdmissionUnavailable) return error
+    return refuse(`no offer on ${socket} within 1 s`)()
+  }))
+  return yield* decodeOffer(text).pipe(Effect.mapError(refuse(`the offer on ${socket} is not a v1 offer`)))
 })

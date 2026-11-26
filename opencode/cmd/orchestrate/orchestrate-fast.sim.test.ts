@@ -61,8 +61,9 @@ const SOL = sol("gpt-6.1-sol", "2026-09-29")
 const OPUS = offered("anthropic", "claude-opus-5-5", { family: "claude-opus", time: { released: Date.parse("2026-10-01") } })
 const CATALOG = [FIRST, fastMode(FIRST), OPUS, fastMode(OPUS), OTHER, fastMode(OTHER), PLAIN, sol("gpt-6-sol", "2026-06-01"), SOL, fastMode(SOL)]
 
-/** One request as a test reads it back: the agent's, its model, its text. */
+/** One request as a test reads it back: its kind (a turn's, a title's, a compaction's), the agent's, its model, its text. */
 interface Seen {
+  readonly kind: World.Kind
   readonly agent: string
   readonly model: World.ModelRef
   readonly text: string
@@ -104,7 +105,7 @@ const childAnswer = (s: string, asks: Asks) => {
 const script =
   (seen: Array<Seen>, asks: Asks, child: () => string): World.Script =>
   (request) => {
-    seen.push({ agent: request.agent, model: request.model, text: request.text })
+    seen.push({ kind: request.kind, agent: request.agent, model: request.model, text: request.text })
     const s = request.text
     if (request.kind === "title") return World.say("export check")
     // A worker's request carries its briefs, never the parent's prompt.
@@ -179,7 +180,8 @@ const boot = (seed: number, asks: Asks, pace: Pace = "room", rootModel: World.Ca
     root = yield* world.session(WORK)
     yield* world.prompt(root, ASK)
     yield* world.until(() => world.messages(root).some((message) => message.type === "assistant" && message.text === HEARD), 120_000)
-    const parent = seen.flatMap((request) => Arr.filter([request.text], (text) => text.includes(ASK))).at(-1)
+    // The root's last turn: a title request carries the prompt too, and the seed decides whether it comes last.
+    const parent = seen.flatMap((request) => Arr.filter([request.text], (text) => request.kind === "primary" && text.includes(ASK))).at(-1)
     const worker = (brief: string) => seen.flatMap((request) => Arr.filter([request.model], () => !request.text.includes(ASK) && request.text.includes(brief)))
     const grand = seen.flatMap((request) => Arr.filter([request.model], () => request.text.includes(GRAND) && !request.text.includes(BRIEF)))
     return { calls, worker, grand, parent: Option.getOrElse(Option.fromUndefinedOr(parent), () => "") }

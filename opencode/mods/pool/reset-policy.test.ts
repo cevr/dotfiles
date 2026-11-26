@@ -16,7 +16,7 @@ const option = (from = 1, preservesWeekly = true, resetIn = 3 * day): ClaimOptio
   weekUsed: from, weekResetAt: Option.some(now + resetIn), preservesWeekly,
 })
 const situation = (running = 1): ClaimSituation => ({
-  now, held: 0, running, hosts: 1, settling: false, pushed: false,
+  now, held: 0, running, hosts: 1, settling: false, pushed: false, room: false,
   accounts: [{ credentialID: "a", freeAt: Option.none(), windows: [{ name: "7d", used: 1, resetAt: now + 3 * day, burn: 0.001 }] }],
 })
 

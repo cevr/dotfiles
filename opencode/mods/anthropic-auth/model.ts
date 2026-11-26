@@ -3,7 +3,7 @@
 // Claude Code version reported, and the sign-in and refresh of a Claude
 // Pro/Max login. The HTTP hooks (`fetch/exchange.ts`) and the composition
 // root (`cmd/anthropic-auth/server.ts`) call it.
-import { Clock, Context, Deferred, Effect, Exit, Layer, Option } from "effect"
+import { Clock, Context, Deferred, Effect, Exit, Layer, Option, Result } from "effect"
 import type { SourcedCredential } from "./credential-source.ts"
 import {
   AUTHORIZE_INSTRUCTIONS,
@@ -31,7 +31,9 @@ import {
   refusalOf,
   retryAfterSeconds,
   SIGNIN_RETRY_MS,
+  unread,
   USAGE_REFRESH_AFTER_MS,
+  type UsageRead,
 } from "./quota.ts"
 import { type ConnectionInfo, createConnectionLabel, type RateLimitCategory } from "./rate-limit.ts"
 import {
@@ -54,7 +56,6 @@ import {
   RefreshFailed,
   TokenEndpoint,
   UsageEndpoint,
-  type UsageFailed,
 } from "./service.ts"
 import {
   CLAUDE_CODE_VERSION,
@@ -127,8 +128,12 @@ export class Auth extends Context.Service<
     readonly refused: (refusal: Refusal) => Effect.Effect<void>
     /** The newest reading of a credential. */
     readonly reading: (credentialID: string) => Effect.Effect<QuotaReading | undefined>
-    /** Read the usage endpoint for one credential now: the pool's sweep. */
-    readonly usage: (credentialID: string) => Effect.Effect<QuotaReading | undefined, LoginFailed | LoginRefused | UsageFailed>
+    /**
+     * Read the usage endpoint for one credential now: the pool's sweep. No
+     * reading says why (`UsageUnread`): the endpoint's refusal by its class,
+     * a read that did not complete (`network`), no login to read with (`signed-out`).
+     */
+    readonly usage: (credentialID: string) => Effect.Effect<UsageRead>
     /**
      * Claim the reset grant `grantID` on a credential's account, under the
      * idempotency key `requestID`. A claim that reset the windows drops the
@@ -328,11 +333,15 @@ export const layer = (config: Config) =>
           )
         })
 
-      const usage = (credentialID: string) =>
+      /** A reading the plugin holds as a read: none held is a login with no token to read with. */
+      const kept = (credentialID: string): UsageRead =>
+        Option.match(Option.fromUndefinedOr(readings.get(credentialID)), { onNone: () => unread("signed-out"), onSome: (reading) => Result.succeed(reading) })
+
+      const usage = (credentialID: string): Effect.Effect<UsageRead> =>
         Effect.gen(function* () {
           const active = yield* usageLogin(credentialID)
-          if (active === undefined) return undefined
-          if (active.type === "skip") return readings.get(credentialID)
+          if (active === undefined) return unread("signed-out")
+          if (active.type === "skip") return kept(credentialID)
           const answer = yield* usageEndpoint.read(active.access, formatUserAgent(currentVersion()))
           const now = yield* Clock.currentTimeMillis
           if (answer.status === "unauthorized") {
@@ -343,24 +352,31 @@ export const layer = (config: Config) =>
               // A source refreshes the rejected token on its next resolve.
               until: Math.max(now + MIN_UNAUTHORIZED_HOLD_MS, active.sourced ? 0 : active.expires - HOST_REFRESH_WINDOW_MS),
             })
-            return readings.get(credentialID)
+            return kept(credentialID)
           }
-          if (answer.status === "unread") return undefined
+          if (answer.status === "unread") return unread(answer.cause, Option.fromUndefinedOr(answer.retryAfterMs))
           const reading = readUsageBody(answer.body, now)
           // A shape change is diagnosable from the key names alone; no value, no token is logged.
           if (reading === undefined) {
             yield* Effect.logWarning(`${LOG_PREFIX} the usage answer did not read (${usageKeys(Option.some(answer.body))}); the read counts as failed`)
-            return undefined
+            return unread("decode")
           }
           // A usage read says nothing of a refusal: a held credential stays
           // held until its refusal ends.
           const previous = readings.get(credentialID)?.refusal
           const measured = { ...reading, usage: { at: now, samples: 1 } } satisfies QuotaReading
-          const kept =
+          const read =
             previous && (previous.until === undefined || previous.until > now) ? { ...measured, refusal: previous } : measured
-          yield* publish(credentialID, kept)
-          return kept
-        })
+          yield* publish(credentialID, read)
+          return Result.succeed(read)
+        }).pipe(
+          // No login to read with, or a read that did not complete: the class is kept, never the error's text.
+          Effect.catchTags({
+            LoginFailed: () => Effect.succeed(unread("signed-out")),
+            LoginRefused: () => Effect.succeed(unread("signed-out")),
+            UsageFailed: () => Effect.succeed(unread("network")),
+          }),
+        )
 
       const refresh = (credential: OAuthCredential): Effect.Effect<OAuthCredential, RefreshFailed> =>
         Effect.gen(function* () {

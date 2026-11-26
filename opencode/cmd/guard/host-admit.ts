@@ -223,8 +223,9 @@ export const runProcessMain = (args: ReadonlyArray<string>, ports: Ports = {}) =
   let foreground = Option.none<ForegroundInterrupt>()
   let interrupted = 1
   const task = Effect.runFork(main(args, (handler) => { foreground = handler }, ports).pipe(
-    Effect.catchTag("AdmissionUnavailable", ({ reason, storeVersion }) => print({
+    Effect.catchTag("AdmissionUnavailable", ({ reason, storeVersion, detail }) => print({
       version: 1, state: "refused", reason, qualifiedForm: qualifiedForm(reason, storeVersion),
+      ...Option.match(Option.fromNullishOr(detail), { onNone: () => ({}), onSome: (cause) => ({ detail: cause }) }),
     }).pipe(Effect.as(2))),
     Effect.provide(BunServices.layer),
   ))

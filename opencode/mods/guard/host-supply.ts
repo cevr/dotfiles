@@ -97,6 +97,14 @@ export const POLICY = {
   reserveCpuMilli: 2000,
   reserveMemoryBytes: 2 ** 30,
   freshnessMs: 2000,
+  // How long the host's last reading of a volume binds the capped
+  // (unattested) path. A reading that shows a volume short stops new leases
+  // on it until a newer reading shows room or this bound passes; only then,
+  // with no recent reading anywhere on the host, is the volume unmeasured
+  // and admitted under the cap. A failed or timed-out read is no new fact.
+  // Waiters re-sample about every 500 ms, so a freed volume shows room
+  // within a sample of any successful read.
+  readingMs: 60_000,
   queueMs: 60 * 60_000,
   launchMs: 5000,
   supervisionMs: 15_000,

@@ -6,8 +6,8 @@
 //
 // The swap holds twice. Each agent of mode `subagent` gets a deny of
 // `ask_user_async`, and each of mode `primary` a deny of `ask_orchestrator`,
-// pushed last: OpenCode's rules match last-first (packages/core/src/tool.ts
-// `whollyDisabled`, permission.ts `evaluate`, both `findLast`), so a role's
+// pushed last: a later blanket rule replaces every earlier one (the fork's
+// permission/policy.ts `isActionDenied` and `evaluate`), so a role's
 // earlier allow does not undo it; an agent of mode `all` keeps both. And
 // whatever the agent, a call of the wrong one is refused before it runs
 // (`execute.before`), naming the right one: the session's parent decides.

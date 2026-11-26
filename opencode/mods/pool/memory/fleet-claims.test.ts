@@ -18,7 +18,7 @@
 //   reading right before the send: nothing more is spent.
 // - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Clock, Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Fiber, Layer, Option, Result, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
@@ -104,7 +104,7 @@ const hostQuota = (account: Provider, view: View) =>
       Effect.sync(() => {
         const read = view.snapshot ?? account.reading()
         if (!view.lags) view.snapshot = undefined
-        return read
+        return Result.succeed(read)
       }),
     readings: () => Stream.empty,
     claim: (_pool, input) =>
@@ -166,9 +166,14 @@ const fleet = (account: Provider) => {
         LedgerTest.layer(),
         PeersTest.layer(new Map([[other.name, { down: "not polled here" }]]), (peer, message) => {
           if (self.link === "down") return Effect.fail(new PeerUnreachable({ peer, message: "connection refused" }))
-          if (self.link === "silent" || other.pool === undefined) return Effect.never
-          if (message._tag === "Ask") other.onAsk?.()
-          return other.pool.lease(message)
+          if (self.link === "silent") return Effect.never
+          return Option.match(Option.fromUndefinedOr(other.pool), {
+            onNone: () => Effect.never,
+            onSome: (pool) => {
+              if (message._tag === "Ask") other.onAsk?.()
+              return pool.lease(message)
+            },
+          })
         }),
         FleetTest.layer(),
         ResetsTest.layer(self.store),
@@ -214,11 +219,14 @@ const verifierCase = (now: number) => {
 
 const records = (pool: Model.Pool["Service"]) => Effect.map(pool.resets, (status) => status.claims)
 
-/** The claims a host recorded unsent for want of a peer's agreement; it asks the owner nothing. */
+/** The tries a host did not send (`Reset.unsent`): none of them a claim made. */
+const unsent = (pool: Model.Pool["Service"]) => Effect.map(pool.resets, (status) => status.resets.filter((reset) => Option.isSome(Option.fromUndefinedOr(reset.unsent))))
+
+/** The claims a host recorded unsent for want of a peer's agreement, to go again; it asks the owner nothing. */
 const unagreed = (host: Host) =>
   Effect.gen(function* () {
     expect(host.owner.asked).toEqual([])
-    return (yield* records(host.pool!)).filter((claim) => claim.outcome === "failed" && /^not sent: no agreement, .* unreachable$/.test(claim.message ?? ""))
+    return (yield* unsent(host.pool!)).filter((reset) => reset.stage === "failed" && reset.unsent?.why === "unreachable" && /^not sent: no agreement, .* unreachable$/.test(reset.message ?? ""))
   })
 
 describe("one account read by two hosts, claimed at one provider, no host the master", () => {
@@ -238,11 +246,13 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         const made = all.filter((claim) => claim.outcome === "reset")
         expect(made).toHaveLength(1)
         expect(made[0]?.lease).toMatch(/^granted by (mac|workbox)$/)
-        for (const other of all.filter((claim) => claim.outcome !== "reset")) expect(other.message).toMatch(/^(backed off: |not sent: )/)
+        // The one claim made is the only claim recorded: the other host's try is no claim, recorded unsent.
+        expect(all.filter((claim) => claim.outcome !== "reset")).toEqual([])
+        for (const other of [...(yield* unsent(mac)), ...(yield* unsent(workbox))]) expect(other.message).toMatch(/^(backed off: |not sent: )/)
       }),
     ))
 
-  test("the other host offline (no answer): no claim sent, recorded failed naming it, nothing asked (it goes again later)", () =>
+  test("the other host offline (no answer): no claim sent, recorded unsent naming it, nothing asked (it goes again later)", () =>
     scoped(
       Effect.gen(function* () {
         const now = stamp()
@@ -358,8 +368,11 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         yield* workbox.sweep
         // The one spent is the app's: the workbox read the account again and sent nothing.
         expect(account.spent().map((claim) => claim.requestID)).toEqual(["claude-app"])
-        const [record] = yield* records(workbox)
-        expect(record).toMatchObject({ outcome: "nothing-to-reset", message: expect.stringMatching(/^not sent: /), lease: "granted by mac" })
+        // Recorded as what it was: not sent, the send-time check's, never the provider's nothing-to-reset, and no claim made.
+        expect(yield* records(workbox)).toEqual([])
+        const [record] = yield* unsent(workbox)
+        expect(record).toMatchObject({ stage: "settled", unsent: { why: "stale" }, message: expect.stringMatching(/^not sent: .*; granted by mac$/) })
+        expect(record?.outcome).toBeUndefined()
       }),
     ))
 })
@@ -423,7 +436,8 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
           hosts.workbox.view.lags = true
           yield* workbox.sweep
           expect(account.sent).toHaveLength(1)
-          const [record] = yield* records(workbox)
+          const [record] = yield* unsent(workbox)
+          expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
           expect(record?.message).toMatch(/^backed off: .*may not show yet/)
         }),
       ))
@@ -450,7 +464,8 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
-        const [record] = yield* records(workbox)
+        const [record] = yield* unsent(workbox)
+        expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
         expect(record?.message).toMatch(/^backed off: mac: a claim sent on Claude A at .* may not show yet/)
       }),
     ))
@@ -483,8 +498,8 @@ describe("a host's own claim (test strength, round 5)", () => {
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
-        const made = yield* records(workbox)
-        expect(made.some((record) => /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
+        const made = yield* unsent(workbox)
+        expect(made.some((record) => record.unsent?.why === "backed-off" && /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
       }),
     ))
 })
@@ -528,7 +543,8 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
         const [mac] = yield* hosts.start
         yield* mac.sweep
         expect(account.spent()).toHaveLength(1)
-        const [record] = yield* records(mac)
+        const [record] = yield* unsent(mac)
+        expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
         expect(record?.message).toMatch(/^backed off: workbox: a claim sent on Claude A at .* may not show yet/)
       }),
     ))
@@ -545,5 +561,131 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
         expect(account.sent).toEqual([])
         expect([...hosts.mac.owner.asked, ...hosts.workbox.owner.asked]).toEqual([])
       }),
+    ))
+})
+
+describe("two accounts, two hosts each holding work (q223 across the fleet)", () => {
+  /**
+   * Accounts A and B at the provider, both 5h spent with a 5-hour grant in hand; each host lists both (its own
+   * login ids) and reads them at the clock's time. A claim clears the account's 5-hour window.
+   */
+  const pair = (now: { at: number }) => {
+    const grant = (id: string): ResetCredit => ({ id, count: 1, usable: true, expiresAt: now.at + 120 * DAY, clears: ["five_hour"] })
+    const accounts = new Map(["a", "b"].map((name) => [name, { fiveHour: 1, grants: new Map([[`grant-${name}`, 1]]) }]))
+    const spent: Array<string> = []
+    const of = (credentialID: string) => accounts.get(credentialID.slice(0, 1))!
+    const reading = (credentialID: string): QuotaReading => {
+      const account = of(credentialID)
+      const credits = [...account.grants].map(([id, count]) => ({ ...grant(id), count, usable: count > 0 }))
+      return {
+        at: now.at,
+        windows: [
+          { name: "5h", utilization: account.fiveHour, resetAt: now.at + 2 * HOUR },
+          { name: "7d", utilization: 0.4, resetAt: now.at + 3 * DAY },
+        ],
+        resets: { available: credits.filter((credit) => credit.usable).length, credits },
+      }
+    }
+    const quota = Layer.succeed(Quota, Quota.of({
+      reading: (_pool, credentialID) => Effect.sync(() => reading(credentialID)),
+      usage: (_pool, credentialID) => Effect.sync(() => Result.succeed(reading(credentialID))),
+      readings: () => Stream.empty,
+      claim: (_pool, input) =>
+        Effect.sync((): ClaimAnswer => {
+          const account = of(input.credentialID)
+          const left = account.grants.get(input.creditID) ?? 0
+          if (left <= 0) return { outcome: "no-credit" }
+          account.grants.set(input.creditID, left - 1)
+          account.fiveHour = 0
+          spent.push(input.credentialID.slice(0, 1))
+          return { outcome: "reset" }
+        }),
+    }))
+    return { accounts, spent, quota }
+  }
+
+  test("both hosts hold a start with both accounts spent: one refilled; the refilled one takes both hosts' work, the other stays in hand past the lease and the wait; a start it cannot take refills the other, once", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = { at: Date.parse("2026-11-25T19:00:00Z") }
+        yield* TestClock.setTime(now.at)
+        const world = pair(now)
+        const pools = new Map<string, Model.Pool["Service"]>()
+        const build = (self: string, other: string) =>
+          Effect.gen(function* () {
+            const integration: LoginsTest.Integration = {
+              connections: new Map([[ANTHROPIC, ["a", "b"].map((name) => ({ type: "credential" as const, method: "oauth" as const, id: `${name}-${self}`, label: `Claude ${name.toUpperCase()}` }))]]),
+              marks: [],
+            }
+            const config: Model.Config = {
+              providers: { anthropic: ANTHROPIC },
+              cacheLifeMs: CACHE_LIFE_MS,
+              resets: { anthropic: "claude" },
+              fleet: { ...Model.DEFAULT_FLEET, host: self, leaseMs: LEASE_MS, leaseWaitMs: WAIT_MS },
+            }
+            const externals = Layer.mergeAll(
+              LoginsTest.layer(integration),
+              world.quota,
+              LedgerTest.layer(),
+              PeersTest.layer(new Map([[other, { down: "not polled here" }]]), (_peer, message) =>
+                Effect.suspend(() => Option.match(Option.fromUndefinedOr(pools.get(other)), { onNone: () => Effect.never, onSome: (pool) => pool.lease(message) }))),
+              FleetTest.layer(),
+              ResetsTest.layer(new Map()),
+              OwnerTest.layer(OwnerTest.empty()),
+              Layer.succeed(Lease.Leases, Lease.make({ quietMs: 0 })),
+            )
+            const services = yield* Layer.build(Model.layer(config).pipe(Layer.provide(externals)))
+            const pool = Context.get(services, Model.Pool)
+            pools.set(self, pool)
+            return pool
+          })
+        const mac = yield* build("mac", "workbox")
+        const workbox = yield* build("workbox", "mac")
+        const hosts = [["mac", mac], ["workbox", workbox]] as const
+        /** A start of the session asked for on the pool, of no model in particular. */
+        const start = (pool: Model.Pool["Service"], sessionID: string) => pool.pace("anthropic", undefined, sessionID)
+        const sweepBoth = Effect.all([mac.sweep, workbox.sweep], { concurrency: 2, discard: true })
+        const at = (ms: number) => Effect.gen(function* () {
+          now.at += ms
+          yield* TestClock.adjust(ms)
+        })
+
+        // Each host: three agents busy and a start held, both accounts spent.
+        for (const [name, pool] of hosts) {
+          yield* Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_${name}_${n}`, "anthropic"), { discard: true })
+          expect((yield* start(pool, `ses_${name}`)).ok).toBe(false)
+        }
+        yield* Effect.yieldNow
+        yield* sweepBoth
+        // One refill across the fleet: the other host's claim waits on the lease, then on the first refill showing.
+        expect(world.spent).toHaveLength(1)
+        const first = world.spent[0]!
+        const other = ["a", "b"].filter((name) => name !== first).join("")
+
+        // A minute on, the refill shows in both hosts' readings; each host's held start asks again and goes out.
+        yield* at(MINUTE)
+        for (const [name, pool] of hosts) expect((yield* start(pool, `ses_${name}`)).ok).toBe(true)
+        yield* sweepBoth
+        // Past the lease's SETTLE_MS and the wait's WAIT_MS (5 min each): the refilled account takes both hosts' work.
+        for (const step of [2, 3, 4, 5, 6]) {
+          yield* at(MINUTE)
+          for (const [name, pool] of hosts) yield* pool.stepStarted(`ses_${name}_${step}`, "anthropic")
+          yield* sweepBoth
+        }
+        expect(world.spent).toEqual([first])
+        // Not even decided: no host weighed a claim on the other account (a lease refusal alone is not the rule).
+        const label = `Claude ${other.toUpperCase()}`
+        for (const [, pool] of hosts) expect((yield* pool.resets).claims.filter((claim) => claim.label === label)).toEqual([])
+
+        // The refilled account at its 5-hour hold line: a start on the workbox it cannot take refills the other, once.
+        world.accounts.get(first)!.fiveHour = 0.95
+        yield* at(MINUTE)
+        expect((yield* start(workbox, "ses_workbox")).ok).toBe(false)
+        yield* Effect.yieldNow
+        yield* sweepBoth
+        yield* at(MINUTE)
+        yield* sweepBoth
+        expect(world.spent).toEqual([first, other])
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 })

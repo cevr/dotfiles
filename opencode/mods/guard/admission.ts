@@ -1,6 +1,42 @@
 import { Context, Effect, Option, Predicate, Result, Schema } from "effect"
-import { Counter, Demand, normalizeRequest, OpaqueId, Phase, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
-import { capacityOf, freeHostCpu, type HostEnvelope, POLICY, runnableLimit, type Supply, unattested, usableVolume } from "./host-supply.ts"
+import { Counter, Demand, normalizeRequest, OpaqueId, Phase, Purpose, purposeKeys, qualifiedForm, Reason, reply, Request, type Reply } from "./admission-wire.ts"
+import { capacityOf, freeHostCpu, type HostEnvelope, maximumRequestMemory, POLICY, runnableLimit, type Supply, unattested, usableVolume, type Volume } from "./host-supply.ts"
+
+const Amount = Schema.Finite
+const VolumeModel = Schema.Struct({
+  capacityBytes: Amount, freeBytes: Amount, freeInodes: Schema.Union([Amount, Schema.Literal("dynamic")]),
+  metadataFreeBytes: Amount, diskFloorBytes: Amount,
+})
+const Ticks = Schema.Struct({ total: Amount, idle: Amount, at: Amount })
+const Io = Schema.Literals(["weighted", "unavailable"])
+const EnvelopeModel = Schema.Struct({
+  cpuMilli: Amount, memoryBytes: Amount, containedMemoryBytes: Schema.optionalKey(Amount), needsMemoryReservation: Schema.Boolean,
+  volumes: Schema.Record(Schema.String, Amount), keys: Schema.Array(Schema.String), purposes: Schema.Array(Purpose),
+  attestation: Schema.optionalKey(Schema.Union([
+    Schema.Struct({ controller: Schema.Literal("enforced"), io: Io }),
+    Schema.Struct({ controller: Schema.Literal("unattested"), io: Io, file: Schema.String, why: Schema.String }),
+  ])),
+})
+const SupplyModel = Schema.Struct({
+  id: Schema.String, at: Amount, effectiveCpuMilli: Amount, containedCpuMilli: Schema.optionalKey(Amount),
+  outsideNoncriticalMilli: Amount, protectedCpuMilli: Amount, memoryBytes: Amount,
+  pressure: Schema.Literals(["clear", "degraded", "hold"]), qualification: Schema.Literals(["enforced", "advisory", "unattested", "unqualified"]),
+  runnable: Amount, managed: Schema.Array(Schema.Struct({ binding: Schema.String, measuredCpuMilli: Amount, enforcedCpuMilli: Amount })),
+  volumes: Schema.Record(Schema.String, VolumeModel), keys: Schema.Array(Schema.String), envelope: EnvelopeModel,
+  interval: Schema.optionalKey(Schema.Struct({ before: Ticks, after: Ticks })),
+})
+const VolumeReading = Schema.Struct({ at: Amount, sampleId: Schema.String, volume: VolumeModel })
+/** What the host last measured, shared by every process that decides: the
+ * newest whole sample (CPU, memory, pressure; the measured path's supply)
+ * and, per volume, the newest reading of it with its time. A sample that
+ * lacks a volume (its read failed or timed out) leaves that volume's last
+ * reading in place: a failed read is no new fact. */
+export const Readings = Schema.Struct({
+  sample: Schema.optionalKey(SupplyModel),
+  volumes: Schema.Record(Schema.String, VolumeReading),
+})
+export type Readings = typeof Readings.Type
+const storable = Schema.is(SupplyModel)
 
 export const Lease = Schema.Struct({
   id: OpaqueId,
@@ -28,6 +64,10 @@ export const Admission = Schema.Struct({
   bootStartRevision: Counter,
   landBurst: Counter,
   leases: Schema.Record(OpaqueId, Lease),
+  /** Absent before the first reading of this boot (and in a body an older
+   * writer saved, which drops it: the host is then unmeasured until the
+   * next sample). */
+  readings: Schema.optionalKey(Readings),
 })
 export type Admission = typeof Admission.Type
 
@@ -64,6 +104,9 @@ interface Outcome {
 export class AdmissionUnavailable extends Schema.TaggedError<AdmissionUnavailable>()("AdmissionUnavailable", {
   reason: Reason,
   storeVersion: Schema.optionalKey(Schema.Struct({ found: Counter, supported: Counter })),
+  /** The read or step that failed, in words: a refusal names its own
+   * cause, never only the generic form of its reason. */
+  detail: Schema.optionalKey(Schema.String),
 }) {}
 
 /** Persistence serializes each operation, including use of the sampled clock,
@@ -186,11 +229,34 @@ const staticCeilings = (demand: Demand, limit: HostEnvelope, holds: ReadonlyArra
   ]
 }
 
-const volumeCeiling = (demand: Demand, sample: Supply, holds: ReadonlyArray<Lease>, volumeId: string) => {
-  const volume = sample.volumes[volumeId]
-  if (!volume || !usableVolume(volume)) return ceiling(-1, 0, "disk")
-  return ceiling(volume.freeBytes - Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes),
+/** The one disk rule, on the measured path and the capped one alike: a
+ * volume in the reading takes a lease only while it is usable (free
+ * metadata, inodes) and its free space less the floor holds every held
+ * reservation and this one; else the lease waits `disk`. A volume the
+ * reading lacks: the measured path waits (it decides nothing it has not
+ * measured); the capped path admits under its cap, because an unattested
+ * host degrades and never stops on a missing reading, and status says the
+ * disk is `unsampled` or `unmeasured`. The reading is the host's (the
+ * ledger's `readings`), never only the calling process's own sample. */
+type Disk = (volumeId: string) => Option.Option<Volume>
+const volumeCeiling = (demand: Demand, disk: Disk, holds: ReadonlyArray<Lease>, volumeId: string,
+  unread: "wait" | "admit") => {
+  const volume = disk(volumeId)
+  if (Option.isNone(volume)) return ceiling(-Number(unread === "wait"), 0, "disk")
+  if (!usableVolume(volume.value)) return ceiling(-1, 0, "disk")
+  return ceiling(volume.value.freeBytes - Math.max(volume.value.diskFloorBytes, POLICY.diskFloorBytes),
     bytesOn(demand, volumeId), "disk", reserved(holds, (d) => bytesOn(d, volumeId)))
+}
+const diskCeilings = (demand: Demand, disk: Disk, holds: ReadonlyArray<Lease>, unread: "wait" | "admit") =>
+  demand.volumeReservations.map(({ volumeId }) => volumeCeiling(demand, disk, holds, volumeId, unread))
+/** Why a volume in a reading takes no lease, if it takes none: what
+ * `host status --json` prints as `diskWhy` beside `disk: "full"`. */
+export const volumeShortfall = (volume: Volume): Option.Option<string> => {
+  const floor = Math.max(volume.diskFloorBytes, POLICY.diskFloorBytes)
+  if (!usableVolume(volume)) return Option.some(
+    `metadata ${volume.metadataFreeBytes} bytes free (needs ${POLICY.minMetadataBytes}), inodes ${volume.freeInodes} free (needs ${POLICY.minFreeInodes})`)
+  if (volume.freeBytes < floor) return Option.some(`${volume.freeBytes} bytes free, under the ${floor}-byte floor`)
+  return Option.none()
 }
 const slots = { clear: POLICY.slots, degraded: 1, hold: 0 }
 const wholePoolFloor = (sample: Supply) => Math.ceil(sample.envelope.cpuMilli * POLICY.wholePoolFreeFraction)
@@ -201,19 +267,19 @@ const cpuCeilings = (demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply
   const cpu = holds.reduce((sum, row) => sum + liveCharge(row, sample), 0)
   return [ceiling(freeHostCpu(sample), demand.cpuMilli, "capacity", cpu)]
 }
-const liveCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply) => {
+const liveCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply, disk: Disk) => {
   const exclusiveHold = holds.some((row) => exclusive(row) || exclusive(entry))
   const wholeHold = holds.some((row) => Option.exists(row.admittedDemand, (held) => held.width === "full"))
   return [
     ...cpuCeilings(demand, holds, sample),
     ceiling(0, Number(exclusiveHold || wholeHold), "capacity"),
-    ...demand.volumeReservations.map(({ volumeId }) => volumeCeiling(demand, sample, holds, volumeId)),
+    ...diskCeilings(demand, disk, holds, "wait"),
     ceiling(slots[sample.pressure], 1, "capacity", holds.length),
     ceiling(sample.memoryBytes - POLICY.reserveMemoryBytes, demand.memoryBytes, "memory", reserved(holds, (d) => d.memoryBytes)),
   ]
 }
-const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply) =>
-  fits([...liveCeilings(entry, demand, holds, sample), ...staticCeilings(demand, sample.envelope, holds, "memory")])
+const budgetReason = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, sample: Supply, disk: Disk) =>
+  fits([...liveCeilings(entry, demand, holds, sample, disk), ...staticCeilings(demand, sample.envelope, holds, "memory")])
 
 export const cpuDemand = (demand: Demand, maximum: number) => {
   if (!Predicate.isNumber(demand.width)) return maximum
@@ -233,24 +299,140 @@ const checkedDemand = (entry: Lease, sample: Supply): Demand => demandWithin(ent
 /** An unattested host (no workload controller to measure against) admits
  * by a fixed rule instead: at most `POLICY.unattestedSlots` held leases,
  * exclusive and whole-pool checks alone, each resource key once, and the
- * envelope's CPU and memory as reservations. No sample is needed. */
-const fixedCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, limit: HostEnvelope) => {
+ * envelope's CPU and memory as reservations, and the disk rule over a
+ * host's recent reading when there is one. No sample is needed. */
+const fixedCeilings = (entry: Lease, demand: Demand, holds: ReadonlyArray<Lease>, limit: HostEnvelope, disk: Disk) => {
   const alone = holds.length > 0 && (exclusive(entry) || demand.width === "full" ||
     holds.some((row) => exclusive(row) || Option.exists(row.admittedDemand, (held) => held.width === "full")))
   return [
     ceiling(POLICY.unattestedSlots, 1, "capacity", holds.length),
     ceiling(0, Number(alone), "capacity"),
     ...staticCeilings(demand, limit, holds, "memory"),
+    ...diskCeilings(demand, disk, holds, "admit"),
   ]
 }
 const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
 const fixedLimit = (observation: Observation) => Option.filter(Option.fromNullishOr(envelopeOf(observation)), unattested)
 
+/** Fold a sample into the host's readings: newest wins, whole sample and
+ * each volume alike, whichever process carried it. An older sample (a slow
+ * sampler) changes nothing it is older than; a volume a sample lacks keeps
+ * its last reading; a sample from the future, or one that cannot be stored,
+ * is no reading. An equal time is a tie: the reading delivered last wins.
+ * Unchanged readings come back as the same object. */
+const folded = (readings: Option.Option<Readings>, sample: Supply): Readings => {
+  const prior = Option.flatMap(readings, (held) => Option.fromNullishOr(held.sample))
+  const newest = Option.match(prior, { onNone: () => true, onSome: (last) => sample.at > last.at || (sample.at === last.at && sample !== last) })
+  const volumes = { ...Option.match(readings, { onNone: (): Readings["volumes"] => ({}), onSome: (held) => held.volumes }) }
+  let changed = newest
+  for (const [volumeId, volume] of Object.entries(sample.volumes)) {
+    if (Option.exists(Option.fromNullishOr(volumes[volumeId]), (last) => last.at > sample.at || (last.at === sample.at && last.sampleId === sample.id && !newest))) continue
+    volumes[volumeId] = { at: sample.at, sampleId: sample.id, volume }
+    changed = true
+  }
+  if (!changed) return Option.getOrElse(readings, () => ({ volumes }))
+  const kept = Option.orElse(Option.filter(Option.some(sample), () => newest), () => prior)
+  return Option.match(kept, { onNone: () => ({ volumes }), onSome: (whole) => ({ sample: whole, volumes }) })
+}
+export const recordReading = (readings: Option.Option<Readings>, sample: Option.Option<Supply>, now: number): Option.Option<Readings> =>
+  Option.match(Option.filter(sample, (taken) => taken.at <= now && storable(taken)), {
+    onNone: () => readings,
+    onSome: (taken) => Option.some(folded(readings, taken)),
+  })
+
+/** What a decider sees: its own envelope (or the host's last), the host's
+ * newest sample, and the host's per-volume readings. Never the caller's
+ * private sample alone: who holds the sampler slot changes no decision. */
+export interface View extends Observation {
+  readonly volumes: Readings["volumes"]
+}
+export const viewOf = (readings: Option.Option<Readings>, observation: Observation): View => {
+  const shared = Option.flatMap(readings, (held) => Option.fromNullishOr(held.sample))
+  const envelope = Option.orElse(Option.fromNullishOr(observation.envelope), () => Option.map(shared, (sample) => sample.envelope))
+  let view: View = { now: observation.now, volumes: Option.match(readings, { onNone: () => ({}), onSome: (held) => held.volumes }) }
+  if (Option.isSome(envelope)) view = { ...view, envelope: envelope.value }
+  if (Option.isSome(shared)) view = { ...view, sample: shared.value }
+  return view
+}
+/** The view a caller reads back from the ledger state a transaction left. */
+export const sharedView = (state: Admission, observation: Observation) => viewOf(Option.fromNullishOr(state.readings), observation)
+/** How long a volume reading binds, and what no recent reading does: the
+ * measured path decides only on a fresh one and waits without; the capped
+ * path holds to the last one for `readingMs` and admits without. */
+const readingRule = (view: View) => Option.match(fixedLimit(view), {
+  onNone: () => ({ boundMs: POLICY.freshnessMs, unread: "wait" as const }),
+  onSome: () => ({ boundMs: POLICY.readingMs, unread: "admit" as const }),
+})
+const recentVolume = (view: View, volumeId: string, bound: number) =>
+  Option.filter(Option.fromNullishOr(view.volumes[volumeId]), ({ at }) => at <= view.now && view.now - at <= bound)
+const diskOf = (view: View): Disk => (volumeId) =>
+  Option.map(recentVolume(view, volumeId, readingRule(view).boundMs), ({ volume }) => volume)
+
+/** What the host's readings say of one volume, by the rule admission
+ * decides by: `room` or `full` (with why) from a reading within its bound;
+ * `expired` past the bound (unmeasured: `unread` says whether this path
+ * then admits or waits); `none` when the host never read it this boot. */
+export const volumeStatus = (view: View, volumeId: string) => {
+  const rule = readingRule(view)
+  const last = Option.fromNullishOr(view.volumes[volumeId])
+  if (Option.isNone(last)) return { kind: "none" as const, ...rule }
+  const { at, volume } = last.value
+  const ageMs = view.now - at
+  if (Option.isNone(recentVolume(view, volumeId, rule.boundMs))) return { kind: "expired" as const, at, ageMs, ...rule }
+  return Option.match(volumeShortfall(volume), {
+    onNone: () => ({ kind: "room" as const, at, ageMs, ...rule }),
+    onSome: (why) => ({ kind: "full" as const, why, at, ageMs, ...rule }),
+  })
+}
+
+/** What `host status --json` offers a request: the same envelope, read by
+ * the same rule `feasibility` admits by. A class offered here, asked within
+ * these maxima on this volume with these keys, is queued or granted, never
+ * refused (process/status-admission.test.ts). */
+const PURPOSES: ReadonlyArray<Request["purpose"]> = ["check", "land-check", "vm", "inventory", "exclusive-check"]
+/** Why `limit` takes no request of `purpose` on `volumes`, in the order
+ * the ledger checks: no CPU or no holdable memory reservation (Linux needs
+ * one) or a class the host does not run is `unsupported-class`; the
+ * class's own resource key missing is `unknown-key`; a volume the host
+ * does not know is `unknown-volume`; one under its disk floor (no byte
+ * reservable) is `disk-limit`. */
+const classReason = (limit: HostEnvelope, purpose: Request["purpose"], volumes: ReadonlyArray<string>): Option.Option<Reason> => {
+  const runs = limit.cpuMilli > 0 && (!limit.needsMemoryReservation || maximumRequestMemory(limit) > 0) && limit.purposes.includes(purpose)
+  if (!runs) return Option.some("unsupported-class")
+  if (purposeKeys[purpose].some((key) => !limit.keys.includes(key))) return Option.some("unknown-key")
+  if (volumes.some((volumeId) => !Object.hasOwn(limit.volumes, volumeId))) return Option.some("unknown-volume")
+  if (volumes.some((volumeId) => (limit.volumes[volumeId] ?? -1) < 0)) return Option.some("disk-limit")
+  return Option.none()
+}
+
+export const hostOffer = (observation: Observation, volume: Option.Option<string>) => {
+  const limit = Option.fromNullishOr(envelopeOf(observation))
+  const volumes = Option.match(volume, { onNone: (): ReadonlyArray<string> => [], onSome: (id) => [id] })
+  // No envelope at all: the ledger refuses every request `unavailable`.
+  const withheld: Partial<Record<Request["purpose"], Reason>> = {}
+  for (const purpose of PURPOSES) {
+    const reason = Option.match(limit, { onNone: () => Option.some<Reason>("unavailable"), onSome: (envelope) => classReason(envelope, purpose, volumes) })
+    if (Option.isSome(reason)) withheld[purpose] = reason.value
+  }
+  return {
+    defaultVolume: volume,
+    maximumCpuMilli: Option.match(limit, { onNone: () => 0, onSome: ({ cpuMilli }) => cpuMilli }),
+    maximumMemoryBytes: Option.match(limit, { onNone: () => 0, onSome: maximumRequestMemory }),
+    /** The most bytes one request may reserve on the default volume. */
+    maximumDiskBytes: Option.getOrElse(Option.flatMap(Option.all([limit, volume]), ([envelope, id]) =>
+      Option.filter(Option.fromNullishOr(envelope.volumes[id]), (bytes) => bytes >= 0)), () => 0),
+    offeredClasses: PURPOSES.filter((purpose) => !Object.hasOwn(withheld, purpose)),
+    /** Each class not offered, with the reason a request of it is refused. */
+    withheld,
+    resourceKeys: Option.match(limit, { onNone: (): ReadonlyArray<string> => [], onSome: ({ keys }) => keys }),
+  }
+}
+
 const feasibility = (request: Request, limit: HostEnvelope): Option.Option<Reason> => {
   const { demand } = request
-  if (!limit.purposes.includes(request.purpose) || limit.cpuMilli <= 0) return Option.some("unsupported-class")
+  const offer = classReason(limit, request.purpose, demand.volumeReservations.map(({ volumeId }) => volumeId))
+  if (Option.isSome(offer)) return offer
   if (demand.keys.some((key) => !limit.keys.includes(key))) return Option.some("unknown-key")
-  if (demand.volumeReservations.some(({ volumeId }) => !Object.hasOwn(limit.volumes, volumeId))) return Option.some("unknown-volume")
   return fits(staticCeilings({ ...demand, cpuMilli: cpuDemand(demand, limit.cpuMilli) }, limit, [], "memory-limit"))
 }
 
@@ -305,13 +487,13 @@ const requestedBeforeExclusive = (queue: ReadonlyArray<Lease>) => {
   return queue.slice(0, exclusiveAt)
 }
 
-const preferredLand = (queue: ReadonlyArray<Lease>, headroom: number, holds: ReadonlyArray<Lease>, sample: Supply) =>
+const preferredLand = (queue: ReadonlyArray<Lease>, headroom: number, holds: ReadonlyArray<Lease>, sample: Supply, disk: Disk) =>
   requestedBeforeExclusive(queue).filter((row, i, prefix) =>
     row.request.purpose === "land-check" &&
     prefix.slice(0, i).some((earlier) => earlier.request.purpose !== "land-check") &&
     !wholePool(row, sample) &&
     !prefix.slice(0, i).some((earlier) => wholePool(earlier, sample) || overlap(earlier, row)) &&
-    Option.isNone(budgetReason(row, checkedDemand(row, sample), holds, sample)),
+    Option.isNone(budgetReason(row, checkedDemand(row, sample), holds, sample, disk)),
   ).slice(0, headroom)
 
 const queuedFor = (tx: Transaction, row: Lease, reason: Reason, sampleId: Lease["sampleId"]) => {
@@ -319,9 +501,9 @@ const queuedFor = (tx: Transaction, row: Lease, reason: Reason, sampleId: Lease[
   return tx.update(row, { reason, sampleId })
 }
 
-const atFrontier = (row: Lease, older: ReadonlyArray<Lease>, holds: ReadonlyArray<Lease>, sample: Supply) => {
+const atFrontier = (row: Lease, older: ReadonlyArray<Lease>, holds: ReadonlyArray<Lease>, sample: Supply, disk: Disk) => {
   if (older.some((entry) => sharesFrontier(entry, row, sample))) return Option.some<Reason>("fifo")
-  return budgetReason(row, checkedDemand(row, sample), holds, sample)
+  return budgetReason(row, checkedDemand(row, sample), holds, sample, disk)
 }
 
 const grant = (tx: Transaction, row: Lease, demand: Demand, sampleId: Lease["sampleId"], now: number) => tx.update(row, {
@@ -332,7 +514,9 @@ const grant = (tx: Transaction, row: Lease, demand: Demand, sampleId: Lease["sam
 
 /** Strict FIFO under the fixed cap: once one queued lease waits, every
  * later one waits behind it, so none starves. */
-const allocateFixed = (tx: Transaction, now: number, limit: HostEnvelope) => {
+const allocateFixed = (tx: Transaction, observation: View, limit: HostEnvelope) => {
+  const { now } = observation
+  const disk = diskOf(observation)
   let waiting = false
   for (const row of tx.rows().filter((entry) => entry.state === "queued")) {
     if (waiting) {
@@ -340,7 +524,7 @@ const allocateFixed = (tx: Transaction, now: number, limit: HostEnvelope) => {
       continue
     }
     const demand = demandWithin(row, limit)
-    const reason = fits(fixedCeilings(row, demand, tx.rows().filter(held), limit))
+    const reason = fits(fixedCeilings(row, demand, tx.rows().filter(held), limit, disk))
     if (Option.isSome(reason)) {
       waiting = true
       queuedFor(tx, row, reason.value, Option.none())
@@ -349,10 +533,10 @@ const allocateFixed = (tx: Transaction, now: number, limit: HostEnvelope) => {
   return 0
 }
 
-const allocate = (tx: Transaction, observation: Observation, landBurst: number) => {
+const allocate = (tx: Transaction, observation: View, landBurst: number) => {
   const { sample, now } = observation
   const fixed = fixedLimit(observation)
-  if (Option.isSome(fixed)) return allocateFixed(tx, now, fixed.value)
+  if (Option.isSome(fixed)) return allocateFixed(tx, observation, fixed.value)
   const available = fresh(observation)
   const queue = tx.rows().filter((row) => row.state === "queued")
   if (Result.isFailure(available)) {
@@ -367,10 +551,10 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
   }
   const supply = available.success
   const waiting: Lease[] = []
-  const prioritized = preferredLand(queue, Math.max(0, POLICY.landBurst - landBurst), tx.rows().filter(held), supply)
+  const prioritized = preferredLand(queue, Math.max(0, POLICY.landBurst - landBurst), tx.rows().filter(held), supply, diskOf(observation))
   let burst = landBurst
   for (const row of [...prioritized, ...queue.filter((row) => !prioritized.includes(row))]) {
-    const reason = atFrontier(row, waiting, tx.rows().filter(held), supply)
+    const reason = atFrontier(row, waiting, tx.rows().filter(held), supply, diskOf(observation))
     if (Option.isSome(reason)) {
       waiting.push(queuedFor(tx, row, reason.value, Option.some(supply.id)))
       continue
@@ -384,27 +568,27 @@ const allocate = (tx: Transaction, observation: Observation, landBurst: number) 
 
 const sameGrant = (row: Lease, demand: Demand) =>
   Option.exists(row.admittedDemand, (granted) => granted.cpuMilli === demand.cpuMilli && granted.width === demand.width)
-const approveFixed = (tx: Transaction, row: Lease, limit: HostEnvelope): Result.Result<{ demand: Demand; sampleId: Lease["sampleId"] }, Reason> => {
+const approveFixed = (tx: Transaction, row: Lease, limit: HostEnvelope, observation: View): Result.Result<{ demand: Demand; sampleId: Lease["sampleId"] }, Reason> => {
   const demand = demandWithin(row, limit)
   if (!sameGrant(row, demand)) return Result.fail("capacity")
-  const reason = fits(fixedCeilings(row, demand, tx.rows().filter((r) => r.id !== row.id && held(r)), limit))
+  const reason = fits(fixedCeilings(row, demand, tx.rows().filter((r) => r.id !== row.id && held(r)), limit, diskOf(observation)))
   if (Option.isSome(reason)) return Result.fail(reason.value)
   return Result.succeed({ demand, sampleId: Option.none() })
 }
-const approveClaim = (tx: Transaction, row: Lease, observation: Observation) => {
+const approveClaim = (tx: Transaction, row: Lease, observation: View) => {
   const fixed = fixedLimit(observation)
-  if (Option.isSome(fixed)) return approveFixed(tx, row, fixed.value)
+  if (Option.isSome(fixed)) return approveFixed(tx, row, fixed.value, observation)
   return Result.flatMap(fresh(observation), (sample) => {
     const demand = checkedDemand(row, sample)
     if (!sameGrant(row, demand)) return Result.fail("capacity" as const)
     const other = tx.rows().filter((r) => r.id !== row.id && held(r))
-    const reason = budgetReason(row, demand, other, sample)
+    const reason = budgetReason(row, demand, other, sample, diskOf(observation))
     if (Option.isSome(reason)) return Result.fail(reason.value)
     return Result.succeed({ demand, sampleId: Option.some(sample.id) })
   })
 }
 
-const claim = (tx: Transaction, row: Lease, input: Extract<Input, { op: "claim" }>, observation: Observation): Option.Option<Reason> => {
+const claim = (tx: Transaction, row: Lease, input: Extract<Input, { op: "claim" }>, observation: View): Option.Option<Reason> => {
   if (row.generation !== input.generation || row.state !== "granted") return Option.some("stale")
   // A binding names a single native incarnation for this boot, even after
   // release. Its appearance on a second offer cannot authorize a second exec.
@@ -449,7 +633,7 @@ const renew = (tx: Transaction, row: Lease, now: number) => {
   tx.update(row, { expiresBootMs: Option.some(Math.min(now + POLICY.supervisionMs, hardDeadline.value)) })
 }
 
-const act = (tx: Transaction, row: Lease, input: Exclude<Input, { op: "request" | "advance" }>, observation: Observation): Option.Option<Reason> => {
+const act = (tx: Transaction, row: Lease, input: Exclude<Input, { op: "request" | "advance" }>, observation: View): Option.Option<Reason> => {
   if ("owner" in input && row.owner !== input.owner) return Option.some("wrong-owner")
   switch (input.op) {
     case "claim": return claim(tx, row, input, observation)
@@ -502,7 +686,7 @@ const register = (tx: Transaction, bootId: string, input: Extract<Input, { op: "
   return Result.succeed(id)
 }
 
-const apply = (tx: Transaction, bootId: string, input: Input, observation: Observation): Result.Result<string, Reason> => {
+const apply = (tx: Transaction, bootId: string, input: Input, observation: View): Result.Result<string, Reason> => {
   if (input.op === "request") return register(tx, bootId, input, observation)
   if (input.op === "advance") return Result.fail("unknown-id")
   const row = tx.get(input.id)
@@ -532,14 +716,21 @@ export const transition = (state: Admission, input: Input, observation: Observat
       return next
     },
   }
-  expire(tx, observation.now)
-  requalify(tx, observation)
-  const result = apply(tx, state.bootId, input, observation)
+  // One truth: this caller's sample, if any, joins the host's readings
+  // first, and every decision below reads those, not the sample.
+  const readings = recordReading(Option.fromNullishOr(state.readings), Option.fromNullishOr(observation.sample), observation.now)
+  const view = viewOf(readings, observation)
+  expire(tx, view.now)
+  requalify(tx, view)
+  const result = apply(tx, state.bootId, input, view)
   let landBurst = state.landBurst
-  // Under the fixed cap any observation with its envelope decides: a lease
-  // waits on the ledger alone, never on a sample.
-  if (observation.sample || input.op === "request" || input.op === "advance" || Option.isSome(fixedLimit(observation)))
-    landBurst = allocate(tx, observation, landBurst)
-  const next = { ...state, revision, landBurst, leases: Object.fromEntries(leases) }
+  // Under the fixed cap any observation with an envelope decides: a lease
+  // waits on the ledger alone, never on a sample. The measured path
+  // decides whenever the host has a fresh sample, whoever took it.
+  const freshSample = Option.exists(Option.fromNullishOr(view.sample), ({ at }) => at <= view.now && view.now - at <= POLICY.freshnessMs)
+  if (observation.sample || freshSample || input.op === "request" || input.op === "advance" || Option.isSome(fixedLimit(view)))
+    landBurst = allocate(tx, view, landBurst)
+  const settled: Admission = { ...state, revision, landBurst, leases: Object.fromEntries(leases) }
+  const next = Option.match(readings, { onNone: () => settled, onSome: (held): Admission => ({ ...settled, readings: held }) })
   return { state: next, reply: respond(tx, next, result), changes }
 }

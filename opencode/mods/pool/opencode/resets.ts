@@ -84,7 +84,8 @@ export const layer = (storage: Storage) =>
               return reset === undefined ? Effect.void : storage.set(resetKey(reset.key), encodeReset(reset))
             }
             case "OwnerTold":
-            case "ClaimSent": {
+            case "ClaimSent":
+            case "ClaimUnsent": {
               const reset = state.resets[event.key]
               return reset === undefined ? Effect.void : storage.set(resetKey(reset.key), encodeReset(reset))
             }
