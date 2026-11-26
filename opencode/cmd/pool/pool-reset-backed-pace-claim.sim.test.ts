@@ -9,19 +9,35 @@
 // week 100%, Fable 68% of its own week = 34 shared points, observed after the
 // claim at 66%, one claim.
 import { Effect } from "effect"
+import type { FakeGrant } from "../../tests/fake-anthropic.ts"
 import { boot, decodePace, decodeStatus, fable, HOUR, POOL, quota } from "./pool-reset-backed-pace.fixture.ts"
 import { simulationRunner } from "../../sim/seed.ts"
 
 const { seeded } = simulationRunner("cmd/pool/pool-reset-backed-pace-claim.sim.test.ts")
 
-seeded("a fresh approved Fable allowance schedules existing quota before redemption", ({ seed, expect }) =>
+/** A grant that empties the shared week (and keeps its deadline): what a claim at the stop gives every model back. */
+const weekly: FakeGrant = { id: "weekly-1", resetsLeft: 1, endsAt: fable.endsAt, clears: ["seven_day"], type: "weekly" }
+
+seeded("a fresh approved weekly allowance schedules existing quota before redemption", ({ seed, expect }) =>
   Effect.gen(function* () {
     // At midweek the ordinary line is 54.5%; the fresh approved credit raises
     // its schedule so existing quota at 72–74% can be used before redemption.
     const own = (4 + (seed >>> 0) % 5) / 100
-    const { world, pace } = yield* boot(seed, quota(0.7 + own / 2, own), [fable])
+    const { world, pace } = yield* boot(seed, quota(0.7 + own / 2, own), [weekly])
     expect(world.provider().claims()).toHaveLength(0)
     expect(yield* pace).toMatchObject({ measured: true, ok: true, admission: "ordinary", eligible: ["fixture"] })
+    yield* world.advance(20_000)
+    expect(world.provider().claims()).toHaveLength(0)
+  }),
+)
+
+seeded("a held Fable reset schedules no Opus quota past the even line: it gives back only Fable's part", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    // The same login on a Fable reset: its claim would give back 2 to 4 points, so the Opus start
+    // holds at the even line (54.5%) instead of running on to the stop, and no claim is sent for it.
+    const own = (4 + (seed >>> 0) % 5) / 100
+    const { world, pace } = yield* boot(seed, quota(0.7 + own / 2, own), [fable])
+    expect(yield* pace).toMatchObject({ measured: true, ok: false, admission: "held", reasonCode: "even-line", soft: true })
     yield* world.advance(20_000)
     expect(world.provider().claims()).toHaveLength(0)
   }),
