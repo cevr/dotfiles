@@ -199,7 +199,8 @@ seeded(
         },
       })
       clock.now = world.now
-      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 100, 2 * DAY))
+      // The 5-hour window spent, the week at 40%: a Codex reset restarts the week, so it waits for the week (README rule 3).
+      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 40, 2 * DAY))
       const claims = () => world.provider().claims()
 
       // ── No work: nothing running and no start held, the pool sweeping on ──
@@ -208,10 +209,16 @@ seeded(
       expect(backend.consumes()).toEqual([])
       expect(yield* open).toEqual([])
 
-      // ── Codex: three starts running, a start held: claimed on its own, once ──
+      // ── Codex: three starts running, a start held, only the 5-hour window spent: not claimed over half a minute of sweeps ──
       for (let start = 0; start < 3; start++) yield* pool("started", { providerID: "openai" })
       const codexPace = yield* Schema.decodeUnknownEffect(Paced)(yield* pool("pace", { providerID: "openai", sessionID: SESSION }))
       expect(codexPace.ok).toBe(false)
+      yield* world.advance(30 * SECOND)
+      expect(backend.consumes()).toEqual([])
+      expect(yield* open).toEqual([])
+      // ── The week spent under the same work: claimed on its own, once ──
+      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 100, 2 * DAY))
+      yield* pool("pace", { providerID: "openai", sessionID: SESSION })
       yield* world.until(() => backend.consumes().length > 0, CLAIM_LIMIT_MS, 250)
       yield* pool("pace", { providerID: "openai", sessionID: SESSION })
       yield* world.advance(SECOND)
@@ -227,22 +234,35 @@ seeded(
       yield* work(3)
       for (const [account, quota] of spent) quotas.set(account, quota)
       yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
-      // Observation of the first refill holds another redemption during this interval.
+      // The refilled account takes the running work, and the start held before the claim was the claim's to answer:
+      // no work waits for the other, so it is not claimed (README rule 2).
       yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
       expect(claims().map(({ grant, result }) => ({ grant, result }))).toMatchObject([{ result: "reset" }])
       expect(claims()).toHaveLength(1)
       expect(String(claims()[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
+      // The work spends the refill to the 5-hour hold line: a start held there, which the refilled account cannot take,
+      // refills the other spent account once the first refill is observed (its 5-hour window read back), once.
+      const first = String(claims()[0]?.account)
+      const other = ["a", "b"].filter((account) => account !== first).join("")
+      quotas.set(first, { ...quotaOf(first), fiveHour: { utilization: 0.95, resetAt: clock.now() + 4 * HOUR } })
+      yield* until(() => claims().length > 1, "the other spent account's refill", CLAIM_LIMIT_MS)
+      yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
+      expect(claims().map(({ account, result }) => ({ account, result }))).toEqual([
+        { account: first, result: "reset" },
+        { account: other, result: "reset" },
+      ])
       // The tray holds one notice per claim and nothing else; each says why.
       const rows = yield* open
-      expect(rows.map((each) => each.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
+      expect(rows.map((each) => each.header)).toEqual(["Pool reset claimed", "Pool reset claimed", "Pool reset claimed"])
       expect(rows.map((each) => each.question).join("\n")).toContain("Claimed the Codex reset on ChatGPT")
       expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the account reached its limit: 5h 100% used, 3 agents running, \d+ starts? held; refill the measured limit\)/)
       const settled = yield* resetsOf(yield* pool("resets"))
       expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
         ["claude", "reset"],
+        ["claude", "reset"],
         ["codex", "reset"],
       ])
-      expect(settled.claims.find((claim) => claim.provider === "claude")?.weekly).toBe("kept")
+      expect(settled.claims.filter((claim) => claim.provider === "claude").map((claim) => claim.weekly)).toEqual(["kept", "kept"])
       expect(settled.claims.find((claim) => claim.provider === "codex")?.weekly).toBe("moved")
       // No token ever shows in what the pool answers or logs.
       const shown = line(settled) + line(world.logs())
@@ -257,7 +277,7 @@ seeded(
     Effect.gen(function* () {
       const now = World.START
       // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
-      // while d's whole week is spent. Fresh c does not veto d's refill.
+      // while d's whole week is spent. c takes the running work; d is refilled only for work c cannot take.
       const quotas = new Map<string, FakeQuota>([
         [
           "c",
@@ -272,10 +292,8 @@ seeded(
       const quotaOf = (account: string) => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
       let fableListed = false
-      let weeklyListed = false
       const claimed = new Set<string>()
       const grantsOf = (account: string): ReadonlyArray<FakeGrant> => {
-        if (account !== "c" && !weeklyListed) return []
         if (account !== "c") return [{ id: "weekly-d", resetsLeft: 2 - Number(claimed.has("weekly-d")), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
         if (!fableListed) return []
         return [
@@ -300,12 +318,15 @@ seeded(
       })
       const claims = () => world.provider().claims()
 
-      // ── Demand: a Fable start waits on c's own exhausted week and d's shared week.
-      // Record its session before listing d's grant, then let running work trigger the refill. ──
-      yield* world.advance(7 * SECOND)
-      expect(Schema.decodeUnknownSync(Paced)(yield* pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION })).ok).toBe(false)
-      weeklyListed = true
+      // ── Demand: three agents busy, starts paced, d's weekly reset listed: c has room for the running work and takes the
+      // starts, so d's week is left over half a minute of sweeps (README rule 2: no work waiting) ──
       yield* work(3)
+      yield* until(() => false, "half a minute of sweeps", 30 * SECOND, false).pipe(Effect.ignore)
+      expect(claims()).toEqual([])
+      expect(yield* open).toEqual([])
+
+      // ── A Fable start waits on c's own exhausted week and d's shared week: work c cannot take. d is refilled. ──
+      expect(Schema.decodeUnknownSync(Paced)(yield* pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION })).ok).toBe(false)
       const weeklyNotice = yield* row(yield* until((rows) => rows.some((each) => each.header === "Pool reset claimed"), "the notice of d's claim"), "Pool reset claimed")
       expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["d", "weekly-d"]])
       expect(weeklyNotice.question).toContain("the account reached its limit")
