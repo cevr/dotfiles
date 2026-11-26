@@ -33,7 +33,7 @@
  * at least it.
  */
 import { Agent, Credential, Integration, Plugin } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Option, Predicate, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Predicate, Result, Schema } from "effect"
 import { makeEndpoint } from "@dotfiles/opencode-anthropic-auth/endpoint"
 import { makeAliasLeases, makeConnections, makeOwnership, type Ownership } from "@dotfiles/opencode-anthropic-auth/fetch/ownership"
 import { HANDOFF_PROTOCOL, onResponse, pooledRequest, type RequestPreparation } from "@dotfiles/opencode-anthropic-auth/fetch/exchange"
@@ -206,10 +206,16 @@ export const make = (options: Options) =>
               Effect.flatMap(auth.reading),
               Effect.map((reading) => ({ reading: reading ?? null })),
             ),
+          // A read with no reading says why beside it (`unread`): the pool backs off by its cause.
           usage: (input) =>
             credentialOf(input).pipe(
               Effect.flatMap(auth.usage),
-              Effect.map((reading) => ({ reading: reading ?? null })),
+              Effect.map((read) =>
+                Result.match(read, {
+                  onSuccess: (reading) => ({ reading }),
+                  onFailure: ({ _tag: _unread, ...unread }) => ({ reading: null, unread }),
+                }),
+              ),
               Effect.orDie,
             ),
           // A claim the pool decided on (never a read's side effect); a malformed one claims nothing.

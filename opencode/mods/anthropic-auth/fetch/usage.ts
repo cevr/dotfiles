@@ -1,7 +1,7 @@
 // Anthropic's usage endpoints over fetch: what a login has left of its
 // windows, and the claim of one of its reset grants (its organization read
 // from the login's profile first, as Claude Code does).
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Clock, Effect, Layer, Option } from "effect"
 import { OAUTH_BETA } from "../betas.ts"
 import type { Endpoint } from "../endpoint.ts"
 import { parseJson } from "../json.ts"
@@ -15,6 +15,9 @@ import {
   RESET_PROGRAM,
   RESET_TIMEOUT_MS,
   resetPath,
+  retryAfterMs,
+  unreadAnswer,
+  unreadOfStatus,
   USAGE_MAX_BYTES,
   USAGE_PATH,
   USAGE_QUERY,
@@ -48,7 +51,7 @@ export const layer = (fetch: Fetch, endpoint: Endpoint) =>
     read: (access, userAgent) => {
       const url = endpoint.apiUrl(USAGE_PATH)
       url.search = USAGE_QUERY
-      if (!endpoint.isTrusted(url)) return Effect.succeed<UsageAnswer>({ status: "unread" })
+      if (!endpoint.isTrusted(url)) return Effect.succeed<UsageAnswer>({ status: "unread", cause: "refused" })
       return Effect.tryPromise({
         try: () =>
           fetch(url, {
@@ -61,12 +64,21 @@ export const layer = (fetch: Fetch, endpoint: Endpoint) =>
       }).pipe(
         Effect.flatMap((response): Effect.Effect<UsageAnswer, UsageFailed> => {
           if (response.status === 401) return cancel(response).pipe(Effect.as<UsageAnswer>({ status: "unauthorized" }))
-          if (!response.ok) return cancel(response).pipe(Effect.as<UsageAnswer>({ status: "unread" }))
+          // Any other refusal keeps its class, and a 429's `retry-after`: the pool backs off by it.
+          if (!response.ok)
+            return Clock.currentTimeMillis.pipe(
+              Effect.map((now): UsageAnswer => {
+                const cause = unreadOfStatus(response.status)
+                const wait = retryAfterMs(Option.filter(Option.fromNullishOr(response.headers.get("retry-after")), () => cause === "rate-limited"), now)
+                return { status: "unread", ...unreadAnswer(cause, wait) }
+              }),
+              Effect.tap(() => cancel(response)),
+            )
           return readBoundedText(response.body, USAGE_MAX_BYTES, "Anthropic usage response").pipe(
             Effect.mapError((error) => new UsageFailed({ message: error.message })),
             Effect.map((text): UsageAnswer => {
               const body = parseJson(text)
-              return body === undefined ? { status: "unread" } : { status: "ok", body }
+              return body === undefined ? { status: "unread", cause: "decode" } : { status: "ok", body }
             }),
           )
         }),

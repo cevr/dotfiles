@@ -36,14 +36,14 @@
 //
 // `Review` is the decision: it reads every pool's accounts as the pool holds
 // them now and records what is due. The model (model.ts) carries it out.
-import { Array as Arr, Effect, Match, Option, Result, Schema } from "effect"
+import { Array as Arr, Effect, Match, Option, Predicate, Result, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
 import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
 import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
-import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
+import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, type QuotaReading, QuotaWindow, type ResetCredit, ResetKind, scopeOf, UnreadCause } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { percent, used } from "./usage-text.ts"
 
@@ -64,8 +64,50 @@ export const MAX_ATTEMPTS = 3
 export const KEEP_MS = 7 * DAY
 /** The claims kept, newest last. */
 export const MAX_CLAIMS = 20
-/** A hold's reset time is bucketed this coarsely in its key, so a reading's jitter keeps the key. */
-const KEY_BUCKET_MS = 30 * MINUTE
+/**
+ * A window period is named by its end rounded to the nearest of these
+ * (`periodOf`). The providers end a period on the hour (Anthropic's
+ * `resets_at`, measured 2026-11-24..26: 13:59:59.760, 14:00:00.485, 01:59:59.358),
+ * so a rounding boundary sits half an hour from every end: readings of one
+ * end name one period on every host, whatever their jitter below half an hour.
+ */
+const PERIOD_GRID_MS = HOUR
+/**
+ * How far two readings of one period's end may lie apart (measured: about a
+ * second). A record made on one reading is found again from another
+ * (`periodKeys`) by every period name a reading this close could have had, so a
+ * period whose end is off the hour (a provider whose ends are not on it) keeps
+ * the one record, and its request id, on the host that made it, across a
+ * restart too. Distinct periods of one window lie at least its length (five
+ * hours) apart.
+ */
+export const PERIOD_JITTER_MS = 15 * MINUTE
+/** The 30-minute floor keys and request ids were named by before 2026-11-26 (`legacyPeriodOf`). */
+const LEGACY_BUCKET_MS = 30 * MINUTE
+
+/** A period's name: its end, to the nearest hour. */
+export const periodOf = (end: number) => `h${Math.round(end / PERIOD_GRID_MS)}`
+
+/**
+ * Every name a record of the period ending about `end` may be under: its own
+ * first, then the other a reading within PERIOD_JITTER_MS could have rounded
+ * to, then the 30-minute floors a record made before 2026-11-26 has
+ * (`LEGACY_BUCKET_MS`). Found under a legacy name, a claim in flight at the
+ * install goes again as itself, under the request id it was decided with.
+ * The legacy names can go once no such record is kept (KEEP_MS), after 2026-12-31.
+ */
+const periodsNear = (end: number): Arr.NonEmptyReadonlyArray<string> =>
+  Arr.dedupe([
+    periodOf(end),
+    periodOf(end - PERIOD_JITTER_MS),
+    periodOf(end + PERIOD_JITTER_MS),
+    legacyPeriodOf(end - PERIOD_JITTER_MS),
+    legacyPeriodOf(end),
+    legacyPeriodOf(end + PERIOD_JITTER_MS),
+  ] as const)
+
+/** A period's name before 2026-11-26: its end's 30-minute floor, which a second's jitter across the hour changed. */
+const legacyPeriodOf = (end: number) => String(Math.floor(end / LEGACY_BUCKET_MS))
 /** A window at least this long is week-long, not the 5-hour one. */
 const LONG_WINDOW_MS = DAY
 /**
@@ -110,6 +152,57 @@ export const Wait = Schema.Struct({
   model: Schema.optionalKey(Schema.String),
 })
 export type Wait = typeof Wait.Type
+
+/**
+ * Why a claim decided was not sent, none of it the provider's answer: the
+ * account read right before it came back with no reading (`unread`, with
+ * the read's cause), the pool held it back (`backed-off`: a claim it sent may
+ * not show yet, a peer refused or took the lease), a peer could not be reached
+ * (`unreachable`), or the reading right before it found it no longer worth
+ * sending (`stale`). The first three go again, later by their cause (`unsentRetryAt`); `stale` does not.
+ */
+export const UnsentWhy = Schema.Literals(["unread", "backed-off", "unreachable", "stale"])
+export type UnsentWhy = typeof UnsentWhy.Type
+
+/** A claim not sent: why, the read's cause for an unread account, and the tries in a row since one was sent, which its back-off grows with. */
+export const Unsent = Schema.Struct({
+  why: UnsentWhy,
+  cause: Schema.optionalKey(UnreadCause),
+  tries: Schema.Number,
+})
+export type Unsent = typeof Unsent.Type
+
+/** A claim not sent goes again this long after its first unsent try, twice as long after each next one, up to UNSENT_RETRY_MAX_MS. */
+export const UNSENT_RETRY_MS = 10 * MINUTE
+export const UNSENT_RETRY_MAX_MS = 2 * HOUR
+/** The least wait after a rate-limited read, whatever its `retry-after` says. */
+export const UNSENT_RETRY_MIN_MS = MINUTE
+
+/**
+ * When a claim not sent goes again: a read the endpoint rate limited, once
+ * the wait it asked for (`retry-after`) has passed, else on bounded
+ * exponential back-off over its unsent tries (`tries`, from 1). Never on a
+ * fixed beat. `asked` is the rate-limited read's wait, none for any other.
+ */
+export const unsentRetryAt = (now: number, tries: number, asked: Option.Option<number> = Option.none()): number =>
+  now +
+  Option.getOrElse(Option.map(asked, (wait) => Math.max(wait, UNSENT_RETRY_MIN_MS)), () =>
+    Math.min(UNSENT_RETRY_MS * 2 ** Math.max(tries - 1, 0), UNSENT_RETRY_MAX_MS),
+  )
+
+const CAUSES: Readonly<Record<UnreadCause, string>> = {
+  "rate-limited": "rate limited",
+  "server-error": "a server error",
+  refused: "refused",
+  "signed-out": "no good token (signed out)",
+  network: "no answer (network or timeout)",
+  decode: "an answer that does not read",
+  unknown: "cause unknown",
+}
+
+/** An unread read's cause as a log line or the pane says it: `rate limited, retry-after 30 s`. */
+export const unreadText = (unread: { readonly cause: UnreadCause; readonly retryAfterMs?: number }): string =>
+  `${CAUSES[unread.cause]}${Option.match(Option.fromUndefinedOr(unread.retryAfterMs), { onNone: () => "", onSome: (wait) => `, retry-after ${Math.round(wait / 1000)} s` })}`
 
 /** The outcomes worth sending the same claim again for, later. */
 export const retryable = (outcome: ClaimOutcome): boolean =>
@@ -164,6 +257,10 @@ export const Reset = Schema.Struct({
   sentAt: Schema.optionalKey(Schema.Number),
   /** The push whose approved reset it spends (push.ts), for a reset claimed for one. */
   push: Schema.optionalKey(Schema.String),
+  /** Its last try was not sent, and why (`Unsent`); none once a try is sent. */
+  unsent: Schema.optionalKey(Unsent),
+  /** When a try not sent goes again (`unsentRetryAt`); one sent that failed goes again RETRY_MS after it. */
+  retryAt: Schema.optionalKey(Schema.Number),
 })
 export type Reset = typeof Reset.Type
 
@@ -426,10 +523,15 @@ export const buysOf = (gives: ReadonlyArray<Giveback>): string =>
  * credential, whichever pool lists it), the window the claim is judged on,
  * and that window's period; not the credit. So a window period takes one
  * claim on its own, whichever credit or pool serves it, and the claim sent
- * again (a retry, a restart) has the same request id.
+ * again (a retry, a restart) has the same request id. The period is named
+ * by `periodOf`, so a second's jitter of its end keeps the key.
  */
 export const expiringKey = (provider: ResetProvider, credentialID: string, window: string, resetAt: number) =>
-  `${provider}-expiring:${credentialID}:${window}:${Math.floor(resetAt / KEY_BUCKET_MS)}`
+  `${provider}-expiring:${credentialID}:${window}:${periodOf(resetAt)}`
+
+/** Every key a record of that claim may be under (`periodsNear`), `expiringKey`'s first. */
+const expiringKeys = (provider: ResetProvider, credentialID: string, window: string, resetAt: number): Arr.NonEmptyReadonlyArray<string> =>
+  Arr.map(periodsNear(resetAt), (period) => `${provider}-expiring:${credentialID}:${window}:${period}`)
 
 /** FNV-1a, 32 bits, as 8 hex digits. */
 const fnv = (text: string) => {
@@ -468,16 +570,32 @@ export const grantsOf = (account: Pick<AccountStatus, "reading">): ReadonlyArray
  * the fleet's lease (lease.ts) is what keeps a claim to one.
  * The resets left set apart a second claim of the kind in the period once
  * the first shows in a reading. A claim sent again keeps the id it was
- * decided with (`Reset.requestID`).
+ * decided with (`Reset.requestID`). The period is named by `periodOf`, so a
+ * second's jitter of its end keeps the id on every host.
  */
 export const claimRequestID = (provider: ResetProvider, account: AccountStatus, credit: ResetCredit, now: number): string => {
+  const claim = requestOf(provider, account, credit, now)
+  return claim.id(periodOf(claim.end))
+}
+
+/**
+ * Every request id that claim may have been decided with (`periodsNear`),
+ * `claimRequestID`'s first: a record or a claim made under any of them is this claim.
+ */
+const claimRequestIDs = (provider: ResetProvider, account: AccountStatus, credit: ResetCredit, now: number): Arr.NonEmptyReadonlyArray<string> => {
+  const claim = requestOf(provider, account, credit, now)
+  return Arr.map(periodsNear(claim.end), claim.id)
+}
+
+/** What a claim's request id is made of (`claimRequestID`): the end of the period it serves, and its id for a name of that period. */
+const requestOf = (provider: ResetProvider, account: AccountStatus, credit: ResetCredit, now: number) => {
   const kind = kindOf(provider, credit)
   const windowOf = (name: string) => account.reading?.windows.find((window) => window.name === name && accountWide(window))?.resetAt
-  const period = (kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d") ?? credit.expiresAt ?? 0
+  const end = (kind === "session" ? windowOf("5h") : provider === "codex" ? spentUntil(account, now) : undefined) ?? windowOf("7d") ?? credit.expiresAt ?? 0
   const left = Option.getOrElse(Option.fromUndefinedOr(account.reading?.resets?.credits), () => [])
     .filter((item) => inHand(item, now) && kindOf(provider, item) === kind)
     .reduce((total, item) => total + item.count, 0)
-  return requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${Math.floor(period / KEY_BUCKET_MS)}:${left}`)
+  return { end, id: (period: string) => requestIdOf(`${provider}:${grantsOf(account)[0] ?? account.credentialID}:${kind}:${period}:${left}`) }
 }
 
 // ── Words ──
@@ -593,6 +711,20 @@ export const SettleClaim = Schema.TaggedStruct("SettleClaim", {
 })
 export interface SettleClaim extends Schema.Schema.Type<typeof SettleClaim> {}
 
+/**
+ * A claim decided was not sent (`UnsentWhy`): `message` says why, as the log
+ * and the pane read it; `retryAfterMs` the wait a rate-limited read asked for.
+ * It is no claim made: no record among the claims, and no attempt spent.
+ */
+export const SettleUnsent = Schema.TaggedStruct("SettleUnsent", {
+  key: Schema.String,
+  why: UnsentWhy,
+  cause: Schema.optionalKey(UnreadCause),
+  message: Schema.String,
+  retryAfterMs: Schema.optionalKey(Schema.Finite),
+})
+export interface SettleUnsent extends Schema.Schema.Type<typeof SettleUnsent> {}
+
 /** A claim is about to be sent: recorded first, so a restart mid-send still knows of it. */
 export const NoteSend = Schema.TaggedStruct("NoteSend", { key: Schema.String })
 export interface NoteSend extends Schema.Schema.Type<typeof NoteSend> {}
@@ -621,7 +753,7 @@ export interface ReserveSpend extends Schema.Schema.Type<typeof ReserveSpend> {}
 export const WithdrawSpend = Schema.TaggedStruct("WithdrawSpend", { id: Schema.String })
 export interface WithdrawSpend extends Schema.Schema.Type<typeof WithdrawSpend> {}
 
-export type Command = NoteWait | Review | SettleClaim | NoteSend | ObserveClaim | ReserveSpend | WithdrawSpend
+export type Command = NoteWait | Review | SettleClaim | SettleUnsent | NoteSend | ObserveClaim | ReserveSpend | WithdrawSpend
 
 export const ClaimObserved = Schema.TaggedStruct("ClaimObserved", { key: Schema.String, windows: Schema.Array(QuotaWindow) })
 export interface ClaimObserved extends Schema.Schema.Type<typeof ClaimObserved> {}
@@ -653,6 +785,17 @@ export interface ClaimWeighed extends Schema.Schema.Type<typeof ClaimWeighed> {}
 export const ClaimSettled = Schema.TaggedStruct("ClaimSettled", { claim: Claim, stage: Stage })
 export interface ClaimSettled extends Schema.Schema.Type<typeof ClaimSettled> {}
 
+/** A claim decided was not sent (`SettleUnsent`): its stage now (`failed` to go again at `retryAt`, else `settled`), and why. */
+export const ClaimUnsent = Schema.TaggedStruct("ClaimUnsent", {
+  key: Schema.String,
+  at: Schema.Number,
+  stage: Stage,
+  unsent: Unsent,
+  message: Schema.String,
+  retryAt: Schema.optionalKey(Schema.Number),
+})
+export interface ClaimUnsent extends Schema.Schema.Type<typeof ClaimUnsent> {}
+
 /** Finished resets whose hold lifted long ago. */
 export const ResetsForgotten = Schema.TaggedStruct("ResetsForgotten", { keys: Schema.Array(Schema.String) })
 export interface ResetsForgotten extends Schema.Schema.Type<typeof ResetsForgotten> {}
@@ -680,7 +823,7 @@ export const SEEN_ASSUME = "Nothing to do: the pool claimed it"
 export const ClaimSent = Schema.TaggedStruct("ClaimSent", { key: Schema.String, at: Schema.Number })
 export interface ClaimSent extends Schema.Schema.Type<typeof ClaimSent> {}
 
-export type Event = WaitNoted | ClaimDue | ClaimWeighed | ClaimSettled | ResetsForgotten | OwnerTold | ClaimSent | ClaimObserved | SpendReserved | SpendWithdrawn
+export type Event = WaitNoted | ClaimDue | ClaimWeighed | ClaimSettled | ClaimUnsent | ResetsForgotten | OwnerTold | ClaimSent | ClaimObserved | SpendReserved | SpendWithdrawn
 
 /**
  * Why no claim of `provider` goes on at `now`, this host's clock: a claim of
@@ -741,6 +884,31 @@ const lastClaimAt = (state: ResetsState, credentialID: string): number | undefin
       .map((reset) => reset.at),
   ]
   return times.length === 0 ? undefined : Math.max(...times)
+}
+
+/** How old a reading may be for the check right before a claim to stand on it, instead of reading the account again (`reusableReading`). */
+export const REUSE_MS = MINUTE
+
+/**
+ * The reading the check right before `reset` is sent may stand on instead of
+ * reading the account again: the account's reading as the pool holds it,
+ * a usage endpoint's (`usage`), its resets listed, each window and the
+ * resets read within REUSE_MS of `now` (none carried from an older reading),
+ * and after the last claim on the account, this one's last send included.
+ * The sweep reads every account just before the review that decides a claim:
+ * a second read seconds later only spends the endpoint's patience. None
+ * otherwise. The check after the fleet's lease is granted always reads anew.
+ */
+export const reusableReading = (state: ResetsState, reset: Pick<Reset, "key" | "credentialID" | "sentAt">, account: AccountStatus, now: number): Option.Option<QuotaReading> => {
+  const { [reset.key]: _judged, ...others } = state.resets
+  const last = Math.max(lastClaimAt({ ...state, resets: others }, reset.credentialID) ?? Number.NEGATIVE_INFINITY, reset.sentAt ?? Number.NEGATIVE_INFINITY)
+  return Option.fromUndefinedOr(account.reading).pipe(
+    Option.filter((reading) => {
+      const times = [reading.at, ...reading.windows.map((window) => window.at ?? reading.at), reading.resets?.at ?? reading.at]
+      const oldest = Math.min(...times)
+      return Predicate.isNotUndefined(reading.usage) && Predicate.isNotUndefined(reading.resets) && reading.windows.length > 0 && Math.max(...times) <= now && now - oldest <= REUSE_MS && oldest > last
+    }),
+  )
 }
 
 /** When an account was read: its windows, and its resets (`at`, when carried from an older reading), the older. */
@@ -824,18 +992,39 @@ const resetOf = (
 
 /**
  * Whether a reset's reason is still current: its key is among the window
- * periods still running that the pools give now (`expiringKey`).
+ * periods still running that the pools give now (`expiringKeys`: any name
+ * a record of the period may be under).
  */
 const currentKeys = (pools: ReadonlyArray<PoolView>, now: number): ReadonlySet<string> =>
   new Set(
     pools.flatMap((view) =>
       view.accounts.flatMap((account) =>
         (account.reading?.windows ?? []).flatMap((window) =>
-          window.resetAt === undefined || window.resetAt <= now ? [] : [expiringKey(view.provider, account.credentialID, window.name, window.resetAt)],
+          window.resetAt === undefined || window.resetAt <= now ? [] : expiringKeys(view.provider, account.credentialID, window.name, window.resetAt),
         ),
       ),
     ),
   )
+
+/**
+ * The key a claim of a period takes, and whether that claim was worked
+ * already. Of the keys a record of the period may be under (`keys`, the
+ * claim's own first), the one a record holds, else its own; the claim is
+ * worked when a record under any of them, or a generation of one, carries
+ * one of its request ids (`ids`, its own first). A record of the period
+ * with another request id is an earlier inventory's: this claim is the
+ * subsequent redemption, the generation `<key>:<its request id>`.
+ */
+const periodRecord = (state: ResetsState, keys: Arr.NonEmptyReadonlyArray<string>, ids: Arr.NonEmptyReadonlyArray<string>): Option.Option<string> => {
+  const records = keys.flatMap((key) => [key, ...ids.map((id) => `${key}:${id}`)]).flatMap((key) => Option.toArray(Option.fromUndefinedOr(state.resets[key])))
+  if (records.some((record) => ids.includes(record.requestID))) return Option.none()
+  return Option.some(
+    Option.match(Arr.findFirst(keys, (key) => Predicate.isNotUndefined(state.resets[key])), {
+      onNone: () => Arr.headNonEmpty(keys),
+      onSome: (key) => `${key}:${Arr.headNonEmpty(ids)}`,
+    }),
+  )
+}
 
 // ── The standing allowance ──
 
@@ -944,14 +1133,13 @@ const candidatesOf = (
       const gives = weighed(estimated, held)
       const best = Option.getOrUndefined(judgedGive(gives, held, blocking, now))
       if (best?.resetAt === undefined) return []
-      const key = expiringKey(view.provider, account.credentialID, best.window, best.resetAt)
-      const requestID = claimRequestID(view.provider, account, credit, now)
-      if (state.claims.some((claim) => claim.requestID === requestID && (claim.outcome === "reset" || claim.outcome === "already-redeemed"))) return []
+      const ids = claimRequestIDs(view.provider, account, credit, now)
+      if (state.claims.some((claim) => ids.includes(claim.requestID) && (claim.outcome === "reset" || claim.outcome === "already-redeemed"))) return []
       // A lower observed credit count identifies a subsequent redemption in
       // this same cadence; a replay retains its original request and key.
-      const previous = Option.filter(Option.fromUndefinedOr(state.resets[key]), (previous) => previous.requestID !== requestID)
-      const generation = Option.match(previous, { onNone: () => key, onSome: () => `${key}:${requestID}` })
-      if (state.resets[generation] !== undefined) return []
+      const found = periodRecord(state, expiringKeys(view.provider, account.credentialID, best.window, best.resetAt), ids)
+      if (Option.isNone(found)) return []
+      const generation = found.value
       const length = windowMs(best.window) ?? LONG_WINDOW_MS
       const judged = (account.reading?.windows ?? []).find((window) => window.name === best.window)
       const option: ClaimOption = {
@@ -1169,7 +1357,7 @@ const plannedCapacity = (provider: ResetProvider, account: AccountStatus, claims
     const at = Option.getOrElse(Option.fromUndefinedOr(window.at), () => fields.at)
     return at <= now && now - at < FRESH_MS && at > last
   }) } }
-  const stock = sparesOf(provider, fresh, now).filter(({ credit }) => !observed.has(claimRequestID(provider, account, credit, now)))
+  const stock = sparesOf(provider, fresh, now).filter(({ credit }) => !claimRequestIDs(provider, account, credit, now).some((id) => observed.has(id)))
   const extra = stock.reduce((sum, item) => sum + item.spare, 0)
   if (extra <= 0) return Option.none()
   const expiries = stock.flatMap((spare) => Option.toArray(Option.fromUndefinedOr(spare.expiresAt)))
@@ -1339,7 +1527,11 @@ export const rankPush = (left: PushOption, right: PushOption): number =>
   (right.weekResetAt ?? 0) - (left.weekResetAt ?? 0)
 
 /** The key of a push's claim on a held account: once per push, account and hold. */
-export const pushKey = (pushID: string, credentialID: string, until: number) => `push:${pushID}:${credentialID}:${Math.floor(until / KEY_BUCKET_MS)}`
+export const pushKey = (pushID: string, credentialID: string, until: number) => `push:${pushID}:${credentialID}:${periodOf(until)}`
+
+/** Every key a record of that push claim may be under (`periodsNear`), `pushKey`'s first. */
+const pushKeysNear = (pushID: string, credentialID: string, until: number): Arr.NonEmptyReadonlyArray<string> =>
+  Arr.map(periodsNear(until), (period) => `push:${pushID}:${credentialID}:${period}`)
 
 /** Until when the windows that hold the account block a start of `model`; none when none does. */
 const blockedUntil = (account: AccountStatus, now: number, model?: string): number | undefined => {
@@ -1395,8 +1587,9 @@ const pushDue = (
       if (spentWeek && !blockingOf(account, now).some((window) => window.name === "7d")) return []
       const until = blockedUntil(account, now, model)
       if (until === undefined) return []
-      const key = pushKey(grant.id, account.credentialID, until)
-      if (state.resets[key] !== undefined) return []
+      const keys = pushKeysNear(grant.id, account.credentialID, until)
+      if (keys.some((near) => state.resets[near] !== undefined)) return []
+      const key = Arr.headNonEmpty(keys)
       return pushOptions(view, account, grant, now, model)
         .filter((option) => !spentWeek || option.weekly >= MIN_RESTORE)
         .map((option) => ({ option, key }))
@@ -1419,7 +1612,7 @@ const pushKeys = (state: ResetsState, pools: ReadonlyArray<PoolView>, pushes: Re
       view.accounts.flatMap((account) =>
         [state.waits[view.id]?.model, undefined].flatMap((model) => {
           const until = blockedUntil(account, now, model)
-          return until === undefined ? [] : [pushKey(grant.id, account.credentialID, until)]
+          return until === undefined ? [] : pushKeysNear(grant.id, account.credentialID, until)
         }),
       ),
     ),
@@ -1441,7 +1634,7 @@ const review = (state: ResetsState, command: Review, now: number): ReadonlyArray
     command.pools.find((view) => view.id === reset.pool)?.accounts.find((account) => account.credentialID === reset.credentialID)
   // A claim that did not go through goes again, the same claim, while its window period lasts; one the pool decided on its own, only on fresh evidence.
   for (const reset of Object.values(after.resets)) {
-    if (!retries(reset, current) || now - reset.at < RETRY_MS || claiming.has(reset.credentialID)) continue
+    if (!retries(reset, current) || now < (reset.retryAt ?? reset.at + RETRY_MS) || claiming.has(reset.credentialID)) continue
     const account = accountOf(reset)
     if (automatic(reset) && (!auto || account === undefined || freshView(state, account, now) === undefined)) continue
     claiming.add(reset.credentialID)
@@ -1499,6 +1692,27 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
   const text = toldText(reset)
   return [settled, OwnerTold.make({ key: reset.key, at: now, text, ...(newest?.sessionID === undefined ? {} : { sessionID: newest.sessionID }) })]
 }
+
+/**
+ * A claim not sent (`SettleUnsent`), on the claim in flight under `key`: a
+ * stale one settles, any other goes again at `unsentRetryAt`. No claim is
+ * recorded and no attempt is spent: nothing reached the provider.
+ */
+const settleUnsent = (state: ResetsState, command: SettleUnsent, now: number): ReadonlyArray<Event> =>
+  Option.match(Option.filter(Option.fromUndefinedOr(state.resets[command.key]), (reset) => reset.stage === "claiming"), {
+    onNone: (): ReadonlyArray<Event> => [],
+    onSome: (reset) => {
+      const tries = Option.match(Option.fromUndefinedOr(reset.unsent), { onNone: () => 1, onSome: (last) => last.tries + 1 })
+      const unsent: Unsent = Option.match(Option.fromUndefinedOr(command.cause), {
+        onNone: () => ({ why: command.why, tries }),
+        onSome: (cause) => ({ why: command.why, tries, cause }),
+      })
+      if (command.why === "stale") return [ClaimUnsent.make({ key: command.key, at: now, stage: "settled", unsent, message: command.message })]
+      // Only a rate-limited read's wait is the endpoint's to set.
+      const asked = Option.filter(Option.fromUndefinedOr(command.retryAfterMs), () => command.cause === "rate-limited")
+      return [ClaimUnsent.make({ key: command.key, at: now, stage: "failed", unsent, message: command.message, retryAt: unsentRetryAt(now, tries, asked) })]
+    },
+  })
 
 /** A kind as a notice names it: the 5-hour reset as the usage wording does, `5h`. */
 const NOTICE_KIND: Readonly<Record<ResetKind, string>> = { ...KIND_LABEL, session: "5h reset" }
@@ -1604,6 +1818,8 @@ export const Resets: Decider<ResetsState, Command, Event> = {
         return Effect.succeed(review(state, command, now))
       case "SettleClaim":
         return Effect.succeed(settleClaim(state, command, now))
+      case "SettleUnsent":
+        return Effect.succeed(settleUnsent(state, command, now))
       case "NoteSend":
         return Effect.succeed(state.resets[command.key]?.stage === "claiming" ? [ClaimSent.make({ key: command.key, at: now })] : [])
       case "ObserveClaim":
@@ -1628,6 +1844,13 @@ export const keptSpends = (claims: ReadonlyArray<Claim>, spends: ReadonlyArray<S
   return spends.filter((spend) => kept.has(spend.claim))
 }
 
+/** The resets with the one under `key` sent: its unsent tries and their retry forgotten. */
+const sentOnly = (resets: ResetsState["resets"], key: string): ResetsState["resets"] =>
+  Option.match(Option.fromUndefinedOr(resets[key]), {
+    onNone: () => resets,
+    onSome: ({ unsent: _unsent, retryAt: _retryAt, ...sent }) => ({ ...resets, [key]: sent }),
+  })
+
 const withStage = (state: ResetsState, key: string, stage: Stage, at: number, extra: Partial<Reset> = {}): ResetsState => {
   const reset = state.resets[key]
   return reset === undefined ? state : { ...state, resets: { ...state.resets, [key]: { ...reset, ...extra, stage, at } } }
@@ -1637,23 +1860,31 @@ export const evolve = (state: ResetsState, event: Event): ResetsState => {
   switch (event._tag) {
     case "WaitNoted":
       return { ...state, waits: { ...state.waits, [event.pool]: event.wait } }
-    case "ClaimDue":
-      return { ...state, resets: { ...state.resets, [event.reset.key]: { ...event.reset, attempts: event.reset.attempts + 1 } } }
+    case "ClaimDue": {
+      // A try in flight goes again RETRY_MS after it, whenever an unsent one was due.
+      const { retryAt: _due, ...reset } = event.reset
+      return { ...state, resets: { ...state.resets, [event.reset.key]: { ...reset, attempts: event.reset.attempts + 1 } } }
+    }
     case "ClaimWeighed":
       return state
     case "ClaimSettled": {
       const claims = [...state.claims, event.claim].slice(-MAX_CLAIMS)
-      return withSpends(
-        {
-          ...withStage(state, event.claim.key, event.stage, event.claim.at, {
-            outcome: event.claim.outcome,
-            ...(event.claim.message === undefined ? {} : { message: event.claim.message }),
-          }),
-          claims,
-        },
-        keptSpends(claims, state.spends ?? []),
-      )
+      const settled = withStage(state, event.claim.key, event.stage, event.claim.at, {
+        outcome: event.claim.outcome,
+        ...(event.claim.message === undefined ? {} : { message: event.claim.message }),
+      })
+      return withSpends({ ...settled, resets: sentOnly(settled.resets, event.claim.key), claims }, keptSpends(claims, state.spends ?? []))
     }
+    case "ClaimUnsent":
+      // Nothing reached the provider: the attempt the claim's decision counted is given back, and no outcome of its is kept.
+      return Option.match(Option.fromUndefinedOr(state.resets[event.key]), {
+        onNone: () => state,
+        onSome: ({ outcome: _outcome, retryAt: _retryAt, ...rest }) => {
+          const next: Reset = { ...rest, stage: event.stage, at: event.at, attempts: Math.max(rest.attempts - 1, 0), unsent: event.unsent, message: event.message }
+          const due = Option.match(Option.fromUndefinedOr(event.retryAt), { onNone: () => next, onSome: (retryAt): Reset => ({ ...next, retryAt }) })
+          return { ...state, resets: { ...state.resets, [event.key]: due } }
+        },
+      })
     case "ClaimObserved":
       return { ...state, claims: state.claims.map((claim) => Object.assign({}, claim, claim.key === event.key && { observed: event.windows })) }
     case "SpendReserved":

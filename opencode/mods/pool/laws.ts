@@ -1,7 +1,7 @@
 // What every implementation of a contract in service.ts owes, as shared test
 // suites. Each implementation's test beside it runs the suite over its Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Queue, Stream } from "effect"
+import { Effect, Layer, Queue, Result, Stream } from "effect"
 import {
   LedgerPruned,
   LoginsListed,
@@ -255,17 +255,17 @@ export const quotaLaws = (name: string, layer: (world: QuotaWorld) => Layer.Laye
     const refused: QuotaReading = { at: 2_000, status: "rejected", windows: [], refusal: { kind: "signin", until: 9_000 } }
     const readings = new Map([[pool, new Map([["cred-a", newest], ["cred-b", refused]])]])
 
-    test("reading and usage answer a login's newest reading, and none for a login without one", () =>
+    test("reading and usage answer a login's newest reading, and none for a login without one (usage: unread, with a cause)", () =>
       Effect.runPromise(
         Effect.gen(function* () {
           const published = new Map([[pool, yield* Queue.unbounded<PublishedReading>()]])
           yield* Effect.gen(function* () {
             const quota = yield* Quota
             expect(yield* quota.reading(pool, "cred-a")).toEqual(newest)
-            expect(yield* quota.usage(pool, "cred-a")).toEqual(newest)
+            expect(yield* quota.usage(pool, "cred-a")).toEqual(Result.succeed(newest))
             expect(yield* quota.reading(pool, "cred-b")).toEqual(refused)
             expect(yield* quota.reading(pool, "cred-unknown")).toBeUndefined()
-            expect(yield* quota.usage(other, "cred-a")).toBeUndefined()
+            expect(Result.isFailure(yield* quota.usage(other, "cred-a"))).toBe(true)
           }).pipe(Effect.provide(layer({ readings, published })))
         }),
       ))

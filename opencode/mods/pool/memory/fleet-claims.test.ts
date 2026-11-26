@@ -18,7 +18,7 @@
 //   reading right before the send: nothing more is spent.
 // - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Clock, Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Fiber, Layer, Option, Result, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
@@ -104,7 +104,7 @@ const hostQuota = (account: Provider, view: View) =>
       Effect.sync(() => {
         const read = view.snapshot ?? account.reading()
         if (!view.lags) view.snapshot = undefined
-        return read
+        return Result.succeed(read)
       }),
     readings: () => Stream.empty,
     claim: (_pool, input) =>
@@ -214,11 +214,14 @@ const verifierCase = (now: number) => {
 
 const records = (pool: Model.Pool["Service"]) => Effect.map(pool.resets, (status) => status.claims)
 
-/** The claims a host recorded unsent for want of a peer's agreement; it asks the owner nothing. */
+/** The tries a host did not send (`Reset.unsent`): none of them a claim made. */
+const unsent = (pool: Model.Pool["Service"]) => Effect.map(pool.resets, (status) => status.resets.filter((reset) => Option.isSome(Option.fromUndefinedOr(reset.unsent))))
+
+/** The claims a host recorded unsent for want of a peer's agreement, to go again; it asks the owner nothing. */
 const unagreed = (host: Host) =>
   Effect.gen(function* () {
     expect(host.owner.asked).toEqual([])
-    return (yield* records(host.pool!)).filter((claim) => claim.outcome === "failed" && /^not sent: no agreement, .* unreachable$/.test(claim.message ?? ""))
+    return (yield* unsent(host.pool!)).filter((reset) => reset.stage === "failed" && reset.unsent?.why === "unreachable" && /^not sent: no agreement, .* unreachable$/.test(reset.message ?? ""))
   })
 
 describe("one account read by two hosts, claimed at one provider, no host the master", () => {
@@ -238,11 +241,13 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         const made = all.filter((claim) => claim.outcome === "reset")
         expect(made).toHaveLength(1)
         expect(made[0]?.lease).toMatch(/^granted by (mac|workbox)$/)
-        for (const other of all.filter((claim) => claim.outcome !== "reset")) expect(other.message).toMatch(/^(backed off: |not sent: )/)
+        // The one claim made is the only claim recorded: the other host's try is no claim, recorded unsent.
+        expect(all.filter((claim) => claim.outcome !== "reset")).toEqual([])
+        for (const other of [...(yield* unsent(mac)), ...(yield* unsent(workbox))]) expect(other.message).toMatch(/^(backed off: |not sent: )/)
       }),
     ))
 
-  test("the other host offline (no answer): no claim sent, recorded failed naming it, nothing asked (it goes again later)", () =>
+  test("the other host offline (no answer): no claim sent, recorded unsent naming it, nothing asked (it goes again later)", () =>
     scoped(
       Effect.gen(function* () {
         const now = stamp()
@@ -358,8 +363,11 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         yield* workbox.sweep
         // The one spent is the app's: the workbox read the account again and sent nothing.
         expect(account.spent().map((claim) => claim.requestID)).toEqual(["claude-app"])
-        const [record] = yield* records(workbox)
-        expect(record).toMatchObject({ outcome: "nothing-to-reset", message: expect.stringMatching(/^not sent: /), lease: "granted by mac" })
+        // Recorded as what it was: not sent, the send-time check's, never the provider's nothing-to-reset, and no claim made.
+        expect(yield* records(workbox)).toEqual([])
+        const [record] = yield* unsent(workbox)
+        expect(record).toMatchObject({ stage: "settled", unsent: { why: "stale" }, message: expect.stringMatching(/^not sent: .*; granted by mac$/) })
+        expect(record?.outcome).toBeUndefined()
       }),
     ))
 })
@@ -423,7 +431,8 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
           hosts.workbox.view.lags = true
           yield* workbox.sweep
           expect(account.sent).toHaveLength(1)
-          const [record] = yield* records(workbox)
+          const [record] = yield* unsent(workbox)
+          expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
           expect(record?.message).toMatch(/^backed off: .*may not show yet/)
         }),
       ))
@@ -450,7 +459,8 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
-        const [record] = yield* records(workbox)
+        const [record] = yield* unsent(workbox)
+        expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
         expect(record?.message).toMatch(/^backed off: mac: a claim sent on Claude A at .* may not show yet/)
       }),
     ))
@@ -483,8 +493,8 @@ describe("a host's own claim (test strength, round 5)", () => {
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
-        const made = yield* records(workbox)
-        expect(made.some((record) => /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
+        const made = yield* unsent(workbox)
+        expect(made.some((record) => record.unsent?.why === "backed-off" && /^backed off: a claim sent on Claude A at .* may not show yet/.test(record.message ?? ""))).toBe(true)
       }),
     ))
 })
@@ -528,7 +538,8 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
         const [mac] = yield* hosts.start
         yield* mac.sweep
         expect(account.spent()).toHaveLength(1)
-        const [record] = yield* records(mac)
+        const [record] = yield* unsent(mac)
+        expect(record).toMatchObject({ stage: "failed", unsent: { why: "backed-off" } })
         expect(record?.message).toMatch(/^backed off: workbox: a claim sent on Claude A at .* may not show yet/)
       }),
     ))
