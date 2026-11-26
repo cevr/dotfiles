@@ -10,6 +10,7 @@ import { basename, join } from "node:path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Option, Schedule } from "effect"
 import { gitClone, gitInit } from "../../../tests/git-repo.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { exitWords } from "../land.ts"
 import { RESUMED } from "../owed.ts"
 import { Landing } from "../service.ts"
@@ -587,38 +588,8 @@ describe("process Landing", () => {
     expect(load.load).toBeGreaterThanOrEqual(0)
   })
 
-  test("the gate and acceptance run always go through the guard's launcher: niced, and in the idle I/O class and a scope under MemoryMax=12G on systemd", () => {
-    const wrapped = ["sh", "-c", ProcessLanding.CHECK_WRAPPER, "rift-land", "bun run gate", "/l/gate.log", "/proc/self/cgroup", "/sys/fs/cgroup"]
-    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: false, ionice: false })).toEqual(["nice", "-n", "10", ...wrapped])
-    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log", { scope: true, ionice: true })).toEqual([
-      "nice", "-n", "10",
-      "ionice", "-c3",
-      "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
-      ...wrapped,
-    ])
-  })
-
-  /** A check's wrapper run on `command`, with its scope's cgroup at `/run-x.scope` under a scratch root counting `kills`. */
-  const wrapperRun = (command: string, kills: number) => {
-    const scratch = mkdtempSync(join(tmpdir(), "rift-oom-"))
-    scratches.push(scratch)
-    write(scratch, "self", "0::/user.slice/run-x.scope\n")
-    write(scratch, "fs/user.slice/run-x.scope/memory.events", `low 0\nhigh 0\nmax 9\noom 1\noom_kill ${kills}\noom_group_kill 0\n`)
-    const log = join(scratch, "gate.log")
-    const argv = ProcessLanding.checkArgv(command, log, { scope: false, ionice: false }, { self: join(scratch, "self"), root: join(scratch, "fs") })
-    const ran = spawned(scratch, argv)
-    return { code: ran.exitCode, output: readFileSync(log, "utf8") }
-  }
-
-  test("land-adopt: a check its scope stopped for memory (SIGTERM after the kernel's oom_kill) ends 143 with the count in its log, which the answer says as out of memory at MemoryMax", () => {
-    // systemd's OOMPolicy=stop sends SIGTERM to every process of the scope: the command and its wrapper.
-    const stopped = wrapperRun('echo testing; kill -TERM "$PPID"; kill -TERM $$', 2)
-    expect(stopped).toEqual({ code: 143, output: "testing\nrift-land: out of memory: oom_kill 2 at MemoryMax=12G\n" })
-    expect(exitWords(stopped)).toBe("exit 143: out of memory, killed at the scope's limit MemoryMax=12G (memory.events oom_kill 2)")
-    // A red check with no kill in its scope says its exit alone; a green one says nothing more.
-    const red = wrapperRun("echo red; exit 3", 0)
-    expect([red, exitWords(red)]).toEqual([{ code: 3, output: "red\n" }, "exit 3"])
-    expect(wrapperRun("echo fine", 0)).toEqual({ code: 0, output: "fine\n" })
+  test("a gate or acceptance run runs as written: no nice, no scope, both streams into its log", () => {
+    expect(ProcessLanding.checkArgv("bun run gate", "/l/gate.log")).toEqual(["sh", "-c", ProcessLanding.CHECK_WRAPPER, "rift-land", "bun run gate", "/l/gate.log"])
   })
 
   /** One check of `command` in a bare scratch directory, under the layer's `options`. */
@@ -629,31 +600,12 @@ describe("process Landing", () => {
     return { scratch, ran: Effect.runPromise(Effect.flatMap(Landing, (landing) => landing.check(scratch, "gate", command, {})).pipe(Effect.provide(layer))) }
   }
 
-  test("on the Mac a check runs niced alone, ten more than the caller", async () => {
+  test("a check runs at the caller's niceness, its exit and output kept", async () => {
     const own = Number(sh(tmpdir(), "sh", "-c", "ps -o nice= -p $$"))
-    const { ran } = checkIn({ platform: "darwin", probe: ["/nonexistent/loop-probe-x"] }, "ps -o nice= -p $$")
-    expect(Number((await ran).output.trim())).toBe(Math.min(process.platform === "darwin" ? 20 : 19, own + 10))
-  })
-
-  test("on a systemd host a check runs in a user scope with its limits; a failed probe runs it niced alone", async () => {
-    // A stand-in systemd-run on PATH records its arguments and runs the command after `--`.
-    const bin = mkdtempSync(join(tmpdir(), "rift-systemd-"))
-    scratches.push(bin)
-    write(bin, "systemd-run", '#!/bin/sh\necho "$@" > "$(dirname "$0")/asked"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
-    sh(bin, "chmod", "755", join(bin, "systemd-run"))
-    const env = { PATH: `${bin}:${process.env.PATH ?? ""}` }
-
-    const scoped = checkIn({ platform: "linux", probe: ["true"], env }, "echo ran")
-    expect((await scoped.ran).output).toBe("ran\n")
-    expect(readFileSync(join(bin, "asked"), "utf8")).toBe(
-      `--user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- sh -c ${ProcessLanding.CHECK_WRAPPER} rift-land echo ran ${join(scoped.scratch, "logs", `${basename(scoped.scratch)}.gate.log`)} /proc/self/cgroup /sys/fs/cgroup\n`,
-    )
-
-    rmSync(join(bin, "asked"))
-    const refused = checkIn({ platform: "linux", probe: ["false"], env }, "echo ran")
-    expect((await refused.ran).output).toBe("ran\n")
-    expect(existsSync(join(bin, "asked"))).toBe(false)
-  })
+    const { ran } = checkIn({}, "ps -o nice= -p $$; echo red >&2; exit 3")
+    const done = await ran
+    expect([done.code, done.output.trim().split("\n").map((line) => line.trim()), exitWords(done)]).toEqual([3, [String(own), "red"], "exit 3"])
+  }, hangGuard("process-fixture"))
 
   test("push sends HEAD to main when it holds origin's newest main, and refuses when main moved", async () => {
     const made = bench()

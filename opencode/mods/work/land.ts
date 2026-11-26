@@ -196,18 +196,8 @@ export const digest = (output: string, limit = 12): string => {
 
 const branches = (units: ReadonlyArray<Unit>): string => units.map((unit) => unit.branch).join(", ")
 
-/** The line a check's wrapper appends when the kernel killed in its scope at MemoryMax (process/landing.ts `CHECK_WRAPPER`). */
-const OUT_OF_MEMORY = /^rift-land: out of memory: oom_kill (\d+) at MemoryMax=(\S+)$/m
-
-/**
- * How a check ended, as an answer says it: `exit <code>`, and for a red one whose scope the kernel killed in at its
- * memory cap (systemd then stops the scope: exit 143, or 137 for the one killed), that it ran out of memory there.
- */
-export const exitWords = (ran: Pick<Ran, "code" | "output">): string =>
-  Option.match(Option.filter(Option.fromNullOr(OUT_OF_MEMORY.exec(ran.output)), () => ran.code !== 0), {
-    onNone: () => `exit ${ran.code}`,
-    onSome: (oom) => `exit ${ran.code}: out of memory, killed at the scope's limit MemoryMax=${oom[2]} (memory.events oom_kill ${oom[1]})`,
-  })
+/** How a check ended, as an answer says it. */
+export const exitWords = (ran: Pick<Ran, "code">): string => `exit ${ran.code}`
 
 /** The answer to a land that pushed. */
 export const landedText = (landed: Landed, accepting: boolean, postLand = false): string => {

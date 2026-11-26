@@ -3,8 +3,8 @@
 // `rift.accept`, `rift.generated`, `rift.regenerate`, `rift.push`,
 // `rift.pushBranches`, `rift.postLand`, `rift.mergeCheck`, `rift.focus`, the default branch from
 // `workrift.main` else origin's HEAD) and run through `sh -c`, their output
-// kept in a log under `logs`; the gate and the acceptance run always run
-// heavy, through the guard's launcher (`checkArgv`). A lock file is installed again with its package
+// kept in a log under `logs`; the gate and the acceptance run run as written
+// (`checkArgv`), no nice and no scope. A lock file is installed again with its package
 // manager (frozen first, then free, as a merged lock file may need) and
 // committed when the install rewrote it. `rift.regenerate` runs after every
 // batch's merges, and what it rewrote is committed. Receipts (`receipts`) are read and written here: a
@@ -15,7 +15,6 @@ import { availableParallelism, loadavg } from "node:os"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { basename, dirname, join } from "node:path"
 import { getegid, geteuid } from "node:process"
-import { DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
 import { Clock, Console, DateTime, Effect, Layer, Match, Option, Predicate, Random, Result, Schema } from "effect"
 import { type HostLoad, type LandConfig, type Merged, type PostLanded, type Ran, type Started, type Unit } from "../land.ts"
 import { receiptCommand } from "../owed.ts"
@@ -29,44 +28,13 @@ export interface Options {
   readonly logs: string
   /** Variables added to every command's environment (a test's scratch HOME). */
   readonly env?: Readonly<Record<string, string>>
-  /** The machine's platform; a test names another. */
-  readonly platform?: string
-  /** The systemd scope probe (the guard's `SCOPE_PROBE`); a test names a stand-in. */
-  readonly probe?: ReadonlyArray<string>
 }
 
-/** Where a check's wrapper reads its own cgroup (Linux): `/proc/self/cgroup`, and the cgroup2 mount it names a path under. */
-export interface Cgroups {
-  readonly self: string
-  readonly root: string
-}
+/** The wrapper a check runs in: the command as written, both streams into the log (`$2`) in the order they were written. */
+export const CHECK_WRAPPER = 'exec sh -c "$1" >"$2" 2>&1'
 
-export const CGROUPS: Cgroups = { self: "/proc/self/cgroup", root: "/sys/fs/cgroup" }
-
-/**
- * The wrapper a check runs in, inside its scope: the command with both streams into the log (`$2`); then, when the
- * scope's `memory.events` counts an `oom_kill` (the kernel killed a process at the scope's MemoryMax, and systemd's
- * OOMPolicy then stops the scope with SIGTERM, the gate's exit 143), the line `oomLine` reads, appended to the log.
- * SIGTERM is trapped, not ignored, so the command still dies of it and the wrapper lives to read the count.
- */
-export const CHECK_WRAPPER = [
-  "termed=; trap 'termed=1' TERM",
-  'sh -c "$1" >"$2" 2>&1; code=$?',
-  '[ -n "$termed" ] && code=143',
-  'cg=$(sed -n "s/^0:://p" "$3" 2>/dev/null)',
-  'if [ -n "$cg" ] && [ "$cg" != / ]; then kills=$(sed -n "s/^oom_kill //p" "$4$cg/memory.events" 2>/dev/null); fi',
-  `case "\${kills:-0}" in 0|*[!0-9]*) ;; *) echo "rift-land: out of memory: oom_kill $kills at MemoryMax=${DEFAULT_LIMITS.memoryMax}" >>"$2";; esac`,
-  'exit $code',
-].join("\n")
-
-/**
- * The argv a gate or acceptance run runs as: always heavy, through the
- * guard's launcher (`nice`, `ionice -c3` where the host has it, and on a
- * systemd host a user scope under its memory cap), both streams into `log`
- * in the order they were written, with the scope's out-of-memory kill said at its end (`CHECK_WRAPPER`).
- */
-export const checkArgv = (command: string, log: string, host: Host, cgroups: Cgroups = CGROUPS): ReadonlyArray<string> =>
-  heavyArgv(["sh", "-c", CHECK_WRAPPER, "rift-land", command, log, cgroups.self, cgroups.root], DEFAULT_LIMITS, host)
+/** The argv a gate or acceptance run runs as: the command as written, at the land's own niceness, no scope (`CHECK_WRAPPER`). */
+export const checkArgv = (command: string, log: string): ReadonlyArray<string> => ["sh", "-c", CHECK_WRAPPER, "rift-land", command, log]
 
 /**
  * The lock files a land's checks hold, under `logs`, one set per host. `checks`: every gate and accept check
@@ -427,17 +395,6 @@ export const scriptReceipt = <A>(logs: string, path: string, kind: Receipt["kind
 export const layer = (options: Options) => {
   const { spawn, run } = commands(options.env)
   const kept = receipts(options.logs, options.env)
-  /** Whether a systemd scope is available: on Linux, the probe exits 0; asked once, at the first check. */
-  let scoped: boolean | undefined
-  const scope = Effect.suspend(() =>
-    scoped !== undefined || (options.platform ?? process.platform) !== "linux"
-      ? Effect.succeed(scoped ?? false)
-      : spawn(options.probe ?? SCOPE_PROBE, options.logs).pipe(
-          Effect.map((ran) => ran.code === 0),
-          Effect.orElseSucceed(() => false),
-          Effect.tap((available) => Effect.sync(() => void (scoped = available))),
-        ),
-  )
   const git = (path: string, ...args: ReadonlyArray<string>) => run(["git", "-C", path, ...args], path)
   const trimmed = (path: string, ...args: ReadonlyArray<string>) => git(path, ...args).pipe(Effect.map((out) => out.trim()))
   /** A Git config value, or undefined when unset. */
@@ -553,7 +510,7 @@ export const layer = (options: Options) => {
     mkdirSync(options.logs, { recursive: true })
     const log = join(options.logs, `${basename(path)}.${label}.log`)
     const started = Date.now()
-    const argv = checkArgv(command, log, { scope: yield* scope, ionice: ioniceAvailable(options.platform ?? process.platform) })
+    const argv = checkArgv(command, log)
     // RIFT_LAND_CHECK tells the command which check it runs: a full gate run as the land's gate check runs under these locks, not in a turn of its own.
     const ran = yield* holding(CHECK_LOCKS[label](locks), spawn(argv, path, { ...env, RIFT_LAND_CHECK: label }))
     const output = existsSync(log) ? readFileSync(log, "utf8") : ran.stderr
