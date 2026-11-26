@@ -422,6 +422,90 @@ describe("Claude", () => {
   })
 })
 
+describe("room is real room: another login is room for the running work only where placement would send it now", () => {
+  const spentA = () => account("cred-a", { fiveHour: 1, sevenDay: 0.4, credits: [claudeGrant("grant-a")] })
+  const roomB = account("cred-b", { fiveHour: 0.1, sevenDay: 0.3 })
+  /** The accounts claimed on one review of A (5h spent, a grant in hand) beside `b`, three agents running and no start held. */
+  const claimedBeside = (b: AccountStatus) =>
+    run([[T0, Review.make({ pools: [claude([spentA(), b])] })]]).events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset.credentialID] : []))
+  const holdOf = (kind: NonNullable<AccountStatus["hold"]>["kind"], until = T0 + 6 * HOUR) => ({ kind, until, at: T0 - MINUTE })
+
+  test("a login with room on a fresh reading and nothing refusing it: the running work goes there, nothing is claimed", () => {
+    expect(claimedBeside(roomB)).toEqual([])
+    // A refusal that has ended holds nothing: the login is room again.
+    expect(claimedBeside({ ...roomB, hold: holdOf("rate-limit", T0 - 1) })).toEqual([])
+  })
+
+  for (const kind of ["signin", "unauthorized", "rate-limit", "usage-limit", "record-unreadable"] as const)
+    test(`a login held by a live ${kind} refusal is no room: the spent account is refilled for the running work`, () => {
+      expect(claimedBeside({ ...roomB, hold: holdOf(kind) })).toEqual(["cred-a"])
+    })
+
+  test("a sign-in refusal its reading carries is no room either", () => {
+    const reading = Option.getOrThrow(Option.fromUndefinedOr(roomB.reading))
+    expect(claimedBeside({ ...roomB, reading: { ...reading, refusal: { kind: "signin" } } })).toEqual(["cred-a"])
+  })
+
+  test("a reading too old to trust, or a usage read failed since, is no room: past STALE_AFTER_MS (30 min) placement sends nothing there", () => {
+    const reading = Option.getOrThrow(Option.fromUndefinedOr(roomB.reading))
+    expect(claimedBeside({ ...roomB, reading: { ...reading, at: T0 - 31 * MINUTE } })).toEqual(["cred-a"])
+    expect(claimedBeside({ ...roomB, reading: { ...reading, at: T0 - 2 * MINUTE }, usageReadFailure: { failedAt: T0 - MINUTE, nextTryAt: T0 + MINUTE } })).toEqual(["cred-a"])
+  })
+
+  test("an unread login, or one whose every window is absent, is no room", () => {
+    const { reading: _reading, ...unread } = roomB
+    expect(claimedBeside(unread)).toEqual(["cred-a"])
+    const absent = { ...roomB, reading: { at: T0, windows: [], absent: [{ name: "5h", at: T0 }, { name: "7d", at: T0 }] } }
+    expect(claimedBeside(absent)).toEqual(["cred-a"])
+    // Either window alone may be absent: a weekly-only login with room is room.
+    const weekly = { ...roomB, reading: { at: T0, windows: [{ name: "7d", utilization: 0.3, resetAt: T0 + 4.5 * DAY }], absent: [{ name: "5h", at: T0 }] } }
+    expect(claimedBeside(weekly)).toEqual([])
+  })
+
+  test("a login at its 5-hour hold line is no room", () => {
+    expect(claimedBeside(account("cred-b", { fiveHour: 0.95, sevenDay: 0.3 }))).toEqual(["cred-a"])
+  })
+
+  /**
+   * Every pool of A (spent, a grant in hand) and one other login in each state a login can be in, with
+   * agents running or not and work held or not (a held start, or a running agent's request the pace held:
+   * both note a wait). Work cannot go when some is held, or when agents run and no login takes work; a
+   * reset is then due on A. When all work can go, nothing is claimed.
+   */
+  test("over generated pools: a reset is claimed exactly when some work has nowhere to go", () => {
+    const reading = Option.getOrThrow(Option.fromUndefinedOr(roomB.reading))
+    const { reading: _reading, ...unread } = roomB
+    const states: ReadonlyArray<readonly [string, AccountStatus, boolean]> = [
+      ["room", roomB, true],
+      ["ended rate-limit", { ...roomB, hold: holdOf("rate-limit", T0 - 1) }, true],
+      ["weekly only", { ...roomB, reading: { at: T0, windows: [{ name: "7d", utilization: 0.3, resetAt: T0 + 4.5 * DAY }], absent: [{ name: "5h", at: T0 }] } }, true],
+      ...(["signin", "unauthorized", "rate-limit", "usage-limit", "record-unreadable"] as const).map(
+        (kind): readonly [string, AccountStatus, boolean] => [kind, { ...roomB, hold: holdOf(kind) }, false],
+      ),
+      ["reading refusal", { ...roomB, reading: { ...reading, refusal: { kind: "signin" } } }, false],
+      ["stale", { ...roomB, reading: { ...reading, at: T0 - 31 * MINUTE } }, false],
+      ["failed read", { ...roomB, reading: { ...reading, at: T0 - 2 * MINUTE }, usageReadFailure: { failedAt: T0 - MINUTE, nextTryAt: T0 + MINUTE } }, false],
+      ["unread", unread, false],
+      ["all absent", { ...roomB, reading: { at: T0, windows: [], absent: [{ name: "5h", at: T0 }, { name: "7d", at: T0 }] } }, false],
+      ["hold line", account("cred-b", { fiveHour: 0.95, sevenDay: 0.3 }), false],
+      ["spent, no grant", account("cred-b", { fiveHour: 1, sevenDay: 0.4 }), false],
+    ]
+    const cases = states.flatMap(([name, b, takes]) => [0, BUSY].flatMap((running) => [false, true].map((held) => ({ name, b, takes, running, held }))))
+    const wrong = cases.flatMap(({ name, b, takes, running, held }) => {
+      const commands: ReadonlyArray<readonly [number, Command]> = [
+        ...(held ? [[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })] as const] : []),
+        [T0, Review.make({ pools: [claude([spentA(), b], running)] })],
+      ]
+      const claimed = run(commands).events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset.credentialID] : []))
+      const due = held || (running > 0 && !takes)
+      const expected = due ? ["cred-a"] : []
+      return JSON.stringify(claimed) === JSON.stringify(expected) ? [] : [`${name}, ${running} running, ${held ? "work held" : "nothing held"}: claimed ${JSON.stringify(claimed)}`]
+    })
+    expect(cases).toHaveLength(states.length * 4)
+    expect(wrong).toEqual([])
+  })
+})
+
 test("a claim's record says whether the weekly reset moved", () => {
   const before = [{ name: "7d", utilization: 0.8, resetAt: T0 + 3 * DAY }]
   expect(weeklyMove(before, [{ name: "7d", utilization: 0.8, resetAt: T0 + 3 * DAY + 1000 }])).toBe("kept")

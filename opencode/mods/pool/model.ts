@@ -32,7 +32,7 @@ import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
-import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
@@ -1401,7 +1401,20 @@ export const layer = (config: Config) =>
         const now = yield* Clock.currentTimeMillis
         if (Option.isSome(resetting) && Option.isSome(session)) askers.set(resetting.value, { at: now, sessionID: session.value })
         const answer = yield* withPending(paced, id, now)
-        if (answer.ok || !answer.measured) return answer
+        if (answer.ok) return answer
+        // Work held for lack of a login it may go out on is work waiting, measured or not: a start, or a running
+        // agent's request at its dispatch (`admission`). The review hears of it as of a held start.
+        if (!answer.measured) {
+          if (Option.isSome(resetting) && LACKS_LOGIN.includes(answer.reasonCode)) {
+            yield* sendResets(ResetsModel.NoteWait.make({
+              pool: resetting.value, hard: true,
+              ...(sessionID === undefined ? {} : { sessionID }),
+              ...(model === undefined ? {} : { model }),
+            }))
+            yield* Effect.forkIn(reviewResets, scope)
+          }
+          return answer
+        }
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
         const root = yield* Option.match(Option.filter(session, () => active.length > 0), {

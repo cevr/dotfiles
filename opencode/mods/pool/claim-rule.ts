@@ -89,8 +89,10 @@ export interface ClaimSituation {
   /** A push covers the held work: its approved resets decide for it (resets.ts `pushDue`). */
   readonly pushed: boolean
   /**
-   * An account of the pool has room now (none of its windows spent): the running work goes there, so
-   * running work alone is no work waiting for a refill; only a start held is (owner law: never with no work waiting).
+   * An account of the pool has room now (pace.ts `hasRoom`: placement would send work there, on a
+   * trusted reading; no refusal of any kind holds it): the running work goes there, so running work
+   * alone is no work waiting for a refill; only work held is, a start or a running agent's request
+   * (owner law: never with no work waiting).
    */
   readonly room: boolean
 }

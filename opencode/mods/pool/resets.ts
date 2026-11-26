@@ -43,7 +43,7 @@ import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
 import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
-import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
+import { hasRoom, type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, QuotaWindow, type ResetCredit, ResetKind, scopeOf } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { percent, used } from "./usage-text.ts"
@@ -735,13 +735,6 @@ const waiting = (state: ResetsState, pool: string, now: number, accounts: Readon
 /** Whether every account the pool can use is held by a spent window; false for a pool with none. */
 const allSpent = (accounts: ReadonlyArray<AccountStatus>, now: number) =>
   accounts.length > 0 && accounts.every((account) => spentUntil(account, now) !== undefined)
-
-/**
- * Whether the account takes a start now: read, with room on it, no spent window holding it, and no
- * account-wide window at the pace's hold line (`blockingOf`). An unread account is not counted as room.
- */
-const hasRoom = (account: AccountStatus, now: number): boolean =>
-  Option.isSome(Option.fromUndefinedOr(account.reading)) && !account.noRoom && Option.isNone(Option.fromUndefinedOr(spentUntil(account, now))) && blockingOf(account, now).length === 0
 
 /**
  * Whether a claim goes again, the same claim, while its hold lasts and it
