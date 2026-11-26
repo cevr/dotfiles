@@ -7,22 +7,28 @@
 // the pool's ChatGPT source to `usageURL`, and every token is drawn at run time.
 //
 // The pool asks the owner nothing about resets: it claims them on its own
-// and tells the owner after, in the waiting session's tray.
-// - Every account spent, no agent running and no start held: no forecast,
-//   nothing claimed. With three agents running (Codex: started; Claude: three
-//   sessions busy on a long command, no start recorded): one Codex credit
-//   and one Claude grant claimed, once each; the claimed Claude account takes
-//   the work, so the other is not claimed.
-// - A spent week is left while the forecast keeps room on a fresher account
-//   to the reset; a Fable reset
+// and tells the owner after, in the waiting session's tray. Redemption
+// follows measured exhaustion, never a forecast (README "Redemption follows
+// these rules"; mods/pool/reset-policy.qnt `noForecastClaim`, `noMissedReset`).
+// - Every account spent, no agent running and no start held: nothing
+//   claimed. With three agents running (Codex: started; Claude: three
+//   sessions busy on a long command, no start recorded): the Codex credit
+//   waits while only the 5-hour window is spent and its week has room
+//   (rule 3), and is claimed once the week is spent; one exhausted Claude
+//   account is refilled (rule 2) and takes the running work, so the other
+//   is not claimed, until a start is held that the refilled account cannot
+//   take: then the other is refilled, once.
+// - A spent week is refilled while work runs, though a fresher account has
+//   room (rule 2: "Another fresh account … does not veto it"); a Fable reset
 //   about to expire unused is claimed on its own, empties Fable's week and
-//   gives its part of the weekly use back, and the owner is told.
+//   gives its part of the weekly use back, and the owner is told of each.
 // - One spent week, two weekly resets about to expire: one is claimed, and
 //   the reading after it (the week back to 0%) keeps the second.
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Schema } from "effect"
+import { it } from "effect-bun-test"
 import { formatNotificationTime } from "../decider/notification-time.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { readScratchFileSync, scratchInput } from "./read-path.ts"
@@ -46,6 +52,7 @@ const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const SESSION = "ses_resets_root"
 const readBusy = Schema.decodeUnknownSync(Schema.Struct({ busy: Schema.Array(Schema.String) }))
+const readPaced = Schema.decodeUnknownSync(Schema.Struct({ ok: Schema.optional(Schema.Boolean) }))
 
 interface Service {
   readonly url: string
@@ -221,189 +228,241 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
         return reads()
       }, (seen) => seen >= target, () => `the pool's ${count} completed sweeps (${log()})`)
     }
-    return { pool, questions, open, log, swept, work, stderr: () => stderr }
-  }
-
-  test(
-    "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked",
-    kept.test(async () => {
-      const now = stamp()
-      // ── The fakes ──
-      const chatgpt = startFakeChatGPT()
-      stops.push(chatgpt.stop)
-      // The credit ends before the week resets: not one to keep in hand.
-      chatgpt.accounts.set("acct-1", spentAccount("chatgpt-access-1", "credit-1", now, 40, 2 * DAY))
-
-      const accounts = { a: fakeAccount(), b: fakeAccount() }
-      // a and b: both 5-hour windows spent for two hours, a's week resetting in three days, b's in two.
-      const quotas = new Map<string, FakeQuota>([
-        ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
-        ["b", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } }],
-      ])
-      const anthropic = startFakeAnthropic({
-        accounts,
-        script: working,
-        quota: (account) => quotas.get(account)!,
-        // Two resets in hand on each account: not the last one, kept in reserve.
-        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
-        claim: (account) => {
-          const quota = quotas.get(account)!
-          quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: stamp() + 5 * HOUR } })
-          return "reset"
-        },
-      })
-      stops.push(anthropic.stop)
-
-      // ── The server ──
-      const { pool, open, log, swept, work, stderr } = await serve("host", accounts, anthropic.url, now, chatgpt.usageURL)
-
-      // ── No work: nothing running and no start held, over two sweeps ──
-      await swept(anthropic, 2)
-      expect(anthropic.claims).toEqual([])
-      expect(chatgpt.consumes).toEqual([])
-      expect(await open()).toEqual([])
-
-      // ── Codex: three starts running, a start held: claimed on its own, once ──
-      for (let start = 0; start < 3; start++) await pool("started", { providerID: "openai" })
-      const codexPace = (await pool("pace", { providerID: "openai", sessionID: SESSION })) as { ok?: boolean }
-      expect(codexPace.ok).toBe(false)
-      await until(() => chatgpt.consumes.length, (count) => count > 0, () => `a consume (${log()})`)
-      await until(open, (rows) => rows.some((row) => row.header === "Pool reset claimed"), () => `the recorded Codex claim (${log()})`)
-      expect(chatgpt.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
-        { account: "acct-1", creditID: "credit-1", code: "reset" },
-      ])
-
-      // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no
-      // start recorded: the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
-      const spent = new Map(quotas)
-      for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
-      // A sweep reads the room on both logins before the agents start.
-      await work(3, anthropic, 2)
-      for (const [account, quota] of spent) quotas.set(account, quota)
-      await until(
+    /** Ask to pace a Claude start as the pane does, then `read`, until `done` holds of it. */
+    const pacing = <A>(read: () => A | Promise<A>, done: (value: A) => boolean, label: () => string) =>
+      until(
         async () => {
           await pool("pace", { providerID: "anthropic", sessionID: SESSION })
-          return anthropic.claims.length
+          return read()
         },
-        (count) => count > 0,
-        () => `a Claude claim (${log()})`,
+        done,
+        label,
       )
-      // The claimed account takes the work: the other is not claimed, over two more sweeps.
-      await swept(anthropic, 2, ["anthropic"])
-      expect(anthropic.claims.map(({ result }) => result)).toEqual(["reset"])
-      expect(String(anthropic.claims[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
-      // The tray holds the two notices and nothing else; each says why, in one clause.
-      const rows = await open()
-      expect(rows.map((row) => row.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
-      const told = rows.map((row) => row.question).join("\n")
-      expect(told).toContain("Claimed the Codex reset on ChatGPT")
-      expect(told).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: (\d+ starts? held, )?3 agents running on 1 host, /)
-      const settled = (await pool("resets")) as Resets
-      expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
-        ["claude", "reset"],
-        ["codex", "reset"],
-      ])
-      expect(settled.claims.find((claim) => claim.provider === "claude")?.weekly).toBe("kept")
-      expect(settled.claims.find((claim) => claim.provider === "codex")?.weekly).toBe("moved")
-      // No token ever shows in what the pool answers or logs.
-      const shown = JSON.stringify(settled) + stderr()
-      for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, "chatgpt-access-1", "chatgpt-refresh-1"]) expect(shown).not.toContain(token)
-    }),
+    return { pool, questions, open, log, swept, work, pacing, stderr: () => stderr }
+  }
+
+  it.live(
+    "with agents running, a Codex credit and a Claude grant are each claimed on their own, once, and the owner told after; with no agent running and no start held, nothing is claimed and nothing asked",
+    () =>
+        Effect.gen(function* () {
+          const now = stamp()
+          // ── The fakes ──
+          const chatgpt = startFakeChatGPT()
+          stops.push(chatgpt.stop)
+          // The credit ends before the week resets, two days off: not in its last day. The 5-hour window spent, the week at 40%.
+          chatgpt.accounts.set("acct-1", spentAccount("chatgpt-access-1", "credit-1", now, 40, 2 * DAY))
+
+          const accounts = { a: fakeAccount(), b: fakeAccount() }
+          // a and b: both 5-hour windows spent for two hours, a's week resetting in three days, b's in two.
+          const quotas = new Map<string, FakeQuota>([
+            ["a", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 3 * DAY } }],
+            ["b", { fiveHour: { utilization: 1, resetAt: now + 2 * HOUR }, sevenDay: { utilization: 0.4, resetAt: now + 2 * DAY } }],
+          ])
+          const usedGrants: Array<string> = []
+          const anthropic = startFakeAnthropic({
+            accounts,
+            script: working,
+            quota: (account) => quotas.get(account)!,
+            // Two resets in hand on each account; a claim spends one of them.
+            grants: (account) => [
+              {
+                id: `grant-${account}`,
+                resetsLeft: 2 - usedGrants.filter((grant) => grant === `grant-${account}`).length,
+                endsAt: now + 120 * DAY,
+                clears: ["five_hour", "seven_day_overage_included"],
+              },
+            ],
+            claim: (account, grant) => {
+              usedGrants.push(grant)
+              const quota = quotas.get(account)!
+              quotas.set(account, { ...quota, fiveHour: { utilization: 0, resetAt: stamp() + 5 * HOUR } })
+              return "reset"
+            },
+          })
+          stops.push(anthropic.stop)
+
+          // ── The server ──
+          const { pool, open, log, swept, work, pacing, stderr } = yield* Effect.promise(() => serve("host", accounts, anthropic.url, now, chatgpt.usageURL))
+          const claimCount = () => anthropic.claims.length
+
+          // ── No work: nothing running and no start held, over two sweeps ──
+          yield* Effect.promise(() => swept(anthropic, 2))
+          expect(anthropic.claims).toEqual([])
+          expect(chatgpt.consumes).toEqual([])
+          expect(yield* Effect.promise(open)).toEqual([])
+
+          // ── Codex: three starts running, a start held, only the 5-hour window spent: a Codex reset restarts the week,
+          // so it waits for the week to be spent (README rule 3), over two sweeps ──
+          for (let start = 0; start < 3; start++) yield* Effect.promise(() => pool("started", { providerID: "openai" }))
+          expect(readPaced(yield* Effect.promise(() => pool("pace", { providerID: "openai", sessionID: SESSION }))).ok).toBe(false)
+          yield* Effect.promise(() => swept(anthropic, 2, ["openai"]))
+          expect(chatgpt.consumes).toEqual([])
+          expect(yield* Effect.promise(open)).toEqual([])
+          // ── The week spent under the same work: claimed on its own, once ──
+          chatgpt.accounts.set("acct-1", spentAccount("chatgpt-access-1", "credit-1", now, 100, 2 * DAY))
+          yield* Effect.promise(() => until(() => chatgpt.consumes.length, (count) => count > 0, () => `a consume (${log()})`))
+          yield* Effect.promise(() => until(open, (rows) => rows.some((row) => row.header === "Pool reset claimed"), () => `the recorded Codex claim (${log()})`))
+          expect(chatgpt.consumes.map(({ account, creditID, code }) => ({ account, creditID, code }))).toEqual([
+            { account: "acct-1", creditID: "credit-1", code: "reset" },
+          ])
+
+          // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no
+          // start recorded: an exhausted account is refilled on its own (README rule 2), nothing asked ──
+          const spent = new Map(quotas)
+          for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
+          // A sweep reads the room on both logins before the agents start.
+          yield* Effect.promise(() => work(3, anthropic, 2))
+          for (const [account, quota] of spent) quotas.set(account, quota)
+          yield* Effect.promise(() => pacing(claimCount, (count) => count > 0, () => `a Claude claim (${log()})`))
+          // The refilled account takes the running work, and the start held before the claim was the claim's to answer: no work
+          // waits for the other (README rule 2, owner law "never with no work waiting"), so it is not claimed, over two more sweeps.
+          yield* Effect.promise(() => swept(anthropic, 2, ["anthropic"]))
+          expect(anthropic.claims.map(({ result }) => result)).toEqual(["reset"])
+          expect(`${anthropic.claims[0]?.requestID}`).toMatch(/^pool-[0-9a-f]{24}$/)
+          // The work spends the refill to the 5-hour hold line: a start held there, which the refilled account cannot take,
+          // refills the other spent account once the first refill is observed (its 5-hour window read back), once.
+          const first = `${anthropic.claims[0]?.account}`
+          const other = ["a", "b"].filter((account) => account !== first).join("")
+          quotas.set(first, { ...quotas.get(first)!, fiveHour: { utilization: 0.95, resetAt: stamp() + 4 * HOUR } })
+          yield* Effect.promise(() => pacing(claimCount, (count) => count > 1, () => `the other spent account's refill (${log()})`))
+          yield* Effect.promise(() => swept(anthropic, 2, ["anthropic"]))
+          expect(anthropic.claims.map(({ account, result }) => ({ account, result }))).toEqual([
+            { account: first, result: "reset" },
+            { account: other, result: "reset" },
+          ])
+          // The tray holds the three notices and nothing else; each says why, in one clause.
+          const rows = yield* Effect.promise(open)
+          expect(rows.map((row) => row.header)).toEqual(["Pool reset claimed", "Pool reset claimed", "Pool reset claimed"])
+          const told = rows.map((row) => row.question).join("\n")
+          expect(told).toContain("Claimed the Codex reset on ChatGPT")
+          expect(told).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the account reached its limit: 5h 100% used, 3 agents running, \d+ starts? held; refill the measured limit\)/)
+          const settled = (yield* Effect.promise(() => pool("resets"))) as Resets
+          expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
+            ["claude", "reset"],
+            ["claude", "reset"],
+            ["codex", "reset"],
+          ])
+          expect(settled.claims.filter((claim) => claim.provider === "claude").map((claim) => claim.weekly)).toEqual(["kept", "kept"])
+          expect(settled.claims.find((claim) => claim.provider === "codex")?.weekly).toBe("moved")
+          // No token ever shows in what the pool answers or logs.
+          const shown = JSON.stringify(settled) + stderr()
+          for (const token of [accounts.a.access, accounts.b.access, accounts.a.refresh, "chatgpt-access-1", "chatgpt-refresh-1"]) expect(shown).not.toContain(token)
+        }),
     hangGuard("fork-session"),
   )
 
-  test(
-    "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
-    kept.test(async () => {
-      const now = stamp()
-      const accounts = { c: fakeAccount(), d: fakeAccount() }
-      // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
-      // so at the pool's burn its room outlasts the reset. d: its whole week spent.
-      const quotas = new Map<string, FakeQuota>([
-        [
-          "c",
-          {
-            fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR },
-            sevenDay: { utilization: 0.6, resetAt: now + 1.5 * DAY },
-            fable: { utilization: 1, resetAt: now + 1.5 * DAY, ofWeekly: 0.5 },
-          },
-        ],
-        ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 1.5 * DAY } }],
-      ])
-      // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
-      let fableListed = false
-      const claimed = new Set<string>()
-      const grantsOf = (account: string): ReadonlyArray<FakeGrant> =>
-        account === "c"
-          ? fableListed
-            ? [
+  it.live(
+    "an exhausted week refills despite a fresher account; a later Fable expiry gives its part of the week back, with one notice per claim",
+    () =>
+        Effect.gen(function* () {
+          const now = stamp()
+          const accounts = { c: fakeAccount(), d: fakeAccount() }
+          // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
+          // so c has room. d: its whole week spent.
+          const quotas = new Map<string, FakeQuota>([
+            [
+              "c",
+              {
+                fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR },
+                sevenDay: { utilization: 0.6, resetAt: now + 1.5 * DAY },
+                fable: { utilization: 1, resetAt: now + 1.5 * DAY, ofWeekly: 0.5 },
+              },
+            ],
+            ["d", { fiveHour: { utilization: 0.2, resetAt: now + 3 * HOUR }, sevenDay: { utilization: 1, resetAt: now + 1.5 * DAY } }],
+          ])
+          // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
+          let fableListed = false
+          // d's weekly reset is listed once the waiting session is recorded, so its notice has a tray.
+          let weeklyListed = false
+          const claimed: Array<string> = []
+          const left = (grant: string, total: number) => total - claimed.filter((id) => id === grant).length
+          const grantsOf = (account: string): ReadonlyArray<FakeGrant> => {
+            if (account === "c" && fableListed)
+              return [
                 {
                   id: "fable-c",
-                  resetsLeft: claimed.has("fable-c") ? 0 : 1,
+                  resetsLeft: left("fable-c", 1),
                   endsAt: now + 2 * HOUR,
                   clears: ["five_hour", "seven_day_overage_included"],
                   type: "full",
                   givesBackWeekly: true,
                 },
               ]
-            : []
-          : [{ id: "weekly-d", resetsLeft: claimed.has("weekly-d") ? 1 : 2, endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
-      const anthropic = startFakeAnthropic({
-        accounts,
-        script: working,
-        quota: (account) => quotas.get(account)!,
-        grants: grantsOf,
-        claim: (account, grant) => {
-          const found = grantsOf(account).find((item) => item.id === grant)
-          if (found !== undefined) quotas.set(account, claimEffect(quotas.get(account)!, found))
-          claimed.add(grant)
-          return "reset"
-        },
-      })
-      stops.push(anthropic.stop)
-      const { pool, questions, open, log, swept, work } = await serve("kinds", accounts, anthropic.url, now)
+            if (account === "c" || !weeklyListed) return []
+            return [{ id: "weekly-d", resetsLeft: left("weekly-d", 2), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
+          }
+          const anthropic = startFakeAnthropic({
+            accounts,
+            script: working,
+            quota: (account) => quotas.get(account)!,
+            grants: grantsOf,
+            claim: (account, grant) => {
+              const found = grantsOf(account).find((item) => item.id === grant)
+              if (found !== undefined) quotas.set(account, claimEffect(quotas.get(account)!, found))
+              claimed.push(grant)
+              return "reset"
+            },
+          })
+          stops.push(anthropic.stop)
+          const { pool, questions, open, log, swept, work, pacing } = yield* Effect.promise(() => serve("kinds", accounts, anthropic.url, now))
+          const claimsSeen = () => anthropic.claims.map(({ account, grant }) => [account, grant])
 
-      // ── Demand: three agents busy, a start paced each second: c's room outlasts the reset, so d's week is left ──
-      await work(3, anthropic)
-      await swept(anthropic, 2, ["anthropic"])
-      expect(anthropic.claims).toEqual([])
-      expect(await open()).toEqual([])
+          // ── Demand: a Fable start held on c's own spent week and d's spent week, its session recorded (work waiting that c cannot
+          // take); with d's weekly reset listed, three agents busy: d's week is refilled on its own though c has room (README rule 2),
+          // the owner told ──
+          expect(readPaced(yield* Effect.promise(() => pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION }))).ok).toBe(false)
+          weeklyListed = true
+          yield* Effect.promise(() => work(3, anthropic))
+          const weeklyRows = yield* Effect.promise(() =>
+            pacing(open, (rows) => rows.some((row) => row.header === "Pool reset claimed"), () => `the notice of d's claim (${claimsSeen().join(" ")}, ${log()})`),
+          )
+          const weeklyNotice = weeklyRows.find((row) => row.header === "Pool reset claimed")!
+          expect(claimsSeen()).toEqual([["d", "weekly-d"]])
+          expect(weeklyNotice.question).toStartWith("Claimed the weekly reset on Claude d: ")
+          expect(weeklyNotice.question).toContain("(the account reached its limit: weekly 100% used, 3 agents running, ")
+          expect(yield* Effect.promise(() => questions("answer", { sessionID: SESSION, answers: [{ id: weeklyNotice.id, answer: "OK" }] }))).toMatchObject({ ok: true })
+          yield* Effect.promise(() => until(open, (rows) => !rows.some((row) => row.id === weeklyNotice.id), () => `d's notice withdrawn (${log()})`))
+          // Once: no second weekly reset on d over two more sweeps, c's room left alone.
+          yield* Effect.promise(() => swept(anthropic, 2, ["anthropic"]))
+          expect(claimsSeen()).toEqual([["d", "weekly-d"]])
+          expect(yield* Effect.promise(open)).toEqual([])
 
-      // ── Use it or lose it: c's Fable reset, listed now, is claimed by itself and the owner told ──
-      fableListed = true
-      let seen = ""
-      const notice = (await until(
-        async () => {
-          await pool("pace", { providerID: "anthropic", sessionID: SESSION })
-          seen = JSON.stringify({ claims: anthropic.claims.map(({ account, grant }) => [account, grant]), resets: await pool("resets"), status: await pool("status") })
-          return open()
-        },
-        (rows) => rows.some((row) => row.header === "Pool reset claimed"),
-        () => `the notice of c's claim (${seen.slice(0, 3000)})`,
-      )).find((row) => row.header === "Pool reset claimed")!
-      expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
-      // Times as the owner reads them (decider/notification-time.ts), from the instants the fake reports.
-      expect(notice.question).toContain(`(about to expire unused: it expires ${formatNotificationTime(now + 2 * HOUR)}, lost unused otherwise)`)
-      // Fable's part of the week, as the fake's usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
-      expect(notice.question).toContain(
-        `weekly 60% used of 100% → ~10% used, next reset ${formatNotificationTime(now + 1.5 * DAY)} (Fable's part 50% of the week as the usage endpoint reports it)`,
-      )
-      expect(anthropic.claims.map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
-      const settled = (await pool("resets")) as Resets
-      const fable = settled.claims.find((claim) => claim.label === "Claude c")
-      expect(fable).toMatchObject({ outcome: "reset", weekly: "kept" })
-      // The reading after the claim: Fable's week empty, the weekly window with Fable's part given back.
-      expect(fable?.after?.find((window) => window.name === "7d:Fable")?.utilization).toBe(0)
-      expect(fable?.after?.find((window) => window.name === "7d")?.utilization).toBeCloseTo(0.1)
-      expect(settled.resets.find((reset) => reset.label === "Claude c")).toMatchObject({ why: "expiring", kind: "fable", stage: "settled" })
+          // ── Use it or lose it: c's Fable reset, listed now, is claimed by itself and the owner told ──
+          fableListed = true
+          let seen = ""
+          const observe = async () => {
+            seen = JSON.stringify({ claims: claimsSeen(), resets: await pool("resets"), status: await pool("status") })
+            return open()
+          }
+          const rows = yield* Effect.promise(() => pacing(observe, (found) => found.some((row) => row.header === "Pool reset claimed"), () => `the notice of c's claim (${seen.slice(0, 3000)})`))
+          const notice = rows.find((row) => row.header === "Pool reset claimed")!
+          expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
+          // Times as the owner reads them (decider/notification-time.ts), from the instants the fake reports.
+          expect(notice.question).toContain(`(about to expire unused: it expires ${formatNotificationTime(now + 2 * HOUR)}, lost unused otherwise)`)
+          // Fable's part of the week, as the fake's usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
+          expect(notice.question).toContain(
+            `weekly 60% used of 100% → ~10% used, next reset ${formatNotificationTime(now + 1.5 * DAY)} (Fable's part 50% of the week as the usage endpoint reports it)`,
+          )
+          expect(claimsSeen()).toEqual([
+            ["d", "weekly-d"],
+            ["c", "fable-c"],
+          ])
+          const settled = (yield* Effect.promise(() => pool("resets"))) as Resets
+          const fable = settled.claims.find((claim) => claim.label === "Claude c")
+          expect(fable).toMatchObject({ outcome: "reset", weekly: "kept" })
+          // The reading after the claim: Fable's week empty, the weekly window with Fable's part given back.
+          expect(fable?.after?.find((window) => window.name === "7d:Fable")?.utilization).toBe(0)
+          expect(fable?.after?.find((window) => window.name === "7d")?.utilization).toBeCloseTo(0.1)
+          expect(settled.resets.find((reset) => reset.label === "Claude c")).toMatchObject({ why: "expiring", kind: "fable", stage: "settled" })
 
-      // The owner reads the notice: it leaves the tray.
-      expect(await questions("answer", { sessionID: SESSION, answers: [{ id: notice.id, answer: "OK" }] })).toMatchObject({ ok: true })
-      await until(open, (rows) => !rows.some((row) => row.id === notice.id), () => `the notice withdrawn (${log()})`)
-      // Each claim once.
-      await swept(anthropic, 1)
-      expect(anthropic.claims).toHaveLength(1)
-    }),
+          // The owner reads the notice: it leaves the tray.
+          expect(yield* Effect.promise(() => questions("answer", { sessionID: SESSION, answers: [{ id: notice.id, answer: "OK" }] }))).toMatchObject({ ok: true })
+          yield* Effect.promise(() => until(open, (found) => !found.some((row) => row.id === notice.id), () => `the notice withdrawn (${log()})`))
+          // Each claim once.
+          yield* Effect.promise(() => swept(anthropic, 1))
+          expect(anthropic.claims).toHaveLength(2)
+          expect(yield* Effect.promise(open)).toEqual([])
+        }),
     hangGuard("fork-session"),
   )
 
