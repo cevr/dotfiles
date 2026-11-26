@@ -516,7 +516,7 @@ const refusal = (tool: string, rejection: Model.StartRefusal, place: Place): Too
       error: rejection,
     })
   return new Tool.Error({
-    message: `orchestrate: ${whoseOf(rejection.whose)} pace holds this agent. ${rejection.reason}. It opens about ${timeOf(rejection.retryAt, place)}; no latch could be kept for it, so start it again after then. Do not poll.`,
+    message: `orchestrate: ${whoseOf(rejection.whose)} pace holds this agent. ${rejection.reason}. It opens about ${timeOf(rejection.retryAt, place)}; no latch could be kept for it (${rejection.unlatched}), so start it again after then. Do not poll.`,
     error: rejection,
   })
 }
@@ -774,8 +774,12 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
       const footed = (agent: string, self: Option.Option<string>, prompt: string) =>
         footerNow(agent, self).pipe(Effect.map(Option.match({ onNone: () => prompt, onSome: (footer) => withFooter(prompt, footer) })))
       // The subagent tool's own execute, as the last tool transform saw it: a latched child starts through it,
-      // in the background on the existing child.
+      // in the background on the existing child. A latch that opens before any request since a restart listed the
+      // tools lists them itself, which runs the transform.
       let subagent: Execute | undefined
+      const listed = Effect.suspend(() =>
+        Option.match(Option.fromUndefinedOr(subagent), { onNone: () => ctx.tool.list().pipe(Effect.ignore), onSome: () => Effect.void }),
+      )
       const run = (request: LatchStart, prompt: string) =>
         Effect.suspend(() => {
           if (subagent === undefined) return Effect.fail(new Error("the subagent tool is not loaded"))
@@ -800,7 +804,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
         })
       // A latched child's prompt gets its footer as it opens, with the share of that moment.
       const start: LatchesLive.Start = (request) =>
-        footed(request.agent, Option.some(request.child), `${SPAWNED}\n${request.prompt}`).pipe(Effect.flatMap((prompt) => run(request, prompt)))
+        footed(request.agent, Option.some(request.child), `${SPAWNED}\n${request.prompt}`).pipe(Effect.flatMap((prompt) => Effect.andThen(listed, run(request, prompt))))
       const config = {
         place: options.place,
         fullAgent: options.fullAgent,

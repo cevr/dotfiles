@@ -18,10 +18,11 @@
 // model, Opus, then Codex) and its line says why (`first`). No other role has
 // a first model, so an implementor or verifier never starts on it.
 //
-// A held start latches: the wakes keep it (Latches), and at its time they ask
-// `openLatch`, which decides it again, its first model before its fallback,
-// and, admitted, starts it. With no wakes to keep it, the call is refused with
-// the hold's reason and time.
+// A held start, new or a follow-up continuing its child, latches: the wakes
+// keep it (Latches), and at its time they ask `openLatch`, which decides it
+// again, its first model before its fallback, earliest held first, and,
+// admitted, starts it. With no wakes to keep it, the call is refused with the
+// hold's reason and time and why no latch was kept.
 //
 // A role's start, and its hand-back when it goes idle, move its unit in the
 // run's log (unit-log.ts, through UnitLogs): the orchestrator need not log
@@ -31,7 +32,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Deferred, Duration, Effect, Layer, Match, Option, Predicate, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -206,6 +207,8 @@ export class Orchestrate extends Context.Service<
 >()("dotfiles-opencode/orchestrate/Orchestrate") {}
 
 const SUBAGENT = "subagent"
+/** How long an open waits for the others the wakes hand in at the same opening, before the earliest held is decided. */
+const OPEN_GATHER_MS = 250
 
 export const layer = (config: Config) =>
   Layer.effect(
@@ -674,7 +677,7 @@ export const layer = (config: Config) =>
         if (latched !== undefined) {
           // The host checks ownership before prompting an existing child; check it here too before marking a latch.
           if (child && (yield* sessions.parentOf(child)) !== call.sessionID) {
-            const rejection = refusalOf(latched, config.place)
+            const rejection = refusalOf(latched, config.place, `subagent ${child} is not this session's to continue`)
             yield* deny(call, SUBAGENT, whyOf(rejection))
             return yield* rejection
           }
@@ -709,7 +712,7 @@ export const layer = (config: Config) =>
               Effect.catchTag("LatchRefused", (refused) =>
                 Effect.gen(function* () {
                   yield* Effect.logWarning("orchestrate: a held start could not latch; the call is refused", { reason: refused.reason })
-                  const rejection = refusalOf(latched, config.place)
+                  const rejection = refusalOf(latched, config.place, refused.reason)
                   yield* deny(call, SUBAGENT, whyOf(rejection))
                   return yield* rejection
                 }),
@@ -725,7 +728,36 @@ export const layer = (config: Config) =>
         return Option.fromNullishOr(started)
       })
 
-      const openLatch = Effect.fn("Orchestrate.openLatch")(function* (latch: LatchOpen): Effect.fn.Return<OpenAnswer> {
+      /**
+       * Latches open first come, first served by the time they were first held (`setAt`; a re-latch keeps it), new
+       * starts and continued rounds alike: the opens the wakes hand in at one opening are gathered for `OPEN_GATHER_MS`,
+       * then decided one at a time, earliest held first. A start the first one makes can move the pace's line: the next
+       * is then held again by itself at the new opening, never refused.
+       */
+      const turnstile = yield* Semaphore.make(1)
+      const queued: Array<{ readonly setAt: number; readonly order: number; readonly decide: Effect.Effect<void> }> = []
+      let arrived = 0
+      const openLatch = (latch: LatchOpen): Effect.Effect<OpenAnswer> =>
+        Effect.gen(function* () {
+          const answer = yield* Deferred.make<OpenAnswer>()
+          const entry = { setAt: latch.setAt, order: arrived++, decide: Effect.flatMap(Effect.exit(decideOpen(latch)), (exit) => Deferred.done(answer, exit)).pipe(Effect.asVoid) }
+          queued.push(entry)
+          const leave = Effect.sync(() => {
+            const at = queued.indexOf(entry)
+            if (at >= 0) queued.splice(at, 1)
+          })
+          yield* Effect.sleep(Duration.millis(OPEN_GATHER_MS)).pipe(Effect.onInterrupt(() => leave))
+          // Each open that came decides the earliest held one waiting, so every one is decided once, in order.
+          yield* turnstile.withPermits(1)(
+            Effect.suspend(() => {
+              queued.sort((left, right) => left.setAt - right.setAt || left.order - right.order)
+              return Option.match(Option.fromUndefinedOr(queued.shift()), { onNone: () => Effect.void, onSome: (next) => next.decide })
+            }),
+          )
+          return yield* Deferred.await(answer)
+        })
+
+      const decideOpen = Effect.fn("Orchestrate.openLatch")(function* (latch: LatchOpen): Effect.fn.Return<OpenAnswer> {
         const call = { sessionID: latch.parent, callID: latch.callID }
         // An open asked twice (the wakes lost the first answer) starts nothing twice.
         const since = Option.getOrUndefined(Option.liftPredicate(latch.setAt, () => latch.context.continuation === true))
@@ -750,7 +782,9 @@ export const layer = (config: Config) =>
             : undefined
         const own = tried !== undefined && tried.model === undefined && level !== undefined && level !== "" ? yield* models.variant(latch.parent, latch.agent, level) : undefined
         // Codex never implements: an implementor latched on a Codex model (an older build's) opens on Opus, or not at all.
-        const off = yield* offCodex(latch.parent, { agent: latch.agent, followUp: ran }, Option.fromNullishOr(tried?.model ?? own ?? kept?.primary ?? latch.model))
+        // A continued round keeps its child's model, as its follow-up would.
+        const continued = latch.context.continuation === true
+        const off = yield* offCodex(latch.parent, { agent: latch.agent, followUp: ran || continued }, Option.fromNullishOr(tried?.model ?? own ?? kept?.primary ?? latch.model))
         if (Option.isSome(off.refused))
           return { outcome: "failed", message: `orchestrate: Codex never implements, and no Opus is offered for this implementor (it latched on ${off.refused.value}). Start it again once an Opus model is offered.` }
         let primary = Option.getOrUndefined(off.model)
@@ -759,7 +793,10 @@ export const layer = (config: Config) =>
           if (chosen._tag === "Failure") return { outcome: "failed", message: verificationRefusal(chosen.failure) }
           primary = chosen.success
         }
-        const paced = resting || ran ? undefined : (tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary)))
+        // A continued round asks its follow-up's pace (the pool's, counting no new start), a new one a new agent's.
+        let paced: Effect.Success<ReturnType<typeof paceOf>> | undefined
+        if (!resting && !ran && continued) paced = Option.getOrUndefined(yield* followUpOf(latch.parent, latch.agent, primary))
+        if (!resting && !ran && !continued) paced = tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary))
         // The chain's Codex fallback, offered as a new start's is; a latch made with one keeps its own.
         const offered =
           tried !== undefined && paced?.hold !== undefined && paced.ref !== undefined ? yield* fallbackOf(latch.parent, paced.ref, latch.agent) : undefined
@@ -774,7 +811,7 @@ export const layer = (config: Config) =>
         const first = tried?.first ?? Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
         // A latch opens on the model that admits it as its start asked (`asAsked`): fast only when that start asked fast.
         const fast = Option.liftPredicate(latch.context.fast, Predicate.isBoolean)
-        const fresh = latch.context.continuation !== true
+        const fresh = !continued
         const opensOn = Option.getOrUndefined(yield* asAsked(latch.parent, Option.fromUndefinedOr(primary), fast, fresh))
         const opensFallback = yield* fastFallback(latch.parent, Option.fromUndefinedOr(fallback), fast, fresh)
         const unasked = yield* unaskedFast(latch.parent, Option.fromUndefinedOr(primary), fast, fresh)
@@ -846,7 +883,7 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         const inSubagent = resting ? Boolean(yield* sessions.parentOf(call.sessionID)) : false
         // Another tool is never paced.
-        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die, PaceHeld: Effect.die, VerificationRequiresOpus: Effect.die }))
+        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die, VerificationRequiresOpus: Effect.die }))
       })
 
       const finish = Effect.fn("Orchestrate.finishSubagent")(function* (input: {
@@ -875,10 +912,10 @@ const lineOf = (event: Event, at: string, asked: Asked | undefined, first: First
       : CallLine.finished(event, at)
 
 /** A held start that could not latch, as the call's refusal: the Sabbath's rest, or the pace's hold until it opens. */
-const refusalOf = (latched: SubagentLatched, place: Place): SabbathRest | PaceHeld =>
+const refusalOf = (latched: SubagentLatched, place: Place, unlatched: string): SabbathRest | PaceHeld =>
   latched.hold === "sabbath"
     ? new SabbathRest({ resumesAt: latched.opensAt, place })
-    : new PaceHeld({ whose: latched.whose ?? "pool", reason: latched.why, retryAt: latched.opensAt })
+    : new PaceHeld({ whose: latched.whose ?? "pool", reason: latched.why, retryAt: latched.opensAt, unlatched })
 
 // ── Idle roots (idle.ts) ──
 

@@ -22,7 +22,7 @@
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
 import { LaunchStatus } from "@dotfiles/opencode-kernel/launch-status"
-import { PaceHeld, PaceHold, Whose } from "./pace.ts"
+import { PaceHold, Whose } from "./pace.ts"
 import { capEffort, IMPLEMENTOR, Reason, roleModels, route, unspecific, verificationModel } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
@@ -40,8 +40,8 @@ export const streamOf = (id: ToolCallId) => `${id.sessionID}/${id.callID}`
 
 // ── StartSubagent ──
 // Starting a subagent: a new one latches over the Sabbath or when the pace
-// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath, while its child is
-// still latched, or while the pace holds its model (PaceHeld, with when it opens), and otherwise it runs as the agent the guard routes it to. A
+// has no room on its model nor on its fallback; a follow-up is refused over the Sabbath or while its child is
+// still latched, latches on its child while the pace holds its model, and otherwise it runs as the agent the guard routes it to. A
 // worker at max runs at its model's default unless its work is mechanical.
 
 /**
@@ -84,8 +84,8 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   fullAgent: Schema.Boolean,
   place: Place,
   /**
-   * The pace's answer when it holds the agent on its model: a new one latches; a follow-up is refused (PaceHeld)
-   * with the time it opens, its child and prompt kept with the parent, no new agent made.
+   * The pace's answer when it holds the agent on its model: a new one latches on a new child; a follow-up latches
+   * on its own child, its prompt kept with the latch, and its round starts by itself at the opening.
    */
   hold: Schema.optionalKey(PaceHold),
   /** The Codex model to start on when the pace holds `model`; gathered only for a held new agent that named no model. */
@@ -175,7 +175,7 @@ export class VerificationRequiresOpus extends Schema.TaggedError<VerificationReq
 }) {}
 
 export declare namespace StartSubagent {
-  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements | PaceHeld | VerificationRequiresOpus
+  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements | VerificationRequiresOpus
 }
 
 /** A held agent asks again no sooner than this after now. */
@@ -245,9 +245,6 @@ export const routeOf = (
 const forbiddenModel = (agent: string, model: string | undefined) =>
   Option.filter(Option.fromUndefinedOr(model), (ref) => roleModels(agent).kind === "verification" && !verificationModel(ref))
 
-const heldFollowUpOf = (agent: string, command: StartSubagent) =>
-  Option.filter(Option.fromUndefinedOr(command.hold), () => Boolean(command.child) && roleModels(agent).kind !== "verification")
-
 const decideStart = (
   command: StartSubagent,
   now: number,
@@ -257,13 +254,10 @@ const decideStart = (
   if (resumes !== undefined && command.child !== undefined) return Effect.fail(new SabbathRest({ resumesAt: resumes, place: command.place }))
   if (command.child !== undefined && command.childLatched !== undefined)
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
-  // A follow-up the pace holds on its model sends nothing: refused with when it opens, the child kept as it is.
+  // A follow-up the pace holds on its model latches on its child, as a new start does: its round starts by itself at the opening.
   const { agent, reason: routed } = routeOf(command)
   const forbidden = forbiddenModel(agent, command.model)
   if (Option.isSome(forbidden)) return Effect.fail(new VerificationRequiresOpus({ requested: forbidden.value }))
-  const heldFollowUp = heldFollowUpOf(agent, command)
-  if (Option.isSome(heldFollowUp))
-    return Effect.fail(new PaceHeld({ whose: heldFollowUp.value.whose, reason: heldFollowUp.value.reason, retryAt: opensOf(heldFollowUp.value, now) }))
   const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
   // The worker's ceiling: a worker at max, asked or inherited, runs at its model's default unless its work is mechanical.
   const capped = capEffort(agent, command.description, command.model ?? command.inherited)
