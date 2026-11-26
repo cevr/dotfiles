@@ -4,13 +4,15 @@
 // busy session stops its run in every state, never drops the prompt the user
 // sent while it ran, and says so when the server does not answer. Needs
 // OPENCODE_DEV, the fork.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { timedAmong, withoutTurnTime } from "./turn-time.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-states.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -34,7 +36,7 @@ function split(name: string) {
 
 describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "escape-states-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("escape-states-")
     for (const which of cases) {
       const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-states.ts"], {
@@ -46,8 +48,8 @@ describe.skipIf(!fork)("one Escape stops a busy session in every state (OPENCODE
       const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
       if (code !== 0) throw new Error(`the ${which} case exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     }
-    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
-  }, 400_000))
+    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readScratchFileSync(join(out, name), "utf8"))
+  }), hangGuard("long-fork-scenario"))
 
   for (const which of ["steer", "queue"] as const)
     test(`a ${which === "steer" ? "steer" : "queued prompt"} sent while the model works: one Escape stops the run and puts the prompt back in the composer`, kept.test(() => {

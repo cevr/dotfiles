@@ -55,12 +55,15 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { ORCHESTRATOR } from "../../mods/orchestrate/role.ts"
+import { ORCHESTRATOR, orchestrator } from "../../mods/orchestrate/role.ts"
 import { STORE_PREFIX, StoreSource } from "../../mods/pool/store/store.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../../scripts/release-flags.ts"
+import { testHostEnv } from "../../scripts/test-host.ts"
 import { gitInit } from "../../tests/git-repo.ts"
 import { anthropicAuthPlugin, poolPlugin } from "../anthropic-auth.ts"
 import { type HostConfig, type HostScreen, hostCall, isKeyName, keys } from "./pty-host.ts"
+import { stamp, watchdog } from "../../tests/hang-guard.ts"
+import { submit, waitForComposer } from "./startup/handshake.ts"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CHECKOUT = resolve(HERE, "../..")
@@ -465,6 +468,7 @@ export const forkLaunch = (fork: string, bun: string): Launch => ({
     // A fork from source is channel local, where every flag defaults on: run at the owner's build's flags instead.
     OPENCODE_FLAGS: releaseFlags(""),
     ...NO_FREE_MODELS,
+    ...testHostEnv(),
   },
   fork,
 })
@@ -576,6 +580,10 @@ export const runEnv = (
     OPENCODE_CONFIG_DIR: paths.config,
     ...(offline ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
     ...launch.env,
+    // No file watches. The fork from source opens one per plugin module (hot reload, which a compiled build skips), and
+    // on macOS each blocks its thread while Bun rebuilds its one FSEventStream (oven-sh/bun#43870): ~300 ms each with
+    // a busy fseventsd, ~170 of them, so the TUI's plugins missed the composer wait. A run is a fixed copy; `restart` reloads.
+    ...testHostEnv(),
   }
 }
 
@@ -774,8 +782,8 @@ const startDetached = async (
   const child = Bun.spawn([process.execPath, ...argv], { stdio: ["ignore", fd, fd], detached: true })
   closeSync(fd)
   child.unref()
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
+  const deadline = watchdog(10_000)
+  while (!deadline.expired()) {
     if (child.exitCode !== null) {
       throw new Error(`the ${what} exited ${child.exitCode}: ${failureText("", await Bun.file(log).text())}`)
     }
@@ -901,7 +909,7 @@ const up = async (args: UpArgs) => {
   const loginStore = named.claudeLogins === "store" ? loginStoreDir() : undefined
   if (loginStore !== undefined) storeAccounts(loginStore)
 
-  const root = join(tmpdir(), `opencode-gamut-${Date.now()}`)
+  const root = join(tmpdir(), `opencode-gamut-${stamp()}`)
   // Until the state file names `root`, `down` cannot find it: a failed `up`
   // stops what it started and removes it here instead.
   const started: { simPid?: number } = {}
@@ -947,9 +955,11 @@ const prepareAndLaunch = async (
     ...(usesPool(preset) ? serverPlugins(preset, anthropicAuthPlugin, loginStore) : [poolPlugin]),
   ]
   writeProjectConfig(paths.work, preset, simPort, plugins)
-  // Every TUI plugin is a cmd/ composition root, Prime first. cmd/btw's /btw replaces the fork's built-in one, which
-  // "-opencode.btw" turns off.
-  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify(cliConfig([...pluginPaths(CMD), "-opencode.btw"]), null, 2)}\n`)
+  // Load the cmd/ TUI plugins, Prime first, and the testbed's readiness probe. cmd/btw replaces the fork's /btw.
+  const marker = join(root, "composer-ready")
+  const cli = cliConfig([...pluginPaths(CMD), "-opencode.btw"])
+  const startup = { package: join(HERE, "startup"), options: { marker, agent: ORCHESTRATOR, description: orchestrator.description } }
+  await Bun.write(join(paths.config, "cli.json"), `${JSON.stringify({ ...cli, plugins: [...cli.plugins, startup] }, null, 2)}\n`)
   cpSync(THEME, join(paths.work, ".opencode/themes/prime.json"))
   const agentsPath = join(paths.work, "AGENTS.md")
   await Bun.write(agentsPath, rewriteRoster(await Bun.file(agentsPath).text(), preset))
@@ -978,11 +988,10 @@ const prepareAndLaunch = async (
   importCredentials(loginsToCopy(named, preset), launch, env, paths.work)
 
   const prompt = args.prompt === undefined ? DEFAULT_PROMPT : await resolvePrompt(args.prompt)
-  const sendMark = Date.now()
   const hostPid = await startHost(root, {
     socket: paths.socket,
     cwd: paths.work,
-    command: [...launch.base, "--standalone", "--auto", "--prompt", prompt],
+    command: [...launch.base, "--standalone", "--auto"],
     env,
     ...HOST_SIZE,
   })
@@ -994,11 +1003,17 @@ const prepareAndLaunch = async (
     ...(started.simPid === undefined ? {} : { simPid: started.simPid }),
     base: launch.base,
     preset: args.preset,
-    sendMark,
-    awaitsTurn: true,
+    sendMark: 0,
+    awaitsTurn: sendAwaitsTurn(prompt),
   }
   try {
-    await writeState(state)
+    // Don't let the cold TUI auto-submit on the built-in agent before the real default arrives.
+    await waitForComposer(marker, ORCHESTRATOR, () =>
+      callHost(state, (socket) => hostCall(socket, { op: "read", scope: "screen" }), 1000),
+    )
+    const sendMark = stamp()
+    await callHost(state, (socket) => submit(socket, prompt))
+    await writeState({ ...state, sendMark })
   } catch (error) {
     // Without the state file no `down` can find the host, so stop it here.
     if (await isHost(hostPid, root)) process.kill(hostPid, "SIGKILL")
@@ -1264,11 +1279,8 @@ const send = async (text: string) => {
   if (text.trim() === "") throw new Error("send needs the text to type")
   const state = await readState()
   // Mark before typing: the message is stored after this time.
-  await writeState({ ...state, sendMark: Date.now(), awaitsTurn: sendAwaitsTurn(text) })
-  await callHost(state, async (socket) => {
-    await hostCall(socket, { op: "type", text })
-    await hostCall(socket, { op: "keys", names: ["enter"] })
-  })
+  await writeState({ ...state, sendMark: stamp(), awaitsTurn: sendAwaitsTurn(text) })
+  await callHost(state, (socket) => submit(socket, text))
 }
 
 const pressKeys = async (names: ReadonlyArray<string>) => {
@@ -1340,15 +1352,15 @@ export const isSettled = (progress: WaitProgress): boolean =>
 const wait = async (timeoutSeconds: number) => {
   const state = await readState()
   const paths = runPaths(state.root)
-  const deadline = Date.now() + timeoutSeconds * 1000
+  const deadline = watchdog(timeoutSeconds * 1000)
   let progress = WAIT_START
   let record = NO_RECORD
-  while (Date.now() < deadline) {
+  while (!deadline.expired()) {
     // A host that stops answering ends the wait with the budget, not after it.
     const screen = await callHost(
       state,
       (socket) => hostCall(socket, { op: "read", scope: "screen" }),
-      Math.max(deadline - Date.now(), 1000),
+      Math.max(deadline.remaining(), 1000),
     )
     if (screen.exited !== undefined) throw new Error(`opencode exited ${screen.exited}; read --full shows its last screen`)
     record = readRunDb(paths.db, NO_RECORD, (db) => runRecord(db, state.sendMark))
@@ -1387,7 +1399,7 @@ const restart = async () => {
     "--auto",
     ...(session === undefined ? [] : ["--session", session]),
   ]
-  await writeState({ ...state, sendMark: Date.now(), awaitsTurn: false })
+  await writeState({ ...state, sendMark: stamp(), awaitsTurn: false })
   await callHost(state, (socket) => hostCall(socket, { op: "restart", command }), 30_000)
   console.log(session === undefined ? "relaunched: no session to resume" : `relaunched: resumed ${session}`)
 }
@@ -1405,8 +1417,8 @@ const down = async () => {
     25_000,
   )
   if (stopped !== TIMED_OUT && stopped?.killed === true) console.log("opencode did not quit on ctrl+c within 15s; killed it")
-  const deadline = Date.now() + 2000
-  while ((await isHost(state.hostPid, state.root)) && Date.now() < deadline) await Bun.sleep(100)
+  const deadline = watchdog(2000)
+  while ((await isHost(state.hostPid, state.root)) && !deadline.expired()) await Bun.sleep(100)
   if (await isHost(state.hostPid, state.root)) process.kill(state.hostPid, "SIGKILL")
   if (state.simPid !== undefined && (await isSim(state.simPid, state.root))) process.kill(state.simPid, "SIGTERM")
   rmSync(state.root, { recursive: true, force: true })

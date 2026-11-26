@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at cmd/kernel/server.test.ts: execute: (input: { readonly path: string }) => Effect.promise(() => Bun.file(input.path).text()
 // The plugin seam: the composition root on a stand-in host, with the sessions
 // in memory, the stored bindings in OpenCode's storage format over the
 // stand-in's storage, and the workers live (the worker is this repo's own
@@ -11,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Tool } from "@opencode/plugin/effect"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Schema, Scope, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
@@ -75,6 +78,8 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
     let added: Added | undefined
     const host = {
       options,
+      location: { directory: work },
+      rpc: { register: () => Effect.succeed({ events: { emit: () => Effect.void }, dispose: Effect.void }) },
       tool: {
         list: () => Effect.succeed([...(world.tools ?? []), { id: "kernel", description: "itself", input: {}, execute: () => Effect.die("not called") }]),
         transform: (callback: (editor: { add: (tool: Added) => void }) => void) =>
@@ -92,7 +97,10 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
             return { dispose: Effect.void }
           }),
       },
-      event: { subscribe: () => Stream.fromQueue(deletions) },
+      event: { subscribe: (input?: { types?: ReadonlyArray<string> }) => {
+        if (input?.types?.length === 1) return Stream.fromQueue(deletions)
+        return Stream.never
+      } },
       // The plugin's own storage, where the frozen descriptions live.
       storage: {
         get: (key: string) => Effect.sync(() => stored.get(key)),
@@ -331,9 +339,9 @@ describe("the kernel tool", () => {
       Effect.gen(function* () {
         const { call } = yield* start({ idleMs: 100 })
         yield* call("let waited = 1")
-        yield* Effect.sleep("400 millis")
+        yield* TestClock.adjust(100)
         expect(yield* call("waited")).toBe("[new kernel; restored waited]\n1")
-      }),
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("drops a deleted session's worker and its stored bindings", () =>

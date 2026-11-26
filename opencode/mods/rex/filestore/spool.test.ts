@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/filestore/spool.test.ts: const files = yield* Effect.sync(() => readdirSync(join(root, FileSpool.folderOf(SESSION))).toS
 // The spool in files, in a scratch folder: a session with no spool reads as
 // nothing shown, a write reads back, and keeping a new copy of the shown
 // file drops the older one.
@@ -10,6 +12,7 @@ import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Spool } from "../service.ts"
 import { empty, Picture } from "../spool.ts"
 import * as FileSpool from "./spool.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const SESSION = "session:01a"
 
@@ -33,11 +36,11 @@ effectTest(
       }).pipe(Effect.provide(FileSpool.layer(root))),
     (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
   ),
-  10_000,
+  hangGuard("in-memory"),
 )
 
 effectTest(
   "names a session's folder with nothing that climbs out of the root",
   Effect.sync(() => expect(FileSpool.folderOf("session:01a/../x")).toBe("session_01a_.._x")),
-  5_000,
+  hangGuard("local-fixture"),
 )

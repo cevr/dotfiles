@@ -1,30 +1,32 @@
+// @reads all
+// @reads-reason computed read at scripts/accept.test.ts: const driven = scenariosOf(text).filter((scenario) => existsSync(join(ROOT, scenario)))
 // `bun run accept`'s order (scripts/accept-plan.ts, scripts/accept.ts): the
 // pool first, as wide as the host's load leaves room for, then the files marked
 // `// accept: one at a time`, one at a time; and every acceptance file that
 // asserts an upper bound on a time, rate or CPU (its own text or the scenario
 // it drives) carries that marker, where a file that only waits for events does
 // not need it. Run from opencode/, as the gate runs it.
-// @reads sim/seed.ts
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync as readCheckoutFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Option } from "effect"
 import { owned } from "../tests/owned.ts"
+import { matchingInput, readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync } from "../tests/read-path.ts"
+import { spawnScratchBunSync } from "../tests/scratch-child.ts"
 import { scratch } from "../tests/scratch.ts"
 import { waitUntil } from "../tests/wait.ts"
 import { FIXED_SEEDS, isSerial, isSimSuite, longSwarmDue, plan, poolWidth, reachedSuites, replayLine, requestedWidth, scenariosOf, swarmBox, swarmCut, swarmFirst, swarmRead, swarmSlot, TIMED_RUNS, timedCounts, timedFilter, timingSigns, unjudgedRead } from "./accept-plan.ts"
 import { offUntil, parseClosing, readLedger, SLOW_DEEP, tierOf } from "./accept-ledger.ts"
 import { table } from "./leaks.ts"
-import { acceptanceTests, acceptReach, codeOf, load, packageOf, reach } from "./reach.ts"
+import { acceptanceTests, acceptReach, codeOf, declaredInputs, load, packageOf, reach } from "./reach.ts"
+import { hangGuard, measured, stamp } from "../tests/hang-guard.ts"
 
 const ROOT = process.cwd()
 
 /** The acceptance files, as scripts/reach.ts lists them: tests/*.test.ts. */
 const acceptance = () => [...new Bun.Glob("tests/*.test.ts").scanSync({ cwd: ROOT })].sort()
-const read = (file: string) => readFileSync(join(ROOT, file), "utf8")
+const read = (file: string) => readCheckoutFileSync(matchingInput("{tests/*.test.ts,scenarios/*.ts,scripts/accept.test.ts}", file), "utf8")
 
-/** A real accept run takes the machine's lock and spawns bun test twice: a loaded machine gets room. */
-const RUN_MS = 120_000
 
 describe("the acceptance run's plan", () => {
   test("puts the marked files after the pool, one at a time, and the rest in a pool no wider than asked or than its files", () => {
@@ -95,13 +97,13 @@ describe("the acceptance files", () => {
   })
 
   test("the files the survey judged: those that measure are marked, those that only wait for events are not", () => {
-    // Measured: setup CPU, paints a second, a refresh's duration, the dock's settle time, a stop check's
+    // Measured: setup CPU, paints a second, the dock's settle time, a stop check's
     // requests within 6.5 s, a 1 s stall under the 2 s threshold. The rest wait for events under
     // generous deadlines (herdr's release among them, since the scenario waits for it).
     const judged = {
       "tests/plugin-start.test.ts": true,
       "tests/tui-paint.test.ts": true,
-      "tests/pool-store-refresh.test.ts": true,
+      "tests/pool-store-refresh.test.ts": false,
       "tests/dock-reconnect.test.ts": true,
       "tests/escape-send.test.ts": true,
       "tests/prime-escape.test.ts": true,
@@ -133,13 +135,12 @@ const accept = (args: ReadonlyArray<string>, env: typeof process.env) => startAc
  * bare (its own group), for a test that checks the run's own stop and then ends its stand-ins' groups itself.
  */
 const startAccept = (args: ReadonlyArray<string>, env: typeof process.env, unowned = false) => {
-  const started = performance.now()
   const argv = ["/bin/sh", "-c", 'exec "$0" scripts/accept.ts "$@" 2>&1', process.execPath, ...args]
   const child = (unowned && Bun.spawn(argv, { cwd: ROOT, env, stdout: "pipe", detached: true })) || owned(argv, { cwd: ROOT, env, stdout: "pipe" })
   const done = (async () => {
     const out = await Bun.readableStreamToText(child.stdout)
     const code = await child.exited
-    return { code, lines: linesOf(out).filter((line) => line !== ""), seconds: (performance.now() - started) / 1000 }
+    return { code, lines: linesOf(out).filter((line) => line !== "") }
   })()
   return { child, done }
 }
@@ -153,9 +154,6 @@ const { OPENCODE_DEV: _fork, ACCEPT_TIMED: timedSwitch, ...INHERITED } = process
  * and a gate unit test does not judge it: there the runs judge what happened and in what order, never how fast.
  */
 const TIMED = timedSwitch === "1"
-
-/** A wall-clock bound: judged only when TIMED; holds otherwise. */
-const bound = (holds: boolean) => holds || !TIMED
 
 /** The environment of a run on a scratch lock and ledger, without the fork (its real-OpenCode tests skip). */
 const scratchEnv = (dir: string, extra: Record<string, string> = {}) => ({
@@ -225,7 +223,7 @@ describe("bun run accept", () => {
     })
     // At most what --parallel asks, and at least one.
     expect(Option.getOrElse(Option.map(heading, (each) => each.width), () => 0)).toBeWithin(1, 4)
-  })
+  }, hangGuard("installer"))
 
   test(
     "runs the pool to its end, then each marked file, in that order; a file whose tests skip records no pass",
@@ -257,7 +255,7 @@ describe("bun run accept", () => {
       })
       expect(Object.keys(ledgerAt(join(dir.path, "ledger.json")).passes)).toEqual(["tests/git-options.test.ts"])
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })
 
@@ -265,22 +263,23 @@ describe("bun run accept", () => {
 const ledgerAt = (file: string) => readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, file).ledger
 
 describe("the acceptance tiers over the real tree", () => {
-  test("each file's acceptance reach is its reach less only in-package unit tests, benches and Markdown", async () => {
+  test("acceptance keeps declared inputs even when import reach would omit them", async () => {
     const workspace = await load()
     const memo = new Map<string, ReadonlyArray<string>>()
     const wrong = acceptanceTests(workspace).flatMap((file) => {
       const all = reach(workspace, [file], memo)
+      const declared = new Set(declaredInputs(workspace, file))
       const inputs = acceptReach(workspace, file, memo)
-      const extra = [...inputs].filter((each) => !all.has(each))
-      const dropped = [...all].filter((each) => !inputs.has(each))
-      const unexpected = dropped.filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))
-      return [...extra.map((each) => `${file}: ${each} is not in its reach`), ...unexpected.map((each) => `${file}: ${each} dropped`)]
+      const expected = new Set([...declared, ...[...all].filter((each) => !packageOf(each) || !/(\.test\.tsx?|\.bench\.ts|\.md)$/.test(each))])
+      const extra = [...inputs].filter((each) => !expected.has(each))
+      const dropped = [...expected].filter((each) => !inputs.has(each))
+      return [...extra.map((each) => `${file}: ${each} is not an input`), ...dropped.map((each) => `${file}: ${each} dropped`)]
     })
     expect(wrong).toEqual([])
-  })
+  }, hangGuard("short-fixture"))
 
   test("every path the runner reads from the environment (ACCEPT_*) is in scratch for every test that runs it: none touches the owner's ledger, lock, logs or swarm state, or swarms the real suites", () => {
-    const read = new Set(Array.from(readFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
+    const read = new Set(Array.from(readCheckoutFileSync(join(ROOT, "scripts/accept.ts"), "utf8").matchAll(/ENV\.(ACCEPT_[A-Z_]+)/g), (match) => String(match[1])))
     // Not paths: the land budget, the long swarm's box, and the files glob each test sets to its own stand-ins. The
     // simulated suites' glob is one: unset, a run swarms the real suites.
     const paths = [...read].filter((name) => name !== "ACCEPT_BUDGET_MS" && name !== "ACCEPT_LONG_SWARM_MS" && name !== "ACCEPT_FILES").sort()
@@ -356,7 +355,7 @@ describe("the acceptance tiers over the real tree", () => {
       expect({ code: settled.code, due: [...dueOf(settled.lines)].sort() }).toEqual({ code: 0, due: on })
       expect(land.lines.concat(owed.lines, settled.lines).filter((line) => line.includes("waiting for"))).toEqual([])
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })
 
@@ -367,17 +366,51 @@ describe("the acceptance tiers over the real tree", () => {
  */
 const GRANDCHILD = '  const child = Bun.spawn(["/bin/sh", "-c", "sleep 120 & wait"], { detached: true, stdout: "ignore" })'
 
+/** The stand-in publishes its group ids before it can be stopped. The probe runs at the open/write boundary. */
+const GROUP_WRITER = [
+  'import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from "node:fs"',
+  "function publishGroups(target: string, groups: ReadonlyArray<number>, opened = () => {}) {",
+  '  const staged = `${target}.${process.pid}.tmp`',
+  '  const fd = openSync(staged, "w")',
+  "  try {",
+  "    opened()",
+  "    writeFileSync(fd, JSON.stringify(groups))",
+  "    fsyncSync(fd)",
+  "  } finally {",
+  "    closeSync(fd)",
+  "  }",
+  "  renameSync(staged, target)",
+  "}",
+].join("\n")
+
+test("a stand-in's group ids are absent or complete even while a new list is being written", () => {
+  using dir = scratch("accept-groups-")
+  const script = join(dir.path, "publish.ts")
+  writeFileSync(script, [
+    'import { existsSync, readFileSync } from "node:fs"',
+    GROUP_WRITER,
+    `const target = ${JSON.stringify(join(dir.path, "groups.json"))}`,
+    'const read = () => console.log(existsSync(target) ? JSON.parse(readFileSync(target, "utf8")).join(",") : "absent")',
+    "publishGroups(target, [1, 2], read)",
+    "publishGroups(target, [3, 4], read)",
+    "read()",
+  ].join("\n"))
+  const ran = spawnScratchBunSync(dir.path, script)
+  expect({ code: ran.exitCode, out: linesOf(ran.stdout.toString()).filter(Boolean), err: ran.stderr.toString() }).toEqual({ code: 0, out: ["absent", "1,2", "3,4"], err: "" })
+}, hangGuard("short-fixture"))
+
 /** Three stand-in acceptance files: one passes in 1 s, one fails, one sleeps 120 s beside a process group of its own with a grandchild in it. */
 const STAND_INS = {
   "pass.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(1).toBe(1)\n})\n',
   "fail.test.ts": 'import { expect, test } from "bun:test"\ntest("fails", () => {\n  expect(1).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { writeFileSync } from "node:fs"',
     'import { join } from "node:path"',
+    GROUP_WRITER,
     'test("sleeps", async () => {',
+    '  const dir = import.meta.dir',
     GRANDCHILD,
-    '  writeFileSync(join(import.meta.dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    '  publishGroups(join(import.meta.dir, "groups.json"), [process.pid, child.pid])',
     "  await Bun.sleep(120_000)",
     "})",
     "",
@@ -397,7 +430,15 @@ describe("a land run under its budget", () => {
       for (const [name, body] of Object.entries(STAND_INS)) writeFileSync(join(files, name), body)
       const env = scratchEnv(dir.path, { ACCEPT_FILES: join(files, "*.test.ts"), ACCEPT_BUDGET_MS: "6000" })
       // Bare, so only the run's own stop can end the sleeper's grandchild (accept-ledger-land M1).
+      let start = () => {}
+      let finish = () => () => {}
+      if (TIMED) measured("accept land returns after a file overruns the run budget", "< 12000 ms", ({ begin, endAfterRelease }) => {
+        start = begin
+        finish = endAfterRelease
+      })
+      start()
       const first = await startAccept(["--land"], env, true).done
+      const judge = finish()
       const groups = Option.match(Option.liftPredicate(join(files, "groups.json"), existsSync), {
         onNone: () => [],
         onSome: (file): ReadonlyArray<number> => JSON.parse(readFileSync(file, "utf8")),
@@ -405,9 +446,9 @@ describe("a land run under its budget", () => {
       const alive = groups.filter(groupAlive)
       // What the run left of this test's own stand-in, ended here so a red run leaks nothing.
       for (const group of alive) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
-      expect({ failed: first.code !== 0, inTime: bound(first.seconds < 12), closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
+      judge()
+      expect({ failed: first.code !== 0, closing: closingOf(first.lines), groups: groups.length, alive }).toEqual({
         failed: true,
-        inTime: true,
         closing: Option.some({ mode: "land", passed: 1, failed: 1, owed: 1, deep: 0, budget: 1 }),
         groups: 2,
         alive: [],
@@ -421,7 +462,7 @@ describe("a land run under its budget", () => {
         before: 1,
       })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })
 
@@ -431,14 +472,15 @@ const DEEP_STAND_INS = {
   "b.test.ts": 'import { expect, test } from "bun:test"\ntest("passes", async () => {\n  await Bun.sleep(1000)\n  expect(2).toBe(2)\n})\n',
   "sleep.test.ts": [
     'import { test } from "bun:test"',
-    'import { existsSync, writeFileSync } from "node:fs"',
+    'import { existsSync } from "node:fs"',
     'import { join } from "node:path"',
+    GROUP_WRITER,
     'const dir = process.env.YIELD_DIR ?? ""',
     'test("sleeps", async () => {',
     '  const first = !existsSync(join(dir, "slept"))',
     '  writeFileSync(join(dir, "slept"), "")',
     GRANDCHILD,
-    '  writeFileSync(join(dir, "groups.json"), JSON.stringify([process.pid, child.pid]))',
+    '  publishGroups(join(dir, "groups.json"), [process.pid, child.pid])',
     "  await Bun.sleep((first && 60_000) || 1000)",
     "  process.kill(-child.pid, \"SIGKILL\")",
     "})",
@@ -510,14 +552,24 @@ describe("a deep run yields the lock to a land run", () => {
       await until("the sleeper running in the deep run", () => world.groups().length === 2)
       // The two quick files pass in this hold, before the yield: the deep run must count them as its own passes after it, not as passed before it.
       await until("the quick files passed in the deep run's first hold", () => world.passed() >= 2)
+      let start = () => {}
+      let finish = () => () => {}
+      if (TIMED) measured("accept land preempts deep and completes", "< 20000 ms", ({ begin, endAfterRelease }) => {
+        start = begin
+        finish = endAfterRelease
+      })
+      start()
       const land = await accept(["--land"], world.landEnv)
+      const judge = finish()
       const deep = await deepRun
+      judge()
       const seen = JSON.parse(readFileSync(join(dir.path, "seen.json"), "utf8"))
       const waited = waitedOf(land.lines)
+      if (TIMED) measured("accept land waits for the deep lock to yield", "< 5000 ms", ({ sample }) =>
+        sample(Option.match(waited, { onNone: () => Number.NaN, onSome: ({ waited }) => waited * 1000 })),
+      )
       expect({
         land: land.code,
-        inBudget: bound(land.seconds < 20),
-        waitedUnder5: bound(Option.exists(waited, (each) => each.waited < 5)),
         // The wait ends as the lock is taken: its line comes before the first file, so it counts the wait alone.
         waitBeforeFiles: land.lines.findIndex((line) => line.startsWith("accept: waited ")) < land.lines.findIndex((line) => line.startsWith("accept: passed ")),
         onClock: Option.exists(waited, (each) => each.onClock === each.waited),
@@ -527,8 +579,6 @@ describe("a deep run yields the lock to a land run", () => {
         yields: deep.lines.filter((line) => line.startsWith("accept: yielded the lock to a land run")).length,
       }).toEqual({
         land: 0,
-        inBudget: true,
-        waitedUnder5: true,
         waitBeforeFiles: true,
         onClock: true,
         seen: { groups: expect.any(Array), alive: [] },
@@ -538,7 +588,7 @@ describe("a deep run yields the lock to a land run", () => {
       })
       expect(seen.groups.length).toBe(2)
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -553,22 +603,28 @@ describe("a deep run yields the lock to a land run", () => {
       // The deep run saw the mark: it stopped the sleeper's groups to give the lock up.
       const stopping = world.groups()
       await until("the deep run stopping the sleeper's groups", () => stopping.every((group) => !groupAlive(group)))
+      let observe = () => {}
+      let finish = () => {}
+      if (TIMED) measured("accept deep resumes once a marked land dies", "< 2000 ms", ({ begin, end }) => {
+        observe = begin
+        finish = end
+      })
       land.child.kill("SIGKILL")
-      const killedAt = Date.now()
+      observe()
+      const killedAt = stamp()
       await land.done
       // The deep run takes the lock back and writes itself as its owner.
       await until(
         "the deep run holding the lock again",
         () => existsSync(world.owner) && statSync(world.owner).mtimeMs >= killedAt && readFileSync(world.owner, "utf8").includes(`"pid":${deep.child.pid}`),
       )
-      const resumedIn = Date.now() - killedAt
+      finish()
       const ended = await deep.done
-      expect({ within2s: bound(resumedIn < 2000), closing: closingOf(ended.lines) }).toEqual({
-        within2s: true,
+      expect({ closing: closingOf(ended.lines) }).toEqual({
         closing: Option.some({ mode: "owed", passed: 3, failed: 0, owed: 0, deep: 0, budget: 0 }),
       })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -586,15 +642,17 @@ describe("a deep run yields the lock to a land run", () => {
       for (const group of orphans) Bun.spawnSync(["kill", "-KILL", `-${group}`], { stderr: "ignore" })
       await until("the killed run's sleeper groups gone", () => orphans.every((group) => !groupAlive(group)))
       const read = readLedger({ read: (each) => Option.liftPredicate(each, existsSync).pipe(Option.map((found) => readFileSync(found, "utf8"))), write: () => {}, rename: () => {} }, join(dir.path, "ledger.json"))
+      if (TIMED) measured("accept land acquires the lock after a deep owner dies", "< 1000 ms", ({ sample }) =>
+        sample(Option.match(waitedOf(land.lines), { onNone: () => Number.NaN, onSome: ({ waited }) => waited * 1000 })),
+      )
       expect({
         land: land.code,
         // The killed run's flock ended with it: the land run found the lock free and waited for no one.
         free: !land.lines.some((line) => line.startsWith("accept: waiting for")),
-        atOnce: bound(Option.exists(waitedOf(land.lines), (each) => each.waited < 1)),
         problem: read.problem,
-      }).toEqual({ land: 0, free: true, atOnce: true, problem: Option.none() })
+      }).toEqual({ land: 0, free: true, problem: Option.none() })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })
 
@@ -654,7 +712,7 @@ describe("a deep run's second runs", () => {
         closing: closingOf(deep.lines),
       }).toEqual({ land: 0, deep: 0, yields: 1, second: 1, closing: Option.some({ mode: "owed", passed: 2, failed: 0, owed: 0, deep: 0, budget: 0 }) })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -671,7 +729,7 @@ describe("a deep run's second runs", () => {
         closing: closingOf(deep.lines),
       }).toEqual({ deep: 0, second: 1, closing: Option.some({ mode: "owed", passed: 1, failed: 0, owed: 0, deep: 0, budget: 0 }) })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -706,7 +764,7 @@ describe("a deep run's second runs", () => {
         closing: Option.some({ mode: "owed", passed: 0, failed: 2, owed: 0, deep: 0, budget: 0 }),
       })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })
 
@@ -732,7 +790,7 @@ describe("the swarm's plan", () => {
     const firsts = heads.map((head) => swarmFirst(head, "land"))
     expect({
       // sim/seed.ts's own constant, read from its text: the runner's gate seeds.
-      fixed: readFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
+      fixed: readCheckoutFileSync(join(ROOT, "sim/seed.ts"), "utf8").includes(`export const SEEDS = ${FIXED_SEEDS}\n`),
       past: firsts.every((first) => first > FIXED_SEEDS),
       inRange: firsts.every((first) => first + 10_000_000 < 2 ** 31 - 1),
       same: swarmFirst("abc", "land") === swarmFirst("abc", "land"),
@@ -869,14 +927,16 @@ describe("a land run's swarm", () => {
       const seed = failing[0]?.seed ?? 0
       const replays: Array<{ code: number; out: string }> = []
       for (const _ of [1, 2, 3]) replays.push(await bunTest(BUG, { SIM_SEED: String(seed) }))
+      // Inside the box (a third of 15 s) plus its grace.
+      if (TIMED) measured("accept swarm reaches the first failure inside its allotted box", "< 9000 ms", ({ sample }) =>
+        sample(Option.match(Option.fromUndefinedOr(swarmed[0]), { onNone: () => Number.NaN, onSome: ({ seconds }) => seconds * 1000 })),
+      )
       expect({
         gate: gate.code,
         land: land.code,
         files: failing.map((each) => each.file),
         pastFixed: seed > 20,
         found: Option.exists(Option.fromUndefinedOr(swarmed[0]), (each) => each.seeds > 0),
-        // Inside the box (a third of the 15 s budget) and its grace.
-        inBox: bound(Option.exists(Option.fromUndefinedOr(swarmed[0]), (each) => each.seconds < 5 + 3 + 1)),
         closing: closingOf(land.lines),
         replays: replays.map((each) => ({ code: each.code, names: each.out.includes(`SIM_SEED=${seed} bun test ${BUG}: every queued message is delivered`) })),
       }).toEqual({
@@ -885,12 +945,11 @@ describe("a land run's swarm", () => {
         files: [BUG],
         pastFixed: true,
         found: true,
-        inBox: true,
         closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 0, deep: 0, budget: 0 }),
         replays: [1, 2, 3].map(() => ({ code: 1, names: true })),
       })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -937,7 +996,7 @@ describe("a land run's swarm", () => {
         closing: Option.some({ mode: "land", passed: 0, failed: 1, owed: 1, deep: 0, budget: 1 }),
       })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test(
@@ -959,7 +1018,7 @@ describe("a land run's swarm", () => {
         counted: land.lines.some((line) => line.startsWith("accept: land ") && line.includes("1 waits for a settled host")),
       }).toEqual({ code: 0, owed: [true], closing: Option.some({ mode: "land", passed: 0, failed: 0, owed: 1, deep: 0, budget: 0 }), counted: true })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 
   test("a simulated TUI file's seeds past the fixed ones reach its body: its gate seeds pass, a swarm of it fails", async () => {
@@ -967,7 +1026,7 @@ describe("a land run's swarm", () => {
     const gate = await bunTest(file)
     const swarm = await bunTest(file, { SIM_SWARM: "100", SIM_SWARM_MS: "500" })
     expect({ gate: gate.code, swarm: swarm.code, seed: swarm.out.includes(`SIM_SEED=100 bun test ${file}`) }).toEqual({ gate: 0, swarm: 1, seed: true })
-  }, RUN_MS)
+  }, hangGuard("installer"))
 })
 
 describe("the deep run's daily long swarm", () => {
@@ -989,6 +1048,6 @@ describe("the deep run's daily long swarm", () => {
         again: daily(second.lines),
       }).toEqual({ first: 1, swarmed: 2, failing: true, closing: Option.some({ mode: "owed", passed: 0, failed: 1, owed: 0, deep: 0, budget: 0 }), state: true, second: 0, again: 0 })
     },
-    RUN_MS,
+    hangGuard("installer"),
   )
 })

@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { scratch } from "../tests/scratch.ts"
+import { spawnCheckoutBun } from "../tests/scratch-child.ts"
 import { parseArgs, plan, type Row, render, secondsOf } from "./migrate-schedules.ts"
+import { hangGuard, stamp } from "../tests/hang-guard.ts"
 
 const NOW = Date.parse("2026-11-06T18:00:00Z")
 const PROMPTS = "/state/opencode-wake/schedules"
@@ -101,9 +103,16 @@ describe("the dry run", () => {
     const dir = held.path
     const file = join(dir, "rows.json")
     // The script plans at the real clock, so the PR watch's end moves with it; a fixed end would expire.
-    writeFileSync(file, JSON.stringify(rows.map((item) => (item.id === "sch_watch" ? { ...item, ends_at: Date.now() + 3 * 86_400_000 } : item))))
+    writeFileSync(file, JSON.stringify(rows.map((item) => (item.id === "sch_watch" ? { ...item, ends_at: stamp() + 3 * 86_400_000 } : item))))
     const prompts = join(dir, "prompts")
-    const child = Bun.spawn([process.execPath, join(import.meta.dir, "migrate-schedules.ts"), "--rows", file, "--prompts", prompts], { stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "", HOME: dir } })
+    const request = join(dir, "cli.json")
+    writeFileSync(request, JSON.stringify(["--rows", file, "--prompts", prompts]))
+    const child = spawnCheckoutBun("scripts/fixtures/migrate-schedules-cli.ts", {
+      scratchArgs: [request],
+      scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir, XDG_CACHE_HOME: dir },
+      external: {},
+      values: {},
+    })
     const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited])
     expect(code).toBe(0)
     expect(out).toStartWith("6 active schedule(s) (dry run: nothing is set, written or paused; --apply does it):")
@@ -115,7 +124,7 @@ describe("the dry run", () => {
     expect(out).toContain("  then: pause sch_watch")
     expect(out).toContain("  skip: cron (0 9 * * 1, UTC) has no wake equivalent")
     expect(await Bun.file(join(prompts, "sch_rest.md")).exists()).toBe(false)
-  })
+  }, hangGuard("short-fixture"))
 
   test("render says when there is nothing to move; the flags parse", () => {
     expect(render([], false)).toBe("No active schedules.")

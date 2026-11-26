@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/devices.test.ts: expect(paths.map((path) => statSync(path).mode & 0o777)).toEqual([0o600, 0o600])
 // The device store on disk over time (round 3's B1, the property the verifier asked for): generated sequences of
 // renames, re-keys, removals, another of HIS devices or another user's device taking a name, configures, requests,
 // the owner's explicit command, and the store lost in every form (deleted, emptied, truncated, garbage, mode 000, a
@@ -18,6 +20,7 @@ import { Copy, copyOfText, copyWord, keysOf, membersWith, type Store, withId } f
 import { type Members, sourceOf } from "../members.ts"
 import { decide, ROUTE_KINDS, type RouteKind } from "../policy.ts"
 import { change, readCopies, readCopy } from "./devices.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const NOW = 1_795_204_800_000
 const HIS = 7
@@ -237,7 +240,7 @@ describe("the device store over time, on disk", () => {
     expect(wrong.slice(0, 2)).toEqual([])
     const counts = STEPS.map((step) => [step.name, runs.flatMap((each) => each.steps).filter((each) => each === step).length] as const)
     expect(counts.filter(([, count]) => count < MIN_EACH)).toEqual([])
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 })
 
 // ── The files themselves ──
@@ -281,7 +284,7 @@ describe("the store's files", () => {
     await Effect.runPromise(Effect.ignore(release))
     expect(Option.map(copy, said)).toEqual(Option.some("unreadable-ENOTREG"))
     expect(keysOf(NAMED, Option.getOrElse(copy, () => Copy.Absent()), Copy.Absent()).closeAll).toEqual(Option.some("unkeyed:dinghy:agent-unkeyed:skiff:store-unreadable-ENOTREG/absent"))
-  }, 10_000)
+  }, hangGuard("in-memory"))
 
   test("a store neither copy reads is refused and left as it is; one copy readable is the start of the next write", async () => {
     using held = scratch("digest-devices-refuse-")

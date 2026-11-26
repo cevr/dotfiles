@@ -29,7 +29,7 @@
 import { Clock, Context, Duration, Effect, FiberMap, Layer, Option } from "effect"
 import { kept, MAX_PINGS, nextPing, pingLine, type Snapshot } from "./keepalive.ts"
 import { judge, lineOf, type Previous, type Sent, type SessionSteps, type StepCause, type Tokens } from "./request-log.ts"
-import { type LedgerUnavailable, Pinger, PingLog, RequestLog } from "./service.ts"
+import { type LedgerUnavailable, PingAdmission, Pinger, PingLog, RequestLog } from "./service.ts"
 
 /** How many sessions, and steps of each, are kept for the RPC; the oldest go first. */
 export const KEPT_SESSIONS = 500
@@ -177,6 +177,7 @@ export const keepaliveLayer = (host: string) =>
     Effect.gen(function* () {
       const log = yield* PingLog
       const pinger = yield* Pinger
+      const admission = yield* PingAdmission
       const loops = yield* FiberMap.make<string>()
       // Insertion order is recency: a session armed again moves to the end.
       const sessions = new Map<string, Waiting>()
@@ -193,6 +194,13 @@ export const keepaliveLayer = (host: string) =>
         const at = yield* Clock.currentTimeMillis
         // Counted as it goes out, so a wait's tool call that starts the loop again sends no fifth.
         waiting.sent = sent + 1
+        // A ping is a request of its model on its login: one the pool's pace would not place there now is not sent,
+        // and the wait's pings end; the tool call it waits on runs on, its next request placed afresh.
+        if (!(yield* admission.admits({ model: snapshot.model, login: snapshot.login, managed: Option.fromUndefinedOr(snapshot.managed) }))) {
+          yield* Effect.logInfo(`cache keepalive: ping ${sent + 1} skipped, the pool's pace holds ${snapshot.model} on its login now`)
+          waiting.sent = MAX_PINGS
+          return false
+        }
         const outcome = yield* Effect.result(pinger.send({ url: snapshot.url, method: snapshot.method, headers: snapshot.headers, body: snapshot.body }))
         yield* log.append(pingLine({ host, sessionID, snapshot, at, ping: sent + 1, outcome })).pipe(Effect.catchTag("LedgerUnavailable", unwritten))
         // A refused or failed ping would fail again within the wait: the wait's pings end.

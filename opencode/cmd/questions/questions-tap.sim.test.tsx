@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The tray is tappable, on the simulated TUI (sim-tui/), each test at its first
 // SEEDS seeds: the fork's real TUI in this process with Prime and the questions
 // plugin loaded by path, in front of the server double, on a virtual clock. The

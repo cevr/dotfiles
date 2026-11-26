@@ -10,12 +10,13 @@
 // once that turn ends the queued prompt enters too and the list is empty.
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-queued.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -39,7 +40,7 @@ const LATER = "  ◌ after the turn · Afterwards tag the release."
 
 describe.skipIf(!fork)("prompts sent during a compaction wait above the composer as one list, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-queued-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-queued-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-queued.ts"], {
       cwd: root,
@@ -53,8 +54,8 @@ describe.skipIf(!fork)("prompts sent during a compaction wait above the composer
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n")
+  }), hangGuard("acceptance"))
 
   test("while the compaction runs: no prompt in the transcript, one list of all three, and the compaction's one timed row", kept.test(() => {
     const shown = above(frames.queued)

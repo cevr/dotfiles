@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // tests/prime-sidebar.test.ts's names on the simulated TUI (sim-tui/), each at
 // its first SEEDS seeds: the fork's real TUI in this process with Prime loaded by path, in
 // front of the server double, on a virtual clock. The live subagent rows
@@ -10,6 +12,7 @@ import { Effect, Option } from "effect"
 import * as App from "../../sim-tui/app.ts"
 import * as Golden from "../../sim-tui/golden.ts"
 import { MODEL_REF, type Model, reasoning, stall, subagent, text } from "../../sim-tui/server.ts"
+import { fixtureChildRows } from "../../tests/held-child-rows.ts"
 
 const FILE = "cmd/prime/prime-sidebar.sim.test.tsx"
 /**
@@ -68,9 +71,11 @@ const scenario = (seed: number) =>
     onSome: Effect.succeed,
     onNone: () => play(seed).pipe(Effect.tap((frames) => Effect.sync(() => played.set(seed, frames)))),
   })
-const play = (seed: number) =>
-  App.seed(BOOT, { key: "prime-sidebar", seed, model, title: () => TITLE }, (tui) =>
+const play = (seed: number) => {
+  const owner = fixtureChildRows()
+  return App.seed(BOOT, { key: "prime-sidebar", seed, model, title: () => TITLE, rpc: owner.rpc }, (tui) =>
     Effect.gen(function* () {
+      owner.attach(tui.server)
       const frames: Record<string, ReadonlyArray<string>> = {}
       const has = (shown: string) => (frame: ReadonlyArray<string>) => frame.join("\n").includes(shown)
       const running = has("◆ 1 subagent ")
@@ -91,6 +96,7 @@ const play = (seed: number) =>
       return frames
     }),
   )
+}
 
 /** The composer area: from the dock's count line to the end, left of the sidebar column. */
 const composer = (lines: ReadonlyArray<string> = []) => {

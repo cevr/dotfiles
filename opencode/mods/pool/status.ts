@@ -5,12 +5,20 @@
 // reads `logins`, the login each of a session's steps went out on. Orchestrate
 // tells it each new agent it `started`; the pool on another host of ours reads
 // `report`, this host's recent starts and readings, and the status pane draws
-// `fleet`, the peers it reads. The definition is the wire contract, kept byte
-// for byte; the schemas below are the shapes its methods answer with. No
-// answer carries a secret.
+// `fleet`, the peers it reads. The definition is the wire contract; the
+// schemas below describe the answers of the older methods. No answer carries
+// a secret.
 import { Schema } from "effect"
-import { QuotaReading, RefusalKind } from "./quota.ts"
+import { Hold } from "./hold.ts"
+import { QuotaReading, UsageReadFailure } from "./quota.ts"
+import { HeldSendAnswer } from "./refuse.ts"
 import { Claim, Reset } from "./resets.ts"
+import { NoPoolLogin } from "./pace.ts"
+export const LaunchRequest = Schema.Struct({
+  providerID: Schema.String, model: Schema.String, sessionID: Schema.String, launchID: Schema.String,
+})
+export type LaunchRequest = typeof LaunchRequest.Type
+export { Hold } from "./hold.ts"
 
 /** The pool's own RPC: each pooled provider's accounts, holds and readings. No secrets. */
 export const POOL_STATUS = {
@@ -19,8 +27,24 @@ export const POOL_STATUS = {
     pace: {
       input: {
         type: "object",
-        properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" } },
+        properties: { providerID: { type: "string" }, model: { type: "string" }, sessionID: { type: "string" }, dispatch: { type: "boolean" } },
         required: ["providerID"],
+      },
+      output: { type: "object" },
+    },
+    heldSend: {
+      input: Schema.toStandardSchemaV1(Schema.Struct({ sessionID: Schema.String })),
+      output: Schema.toStandardSchemaV1(HeldSendAnswer),
+    },
+    handoff: {
+      input: {
+        type: "object",
+        properties: {
+          providerID: { type: "string" }, sessionID: { type: "string" }, model: { type: "string" },
+          kind: { type: "string" }, agent: { type: "string" }, candidate: { type: "string" },
+          keepalive: { type: "boolean" }, stepID: { type: "string" },
+        },
+        required: ["providerID", "sessionID", "model", "kind", "agent", "candidate"],
       },
       output: { type: "object" },
     },
@@ -38,7 +62,9 @@ export const POOL_STATUS = {
       input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] },
       output: { type: "object" },
     },
-    started: { input: { type: "object", properties: { providerID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    started: { input: { type: "object", properties: { providerID: { type: "string" }, model: { type: "string" }, launchID: { type: "string" }, sessionID: { type: "string" } }, required: ["providerID"] }, output: { type: "object" } },
+    reserveLaunch: { input: Schema.toStandardSchemaV1(LaunchRequest), output: { type: "object" } },
+    bindLaunch: { input: { type: "object", properties: { launchID: { type: "string" }, sessionID: { type: "string" } }, required: ["launchID", "sessionID"] }, output: { type: "object" } },
     report: { input: { type: "object" }, output: { type: "object" } },
     fleet: { input: { type: "object" }, output: { type: "object" } },
     resets: { input: { type: "object" }, output: { type: "object" } },
@@ -48,23 +74,19 @@ export const POOL_STATUS = {
     limits: { input: { type: "object" }, output: { type: "object" } },
     /** Start, end, read or plan a push (push.ts `PushRequest`); the answer is a `PushAnswer`. A peer's `pool_push` forwards here over SSH. */
     push: { input: { type: "object" }, output: { type: "object" } },
+    /** Antigravity's quota as the pool last read it (antigravity/text.ts `statusLines`), `{ lines }`; no lines when this host does not read it. Read only: never waits on Google. */
+    antigravity: { input: { type: "object" }, output: { type: "object" } },
   },
   events: {},
 } as const
-
-/** An account refused until `until`, set at `at` (epoch ms). */
-export const Hold = Schema.Struct({
-  kind: RefusalKind,
-  until: Schema.Number,
-  at: Schema.Number,
-})
-export type Hold = typeof Hold.Type
 
 /** One account as the status method reports it. */
 export const AccountStatus = Schema.Struct({
   credentialID: Schema.String,
   hold: Schema.optionalKey(Hold),
   reading: Schema.optionalKey(QuotaReading),
+  measurement: Schema.optionalKey(Schema.Literals(["measured", "unmeasured"])),
+  usageReadFailure: Schema.optionalKey(UsageReadFailure),
   /** USD recorded on it in the window. */
   load: Schema.Number,
   /** Sessions whose run or cache is on it now. */
@@ -86,6 +108,7 @@ export type SourceStatus = typeof SourceStatus.Type
 export const PoolEntry = Schema.Struct({
   accounts: Schema.Array(AccountStatus),
   sources: Schema.optionalKey(Schema.Array(SourceStatus)),
+  untrackedRoutes: Schema.optionalKey(Schema.Record(Schema.String, NoPoolLogin)),
 })
 export type PoolEntry = typeof PoolEntry.Type
 
@@ -191,11 +214,23 @@ export const SessionLogins = Schema.Struct({ steps: Schema.Array(StepLogin) })
 export type SessionLogins = typeof SessionLogins.Type
 
 /** The started method's question: a new agent was admitted on `providerID`. */
-export const StartedQuery = Schema.Struct({ providerID: Schema.String })
+export const StartedQuery = Schema.Struct({
+  providerID: Schema.String,
+  model: Schema.optionalKey(Schema.String),
+  launchID: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+})
 export type StartedQuery = typeof StartedQuery.Type
 
 /** A new agent admitted on `providerID` at `at` (epoch ms). */
-export const Start = Schema.Struct({ providerID: Schema.String, at: Schema.Number })
+export const Start = Schema.Struct({
+  providerID: Schema.String, at: Schema.Number,
+  id: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  sessionID: Schema.optionalKey(Schema.String),
+  /** The estimate frozen when this launch was admitted, as a share of one week. */
+  cost: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+})
 export type Start = typeof Start.Type
 
 /** A reading of one login of the pool `pool`, as the host that took it holds it. */
@@ -213,6 +248,8 @@ export const Report = Schema.Struct({
   host: Schema.String,
   at: Schema.Number,
   starts: Schema.Array(Start),
+  /** Positive capability witness: starts are durably reserved under fleet negotiation. */
+  launchProtocol: Schema.optionalKey(Schema.Literal(1)),
   busy: Schema.optionalKey(Schema.Array(Schema.String)),
   readings: Schema.Array(SharedReading),
   /** The tokens the host sent on each open row of the limit tally (limits.ts), from a host that keeps one. */
@@ -224,6 +261,8 @@ export const Report = Schema.Struct({
       ),
     }),
   ),
+  /** This host's Antigravity quota record, decoded tolerantly on its own (antigravity-report.ts) so future fields never drop the peer's pool data. Never a token or profile path. */
+  antigravity: Schema.optionalKey(Schema.Json),
 })
 export type Report = typeof Report.Type
 

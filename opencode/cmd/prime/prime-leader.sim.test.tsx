@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The pending leader on Prime's hint line (owner, 2026-11-18: "an indicator … that the leader's active"), on the
 // simulated TUI (sim-tui/): the fork's real TUI with Prime loaded by path, on a virtual clock. Ctrl+X shows
 // `Ctrl+X …` on the line above the composer, in place of its hint, and no row moves; the line is clear again once

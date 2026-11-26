@@ -4,13 +4,14 @@
 // keyboard and by mouse, each reads like the main session, and Up, Left and
 // Right move between them; on a phone-sized terminal the dock keeps its count
 // line and draws no rows. It needs OPENCODE_DEV, the fork with the plugin hook points.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Array as Arr, Option } from "effect"
 import { DOCK_COUNT, dockRow, workingRow } from "../scenarios/prime-subagents-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-subagents.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -65,7 +66,7 @@ function expectSubagent(frame: ReadonlyArray<string>, worker: (typeof WORKERS)[n
 
 describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-subagents-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-subagents-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-subagents.ts"], {
       cwd: root,
@@ -79,8 +80,8 @@ describe.skipIf(!fork)("moving between subagents in the Prime look (OPENCODE_DEV
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `subagents-${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `subagents-${name}.txt`), "utf8").split("\n")
+  }), hangGuard("acceptance"))
 
   test("while subagents run, the main session says Down reaches them, under the composer", kept.test(() => {
     expect(frames.started[0]).not.toContain("›")

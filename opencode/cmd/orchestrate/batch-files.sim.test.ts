@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The verify-due line over batch files as a run really writes them, on the simulated host (orch-tools-world.ts): the
 // real orchestrate, rift and status plugins on their memory layers, at 20 seeds. A verify counts from a batch file in a
 // `verify-*` dir (this run's verify-1115cc and verify-1115cd: the head only on the `Heads:` line, the findings opening
@@ -8,10 +10,10 @@
 import { headsOf } from "@dotfiles/opencode-orchestrate/fleet"
 import { VERIFY_EVERY } from "@dotfiles/opencode-orchestrate/tools"
 import { Array as Arr, Effect, Option, Result } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, FORK_HEAD, HAND_BACK, requestHeadFor, RUN_DIR, type Run, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/batch-files.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/batch-files.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 

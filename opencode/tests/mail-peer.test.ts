@@ -10,18 +10,21 @@
 // header, the answer coming back and the unpaired host's refusal are
 // cmd/mail/mail-peer.sim.test.ts's (tests/parity/mail.json).
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { Schema } from "effect"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { externalInput, readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun, ownedForkFixture } from "./owned.ts"
 import { ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/mail-peer.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
 const ROOT = join(import.meta.dir, "..")
-const TIMEOUT_MS = 150_000
+const pairArgs = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))
 
 interface Host {
   readonly name: string
@@ -101,10 +104,10 @@ const sim = Bun.serve({
 })
 
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: () => string, ms = 60_000): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
+    if (deadline.expired()) return expect.unreachable(`${label()}: still ${JSON.stringify(last)}`)
     await Bun.sleep(250)
     last = await read()
   }
@@ -150,7 +153,6 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     )
     const launch = forkLaunch(fork ?? "", process.execPath)
     const env = {
-      PATH: process.env.PATH ?? "",
       HOME: home,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
@@ -159,7 +161,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       OPENCODE_DB: join(base, "opencode.db"),
       OPENCODE_DISABLE_MODELS_FETCH: "1",
     }
-    const child = owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env: { ...env, ...launch.env }, stdout: "ignore", stderr: "pipe" })
+    const child = ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], { ...env, ...launch.env }], { stdout: "ignore", stderr: "pipe" })
     let stderr = ""
     void (async () => {
       for await (const chunk of child.stderr) stderr += new TextDecoder().decode(chunk)
@@ -193,7 +195,18 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     )
 
   const pairCommand = async (host: Host, ...args: ReadonlyArray<string>) => {
-    const child = owned([process.execPath, join(ROOT, "cmd/mail/pair.ts"), ...args, "--name", host.name], { cwd: ROOT, env: host.env, stdout: "pipe", stderr: "pipe" })
+    const file = join(host.base, "pair-args.json")
+    writeFileSync(file, pairArgs([...args, "--name", host.name]))
+    const child = ownedCheckoutBun("tests/mail-peer/pair.ts", {
+      scratchArgs: [file],
+      scratch: {
+        HOME: host.env.HOME || "", TMPDIR: host.base,
+        XDG_CACHE_HOME: host.env.XDG_CACHE_HOME || "", XDG_CONFIG_HOME: host.env.XDG_CONFIG_HOME || "",
+        XDG_DATA_HOME: host.env.XDG_DATA_HOME || "", XDG_STATE_HOME: host.env.XDG_STATE_HOME || "",
+      },
+      external: {},
+      values: {},
+    })
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
@@ -203,7 +216,7 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
     "two real services pair with the pair command run as its own process, and a message by id crosses between them",
     kept.test(async () => {
       const [mac, workbox] = await Promise.all([start("mac"), start("workbox")])
-      const { OpenCode } = (await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule
+      const { OpenCode } = (await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule
       const client = (host: Host) => OpenCode.make({ baseUrl: host.service.url, headers: { authorization: `Basic ${btoa(`opencode:${host.service.password}`)}` } })
       const [macClient, workboxClient] = [client(mac), client(workbox)]
       const target = await workboxClient.session.create({ location: { directory: join(workbox.base, "work") }, title: "Workbox PR" })
@@ -238,6 +251,6 @@ describe.skipIf(!fork)("session mail between two paired OpenCode servers (real p
       expect(secret.length).toBeGreaterThan(20)
       for (const hidden of [secret, mac.service.password, workbox.service.password]) expect(seen.join("\n")).not.toContain(hidden)
     }),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 })

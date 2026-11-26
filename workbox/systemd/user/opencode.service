@@ -6,6 +6,10 @@
 Description=OpenCode service (serve --service and the resident location)
 After=network-online.target
 Wants=network-online.target
+Wants=workbox-opencode-watch.timer
+# The guard's workload slice and its protected sibling (workbox/slices.conf): the guard reads their
+# cgroups (systemctl --user show <slice> -p ControlGroup), which exist only while a slice is active.
+Wants=agentwork.slice opencodecontrol.slice
 
 [Service]
 Type=oneshot

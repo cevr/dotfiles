@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/kernel/filestore/files.ts: const info = yield* Effect.tryPromise({ try: () => stat(path), catch: unreadable })
 // A latched subagent on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/prime-latch.test.ts's server claims under the same names, moved
 // off real OpenCode (scenarios/prime-latch.ts waited out a twelve-second hold
@@ -11,11 +13,12 @@ import type { CallLine } from "@dotfiles/opencode-orchestrate/call-line"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option, Schema } from "effect"
+import { live, make } from "../kernel/server.ts"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate-latch.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-latch.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** How long the stand-in pool holds, from the first agent it is asked about. */
@@ -97,6 +100,7 @@ const boot = (seed: number) =>
     yield* world.load(Plugins.orchestrate({ lines: calls }), { directory: WORK, options: { now: PIN } })
     yield* world.load(Plugins.wake(world), { directory: WORK, options: { backstop: "off" } })
     yield* world.load(pool(paces, () => world.now()), { directory: WORK })
+    yield* world.load(make(live), { directory: WORK, options: { codeOnly: false } })
     const root = yield* world.session(WORK)
     const said = (text: string) => () => world.messages(root).some((message) => message.type === "assistant" && message.text === text)
     yield* world.prompt(root, ASK)

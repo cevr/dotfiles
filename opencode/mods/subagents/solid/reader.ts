@@ -12,9 +12,10 @@
 //   other session's object (and its `messages` array) as it was;
 // - the family of a root is one memo, shared by every computation in the
 //   process that reads it, and disposed once none reads it.
-import { createMemo, createRoot, getOwner, onCleanup, type Accessor } from "solid-js"
-import type { Family, Latch, Message, Session, Shell } from "../family.ts"
-import { familyOf, message, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
+import { createComputed, createMemo, createRoot, createSignal, getOwner, onCleanup, type Accessor } from "solid-js"
+import { Option } from "effect"
+import type { Family, Latch, Lifecycle, Message, OwnedRow, Session, Shell } from "../family.ts"
+import { familyOf, message, ownedSessionOf, read, sessionOf, shellsBySession, transcript, type Reads, type Transcript } from "../opencode/view.ts"
 import { fields, is, list } from "../same.ts"
 import { keptMemo } from "./kept.ts"
 
@@ -44,7 +45,8 @@ const sameList = <T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>) => a.length === b
 const sameTranscript = (a: Transcript, b: Transcript) => a.model === b.model && sameList<Message>(a.messages, b.messages)
 const NONE: ReadonlyArray<Shell> = []
 
-const sameLatch = fields<Latch>({ hold: is(), reason: is(), opensAt: is(), at: is(), cancelledAt: is(), failed: is() })
+const sameLatch = fields<Latch>({ hold: is(), reason: is(), opensAt: is(), recheckAt: is(), at: is(), cancelledAt: is(), failed: is() })
+const sameLifecycle = fields<Lifecycle>({ kind: is(), revision: is(), at: is(), sinceReload: is(), waitingOn: is(), diagnostic: is() })
 
 /**
  * Whether two readings of a session say the same: every field of the
@@ -64,6 +66,9 @@ export const sameSession = fields<Session>({
   outcome: is(),
   time: fields<Session["time"]>({ created: is(), busy: is(), idle: is(), updated: is() }),
   running: is(),
+  wakePending: is(),
+  execution: (a, b) => a === b || Boolean(a && b && a.kind === b.kind && a.at === b.at),
+  lifecycle: (a, b) => a === b || Boolean(a && b && sameLifecycle(a, b)),
   shells: list(fields<Shell>({ id: is(), command: is(), description: is() })),
   // Absent from both, or present in both and the same.
   latch: (a, b) => a === b || Boolean(a && b && sameLatch(a, b)),
@@ -73,26 +78,36 @@ export const sameSession = fields<Session>({
 })
 
 type Kept<T> = { readonly value: Accessor<T>; readonly dispose: () => void }
+export type FollowRows = (
+  reads: Reads,
+  children: ReadonlyArray<string>,
+  publish: (rows: ReadonlyArray<OwnedRow>) => void,
+) => () => void
+type SessionReader = (id: string, words: Transcript) => Session
+type Location = Parameters<Reads["shell"]["list"]>[0]
+type Source = (
+  reads: Reads, root: string, location: Location, ids: Accessor<ReadonlyArray<string>>,
+) => SessionReader
 
 /** One session's memos: its transcript, read again only when one of its items changes, and its `Session`. */
 function keepSession(
   reads: Reads<unknown>,
   id: string,
-  shells: Accessor<ReadonlyMap<string, ReadonlyArray<Shell>>>,
   convert: (item: unknown) => Message | undefined,
+  session: SessionReader,
 ): Kept<Session> {
   return createRoot((dispose) => {
     const told = createMemo(() => transcript(reads.session.message.list(id), convert), undefined, { equals: sameTranscript })
-    const value = keptMemo(() => sessionOf(reads, id, shells().get(id) ?? NONE, told()), sameSession)
+    const value = keptMemo(() => session(id, told()), sameSession)
     return { value, dispose }
   })
 }
 
 /** `root`'s family as one memo over a memo per session; `dispose` ends them all. */
-function keepFamily(reads: Reads<unknown>, root: string, location: unknown, convert: (item: unknown) => Message | undefined): Kept<Family> {
+function keepFamily(reads: Reads<unknown>, root: string, location: unknown, convert: (item: unknown) => Message | undefined, source: Source): Kept<Family> {
   return createRoot((disposeRoot) => {
-    const shells = createMemo(() => shellsBySession(reads.shell.list(location)))
     const ids = createMemo(() => familyOf(reads, root), undefined, { equals: sameList })
+    const session = source(reads, root, location, ids)
     const sessions = new Map<string, Kept<Session>>()
     const value = createMemo((): Family => {
       const wanted = ids()
@@ -107,7 +122,7 @@ function keepFamily(reads: Reads<unknown>, root: string, location: unknown, conv
         sessions: wanted.map((id) => {
           let kept = sessions.get(id)
           if (kept === undefined) {
-            kept = keepSession(reads, id, shells, convert)
+            kept = keepSession(reads, id, convert, session)
             sessions.set(id, kept)
           }
           return kept.value()
@@ -130,12 +145,12 @@ type Entry = Kept<Family> & { users: number }
  * kept per host data, root and location while any computation reads it; read
  * outside one, it is read once, through the message cache alone.
  */
-function reader(): FamilyReader {
+function cachedReader(source: Source, bare: (reads: Reads, root: string, location: Location, convert: typeof message) => Family): FamilyReader {
   const convert = perItem(message)
   const families = new WeakMap<object, Map<string, Entry>>()
   return (reads, sessionID, location) => {
     const root = reads.session.root(sessionID)
-    if (getOwner() === null) return read(reads, sessionID, location, convert)
+    if (getOwner() === null) return bare(reads, root, location, convert)
     let byKey = families.get(reads)
     if (byKey === undefined) {
       byKey = new Map()
@@ -145,7 +160,7 @@ function reader(): FamilyReader {
     const key = location === undefined ? root : `${root}\n${JSON.stringify(location)}`
     let entry = kept.get(key)
     if (entry === undefined) {
-      entry = { ...keepFamily(reads, root, location, convert), users: 0 }
+      entry = { ...keepFamily(reads, root, location, convert, source), users: 0 }
       kept.set(key, entry)
     }
     const used = entry
@@ -164,12 +179,30 @@ function reader(): FamilyReader {
   }
 }
 
-const shared = reader()
+export const readerWithOwner = (follow: FollowRows): FamilyReader => cachedReader((reads, root, location, ids) => {
+  const [owned, setOwned] = createSignal(new Map<string, OwnedRow>())
+  const native = nativeSource(reads, location)
+  createComputed(() => {
+    const children = ids().filter((id) => id !== root)
+    setOwned(new Map())
+    if (children.length === 0) return
+    onCleanup(follow(reads, children, (next) => setOwned(new Map(next.map((row) => [row.child, row])))))
+  })
+  return (id, told) => Option.match(Option.fromUndefinedOr(owned().get(id)), {
+    onNone: () => native(id, told),
+    onSome: (row) => ownedSessionOf(id, told, reads.session.get(id), row),
+  })
+}, read)
+
+const nativeSource = (reads: Reads, location: Location): SessionReader => {
+  const shells = createMemo(() => shellsBySession(reads.shell.list(location)))
+  return (id, told) => sessionOf(reads, id, shells().get(id) ?? NONE, told)
+}
+const shared = cachedReader((reads, _root, location) => nativeSource(reads, location), read)
 
 /**
- * The process's family reader: every TUI plugin that reads a family (Prime's
- * rows, dock and hints, the queue's sidebar) reads it through this one, so a
- * family is read once per update however many views show it.
+ * Host snapshot without an owner. The owner reader uses this same source while
+ * no owner answer is available, and doesn't join its facts into owner rows.
  */
 export function familyReader(): FamilyReader {
   return shared

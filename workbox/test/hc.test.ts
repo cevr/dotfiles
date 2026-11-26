@@ -1,3 +1,4 @@
+// @reads ../workbox/systemd/user/{hc-core.service,opencode.service} ../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}
 // The workbox's hc (herdr-core) side, run through the real scripts with a
 // scratch HOME and a PATH of stub commands that answer from a fixture and
 // record their arguments. Nothing here touches the real host: every path a
@@ -9,46 +10,45 @@ import { afterAll, describe, expect, test } from "bun:test"
 import {
   chmodSync,
   cpSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
+import { externalInput, matchingInput, readScratchDirectorySync, readScratchFileSync, scratchExistsSync as existsSync, scratchInput } from "../../opencode/tests/read-path.ts"
+import { fixtureHostIdentity, scratchArchive, scratchHostConfig, spawnScratchShellFile, writeScratchScript } from "../../opencode/tests/scratch-child.ts"
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
+import { hangGuard } from "../../opencode/tests/hang-guard.ts"
 
 const repo = join(import.meta.dir, "..", "..")
 const workbox = join(repo, "workbox")
 
 /** `path` with its symbolic links resolved, a dangling one too, as far as it exists. */
-const resolved = (path: string): string => {
-  if (existsSync(path)) return realpathSync(path)
+const resolved = (file: string): string => {
+  const path = scratchInput(file)
+  if (existsSync(path)) return realpathSync(scratchInput(path))
   const parent = dirname(path)
   if (parent === path) return path
-  const real = join(resolved(parent), basename(path))
-  const target = linkTarget(real)
-  return target === null ? real : resolved(resolve(dirname(real), target))
-}
-const linkTarget = (path: string) => {
-  try {
-    return readlinkSync(path)
-  } catch {
-    return null
-  }
+  return join(resolved(parent), basename(path))
 }
 const isInside = (path: string, root: string) => {
-  const real = resolved(path)
-  return real === root || real.startsWith(`${root}/`)
+  const absolute = resolve(path)
+  if (absolute !== root && !absolute.startsWith(`${root}/`)) return false
+  try {
+    const real = resolved(absolute)
+    return real === root || real.startsWith(`${root}/`)
+  } catch {
+    return false
+  }
 }
 
 const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "hc-workbox-test-")))
-for (const real of ["/workspaces", homedir()].map(resolved))
+for (const real of ["/workspaces", realpathSync(externalInput(homedir()))])
   if (isInside(scratchRoot, real)) throw new Error(`hc.test: scratch folder ${scratchRoot} is inside ${real}; set TMPDIR to /tmp`)
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }))
 
@@ -95,9 +95,7 @@ const link = (dir: string, name: string, target: string) => {
   symlinkSync(target, join(dir, name))
 }
 
-const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot) => {
-  guard(cmd, env, cwd)
-  const proc = Bun.spawn(cmd, { env, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+const output = async (proc: ReturnType<typeof spawnScratchShellFile>) => {
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -106,7 +104,17 @@ const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot
   return { stdout, stderr, code }
 }
 
-const calls = (log: string) => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [])
+const run = async (cmd: string[], env: Record<string, string>, cwd = scratchRoot) => {
+  guard(cmd, env, cwd)
+  const [tool, entry, ...args] = cmd
+  if (tool !== "/bin/sh" || !entry) throw new Error("hc fixture expects a staged shell program")
+  const tools = (env.PATH || "").split(":").filter((dir) => !["/usr/bin", "/bin", "/usr/sbin", "/sbin"].includes(dir))
+  const paths = Object.fromEntries(writtenPathKeys.flatMap((name) => name in env ? [[name, env[name]!]] : []))
+  const values = Object.fromEntries(["USER", "WORKBOX_EXPECT_MACHINE_ID"].flatMap((name) => name in env ? [[name, env[name]!]] : []))
+  return output(spawnScratchShellFile(entry, args, { cwd, tools, paths, values, systemTools: true }))
+}
+
+const calls = (log: string) => (existsSync(log) ? readScratchFileSync(log, "utf8").split("\n").filter(Boolean) : [])
 
 // ---------------------------------------------------------------- host fixture
 
@@ -118,7 +126,7 @@ type Host = {
   version: string
   keeps: Keeps
   hcEnabled: boolean
-  /** The user unit `ps -o uunit=` names for the core's pid. */
+  /** The user unit reported for the running core. */
   coreUnit: string
   /** That unit's OOMPolicy, whatever unit it is. */
   oomPolicy: string
@@ -169,12 +177,17 @@ case "$*" in
   "--user is-enabled --quiet hc-core.service") exit "$HC_ENABLED_EXIT" ;;
   "--user is-active --quiet herdr-bite.service"|"--user is-enabled --quiet herdr-bite.service") exit "$HERDR_ACTIVE_EXIT" ;;
   "--user show $HC_UNIT -p OOMPolicy --value") echo "$HC_OOM" ;;
+  "--user list-units --type=service --state=running --no-legend --plain hc-serve-*.service")
+    if [ "$HC_ANSWERS" = 1 ]; then echo "$HC_UNIT loaded active running"; fi ;;
+  "--user show $HC_UNIT -p MainPID --value") echo 4242 ;;
   *" -p Slice --value") echo bite.slice ;;
   *".timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value") printf '%s\\n%s\\n' "$TIMER_NEXT" 0 ;;
   "show bite.slice -p MemoryMin --value") echo 268435456 ;;
   "show bite.slice -p MemoryLow --value") echo 536870912 ;;
+  "show bite.slice -p CPUWeight --value") echo 1000 ;;
+  "show user.slice -p MemoryLow --value"|"show user@"*" -p MemoryLow --value"|"--user show app.slice -p MemoryLow --value") echo 4294967296 ;;
   "show user-"*" -p MemoryMax --value") echo 55834574848 ;;
-  "show user-"*" -p MemorySwapMax --value") echo 1073741824 ;;
+  "show user-"*" -p MemorySwapMax --value") echo 0 ;;
   *" -p MemorySwapMax --value") echo 0 ;;
   "show tailscaled.service -p MemoryMin --value") echo 134217728 ;;
   "show tailscaled.service -p MemoryLow --value") echo 268435456 ;;
@@ -195,7 +208,8 @@ if [ "$HC_ANSWERS" != 1 ]; then
   exit 1
 fi
 case "$*" in
-  "server status --json"|"server start"*) cat "$HOME/hc-status.json" ;;
+  "--version") printf 'hc %s\\n' "$(jq -r .version "$HOME/hc-status.json")" ;;
+  "server start"*) cat "$HOME/hc-status.json" ;;
 esac
 exit 0`
 
@@ -206,17 +220,11 @@ case "$*" in
   *) exit 1 ;;
 esac`
 
-const psBody = `. "$HOME/host.env"
-case "$*" in
-  "-o uunit= -p 4242") echo " $HC_UNIT" ;;
-  *) exit 1 ;;
-esac`
-
 // Every command bootstrap --check calls by name, beyond the POSIX tools it
 // shares with the Mac.
 const quietCommands = [
   "btrfs", "bun", "curl", "git", "hunk", "mongosh", "node", "redis-cli", "sideshow", "sqlite3",
-  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node", "loginctl",
+  "syncthing", "tailscale", "work", "workbox-rift-storage", "workrift", "zsh", "install-node",
 ]
 
 /** The host's commands, made once for each {herdr present, hc present}. */
@@ -229,7 +237,7 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
   for (const name of quietCommands) stub(dir, name, null)
   stub(dir, "systemctl", null, systemctlBody)
   if (hcPresent) stub(dir, "hc", null, hcBody)
-  stub(dir, "ps", null, psBody)
+  stub(dir, "loginctl", null, `case "$1" in show-user) [ "$(jq -r .keeps_running_after_logout "$HOME/hc-status.json")" != true ] || echo yes ;; esac`)
   stub(dir, "sysctl", null, sysctlBody)
   // The real cmp for the home's files (the shell-file check); /etc's resolved config reads as current.
   stub(dir, "cmp", null, `case "$3" in "$HOME"/*) exec /usr/bin/cmp "$@" ;; esac`)
@@ -240,7 +248,11 @@ const hostBin = (herdrPresent: boolean, hcPresent = true) => {
     dir,
     "readlink",
     null,
-    `if [ "$1" = /etc/resolv.conf ]; then echo ../run/systemd/resolve/stub-resolv.conf; else exec /usr/bin/readlink "$@"; fi`,
+    `case "$1" in
+      /etc/resolv.conf) echo ../run/systemd/resolve/stub-resolv.conf ;;
+      /proc/4242/exe) command -v hc ;;
+      *) exec /usr/bin/readlink "$@" ;;
+    esac`,
   )
   if (herdrPresent) stub(dir, "herdr", null, "echo 'config: ok'")
   link(dir, "jq", jq)
@@ -301,7 +313,12 @@ const placeShellFiles = (home: string, shell: Shell) => {
   for (const name of ["zshenv", "zshrc"]) {
     writeFileSync(join(tree, name), `# the tree's ${name}\n`)
     writeFileSync(join(installed, name), shell === "behind" ? `# an older ${name}\n` : `# the tree's ${name}\n`)
-    symlinkSync(shell === "checkout" ? join(workbox, name) : join(installed, name), join(home, `.${name}`))
+    if (shell === "checkout") {
+      const stale = join(home, "checkout")
+      mkdirSync(stale, { recursive: true })
+      writeFileSync(join(stale, name), `# the stale checkout's ${name}\n`)
+      symlinkSync(join(stale, name), join(home, `.${name}`))
+    } else symlinkSync(join(installed, name), join(home, `.${name}`))
   }
   if (shell === "file") {
     rmSync(join(home, ".zshenv"))
@@ -313,7 +330,8 @@ const bootstrapCheck = async (host: Host, shell: Shell = "installed") => {
   const home = hostHome("check", host)
   const log = join(home, "calls.log")
   placeShellFiles(home, shell)
-  const result = await run(["/bin/sh", join(workbox, "bootstrap.sh"), "--check"], {
+  const box = bootstrapTree(scratch("check-tree"), log)
+  const result = await run(["/bin/sh", join(box, "bootstrap.sh"), "--check"], {
     HOME: home,
     PATH: `${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: home,
@@ -327,14 +345,18 @@ const bootstrapTree = (root: string, log: string) => {
   const tree = join(root, "dotfiles")
   const box = join(tree, "workbox")
   mkdirSync(box, { recursive: true })
-  cpSync(join(workbox, "bootstrap.sh"), join(box, "bootstrap.sh"))
-  cpSync(join(workbox, "systemd"), join(box, "systemd"), { recursive: true })
+  writeScratchScript(join(box, "bootstrap.sh"), readFileSync(matchingInput("../workbox/bootstrap.sh"), "utf8"))
+  cpSync(matchingInput("../workbox/systemd"), join(box, "systemd"), { recursive: true })
   for (const file of ["hunk-config.toml", "backup.env", "zshenv", "zshrc", "herdr-config.toml"])
-    cpSync(join(workbox, file), join(box, file))
-  for (const name of readdirSync(join(workbox, "bin"))) stub(join(box, "bin"), name, log)
+    cpSync(matchingInput("../workbox/{hunk-config.toml,backup.env,zshenv,zshrc,herdr-config.toml}", `../workbox/${file}`), join(box, file))
+  writeScratchScript(join(box, "host-identity.sh"), readFileSync(matchingInput("../workbox/host-identity.sh"), "utf8"))
+  for (const name of readdirSync(matchingInput("../workbox/bin"))) stub(join(box, "bin"), name, log)
   stub(join(tree, "claude", "mods", "fx-ui"), "install.sh", log)
   // The real install-bin.sh: it installs the stubbed bin/ into ~/.local/bin, as bootstrap did itself before.
-  cpSync(join(workbox, "install-bin.sh"), join(box, "install-bin.sh"))
+  chmodSync(writeScratchScript(join(box, "install-bin.sh"), readFileSync(matchingInput("../workbox/install-bin.sh"), "utf8")), 0o755)
+  // system-tools.sh (root: the pinned tools, the reserve, the slices) has its own tests (system-tools.test.ts);
+  // here it is a stub, which --check finds in place.
+  stub(box, "system-tools.sh", null)
   return box
 }
 
@@ -356,7 +378,7 @@ esac`)
   const installer = join(root, "hc-installer")
   writeFileSync(installer, `mkdir -p "$HOME/.local/bin" && cp '${join(hostBin(true), "hc")}' "$HOME/.local/bin/hc"\n`)
   stub(stubs, "curl", log, `case "$*" in
-  "-fsSL https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
+  "-fsSL "*" https://releases.herdr.dev/core/install.sh") cat '${installer}' ;;
 esac`)
   // The Bite base, which bootstrap asks workrift (a stub here) to give its .env link and warm step.
   const workspaces = join(root, "workspaces")
@@ -367,6 +389,7 @@ esac`)
     PATH: `${stubs}:${hostBin(host.herdrPresent, hcInstalled)}:${join(home, ".local", "bin")}:/usr/bin:/bin`,
     TMPDIR: root,
     WORKBOX_WORKSPACES_DIR: workspaces,
+    WORKBOX_EXPECT_MACHINE_ID: fixtureHostIdentity(root, readFileSync(matchingInput("../workbox/host-identity.sh"), "utf8")),
   })
   return { ...result, home, workspaces, calls: calls(log) }
 }
@@ -379,14 +402,17 @@ describe("bootstrap", () => {
       expect(result.stdout).toContain("Workbox bootstrap checks passed.")
       expect(result.code).toBe(0)
       expect(result.calls.filter((c) => c.startsWith("herdr "))).toEqual([])
-      expect(result.calls).toContain("hc server status --json")
+      expect(result.calls).toContain("hc --version")
+      expect(result.calls).not.toContain("hc server status --json")
+      expect(result.calls).toContain("systemctl --user is-active --quiet workbox-pressure.timer")
+      expect(result.calls).toContain("systemctl --user show workbox-pressure.timer -p NextElapseUSecRealtime -p NextElapseUSecMonotonic --value")
     }
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails when a user timer is active with no next run (2026-11-13: OnUnitActiveSec after a user manager restart)", async () => {
     const checked = await bootstrapCheck({ ...today, timersArmed: false })
     expect({ code: checked.code === 0 ? 0 : "failed", passed: checked.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails, naming the file, when ~/.zshenv links into the live checkout or its installed copy is not the installed build's (2026-11-22: two days behind)", async () => {
     const [checkout, behind] = await Promise.all([bootstrapCheck(today, "checkout"), bootstrapCheck(today, "behind")])
@@ -394,13 +420,13 @@ describe("bootstrap", () => {
     expect(checkout.stderr).toContain("~/.zshenv does not link to")
     expect({ code: behind.code === 0 ? 0 : "failed", passed: behind.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(behind.stderr).toMatch(/\.local\/share\/workbox\/zshenv is not the installed build's .*current\.plugins\/workbox\/zshenv/)
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check fails on a ~/.zshenv that is a file of its own, saying what the owner must do", async () => {
     const owned = await bootstrapCheck(today, "file")
     expect({ code: owned.code === 0 ? 0 : "failed", passed: owned.stdout.includes("checks passed") }).toEqual({ code: "failed", passed: false })
     expect(owned.stderr).toMatch(/~\/\.zshenv is a file of its own, not the link to .*\.local\/share\/workbox\/zshenv: new shells do not read the installed one\. Move what you want to keep from it into ~\/\.config\/secrets\.env, then `mv ~\/\.zshenv ~\/\.zshenv\.mine`; the next install links it\./)
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check warns, and still passes, when a live inotify limit is below sysctl.d/90-inotify.conf's", async () => {
     const low = await bootstrapCheck({ ...today, inotifyWatches: 8192 })
@@ -410,7 +436,7 @@ describe("bootstrap", () => {
     ])
     const high = await bootstrapCheck({ ...today, inotifyWatches: 8388608 })
     expect({ code: high.code, stderr: high.stderr }).toEqual({ code: 0, stderr: "" })
-  }, 30_000)
+  }, hangGuard("local-fixture"))
 
   test("--check compares hc versions as numbers, not text", async () => {
     const cases: [string, boolean][] = [
@@ -427,7 +453,7 @@ describe("bootstrap", () => {
     cases.forEach(([version, ok], i) => {
       expect({ version, passed: results[i]!.code === 0 }).toEqual({ version, passed: ok })
     })
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("--check fails on each wrong hc input alone: no core, hc-core.service not enabled, keeps unknown, the core outside an hc-serve unit, OOMPolicy=stop", async () => {
     const wrong: Host[] = [
@@ -447,7 +473,7 @@ describe("bootstrap", () => {
         passed: false,
       })
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("a full run enables hc-core.service and opencode.service, leaves herdr alone and never restarts a core", async () => {
     for (const [host, hcInstalled] of [[today, true], [saturday, true], [saturday, false]] as const) {
@@ -462,6 +488,7 @@ describe("bootstrap", () => {
       expect(all).not.toMatch(/(stop|disable|mask|kill).*herdr-bite/)
       expect(all).not.toMatch(/^hc server (stop|restart)/m)
       expect(result.calls).toContain("systemctl --user enable --now hc-core.service")
+      expect(result.calls.some((call) => /^systemctl --user enable --now sideshow.service .*workbox-pressure\.timer$/.test(call))).toBe(true)
       expect(result.calls).toContain("systemctl --user enable opencode.service")
       // The inotify limits from the one sysctl.d file provision.sh installs too, applied by that file alone.
       const sysctlCalls = result.calls.filter((c) => c.includes("90-inotify.conf"))
@@ -469,8 +496,11 @@ describe("bootstrap", () => {
         expect.stringMatching(/^sudo install -m 0644 .*\/workbox\/systemd\/sysctl\.d\/90-inotify\.conf \/etc\/sysctl\.d\/90-inotify\.conf$/),
         "sudo sysctl -p /etc/sysctl.d/90-inotify.conf",
       ])
+      // The system layer (pinned tools, reserve, slices, /tmp, free space) once, as root, every step; then its check.
+      expect(result.calls.filter((c) => c.includes("system-tools.sh"))).toEqual([expect.stringMatching(/^sudo env WORKBOX_EXPECT_MACHINE_ID=[a-f0-9]{32} .*\/workbox\/system-tools\.sh$/), "system-tools.sh --check"])
       const installs = result.calls.filter((c) => c.includes("releases.herdr.dev/core/install.sh"))
-      expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL https://releases.herdr.dev/core/install.sh"])
+      // Bounded in time, as every provisioning download.
+      expect(installs).toEqual(hcInstalled ? [] : ["curl -fsSL --connect-timeout 20 --max-time 300 --retry 3 https://releases.herdr.dev/core/install.sh"])
       expect(existsSync(join(result.home, ".config", "systemd", "user", "hc-core.service"))).toBe(true)
       expect(existsSync(join(result.home, ".config", "systemd", "user", "opencode.service"))).toBe(true)
       // hc holds the terminals: no herdr server unit is installed.
@@ -485,7 +515,7 @@ describe("bootstrap", () => {
       expect(existsSync(join(result.workspaces, "bite", ".env"))).toBe(false)
       expect(all).not.toMatch(/(^|\s)\/workspaces\//m)
     }
-  }, 60_000)
+  }, hangGuard("process-fixture"))
 
   test("the guard refuses a bootstrap run whose paths leave the scratch folder", async () => {
     const home = scratch("guard")
@@ -524,7 +554,8 @@ const runBackup = async (dirs: string[]) => {
   "s3api get-object") for last; do :; done; cp '${uploaded}' "$last" ;;
 esac`)
   stub(stubs, "sqlite3", log)
-  const result = await run(["/bin/sh", join(workbox, "bin", "backup-state")], {
+  const staged = writeScratchScript(join(root, "backup-state"), readFileSync(matchingInput("../workbox/bin/backup-state"), "utf8"))
+  const result = await run(["/bin/sh", staged], {
     HOME: home,
     PATH: `${stubs}:/usr/bin:/bin:/usr/sbin:/sbin`,
     TMPDIR: root,
@@ -533,11 +564,11 @@ esac`)
   const out = join(root, "out")
   mkdirSync(out)
   const list = async (archive: string) =>
-    (await run(["tar", "-tzf", archive], { PATH: "/usr/bin:/bin" })).stdout.split("\n").filter(Boolean)
+    (await output(scratchArchive(root, "list", archive, out))).stdout.split("\n").filter(Boolean)
   let archives: string[] = []
   if (existsSync(uploaded)) {
-    await run(["tar", "-xzf", uploaded, "-C", out], { PATH: "/usr/bin:/bin" })
-    archives = readdirSync(join(out, "snapshot", "archives")).sort()
+    await output(scratchArchive(root, "extract", uploaded, out))
+    archives = readScratchDirectorySync(join(out, "snapshot", "archives")).sort()
   }
   return { ...result, archives, list: (name: string) => list(join(out, "snapshot", "archives", name)) }
 }
@@ -574,12 +605,8 @@ describe("herdr-config.toml", () => {
   test.skipIf(!which("herdr"))("herdr accepts the config (a scratch HOME)", async () => {
     const home = scratch("herdr-config")
     mkdirSync(join(home, ".config", "herdr"), { recursive: true })
-    cpSync(join(workbox, "herdr-config.toml"), join(home, ".config", "herdr", "config.toml"))
-    const result = await run([which("herdr"), "config", "check"], {
-      HOME: home,
-      XDG_CONFIG_HOME: join(home, ".config"),
-      PATH: "/usr/bin:/bin",
-    })
+    cpSync(matchingInput("../workbox/herdr-config.toml"), join(home, ".config", "herdr", "config.toml"))
+    const result = await output(scratchHostConfig(scratchRoot, which("herdr"), home))
     expect({ code: result.code, out: result.stdout.trim() }).toEqual({ code: 0, out: "config: ok" })
   })
 })
@@ -609,6 +636,8 @@ describe("unit files", () => {
       "After=network-online.target",
       "Wants=network-online.target",
       "WantedBy=default.target",
+      // The guard's slices are active from boot, so it can read their cgroups (workbox/slices.conf).
+      "Wants=agentwork.slice opencodecontrol.slice",
     ])
       expect(keys).toContain(key)
   })
@@ -618,10 +647,9 @@ describe("unit files", () => {
     const home = scratch("systemd-analyze")
     for (const name of ["hc", "opencode"]) stub(join(home, ".local", "bin"), name, join(home, "calls.log"))
     for (const unit of ["hc-core.service", "opencode.service"]) {
-      const result = await run(
-        ["systemd-analyze", "--user", "verify", join(workbox, "systemd", "user", unit)],
-        { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: scratch("systemd-analyze-run") },
-      )
+      const staged = join(home, unit)
+      cpSync(matchingInput("../workbox/systemd/user/{hc-core.service,opencode.service}", `../workbox/systemd/user/${unit}`), staged)
+      const result = await output(scratchHostConfig(scratchRoot, which("systemd-analyze"), home, { runtime: scratch("systemd-analyze-run"), unit: staged }))
       expect({ unit, code: result.code, stderr: result.stderr }).toEqual({ unit, code: 0, stderr: "" })
     }
   })

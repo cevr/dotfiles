@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // OpenCode on a login store's Claude accounts through the pool, on the
 // simulated host at 20 seeds: tests/pool-store-opencode.test.ts's name and
 // claims, moved off real OpenCode. OpenCode holds no Anthropic login of its
@@ -12,10 +14,10 @@ import { decodeStoredOAuth, encodeRefresh } from "@dotfiles/opencode-pool/store/
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-store-opencode.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-store-opencode.sim.test.ts")
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"

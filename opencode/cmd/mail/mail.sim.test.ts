@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Session mail on the simulated host (sim/world.ts), at 20 seeds:
 // tests/mail.test.ts's name and the claims it reads off the model's requests
 // and the transcripts, moved off real OpenCode. The plugin is
@@ -20,10 +22,10 @@ import * as MemoryNet from "@dotfiles/opencode-mail/memory/net"
 import * as MemoryPairs from "@dotfiles/opencode-mail/memory/pairs"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/mail/mail.sim.test.ts")
+const { seeded } = simulationRunner("cmd/mail/mail.sim.test.ts")
 
 const WORK = "/scratch/project"
 

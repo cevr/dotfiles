@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at lint/tui-dirs.test.ts: const command = ChildProcess.make(path.join(root, "node_modules/.bin/oxlint"), ["-c", config, "
 // dotfiles/tui-dirs-only (lint/tui-dirs.ts), through the oxlint binary the
 // gate runs, with the repository's own overrides (.oxlintrc.json): a planted
 // `homedir()` or `process.env.HOME` anywhere in mods/ and cmd/ (a TUI
@@ -12,10 +14,9 @@ import { describe, expect } from "bun:test"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "../sim-tui/effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const CODE = "dotfiles(tui-dirs-only)"
-/** One oxlint run over a few files. */
-const TIMEOUT_MS = 60_000
 
 /** Each planted file, by its path under the tree, and how many diagnostics it must get. */
 const FILES: ReadonlyArray<readonly [string, string, number]> = [
@@ -89,6 +90,6 @@ describe("tui-dirs-only", () => {
       }
       expect(FILES.map(([file]) => [file, found.get(file) ?? 0])).toEqual(FILES.map(([file, , errors]) => [file, errors]))
     }),
-    TIMEOUT_MS,
+    hangGuard("process-fixture"),
   )
 })

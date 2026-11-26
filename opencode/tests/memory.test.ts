@@ -1,3 +1,4 @@
+// @reads cmd/memory
 // The memory plugin in real OpenCode (the fork, through its SDK) on the
 // scripted model, on a scratch memory file. A run sends an id, a limit and
 // tags as strings, as models do, and they are read as the number and the list
@@ -8,12 +9,15 @@
 // yet. The plugin on its own is tested beside its code in mods/memory and
 // cmd/memory.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { main } from "../cmd/memory/cli.ts"
 import type { Result, Spec } from "./memory/run.ts"
 import { DEPLOY, DEPLOY_FIXED, STRINGS_TASK } from "./memory/sim.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
+import { spawnCheckoutBun } from "./scratch-child.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/memory.test.ts: the OpenCode run skips. Set OPENCODE_DEV to the fork.")
@@ -29,19 +33,18 @@ const run = async (name = "run", tasks?: ReadonlyArray<string>): Promise<Result>
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ base, fork: resolve(fork ?? ""), plugin: join(ROOT, "cmd/memory"), ...(tasks === undefined ? {} : { tasks }) } satisfies Spec))
-  const child = Bun.spawn([process.execPath, join(import.meta.dir, "memory/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = spawnCheckoutBun("tests/memory/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
@@ -79,9 +82,9 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(refused?.state.status).toBe("error")
       expect(JSON.stringify(refused?.state)).toContain('Invalid arguments for tool \\"memory_forget\\":\\n- id: Expected number')
 
-      const stats = await main(["stats", "--json"], { db: result.db, now: Date.now() })
+      const stats = await main(["stats", "--json"], { db: result.db, now: stamp() })
       expect(JSON.parse(stats.out).total).toBe(0)
     },
-    150_000,
+    hangGuard("fork-turn"),
   )
 })

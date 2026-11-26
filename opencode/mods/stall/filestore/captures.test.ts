@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/stall/filestore/captures.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "stall-captures"]).stdout.toString().trim())
 import { spawnSync } from "bun"
 import { Effect } from "effect"
 import { capturesLaws } from "../laws.ts"

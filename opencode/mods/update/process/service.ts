@@ -1,6 +1,6 @@
 import { Duration, Effect, Layer, Match, Option, Predicate, Redacted, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
-import { readText } from "../filestore/files.ts"
+import { readPublished, readText } from "../filestore/files.ts"
 import type { Listed } from "../health.ts"
 import { Placement } from "../placement.ts"
 import { buildOf, parseRecord } from "../record.ts"
@@ -247,7 +247,7 @@ export const layer = (settings: Settings, env: Readonly<globalThis.Record<string
           const listed = listedOf(plugins)
           if (Option.isNone(listed)) return yield* new UpdateFailed({ step: "list the plugins", message: plugins.slice(0, 500) })
           const answer = yield* pool
-          const texts = yield* Effect.forEach(serverConfigsOf(server, yield* readText(settings.record)), readText)
+          const texts = yield* Effect.forEach(serverConfigsOf(server, yield* readPublished("read the installed record", settings.record)), readText)
           const { configured, providers } = configuredBy(texts.flatMap(Option.toArray))
           return {
             configured,

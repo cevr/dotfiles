@@ -6,9 +6,10 @@
 // `/api/info` answers 503 `service_starting` with `retry-after`, and
 // `/api/info` answers 503 too (500 once the boot failed). A test that calls
 // the service on the file alone races the boot.
-import { readFileSync } from "node:fs"
 // The background service a test starts is stopped once the test process is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { readScratchFileSync } from "./read-path.ts"
+import { watchdog } from "./hang-guard.ts"
 
 export interface Service {
   readonly url: string
@@ -17,7 +18,7 @@ export interface Service {
 
 const readService = (file: string): Service | undefined => {
   try {
-    const value = JSON.parse(readFileSync(file, "utf8")) as Partial<Service>
+    const value = JSON.parse(readScratchFileSync(file, "utf8")) as Partial<Service>
     return typeof value.url === "string" && typeof value.password === "string" ? { url: value.url, password: value.password } : undefined
   } catch {
     return undefined
@@ -58,8 +59,8 @@ const probe = async (service: Service): Promise<"ready" | "waiting" | { failed: 
  * answers 200; a failed boot (500) throws at once. `label` names it in the
  * error, with the last thing seen at the deadline.
  */
-export const ready = async (file: string, label: () => string, ms = 60_000): Promise<Service> => {
-  const deadline = Date.now() + ms
+export const ready = async (file: string, label: () => string, ms = 60_000, pollAgain = () => Bun.sleep(250)): Promise<Service> => {
+  const deadline = watchdog(ms)
   let seen = `no service file at ${file}`
   for (;;) {
     const service = readService(file)
@@ -69,7 +70,7 @@ export const ready = async (file: string, label: () => string, ms = 60_000): Pro
       if (state !== "waiting") throw new Error(`${label()}: the service failed to start (/api/info answered ${state.failed})`)
       seen = `${service.url} still starting`
     }
-    if (Date.now() > deadline) throw new Error(`${label()}: ${seen}`)
-    await Bun.sleep(250)
+    if (deadline.expired()) throw new Error(`${label()}: ${seen}`)
+    await pollAgain()
   }
 }

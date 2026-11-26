@@ -4,8 +4,9 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { gitInit } from "../tests/git-repo.ts"
-import { dropMarkers, forkWork, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
+import { initScratchGit, spawnScratchGitSync } from "../tests/scratch-child.ts"
+import { dropMarkers, type ForkWorkInput, forkWorkUsing, forkWorkText, linkedIssues, type Lookup } from "./fork-work.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const AGENTS = [
   "# OpenCode mods",
@@ -18,16 +19,17 @@ const scratch = mkdtempSync(join(tmpdir(), "fork-work-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 
 /** The fixtures' git env: a fixed identity, and no global config. */
-const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null" }
+const GIT_ENV = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }
 const sh = (dir: string, ...args: ReadonlyArray<string>) => {
-  const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
-    env: GIT_ENV,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const ran = spawnScratchGitSync(dir, args, GIT_ENV)
   if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
   return ran.stdout.toString().trim()
 }
+
+const forkWork = (input: ForkWorkInput) => forkWorkUsing(input, (stdin, dir, ...args) => {
+  const ran = spawnScratchGitSync(dir, args, GIT_ENV, stdin)
+  return { ok: ran.exitCode === 0, out: ran.stdout.toString().trim() }
+})
 
 /** Writes `files` and commits them; answers the commit. */
 const commit = (dir: string, message: string, files: Record<string, string>) => {
@@ -49,7 +51,7 @@ const WAIT = ["export const waitsOnOwnWork = (job: Job) => job.background.length
  */
 const fixture = () => {
   const dir = mkdtempSync(join(scratch, "repo-"))
-  gitInit(dir, ["-q", "-b", "dev"], GIT_ENV)
+  initScratchGit(dir, ["-q", "-b", "dev"], GIT_ENV)
   commit(dir, "base", { "src/job.ts": "export {}\n", "src/theme.ts": "export {}\n" })
   sh(dir, "checkout", "-q", "-b", "prime-look")
   const wait = commit(dir, "feat: a subagent waits on its own background work", { "src/job.ts": `export {}\n${WAIT.join("\n")}\n` })
@@ -119,7 +121,7 @@ describe("forkWork on a fixture fork", () => {
     expect(text[0]).toStartWith(`- drop fork commit ${made.wait.slice(0, 10)} (a subagent waiting on its own background work): upstream PR #63209 is merged into the fork`)
     expect(text.filter((line) => line.startsWith("- prefer upstream?"))).toHaveLength(4)
     expect(text.some((line) => line.includes(made.theme.slice(0, 10)))).toBe(false)
-  })
+  }, hangGuard("local-fixture"))
 
   test("after a conflict (nothing merged): the same candidates against the commits tried, the marked commit droppable once the merge lands; a lookup that fails is counted, not fatal", async () => {
     const made = fixture()
@@ -129,11 +131,11 @@ describe("forkWork on a fixture fork", () => {
     expect(work.closed).toEqual([])
     expect(work.unread).toBe(7)
     expect(forkWorkText(work).at(-1)).toBe("- 7 linked upstream issues or PRs could not be read (gh); their state is unchecked.")
-  })
+  }, hangGuard("local-fixture"))
 
   test("lines shared only in files the fork's .gitattributes marks linguist-generated make no candidate", () => {
     const dir = mkdtempSync(join(scratch, "repo-"))
-    gitInit(dir, ["-q", "-b", "dev"], GIT_ENV)
+    initScratchGit(dir, ["-q", "-b", "dev"], GIT_ENV)
     const SCHEMA = ['"McpConnected": {', '"type": "object",', '"required": ["server", "status"],', '"$ref": "#/components/schemas/McpStatus"']
     commit(dir, "base", {
       ".gitattributes": "packages/protocol/openapi.json linguist-generated\npackages/client/src/promise/generated/** linguist-generated\n",
@@ -156,7 +158,7 @@ describe("forkWork on a fixture fork", () => {
     })
     sh(dir, "checkout", "-q", "prime-look")
     return expect(forkWork({ fork: dir, branch: "prime-look", upstream: "dev", before, agents: "# nothing linked", lookup: lookup({}) })).resolves.toMatchObject({ candidates: [] })
-  })
+  }, hangGuard("local-fixture"))
 
   test("nothing new upstream and no marker: no fork work", async () => {
     const made = fixture()
@@ -165,5 +167,5 @@ describe("forkWork on a fixture fork", () => {
     const work = await forkWork({ fork: made.dir, branch: "prime-look", upstream: "dev", before: after, agents: "# nothing linked", lookup: lookup({}) })
     expect(work).toEqual({ candidates: [], closed: [], unread: 0, droppable: [] })
     expect(forkWorkText(work)).toEqual([])
-  })
+  }, hangGuard("local-fixture"))
 })

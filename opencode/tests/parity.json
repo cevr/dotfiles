@@ -181,7 +181,7 @@
     {
       "file": "tests/pool-resets.test.ts",
       "name": "a weekly reset is offered on the fleet's demand early in the week and claimed on a yes; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
-      "by": "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told"
+      "by": "an exhausted week refills despite a fresher account; a later Fable expiry gives its part of the week back, with one notice per claim"
     }
   ]
 }

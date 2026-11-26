@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/image/filesystem/files.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "image-files"]).stdout.toString().trim()),
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "bun"
 import { Context, Effect, Layer } from "effect"

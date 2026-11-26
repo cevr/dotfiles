@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/skills/filesystem/skill-files.ts: contents = readFileSync(path, "utf8")
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"

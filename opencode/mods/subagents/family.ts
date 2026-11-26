@@ -18,7 +18,7 @@ export type Session = {
   readonly agent?: string
   /** The model it runs on, by id as its latest step says, else as the session says (`claude-opus-5-5`). */
   readonly model?: string
-  /** How its last run ended, when the session says: `succeeded`, `failed` or `interrupted`. */
+  /** The host's coarse outcome of its last execution segment, not a transcript notice. */
   readonly outcome?: string
   readonly time: {
     readonly created: number
@@ -30,6 +30,11 @@ export type Session = {
   }
   /** Whether the host runs it now. */
   readonly running: boolean
+  /** The host's current inbox still holds a shell completion, not a delivered notice. */
+  readonly wakePending?: boolean
+  /** The owner-read projection, never a fold kept by this row. */
+  readonly execution?: Execution
+  readonly lifecycle?: Lifecycle
   /**
    * The shell commands the host's shell registry lists as running for it now
    * (a background one outlives its turn), live like `running`: one the
@@ -64,9 +69,31 @@ export type Latch = {
   readonly hold: string
   readonly reason: string
   readonly opensAt: number
+  readonly recheckAt?: number
   readonly at: number
   readonly cancelledAt?: number
   readonly failed?: string
+}
+
+export type Execution =
+  | { readonly kind: "none"; readonly at?: never }
+  | { readonly kind: "failed" | "undetermined"; readonly at: number }
+
+/** One owner-produced display phase. Its clocks and authority belong to its revision. */
+export type Lifecycle = {
+  readonly kind: "none" | "unknown" | "recovering" | "running" | "blocked" | "latched" | "continuing" | "undetermined" | "failed" | "done" | "cancelled"
+  readonly revision: number
+  readonly sinceReload: boolean
+  readonly at: number
+  readonly waitingOn: "Shell" | "Child" | "Wake" | "permission" | "question" | ""
+  readonly diagnostic: boolean
+}
+
+export type OwnedRow = {
+  readonly child: string
+  readonly latch?: Latch
+  readonly execution?: Execution
+  readonly lifecycle?: Lifecycle
 }
 
 /**
@@ -79,7 +106,7 @@ export type Message =
   | { readonly type: "assistant"; readonly agent?: string; readonly parts: ReadonlyArray<Part> }
   | {
       readonly type: "notice"
-      /** The subagent session that stopped. */
+      /** The child named by this display-only notice; it may still have work. */
       readonly childID: string
       /** As the host says it: `completed`, `error` or `cancelled`. */
       readonly state: string

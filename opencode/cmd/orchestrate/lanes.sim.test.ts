@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // One lane, one unit, one branch, with its purpose: the `orchestrate` tool's lane, land and status on the simulated
 // host (orch-tools-world.ts: the real orchestrate, rift and status plugins on their memory layers). A lane the tool made
 // (marked) then switched to another unit's branch is refused by lane and land and flagged by status; one it did not
@@ -8,10 +10,10 @@ import { workriftFolderOf } from "@dotfiles/opencode-orchestrate/tools"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import { workspaceName } from "@dotfiles/opencode-work/rift"
 import { Array as Arr, Effect, Option } from "effect"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, HAND_BACK, RUN_DIR, type Run, requestHeadFor, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/lanes.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/lanes.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 const READY = "/nonexistent/loop-probe-x/request.md"

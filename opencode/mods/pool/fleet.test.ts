@@ -2,7 +2,7 @@
 // each peer's newest report, records a peer that stops answering once, and its
 // pace counts every start in the fleet until it settles.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as Story from "@dotfiles/decider/story"
 import {
@@ -25,7 +25,8 @@ import {
   StartsExpired,
   TakeReport,
 } from "./fleet.ts"
-import type { Report } from "./status.ts"
+import { Report } from "./status.ts"
+import { windowReading } from "./quota.ts"
 
 const MINUTE = 60_000
 const T0 = 1_800_000_000_000
@@ -74,7 +75,7 @@ describe("Fleet", () => {
       Story.state({ starts: [], peers: { workbox: { report: workbox(T0 - 1000), seenAt: T0 } } }),
     ))
 
-  test("forgets this host's starts after an hour, when the next one is recorded", () =>
+  test("forgets this host's old launch history when the next one is recorded", () =>
     run(
       Story.given(StartRecorded.make({ start: { providerID: "anthropic", at: T0 } })),
       Story.clock(T0 + KEEP_MS - 1),
@@ -172,5 +173,27 @@ describe("the fleet's starts", () => {
       { name: "laptop", starts: 0, missed: { since: T0 - MINUTE, message: "no route to host" } },
       { name: "studio", starts: 0 },
     ])
+  })
+
+  test("fleet reports carry reported, absent, and unknown window states; an older host without absent decodes as unknown", () => {
+    const codec = Schema.fromJsonString(Report)
+    const modern: Report = {
+      host: "workbox",
+      at: T0,
+      starts: [],
+      readings: [
+        {
+          pool: "anthropic",
+          credentialID: "cred-ultra",
+          reading: { at: T0, windows: [{ name: "7d", utilization: 0.3, resetAt: T0 + 10 * MINUTE }], absent: [{ name: "5h", at: T0 }], unrecognised: [] },
+        },
+      ],
+    }
+    const decoded = Schema.decodeUnknownSync(codec)(Schema.encodeSync(codec)(modern))
+    const reading = Option.fromUndefinedOr(decoded.readings[0]?.reading)
+    expect(Option.map(reading, (item) => [windowReading(item, "7d")._tag, windowReading(item, "5h")._tag])).toEqual(Option.some(["Reported", "Absent"]))
+    const olderJson = `{"host":"old-host","at":${T0},"starts":[],"readings":[{"pool":"anthropic","credentialID":"cred-old","reading":{"at":${T0},"windows":[{"name":"7d","utilization":0.3}]}}]}`
+    const older = Option.fromUndefinedOr(Schema.decodeUnknownSync(codec)(olderJson).readings[0]?.reading)
+    expect(Option.map(older, (item) => [windowReading(item, "7d")._tag, windowReading(item, "5h")._tag])).toEqual(Option.some(["Reported", "Unknown"]))
   })
 })

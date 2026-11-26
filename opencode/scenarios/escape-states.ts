@@ -18,7 +18,8 @@
 // plus `<case>-tool.txt` with `interrupted` when the shell call was cut.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -77,12 +78,12 @@ export default OpenCodeDriver.use(
         )
       const save = (name: string) =>
         ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${which}-${name}.txt`, text(frame))))
-      const at = (start: number, ms: number) => Effect.sleep(Math.max(0, start + ms - Date.now()))
+      const at = (start: number, ms: number) => Effect.sleep(Math.max(0, start + ms - stamp()))
 
       const shells = which === "tool" ? yield* tools.control("shell") : undefined
       yield* ui.submit(ASK)
       // The TUI has sent the prompt by the time submit returns: the grace counts from then, however slow the host.
-      const sent = Date.now()
+      const sent = stamp()
       yield* until("streaming", (frame) => frame.includes(PARTIAL))
       // Past the 5 s grace, so the first prompt is never taken back.
       yield* at(sent, 6_000)

@@ -18,6 +18,8 @@
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `providers`: provider id to integration id, default `{ anthropic: "anthropic" }`.
+ *   Only `anthropic` has an auth plugin that signs and confirms a placement.
+ *   Other keys track the host's OAuth login; they cannot switch its credential.
  * - `sweepMinutes`: how often to read each login's usage; 0 turns it off. Default 10.
  * - `cacheLifeMs`: how long a session's prompt cache lives on the login it last
  *   used, in ms: the provider's cache lifetime (`settings.cache.ttl`). While it
@@ -40,7 +42,7 @@
  *   (a 429, a 5xx, no answer) before the `alerts` method names it as an
  *   outage. Default 10.
  *
- * - `paced`: providers the pool measures without placing their requests, provider
+ * - `paced`: providers whose active login the pool admits at the final send hook, provider
  *   id to integration id, default none. `{ openai: "openai" }` paces OpenAI's
  *   agents on the ChatGPT account's Codex quota, as the provider measures it
  *   across every place the account is used (`@dotfiles/opencode-pool/chatgpt/usage`):
@@ -71,18 +73,16 @@
  *   Default true. The owner approved every reset in hand ahead of time: the
  *   pool spends them on its own, Claude's and Codex's alike, and never asks
  *   (`@dotfiles/opencode-pool/claim-rule`): first a reset about to expire
- *   unused (one expiring within a day is just used, on a spent window or at
- *   its last call), then the work goes to a fresh account while one can take
- *   it, and only then a reset for held work, when the work would spend at
- *   least half of what it gives back before the window resets by itself;
- *   never for a window that resets by itself soon anyway (5-hour within 30
- *   minutes, a week within a day), at most one claim per window period per
- *   account. After a claim it reads the account again, records whether the
- *   weekly reset moved, and tells the owner once in the tray of the session
- *   that waited last (`Claimed the 5h reset on …`). `resets` answers what is
- *   being worked and the claims made, for the /pool pane. The pace raises an
- *   account's line by what a reset in hand gives back, and starts it again
- *   from a claim. A claim the pool decides on its own is made only on the account's fields read in the last 15
+ *   unused (one expiring within a day goes on exhaustion or at its six-hour
+ *   last call), then an exhausted account with running/held work, provided the
+ *   reset frees it. Anthropic preserves the weekly cadence; Codex waits for
+ *   weekly exhaustion, then redeems promptly and restarts the weekly cadence.
+ *   Every claim waits 30 minutes from its natural reset. Fresh stock schedules
+ *   existing Anthropic quota faster, without bypassing a hard limit. Refunds
+ *   rebase the line only after a successful claim's fresh observed recovery.
+ *   A later claim in the same cadence needs a fresh credit-count generation.
+ *   The owner is notified once in the latest waiting session's tray.
+ A claim the pool decides on its own is made only on the account's fields read in the last 15
  *   minutes and after its last claim (a window carried over from an older
  *   reading counts as unread), one at a time per account (its login, in any
  *   pool). Every claim, a push's too, is sent under one lock per provider
@@ -131,10 +131,17 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, type FileSystem, Layer, Option, type Path, Schedule, Schema, type Scope, Stream } from "effect"
+import { FetchHttpClient } from "effect/http"
 import { heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
+import { type HoldReason, type Pace, RequestHeld, requestHeldMessage, storeHeld, nextRetryAt } from "@dotfiles/opencode-pool/pace"
+import { deferRoute, HeldSend, refuseSend, type SendHold, sendHoldMessage, stepIDOf } from "@dotfiles/opencode-pool/refuse"
+import { HANDOFF_HEADER, HOLD_STORE_RETRY_MS, Handoff, HandoffInput, sentPlacementOf } from "@dotfiles/opencode-pool/handoff"
 import { CACHE_LIFE_MS, ttlMs, ttlOf } from "@dotfiles/opencode-pool/accounts"
 import { OUTAGE_AFTER_MS } from "@dotfiles/opencode-pool/alerts"
+import * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
+import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
+import * as AgyWiring from "@dotfiles/opencode-pool/antigravity/wiring"
 import * as ChatGPT from "@dotfiles/opencode-pool/chatgpt/usage"
 import { StoreSource, type StoreSourceOptions, registerCredentialSource } from "@dotfiles/opencode-pool/store/store"
 import * as Model from "@dotfiles/opencode-pool/model"
@@ -154,15 +161,16 @@ import type { ResetProvider } from "@dotfiles/opencode-pool/resets"
 import { LeaseMessage } from "@dotfiles/opencode-pool/lease"
 import type { Tokens } from "@dotfiles/opencode-pool/limits"
 import * as LimitsLive from "@dotfiles/opencode-pool/opencode/limits"
-import type { FleetStore, Ledger, Limits, Logins, Owner, Peers, PushStore, Quota, ResetsStore, Workload } from "@dotfiles/opencode-pool/service"
+import { AntigravityReporter, FleetStore, type Ledger, type Limits, type Logins, type Owner, type Peers, type PushStore, type Quota, type ResetsStore, type Workload } from "@dotfiles/opencode-pool/service"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
-import { LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
+import { LaunchRequest, LoginsQuery, POOL_STATUS, SessionQuery, StartedQuery } from "@dotfiles/opencode-pool/status"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { STATUS } from "@dotfiles/opencode-status/status"
 
 export { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
+const HostSessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
 
 /** The request header that names the login a request goes out on. Its auth plugin strips it. */
 export const CREDENTIAL_HEADER = "x-opencode-credential-id"
@@ -224,8 +232,17 @@ export const Options = Schema.Struct({
   ),
   limitsFile: Schema.optional(Schema.String),
   unitCost: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  antigravity: AgyLive.PoolOption.pipe(withDefault<AgyLive.PoolOption>({})),
 })
 export type Options = typeof Options.Type
+
+const SEND_HOLD_PREFIX = "held-send/"
+const SEND_HOLD_RETENTION_MS = 24 * 60 * 60 * 1000
+const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
+const decodeSendHold = Schema.decodeUnknownEffect(HeldSend)
+const sendHoldOf = Schema.decodeUnknownOption(HeldSend)
+const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
+type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly stepID?: string }
 
 /** The outside systems the model runs on. */
 export type Externals = Logins | Quota | Ledger | Peers | FleetStore | ResetsStore | Owner
@@ -242,6 +259,10 @@ export const resetsOf = (options: Options): Readonly<Record<string, ResetProvide
   for (const pool of chatgptPools(options)) resets[pool] = "codex"
   return resets
 }
+
+/** Whether the pool claims resets on its own: `resets: true` or `{ auto: true }`; `false` works none, so it claims none. */
+export const autoClaimsOf = (options: Pick<Options, "resets">): boolean =>
+  options.resets === true || (options.resets !== false && options.resets.auto)
 
 /** The pools paced only, never placed: each reads the ChatGPT account's quota. */
 const chatgptPools = (options: Options): ReadonlyArray<PoolId> => {
@@ -318,13 +339,35 @@ export interface StoreHost {
 export const LIVE_STORE_HOST: StoreHost = { source: {}, register: registerCredentialSource }
 
 /**
+ * Antigravity's quota source for the `antigravity` option (`@dotfiles/opencode-pool/antigravity/live`):
+ * in OpenCode, one authority per state file in the process, built with no I/O, which reads only when asked
+ * (the keychain only with a consent, once); none in a
+ * test's pool, so no test reads a real profile or keychain. Its files and paths are the host's: the fork's plugin
+ * host gives a server plugin FileSystem and Path (`@opencode/plugin/effect` `Plugin.Environment`), so the pool
+ * imports no platform implementation.
+ */
+export type AntigravityRoot<R = never> = (option: AgyLive.PoolOption, fleet?: AgySource.FleetContext) => Effect.Effect<Option.Option<AgySource.Source>, never, Scope.Scope | R>
+export const NO_ANTIGRAVITY: AntigravityRoot = () => Effect.succeed(Option.none())
+
+/** What the live Antigravity root needs of the host: its files and paths, as the fork's plugin host provides them. */
+export type AntigravityHost = FileSystem.FileSystem | Path.Path
+
+/** The live root: one authority per state file in the process (`AgyLive.poolSource`), Google over fetch. */
+export const liveAntigravity: AntigravityRoot<AntigravityHost> = (option, fleet) =>
+  AgyLive.poolSource(option, fleet).pipe(Effect.provide(FetchHttpClient.layer))
+
+/**
  * The outside systems as OpenCode provides them: its integrations, the auth plugins' quota RPC, the plugin's
  * storage; the fleet's peers as `peers` reaches them (over SSH in OpenCode, `PeersLive.layer`).
  */
-export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>) => {
+export const liveWith = (
+  peers: (configured: Options["fleet"]["peers"]) => Layer.Layer<Peers>,
+  holds = LedgerLive.holdAuthority(),
+) => {
   // The priced steps and the tally's requests, read and decoded once for every copy of the plugin in this process,
   // and written by one writer of its own (opencode/records.ts).
   const records = Records.make()
+  const fleetAuthority = FleetStoreLive.authority()
   return (
     ctx: Plugin.Context,
     options: Options,
@@ -358,10 +401,10 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
           published: client.events.subscribe("reading"),
         }
       }),
-      LedgerLive.layer(storage, stores.steps),
+      LedgerLive.layer(storage, stores.steps, holds),
       peers(options.fleet.peers),
       // The plugin's storage is the host's: every instance of the plugin reads the same fleet.
-      FleetStoreLive.layer(ctx.storage),
+      FleetStoreLive.layer(ctx.storage, fleetAuthority),
       // And the same resets, so a hold is worked once on the host.
       ResetsStoreLive.layer(ctx.storage),
       OwnerLive.layer(questionsHost(ctx)),
@@ -374,7 +417,7 @@ export const liveWith = (peers: (configured: Options["fleet"]["peers"]) => Layer
 }
 
 /** The outside systems as OpenCode provides them, the peers over SSH. */
-export const live = liveWith(PeersLive.layer)
+export const live = liveWith(PeersLive.layer, LedgerLive.processHoldAuthority())
 
 /** The questions plugin's RPC and the host's sessions, as the pool tells the owner through them. */
 const questionsHost = (ctx: Plugin.Context): OwnerLive.Host => {
@@ -418,7 +461,7 @@ const FIRST_SWEEP = "1 second"
  * seam tests. `externals` gets the store sources the options name, so the
  * plugin registers with the auth plugin exactly the sources the pool lists.
  */
-export const make = (
+export const make = <R = never,>(
   externals: (
     ctx: Plugin.Context,
     options: Options,
@@ -426,6 +469,8 @@ export const make = (
     chatgpt: ReadonlyMap<PoolId, ChatGPT.Source>,
   ) => Layer.Layer<Externals>,
   storeHost: StoreHost = LIVE_STORE_HOST,
+  sendRecords = LedgerLive.holdAuthority().lock,
+  antigravity: AntigravityRoot<R> = NO_ANTIGRAVITY,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.pool",
@@ -435,20 +480,144 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.pool: invalid options: ${error.message}`)),
         Effect.orDie,
       )
+      // The established Anthropic signing path supplies its own final decision.
+      // Every other tracked route (including aliases) uses the host hooks.
+      const signed = (providerID: string) => providerID === "anthropic" && Object.hasOwn(options.providers, providerID)
+      const tracked = (providerID: string) => Option.orElse(
+        Option.filter(Option.fromUndefinedOr(options.providers[providerID]), () => Object.hasOwn(options.providers, providerID)),
+        () => Option.filter(Option.fromUndefinedOr(options.paced[providerID]), () => Object.hasOwn(options.paced, providerID)),
+      )
+      const lastLogin = new Map<string, string>()
+      const noLogin = { ok: true, measured: false, tracking: "not-tracked-no-pool-login", reason: "not tracked: no pool login" } satisfies Pace
+      const loginOf = (integrationID: string) => ctx.integration.connection.active(integrationID).pipe(
+        Effect.map((connection) => {
+          const selected = Option.fromUndefinedOr(connection)
+          if (Option.isNone(selected)) return { active: false, id: Option.fromUndefinedOr(lastLogin.get(integrationID)) }
+          const value = selected.value
+          if (value.type === "credential" && value.method === "oauth") {
+            lastLogin.set(integrationID, value.id)
+            return { active: true, id: Option.some<string>(value.id) }
+          }
+          lastLogin.delete(integrationID)
+          return { active: false, id: Option.none<string>() }
+        }),
+      )
       // The plugin's context carries the host's loggers.
       const sources = storeSources(options, yield* Effect.context<never>(), storeHost)
       const chatgpt = yield* chatgptSources(ctx, options, storeHost)
-
       // The pool model starts from its ledger, a week of priced steps (~190k entries on the workbox, a scan of tens
       // of seconds at its load, in each location). The host activates a location's plugins one after another and
       // serves no provider or model until all have, so the model builds off that path: the plugin's hooks, tools and
       // RPCs are in place at once and each waits for the model, a request's placement too. A model that cannot be
       // built fails every one of them.
       const ready = yield* Deferred.make<Model.Pool["Service"]>()
+      // One FleetStore shared between the pool model and Antigravity's merged fleet view: resolves as soon as
+      // `externals` builds, before the ledger scan finishes, so Antigravity reads do not wait on the ledger.
+      const fleetReady = yield* Deferred.make<FleetStore["Service"]>()
+      let active = true
+      yield* Effect.addFinalizer(() => Effect.sync(() => { active = false }))
       const withPool = <A, E, R>(use: (pool: Model.Pool["Service"]) => Effect.Effect<A, E, R>) =>
         Deferred.await(ready).pipe(Effect.flatMap(use))
+
+      // Antigravity's quota: built with no I/O, read only when asked; its rows come from the merged fleet record, and no
+      // failure of its code reaches the pool (AgyWiring is the one boundary). What the root needs of the host (the live
+      // one: its files and paths) is this plugin's requirement, so a host that does not give it is a compile error.
+      const agyFleet: AgySource.FleetContext = {
+        host: options.fleet.host,
+        read: Effect.gen(function* () {
+          const fleetStore = yield* Deferred.await(fleetReady)
+          const state = yield* fleetStore.read
+          const polled = yield* Deferred.poll(ready)
+          const ownBusy = yield* Option.match(polled, {
+            onNone: () => Effect.succeed<ReadonlyArray<string>>([]),
+            onSome: (done) =>
+              done.pipe(
+                Effect.flatMap((pool) => pool.busy),
+                Effect.catchCause(() => Effect.succeed<ReadonlyArray<string>>([])),
+              ),
+          })
+          const peerBusy = Object.entries(state.peers).flatMap(([name, peer]) =>
+            Option.toArray(
+              Option.map(Option.fromUndefinedOr(peer.seenAt), (seenAt) => ({
+                host: Option.getOrElse(Option.map(Option.fromUndefinedOr(peer.report), (r) => r.host), () => name),
+                busy: Option.getOrElse(Option.flatMap(Option.fromUndefinedOr(peer.report), (r) => Option.fromUndefinedOr(r.busy)), () => []),
+                seenAt,
+              })),
+            ),
+          )
+          return {
+            host: options.fleet.host,
+            peers: state.peers,
+            peerNames: options.fleet.peers.map((peer) => peer.name),
+            ownBusy,
+            peerBusy,
+          }
+        }),
+        recordBusy: (paneId, providerID) => withPool((pool) => pool.stepStarted(paneId, providerID)).pipe(Effect.ignoreCause),
+        releaseBusy: (paneId) => withPool((pool) => pool.release(paneId)).pipe(Effect.ignoreCause),
+      }
+      const agy = AgyWiring.wire(yield* AgyWiring.availability(antigravity(options.antigravity, agyFleet)))
+      const routeTracking = (integration: string, input: Model.PlaceInput) => Effect.gen(function* () {
+        const login = yield* loginOf(integration)
+        if (login.active) return Option.none<Pace>()
+        if (Option.isNone(login.id)) return Option.some<Pace>(noLogin)
+        const candidate = login.id.value
+        return yield* withPool((pool) => pool.admitActive(input, candidate, "signed-out")).pipe(
+          Effect.as(Option.some<Pace>(noLogin)),
+          Effect.catchTag("RequestHeld", (hold) => Clock.currentTimeMillis.pipe(Effect.map((now) => Option.some<Pace>({
+            ok: false, measured: true, reason: requestHeldMessage(hold), reasonCode: hold.reasonCode, retryAt: nextRetryAt(now, [hold.retryAt]),
+          })))),
+        )
+      })
+      // The deadline changes what the record says, not whether it exists.
+      // Reading from storage and the current clock also works after a restart,
+      // without a timer, an activation scan, or a missed expiry to recover.
+      const heldSend = (sessionID: string) => Effect.gen(function* () {
+        const raw = Option.fromUndefinedOr(yield* ctx.storage.get(sendHoldKey(sessionID)))
+        if (Option.isNone(raw)) return {}
+        const hold = yield* decodeSendHold(raw.value).pipe(Effect.orDie)
+        const now = yield* Clock.currentTimeMillis
+        if (now >= hold.retryAt) return { state: "ended" as const, hold }
+        return { state: "held" as const, hold }
+      })
+      const recordHeld = (scope: SendScope, reason: string, reasonCode: HoldReason, retry: number) =>
+        Clock.currentTimeMillis.pipe(Effect.flatMap((now) => {
+          const retryAt = nextRetryAt(now, [retry])
+          const hold = HeldSend.make({
+            sessionID: scope.sessionID, providerID: scope.providerID, reasonCode, retryAt,
+            ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
+          })
+          const refusal = { ...hold, reason }
+          if (scope.kind !== "primary") return Effect.succeed(refusal)
+          // No successful/typed refusal is published before this commit.
+          return sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold)).pipe(Effect.as(refusal))
+        }))
+      const removeHeld = (sessionID: string) => Effect.gen(function* () {
+        const key = sendHoldKey(sessionID)
+        if (Option.isSome(Option.fromUndefinedOr(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
+      })
+      const pruneHeldSends = Effect.gen(function* () {
+        const cutoff = (yield* Clock.currentTimeMillis) - SEND_HOLD_RETENTION_MS
+        const expired = (hold: Option.Option<HeldSend>) => Option.exists(hold, (entry) => entry.retryAt <= cutoff)
+        let after = Option.none<string>()
+        do {
+          const page = yield* ctx.storage.scan({
+            prefix: SEND_HOLD_PREFIX,
+            ...Option.match(after, { onNone: () => ({}), onSome: (after) => ({ after }) }),
+          })
+          for (const { key, value } of page.entries) {
+            if (!expired(sendHoldOf(value))) continue
+            // Admission or a new refusal may have changed the row since the scan.
+            yield* sendRecords.withPermits(1)(Effect.gen(function* () {
+              if (expired(sendHoldOf(yield* ctx.storage.get(key)))) yield* ctx.storage.remove(key)
+            }))
+          }
+          after = Option.fromUndefinedOr(page.next)
+        } while (Option.isSome(after))
+      }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
+          const captureFleet = Layer.effectDiscard(Effect.flatMap(FleetStore, (store) => Deferred.succeed(fleetReady, store)))
           const services = yield* Layer.build(
             Model.layer({
               providers: options.providers,
@@ -462,9 +631,13 @@ export const make = (
                 pollMs: options.fleet.pollSeconds * 1000,
               },
               resets: resetsOf(options),
-              autoClaims: typeof options.resets === "boolean" || options.resets.auto,
+              autoClaims: autoClaimsOf(options),
               ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
-            }).pipe(Layer.provideMerge(externals(ctx, options, sources, chatgpt))),
+            }).pipe(
+              Layer.merge(captureFleet),
+              Layer.provideMerge(externals(ctx, options, sources, chatgpt)),
+              Layer.provideMerge(Layer.succeed(AntigravityReporter, AntigravityReporter.of({ report: agy.report }))),
+            ),
           )
           const pool = Context.get(services, Model.Pool)
           yield* Deferred.succeed(ready, pool)
@@ -476,7 +649,11 @@ export const make = (
 
           if (options.sweepMinutes > 0)
             yield* Effect.forkScoped(
-              pool.sweep.pipe(Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)), Effect.delay(FIRST_SWEEP)),
+              pool.sweep.pipe(
+                Effect.andThen(pruneHeldSends.pipe(Effect.catchDefect((cause) => Effect.logWarning("pool held-send cleanup failed", cause)))),
+                Effect.repeat(Schedule.spaced(`${options.sweepMinutes} minutes`)),
+                Effect.delay(FIRST_SWEEP),
+              ),
             )
 
           if (options.fleet.peers.length > 0)
@@ -489,6 +666,7 @@ export const make = (
               // A start the plugin's end interrupted is no failure to report; its waiters end all the same.
               onFailure: (cause) =>
                 Effect.when(Effect.logError(`dotfiles-opencode.pool: the pool did not start: ${Cause.pretty(cause)}`), Effect.sync(() => !Cause.hasInterruptsOnly(cause))).pipe(
+                  Effect.andThen(Deferred.die(fleetReady, Cause.squash(cause))),
                   Effect.andThen(Deferred.die(ready, Cause.squash(cause))),
                 ),
             }),
@@ -534,14 +712,36 @@ export const make = (
           Effect.orElseSucceed(() => undefined),
         )
 
-      yield* ctx.session.hook("model.request", (event) =>
-        Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID)]).pipe(
-          Effect.flatMap(([cacheLifeMs, source]) =>
+      // The old host has no concrete unsent-Step result. New hosts expose
+      // the Step during routing and again at the final send hook.
+      let canDeferPrimary = false
+      const priorityOf = (event: { readonly sessionID: string; readonly kind: string; readonly keepalive?: boolean }) => {
+        if ((event.kind !== "primary" && event.kind !== "compaction") || event.keepalive === true) return Effect.succeed(false)
+        const id = Schema.decodeUnknownOption(HostSessionID)(event.sessionID)
+        if (Option.isNone(id)) return Effect.succeed(false)
+        return ctx.session.get({ sessionID: id.value }).pipe(
+          Effect.map((session) => Option.isNone(Option.fromUndefinedOr(session.parentID))),
+          Effect.orElseSucceed(() => false),
+        )
+      }
+      const failProposal = (scope: SendScope, reason: string, code: HoldReason, at: number) =>
+        recordHeld(scope, reason, code, at).pipe(
+          Effect.flatMap((hold) => Effect.die(new Error(hold.reason))),
+        )
+      yield* ctx.session.hook("model.request", (event) => {
+        if (!signed(event.model.providerID)) {
+          if (canDeferPrimary && event.kind === "primary") return Effect.void
+          return gateActive(event, "known-hold", (hold) => Effect.die(new Error(sendHoldMessage(hold.reason, hold.until))))
+        }
+        return Effect.all([agentCacheLife(event.agent), cacheOf(event.sessionID), priorityOf(event)]).pipe(
+          Effect.flatMap(([cacheLifeMs, source, priority]) =>
             withPool((pool) =>
               pool.place({
+                priority,
                 providerID: event.model.providerID,
                 sessionID: event.sessionID,
                 kind: event.kind,
+                model: event.model.id,
                 ...(cacheLifeMs === undefined ? {} : { cacheLifeMs }),
                 ...(source === undefined ? {} : { cacheOf: source }),
               }),
@@ -549,16 +749,61 @@ export const make = (
                 Effect.map((placed) => {
                   if (placed === undefined) return
                   event.headers[CREDENTIAL_HEADER] = placed.credentialID
+                  event.headers[HANDOFF_HEADER] = "1"
                   if (placed.cacheLifeMs !== undefined && placed.cacheLifeMs !== cacheLifeMs)
                     event.headers[CACHE_TTL_HEADER] = ttlOf(placed.cacheLifeMs)
                 }),
                 // Every account held: the request goes out on none. The host ends the turn on the pool's own words
                 // and when the first account opens; a hook declares no failure, so the refusal is its defect.
-                Effect.catchTag("AccountsHeld", (held) => Effect.die(new Error(heldMessage(held)))),
+                Effect.catchTag("AccountsHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, heldMessage(held), "account-held", held.retryAt)),
+                // Held by the pace at its dispatch: nothing goes out and no credential is set; the turn ends on why and when.
+                Effect.catchTag("RequestHeld", (held) =>
+                  failProposal({ ...event, providerID: event.model.providerID }, requestHeldMessage(held), held.reasonCode, held.retryAt)),
               ),
           ),
-        ),
-      )
+        )
+      })
+
+      type SendEvent = { readonly kind: Model.PlaceInput["kind"]; readonly sessionID: string;
+        readonly model: { readonly providerID: string; readonly id: string } }
+      const gateActive = (event: SendEvent, phase: "known-hold" | "send",
+        bind: (held: SendHold) => Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          const admitted = Option.match(Option.filter(Option.some(event.sessionID), () => phase === "send" && event.kind === "primary"),
+            { onNone: () => Effect.void, onSome: removeHeld })
+          const poolID = tracked(event.model.providerID)
+          if (Option.isNone(poolID)) return yield* sendRecords.withPermits(1)(admitted)
+          const input = { providerID: event.model.providerID, sessionID: event.sessionID, kind: event.kind, model: event.model.id }
+          const scope = { ...input, ...Option.match(stepIDOf(event), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+          const refuse = (reason: string, code: HoldReason, at: number) => recordHeld(scope, reason, code, at).pipe(
+            Effect.flatMap((hold) => bind({ reason: hold.reason, until: hold.retryAt })),
+          )
+          const login = yield* loginOf(poolID.value)
+          if (Option.isNone(login.id)) return yield* sendRecords.withPermits(1)(admitted)
+          const id = login.id.value
+          const check = Option.getOrElse(Option.filter(Option.some(phase), () => login.active), () => "signed-out" as const)
+          return yield* withPool((pool) => pool.admitActive(input, id, check, admitted)).pipe(
+            Effect.catchTag("RequestHeld", (held) => refuse(requestHeldMessage(held), held.reasonCode, held.retryAt)))
+        })
+      yield* ctx.session.hook("experimental.model.resolve", (event) => Effect.suspend(() => {
+        if (Option.isNone(stepIDOf(event))) return Effect.void
+        canDeferPrimary = true
+        if (signed(event.model.providerID)) return Effect.void
+        return gateActive(event, "known-hold", (hold) => deferRoute(event, hold))
+      }))
+      // A concrete check belongs to this callback's one send. The host
+      // consumes success when it forwards that request or response.create;
+      // no permit survives to another send, even on the same Step or socket.
+      const gateSend = (event: SendEvent) => gateActive(event, "send", (hold) => refuseSend(event, hold))
+      yield* ctx.session.hook("http.request", (event) => {
+        if (signed(event.model.providerID)) return Effect.void
+        return gateSend(event)
+      })
+      yield* ctx.session.hook("experimental.ws.send", (event) => Effect.suspend(() => {
+        if (!event.frame.startsWith('{"type":"response.create"') && !Option.exists(frameType(event.frame), ({ type }) => type === "response.create")) return Effect.void
+        return gateSend(event)
+      }))
 
       // What a paced provider's response showed of the account's quota belongs
       // to the login OpenCode sends it on: the integration's active one.
@@ -585,6 +830,7 @@ export const make = (
             sessionID: event.sessionID,
             kind: event.kind,
             status: event.response.status,
+            credentialID: Option.getOrUndefined(Option.map(sentPlacementOf(event.request), (sent) => sent.credentialID)),
           }),
         ).pipe(
             Effect.andThen(
@@ -628,8 +874,9 @@ export const make = (
       // The host has no idle event: an execution that succeeded, failed or was interrupted is the session going
       // idle, as the host's own Idle message reads it. A shutdown is not: the resumed execution goes on with the run.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
+        ctx.event.subscribe({ types: ["session.deleted", "session.step.started", "session.step.ended", ...EXECUTION_ENDED] }).pipe(
           Stream.runForEach((event) => {
+            if (event.type === "session.deleted") return sendRecords.withPermits(1)(removeHeld(event.data.sessionID)).pipe(Effect.ignoreCause)
             if (event.type === "session.execution.interrupted") {
               if (event.data.reason === "shutdown") return Effect.void
               return withPool((pool) => pool.release(event.data.sessionID))
@@ -665,6 +912,8 @@ export const make = (
           options: { codemode: false },
           execute: (input, context) =>
             withPool((pool) => pool.push({ ...input, sessionID: context.sessionID })).pipe(
+              // A status names Antigravity's quota too, as last read.
+              Effect.flatMap((answer) => Effect.map(agy.pushText(input.action, answer.text), (text) => ({ ...answer, text }))),
               Effect.flatMap((answer) =>
                 answer.ok
                   ? Effect.succeed({ content: [{ type: "text" as const, text: answer.text }] })
@@ -672,15 +921,88 @@ export const make = (
               ),
             ),
         })
+        editor.add({ ...agy.tool, name: AgyWiring.TOOL_NAME })
       })
 
       // The pool's own RPC has no error to answer with: a pool whose logins
       // cannot be read fails the call, and its caller goes on without it. An
       // RPC that cannot be registered stops the plugin.
+      const decodeHandoff = Schema.decodeUnknownOption(HandoffInput)
+      const handoffUnavailable = (sessionID: string) => Clock.currentTimeMillis.pipe(Effect.map((now) =>
+        Handoff.cases.Held.make({ message: requestHeldMessage(RequestHeld.make({
+          sessionID, ...storeHeld(now + HOLD_STORE_RETRY_MS, now),
+        })) }),
+      ))
+      const handoff = (decoded: Option.Option<HandoffInput>) => Effect.gen(function* () {
+        if (Option.isNone(decoded)) return yield* handoffUnavailable("")
+        const { candidate, agent, stepID, ...request } = decoded.value
+        const priority = yield* priorityOf(request)
+        const scope = { ...request, ...Option.match(Option.fromUndefinedOr(stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }) }
+        const refused = (reason: string, reasonCode: HoldReason, retryAt: number) =>
+          recordHeld(scope, reason, reasonCode, retryAt).pipe(
+            Effect.as(Handoff.cases.Held.make({ message: reason })),
+          )
+        const decision = yield* withPool((pool) => Effect.gen(function* () {
+          if (!active) return yield* handoffUnavailable(request.sessionID)
+          const admitted = Effect.suspend(() => {
+            if (!active || request.keepalive === true || scope.kind !== "primary") return Effect.void
+            return removeHeld(scope.sessionID)
+          })
+          if (yield* pool.confirmed(request, candidate, admitted)) {
+            if (active) return Handoff.cases.Send.make({})
+            return yield* handoffUnavailable(request.sessionID)
+          }
+          if (request.keepalive === true) return Handoff.cases.Held.make({ message: "the keepalive's prepared login is held or no longer registered" })
+          const cacheLife = Option.fromUndefinedOr(yield* agentCacheLife(agent))
+          const source = Option.fromUndefinedOr(yield* cacheOf(HostSessionID.make(request.sessionID)))
+          const placed = yield* pool.place({
+            priority,
+            ...request,
+            ...Option.match(cacheLife, { onNone: () => ({}), onSome: (cacheLifeMs) => ({ cacheLifeMs }) }),
+            ...Option.match(source, { onNone: () => ({}), onSome: (cacheOf) => ({ cacheOf }) }),
+          })
+          const placement = Option.fromUndefinedOr(placed)
+          if (Option.isNone(placement)) return yield* handoffUnavailable(request.sessionID)
+          const ttl = Option.filter(Option.fromUndefinedOr(placement.value.cacheLifeMs), (life) => !Option.contains(cacheLife, life))
+          return Handoff.cases.Prepare.make({
+            credentialID: placement.value.credentialID,
+            ...Option.match(ttl, { onNone: () => ({}), onSome: (life) => ({ cacheTTL: ttlOf(life) }) }),
+          })
+        })).pipe(Effect.catchTags({
+          AccountsHeld: (held) => refused(heldMessage(held), "account-held", held.retryAt),
+          RequestHeld: (held) => refused(requestHeldMessage(held), held.reasonCode, held.retryAt),
+        }))
+        return decision
+      })
       yield* ctx.rpc
         .register(POOL_STATUS, {
-          pace: (input) => withPool((pool) => pool.pace(providerOf(input), modelOf(input), sessionOf(input))).pipe(Effect.orDie),
-          status: () => withPool((pool) => pool.status).pipe(Effect.orDie),
+          pace: (input) => Effect.gen(function* () {
+            const provider = providerOf(input)
+            const integration = Option.filter(tracked(provider), () => !signed(provider))
+            if (Option.isSome(integration)) {
+              const tracking = yield* routeTracking(integration.value, {
+                providerID: provider, sessionID: Option.getOrElse(Option.fromUndefinedOr(sessionOf(input)), () => ""),
+                kind: "primary", model: modelOf(input) ?? "",
+              })
+              if (Option.isSome(tracking)) return tracking.value
+            }
+            return yield* withPool((pool) => pool.pace(provider, modelOf(input), sessionOf(input), dispatchOf(input)))
+          }).pipe(Effect.orDie),
+          heldSend: ({ sessionID }) => heldSend(sessionID),
+          handoff: (input) => handoff(decodeHandoff(input)),
+          status: () => Effect.gen(function* () {
+            const status = { ...yield* withPool((pool) => pool.status) }
+            for (const providerID of new Set([...Object.keys(options.providers), ...Object.keys(options.paced)])) {
+              const id = Option.filter(tracked(providerID), () => !signed(providerID))
+              if (Option.isNone(id)) continue
+              const entry = Option.fromUndefinedOr(status[id.value])
+              if (Option.isNone(entry)) continue
+              const tracking = yield* routeTracking(id.value, { providerID, sessionID: "", kind: "primary", model: "" })
+              if (Option.exists(tracking, (answer) => answer.tracking === noLogin.tracking))
+                status[id.value] = { ...entry.value, untrackedRoutes: { ...entry.value.untrackedRoutes, [providerID]: noLogin.tracking } }
+            }
+            return status
+          }).pipe(Effect.orDie),
           // A malformed question names no session: it has no account to name.
           session: (input) =>
             Option.match(decodeSessionQuery(input), { onNone: () => Effect.succeed({}), onSome: (query) => withPool((pool) => pool.session(query)) }),
@@ -691,8 +1013,21 @@ export const make = (
           started: (input) =>
             Option.match(decodeStartedQuery(input), {
               onNone: () => Effect.succeed({}),
-              onSome: ({ providerID }) => withPool((pool) => pool.started(providerID)).pipe(Effect.as({})),
+              onSome: ({ providerID, model, launchID, sessionID }) => withPool((pool) => pool.started(providerID, model, launchID, sessionID)).pipe(Effect.as({})),
             }),
+          reserveLaunch: (input) => Schema.decodeUnknownEffect(LaunchRequest)(input).pipe(
+            Effect.flatMap((request) => Effect.gen(function* () {
+              const integration = Option.filter(tracked(request.providerID), () => !signed(request.providerID))
+              if (Option.isSome(integration)) {
+                const tracking = yield* routeTracking(integration.value, { ...request, kind: "primary" })
+                if (Option.isSome(tracking)) return tracking.value
+              }
+              return yield* withPool((pool) => pool.reserveLaunch(request))
+            })), Effect.orDie,
+          ),
+          bindLaunch: (input) => Schema.decodeUnknownEffect(Schema.Struct({ launchID: Schema.String, sessionID: Schema.String }))(input).pipe(
+            Effect.flatMap(({ launchID, sessionID }) => withPool((pool) => pool.bindLaunch(launchID, sessionID))), Effect.as({}), Effect.orDie,
+          ),
           report: () => withPool((pool) => pool.report),
           fleet: () => withPool((pool) => pool.fleet),
           resets: () => withPool((pool) => pool.resets),
@@ -709,6 +1044,7 @@ export const make = (
               onNone: () => Effect.succeed({ ok: false, text: "not a push request", pushes: [] }),
               onSome: (request) => withPool((pool) => pool.push(request)),
             }),
+          antigravity: (input) => agy.rpc(Option.getOrUndefined(decodeAgyRpc(input))),
         })
         .pipe(Effect.orDie)
     }),
@@ -719,6 +1055,7 @@ const decodeLoginsQuery = Schema.decodeUnknownOption(LoginsQuery)
 const decodeStartedQuery = Schema.decodeUnknownOption(StartedQuery)
 const decodeLease = Schema.decodeUnknownOption(LeaseMessage)
 const decodePush = Schema.decodeUnknownOption(PushRequest)
+const decodeAgyRpc = Schema.decodeUnknownOption(AgyWiring.RpcInput)
 
 const providerOf = (input: unknown) =>
   typeof input === "object" && input !== null && "providerID" in input ? String(input.providerID) : ""
@@ -727,10 +1064,13 @@ const providerOf = (input: unknown) =>
 const modelOf = (input: unknown) =>
   typeof input === "object" && input !== null && "model" in input && typeof input.model === "string" ? input.model : undefined
 
+/** Whether a pace question is a request's at its dispatch (a send outside the host's hooks, the cache's keepalive), not a start's. */
+const dispatchOf = Schema.is(Schema.Struct({ dispatch: Schema.Literal(true) }))
+
 /** The session a pace question comes from, if it names one: the one whose start waits when the pace holds it. */
 const sessionOf = (input: unknown) =>
   typeof input === "object" && input !== null && "sessionID" in input && typeof input.sessionID === "string" && input.sessionID !== ""
     ? input.sessionID
     : undefined
 
-export default make(live)
+export default make(live, LIVE_STORE_HOST, LedgerLive.processHoldAuthority().lock, liveAntigravity)

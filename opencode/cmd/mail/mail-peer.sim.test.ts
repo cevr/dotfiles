@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Session mail between two paired OpenCode servers on the simulated host, at
 // 20 seeds: tests/mail-peer.test.ts's name and the claims it reads off the
 // model's requests and the pairing, moved off two real servers. Each host is a
@@ -23,11 +25,11 @@ import * as MemoryTokens from "@dotfiles/opencode-mail/memory/tokens"
 import * as Hosts from "../../sim/hosts.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import { type Outcome, pair } from "./pair.ts"
 
-const { seeded } = Seed.runner("cmd/mail/mail-peer.sim.test.ts")
+const { seeded } = simulationRunner("cmd/mail/mail-peer.sim.test.ts")
 
 const WORK = "/scratch/work"
 /** Each host's tailnet address, where its listener binds. */

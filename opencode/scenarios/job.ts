@@ -17,7 +17,8 @@
 // `job-requests.json` and `job-transcripts.json`.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -57,7 +58,7 @@ export default OpenCodeDriver.use(
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
         const title = s.includes("You name conversations")
-        requests.push({ session: title ? "title" : "root", at: Date.now(), request: s })
+        requests.push({ session: title ? "title" : "root", at: stamp(), request: s })
         return title ? say("Job fixture") : reply(s)
       })
 

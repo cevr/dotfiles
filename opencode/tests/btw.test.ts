@@ -5,11 +5,13 @@
 // /btw alone opens the same fork again, and ctrl+s brings its newest answer
 // back into the session once, which answers it. The model requests show the
 // fork reusing the session's cached prefix.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Message {
   readonly role: string
@@ -40,7 +42,7 @@ describe.skipIf(!fork)("/btw", () => {
     })
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     if (code !== 0) throw new Error(`btw scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(join(out, "btw-timeout.txt")) ? readFileSync(join(out, "btw-timeout.txt"), "utf8") : ""}`)
-    const frame = (name: string) => readFileSync(join(out, `${name}.txt`), "utf8")
+    const frame = (name: string) => readScratchFileSync(join(out, `${name}.txt`), "utf8")
 
     // The pane answers beside the session, which is still running its shell call.
     const pane = frame("btw-pane")
@@ -101,5 +103,5 @@ describe.skipIf(!fork)("/btw", () => {
     expect(textOf(notices[0] ?? { role: "user" })).toContain("Question:\nWhich command?\n\nAnswer:\nThe sleep in the shell call.")
     expect(back.map(textOf)).toContain("The check passed.")
     for (const message of back) expect(textOf(message)).not.toBe(note)
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

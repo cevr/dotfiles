@@ -6,10 +6,11 @@
 // it again. What fired is read off the frames, the
 // model's requests and the transcripts.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
-import { owned } from "./owned.ts"
+import { ownedDriveScenario } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The frame's lines, without the sidebar's column. */
 const lines = (frame: string): ReadonlyArray<string> => frame.split("\n").map((line) => line.slice(0, 108).trim())
@@ -43,17 +44,10 @@ const wakes = (sessions: ReadonlyArray<Session>) =>
   sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.source === "wake"))
 const textOf = (message: Message) => message.text ?? ""
 
-const scenario = async (out: string, args: ReadonlyArray<string>, label: string, env: (out: string) => Record<string, string> = () => ({})) => {
-  const child = owned(["bunx", "opencode-drive", ...args], {
-    cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, SCENARIO_OUT: out, OPENCODE_DRIVE_MEDIA_DIR: join(out, "media"), ...env(out) },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+const scenario = async (out: string, child: ReturnType<typeof ownedDriveScenario>, label: string) => {
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
   const timeout = join(out, `${label}-timeout.txt`)
-  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+  if (code !== 0) throw new Error(`${label} scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
   return { stdout, read: (name: string) => readFileSync(join(out, `${label}-${name}`), "utf8") }
 }
 
@@ -63,7 +57,7 @@ describe.skipIf(!fork)("wakes", () => {
   const kept = keptScratch(Boolean(fork), "wake-")
   test("an alarm wakes the idle session, a notice waits for the next turn, a monitor wakes on its match, a cancel holds, and a reload fires once", kept.test(async () => {
     const out = kept.dir("wake-")
-    const { stdout, read } = await scenario(out, ["run", "scenarios/wake.ts"], "wake")
+    const { stdout, read } = await scenario(out, ownedDriveScenario("scenarios/wake.ts", out, fork ?? ""), "wake")
     expect(stdout).toMatch(/screenshot: .*wake-pending\.png/)
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const root = requests.filter((request) => request.session === "root").map((request) => ({ ...request, text: unescaped(request.request) }))
@@ -78,7 +72,7 @@ describe.skipIf(!fork)("wakes", () => {
     expect(trayOf(read("alpha.txt"))).toBeUndefined()
     // The letter: what fired, when it was set and due, the note verbatim; on time, so it does not say late.
     const woken = root.find((request) => request.text.includes("Note: ALPHA"))
-    expect(woken?.text).toMatch(/⏰ Wake w[0-9a-z]+ fired: the alarm you set at \d{4}-\d\d-\d\dT[\d:.]+Z, due \d{4}-\d\d-\d\dT[\d:.]+Z\.\nNote: ALPHA: check that the build finished/)
+    expect(woken?.text).toMatch(/⏰ Wake w[0-9a-z]+ fired: the alarm you set at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), due [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT)\.\nNote: ALPHA: check that the build finished/)
     expect(woken?.text).not.toContain("no OpenCode server was running")
 
     // The notice: drawn at its time and counted in the tray, but it starts no turn; the next turn reads it.
@@ -117,15 +111,12 @@ describe.skipIf(!fork)("wakes", () => {
 
     // One message per fire, each a wake or a notice as set.
     expect(fired.map((message) => `${message.metadata?.kind}/${message.metadata?.mode}`)).toEqual(["alarm/wake", "alarm/notify", "monitor/wake", "alarm/wake"])
-  }), 240_000)
+  }), hangGuard("generated-schedule"))
 
   test("an alarm due while no server ran fires when one starts, and says it went late", kept.test(async () => {
-    const fork = process.env.OPENCODE_DEV ?? ""
     const out = kept.dir("wake-downtime-")
-    const { stdout, read } = await scenario(out, ["start", "--name", `wake-downtime-${process.pid}`, "--dev", fork, "--script", "scenarios/wake-downtime.ts"], "wake-downtime", (out) => ({
-      // A file, so the restarted server finds the session and its wake.
-      OPENCODE_DRIVE_DB: join(out, "opencode.db"),
-    }))
+    // Start uses a file, so the restarted server finds its session and wake.
+    const { stdout, read } = await scenario(out, ownedDriveScenario("scenarios/wake-downtime.ts", out, fork ?? "", `wake-downtime-${process.pid}`), "wake-downtime")
     expect(stdout).toMatch(/screenshot: .*wake-downtime-late\.png/)
     expect(trayOf(read("pending.txt"))).toMatch(/^1 wake$/)
 
@@ -135,7 +126,7 @@ describe.skipIf(!fork)("wakes", () => {
     const late = requests.map((request) => ({ ...request, text: unescaped(request.request) })).find((request) => request.text.includes("Note: ZETA"))
     // The fire came after the start, and its letter says how late and why.
     expect(late?.at ?? 0).toBeGreaterThan(started)
-    expect(late?.text).toMatch(/It fired \d+m late: no OpenCode server was running at \d{4}-\d\d-\d\dT[\d:.]+Z, so it went when one started\.\nNote: ZETA: look again after the outage/)
+    expect(late?.text).toMatch(/It fired \d+m late: no OpenCode server was running at [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT), so it went when one started\.\nNote: ZETA: look again after the outage/)
     expect(requests.some((request) => request.at > stopped && request.at < started)).toBe(false)
 
     const frame = lines(read("late.txt"))
@@ -147,5 +138,5 @@ describe.skipIf(!fork)("wakes", () => {
     const fired = wakes(sessions)
     expect(fired).toHaveLength(1)
     expect(fired[0]?.metadata?.lateMs ?? 0).toBeGreaterThanOrEqual(60_000)
-  }), 300_000)
+  }), hangGuard("acceptance"))
 })

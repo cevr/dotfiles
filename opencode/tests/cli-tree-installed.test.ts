@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at tests/cli-tree-installed.test.ts: [...new Glob(glob).scanSync({ cwd: at })]
 // accept: deep (3.0 s alone on a quiet host: it runs every plain-Bun command's probes from a whole installed tree)
 // accept: off until TREE_OPENCODE is set (it checks the no-links tree the production tree maker made, which only the deep gate makes)
 /**
@@ -10,7 +12,6 @@
  * this checkout, every test here fails, saying so; it never passes on another root. The acceptance runner owes the
  * file `off until enabled`, by name, in a run that has no tree (the marker above); the deep gate sets the variable.
  *
- * @reads mods/update/trees.ts cmd/** mods/** scripts/daily.ts
  */
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { Config, Effect, FileSystem, Option, Path, Schema } from "effect"
@@ -20,6 +21,8 @@ import { unresolvedImports } from "../mods/update/filestore/trees.ts"
 import { COMMANDS, hostProvided, SEEDS } from "../mods/update/trees.ts"
 import * as Graph from "./cli-tree/graph.ts"
 import { checkoutRoot, commandChecks, moduleLinks, within } from "./cli-tree/run.ts"
+import { externalInput, matchingInput } from "./read-path.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** Why the named installed tree cannot be checked. */
 class NoTree extends Schema.TaggedError<NoTree>()("NoTree", { message: Schema.String }) {}
@@ -29,7 +32,7 @@ class NoTree extends Schema.TaggedError<NoTree>()("NoTree", { message: Schema.St
  * refuses every source there. A file that does not read fails the check, naming it.
  */
 const readSealed = (file: string) => {
-  const ran = spawnSync(["/bin/cat", file], { stdout: "pipe", stderr: "pipe" })
+  const ran = spawnSync(["/bin/cat", externalInput(file)], { stdout: "pipe", stderr: "pipe" })
   return Option.getOrThrowWith(
     Option.map(
       Option.liftPredicate(ran, (each) => each.exitCode === 0),
@@ -66,7 +69,7 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
 
   it.live.layer(BunServices.layer)("every process's imports resolve in the tree exactly, its servers reach no platform implementation, and it installs the checkout's one Effect", () =>
     Effect.gen(function* () {
-      const at = yield* installedRoot
+      const at = externalInput(yield* installedRoot)
       expect(unresolvedImports(at)).toEqual([])
       // Exactly: every bare import a process reaches, that its host does not serve, resolves from its importer in this tree, subpath and all
       // (React's JSX runtime is this walk's TSX transform's, not the TUI's: its Solid transform imports OpenTUI's, which it serves).
@@ -88,7 +91,10 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
       expect(servers.flatMap((seed) => graph.breaches(seed, Graph.PLATFORM_IMPL, at))).toEqual([])
       // The tree installs the checkout's Effect: the same pins, one copy of each.
       const checkout = yield* checkoutRoot
-      expect(graph.pinsAt(at)).toEqual(Graph.expectedPins(Graph.pinIn(graph.manifestAt(checkout), "effect")))
+      const fs = yield* FileSystem.FileSystem
+      const manifest = yield* fs.readFileString(matchingInput("package.json"))
+      const checkoutGraph = Graph.graphOf(() => manifest)
+      expect(graph.pinsAt(at)).toEqual(Graph.expectedPins(Graph.pinIn(checkoutGraph.manifestAt(checkout), "effect")))
       // Each plain-Bun command loads from the tree alone, and one copy of effect, its platform layer's included.
       const leaving = COMMANDS.flatMap(({ path: seed }) =>
         graph.bareOf(seed, at)
@@ -102,7 +108,7 @@ describe("each plain-Bun command runs from the installed tree TREE_OPENCODE name
       })
       expect(copies).toEqual([])
     }),
-    120_000,
+    hangGuard("installer"),
   )
 
   commandChecks(installedRoot)

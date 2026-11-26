@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/wake/process/runner.ts: const all = readFileSync(file)
 // The plugin seam: the composition root on a stand-in host over the memory
 // doubles. It checks what OpenCode sees: the four direct tools, their answers
 // and refusals, the RPC's pending list and `due`, a `changed` event per change,
@@ -7,7 +9,7 @@
 // tests/wake.test.ts runs it in OpenCode.
 import { describe, expect, test } from "bun:test"
 import type { Tool } from "@opencode/plugin/effect"
-import { Effect, Exit, Layer, Queue, Schema, type Scope, Stream } from "effect"
+import { Clock, Effect, Exit, Layer, Option, Queue, Schema, type Scope, Stream } from "effect"
 import { Latched } from "@dotfiles/opencode-wake/latch"
 import { alarm, latch } from "@dotfiles/opencode-wake/laws"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
@@ -20,10 +22,14 @@ import { Armed, Board, Cancelled, Due, Killed, Pending, WAKES } from "@dotfiles/
 import { waitUntil } from "../../tests/wait.ts"
 import { AUTOMATION_IDS } from "@dotfiles/opencode-wake/automations"
 import WakePlugin, { make } from "./server.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof WakePlugin)["effect"]>[0]
 type Handler = (input: unknown) => Effect.Effect<unknown>
-type Event = { readonly type: "session.deleted"; readonly data: { readonly sessionID: string } } | { readonly type: "session.inbox.delivered"; readonly data: { readonly sessionID: string; readonly inboxID: string } }
+type Event =
+  | { readonly type: "session.deleted"; readonly data: { readonly sessionID: string } }
+  | { readonly type: "session.inbox.delivered"; readonly data: { readonly sessionID: string; readonly inboxID: string } }
+  | { readonly type: "session.tool.success" | "session.tool.failed"; readonly data: { readonly sessionID: string; readonly id: string; readonly assistantMessageID: string } }
 
 /** A tool as the host's editor receives it: only what the tests read. */
 interface Added {
@@ -32,6 +38,12 @@ interface Added {
   readonly options?: { readonly codemode?: boolean }
   readonly execute: (input: unknown, context: unknown) => Effect.Effect<{ readonly content: ReadonlyArray<Tool.Content> }, Tool.Error>
 }
+
+interface StoredToolState {
+  status: "running" | "completed" | "error"
+}
+
+const runningPart = (): StoredToolState => ({ status: "running" })
 
 const DIR = "/work/app"
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -49,10 +61,13 @@ interface Doubles {
   readonly runner: MemoryRunner.MemoryRunner
 }
 
+const defaults = (): Doubles => ({ store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() })
+
 /** The plugin started on a stand-in host over the doubles. */
 const start = (
-  doubles: Doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root", "ses_child"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() },
+  doubles: Doubles = defaults(),
   options: unknown = { backstop: "off" },
+  emitToolEvents = true,
 ) =>
   Effect.gen(function* () {
     doubles.sessions.parents.set("ses_child", "ses_root")
@@ -62,6 +77,14 @@ const start = (
     const added = new Map<string, Added>()
     // The registry's built-in tools before the transform: OpenCode's automation tools, by either fork's ids, beside one that stays.
     const builtin = new Set<string>(["shell", ...AUTOMATION_IDS])
+    const compactions: Array<(event: { readonly sessionID: string }) => Effect.Effect<void>> = []
+    const transcripts = new Map<string, Array<unknown>>()
+    const context = { readable: true, reads: 0 }
+    const messages = (sessionID: string) => {
+      const transcript = Option.getOrElse(Option.fromUndefinedOr(transcripts.get(sessionID)), (): Array<unknown> => [])
+      transcripts.set(sessionID, transcript)
+      return transcript
+    }
     const host = {
       options,
       location: { directory: DIR },
@@ -71,6 +94,15 @@ const start = (
             callback({ add: (tool) => void added.set(tool.name, tool), remove: (id) => void builtin.delete(id) })
             return { dispose: Effect.void }
           }),
+      },
+      session: {
+        context: ({ sessionID }: { readonly sessionID: string }) =>
+          Effect.suspend(() => {
+            context.reads += 1
+            if (!context.readable) return Effect.fail("fixture read failed")
+            return Effect.succeed([...messages(sessionID)])
+          }),
+        hook: (name: string, callback: (typeof compactions)[number]) => Effect.sync(() => void (name === "compaction" && compactions.push(callback))),
       },
       event: { subscribe: () => Stream.fromQueue(events) },
       rpc: {
@@ -98,8 +130,31 @@ const start = (
       const tool = added.get(name)
       return tool === undefined ? Effect.die(new Error(`no tool ${name}`)) : Effect.succeed(tool)
     }
+    let calls = 0
+    const latest = { state: Option.none<StoredToolState>() }
+    // A call runs in its own assistant message; the host commits terminal state before publishing its event.
     const execute = (name: string, input: unknown, sessionID = "ses_root") =>
-      toolOf(name).pipe(Effect.flatMap((tool) => tool.execute(input, { sessionID, agent: "build", messageID: "msg_1", id: "call_1", progress: () => Effect.void })))
+      Effect.gen(function* () {
+        calls += 1
+        const id = `call_${calls}`
+        const assistantMessageID = `msg_${String(calls).padStart(8, "0")}`
+        const state = runningPart()
+        latest.state = Option.some(state)
+        messages(sessionID).push({ type: "assistant", id: assistantMessageID, content: [{ type: "tool", id, name, state }] })
+        const tool = yield* toolOf(name)
+        const ran = yield* Effect.exit(tool.execute(input, { sessionID, agent: "build", messageID: assistantMessageID, id, progress: () => Effect.void }))
+        if (emitToolEvents) {
+          const data = { sessionID, id, assistantMessageID }
+          if (Exit.isSuccess(ran)) {
+            state.status = "completed"
+            yield* Queue.offer(events, { type: "session.tool.success", data })
+          } else {
+            state.status = "error"
+            yield* Queue.offer(events, { type: "session.tool.failed", data })
+          }
+        }
+        return yield* ran
+      })
     const call = (name: string, input: unknown, sessionID?: string) =>
       execute(name, input, sessionID).pipe(Effect.map((result) => result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")))
     const fail = (name: string, input: unknown, sessionID?: string) => Effect.flip(execute(name, input, sessionID)).pipe(Effect.map((error) => error.message))
@@ -115,7 +170,17 @@ const start = (
     const jobs = (sessionID: string) => method("jobs", { sessionID }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Board)), Effect.orDie)
     const kill = (input: { readonly sessionID: string; readonly id?: string }) => method("kill", input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Killed)), Effect.orDie)
     const inbox = (sessionID = "ses_root") => doubles.sessions.inboxes.get(sessionID) ?? []
-    return { added, builtin, call, fail, pending, due, latched, cancel, set, jobs, kill, inbox, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
+    const compactWith = (fact: "completed" | "error" | "missing" | "unreadable") =>
+      Effect.gen(function* () {
+        const sessionID = "ses_root"
+        if (fact === "missing") messages(sessionID).pop()
+        if (fact === "unreadable") context.readable = false
+        if (fact === "completed" || fact === "error") for (const state of Option.toArray(latest.state)) state.status = fact
+        for (const hook of compactions) yield* hook({ sessionID })
+        transcripts.set(sessionID, [{ type: "compaction", id: "msg_99999999", status: "completed" }])
+        context.readable = true
+      })
+    return { added, builtin, call, fail, pending, due, latched, cancel, set, jobs, kill, inbox, compactWith, context, emitted, emit: (event: Event) => Queue.offer(events, event).pipe(Effect.andThen(settle())), doubles }
   })
 
 describe("the wake tools", () => {
@@ -298,7 +363,7 @@ describe("the plugin's events and start", () => {
     scenario(
       Effect.gen(function* () {
         const doubles = { store: MemoryStore.empty(), sessions: MemoryCourier.empty("ses_root"), jobs: MemoryBackstop.empty(), checks: MemoryChecks.empty(), opener: MemoryOpener.empty(), runner: MemoryRunner.empty() }
-        const now = Date.now()
+        const now = stamp()
         doubles.store.entries.set(alarm.id, { ...alarm, sessionID: "ses_root", directory: DIR, setAt: now - 3 * 3600_000, dueAt: now - 2 * 3600_000 })
         const plugin = yield* start(doubles)
         expect(plugin.inbox()[0]?.letter.text).toContain("It fired 2h late: no OpenCode server was running at")
@@ -312,7 +377,7 @@ describe("the plugin's events and start", () => {
       Effect.gen(function* () {
         const plugin = yield* start()
         plugin.doubles.opener.answer = () => ({ outcome: "opened" })
-        const now = Date.now()
+        const now = stamp()
         const ask = { sessionID: "ses_root", subagent: latch.subagent, hold: "pace", reason: latch.reason, opensAt: now + 200, recheckAt: now + 200, context: {} }
         const answer = yield* plugin.latched(ask)
         if (answer.outcome !== "latched") return yield* Effect.die(new Error(answer.reason))
@@ -350,7 +415,7 @@ describe("the job tool", () => {
 
         const job = plugin.doubles.runner.jobs.get(id)
         if (job !== undefined) job.log = "2 pass\n1 fail\n"
-        MemoryRunner.ended(plugin.doubles.runner, id, 1, Date.now())
+        MemoryRunner.ended(plugin.doubles.runner, id, 1, stamp())
         expect(yield* plugin.due(id)).toEqual({ outcome: "fired" })
         const [letter] = plugin.inbox()
         expect(letter?.resume).toBe(true)
@@ -368,7 +433,7 @@ describe("the job tool", () => {
         const plugin = yield* start()
         const idOf = (receipt: string) => /^Job (j[0-9a-z]{6})/.exec(receipt)?.[1] ?? ""
         const waited = idOf(yield* plugin.call("job", { command: "make", note: "n" }))
-        MemoryRunner.ended(plugin.doubles.runner, waited, 0, Date.now())
+        MemoryRunner.ended(plugin.doubles.runner, waited, 0, stamp())
         expect(yield* plugin.call("job", { action: "check", id: waited })).toContain(`Job ${waited} `)
         expect(yield* plugin.call("job", { action: "wait", id: waited, ms: 1000 })).toContain(`Job ${waited} `)
         const killed = idOf(yield* plugin.call("job", { command: "sleep 99", note: "n" }))
@@ -392,4 +457,31 @@ describe("the job tool", () => {
         expect(yield* plugin.call("job", { action: "list" })).toBe("No jobs are running or waiting to report in this session.")
       }),
     ))
+
+  for (const [fact, letters] of [["completed", 0], ["error", 1], ["missing", 1], ["unreadable", 0]] as const) {
+    test(`compaction settles a held end by the stored call, not by compaction itself (${fact})`, () =>
+      scenario(
+        Effect.gen(function* () {
+          const plugin = yield* start(defaults(), { backstop: "off" }, false)
+          const receipt = yield* plugin.call("job", { command: "true", note: "report once" })
+          const id = Option.getOrThrow(Option.flatMapNullishOr(Option.fromNullishOr(/^Job (j[0-9a-z]{6})/.exec(receipt)), (match) => match[1]))
+          expect(id).not.toBe("")
+          MemoryRunner.ended(plugin.doubles.runner, id, 0, yield* Clock.currentTimeMillis)
+          expect(yield* plugin.call("job", { action: "park", id })).toContain("This answer is its end")
+          const delivery = Option.getOrThrow(Option.flatMapNullishOr(Option.fromUndefinedOr(plugin.doubles.runner.deliveries.get(id)), (slots) => slots[0]?.delivery))
+          yield* plugin.compactWith(fact)
+          const reads = plugin.context.reads
+          yield* plugin.due(id)
+          yield* plugin.due(id)
+          const received = plugin.inbox()
+          expect(received).toHaveLength(letters)
+          if (letters > 0) expect(received[0]?.id).toBe(delivery)
+          const listing = yield* plugin.call("job", { action: "list" })
+          if (fact === "unreadable") {
+            expect(plugin.context.reads).toBeGreaterThan(reads)
+            expect(listing).toContain("held, unconfirmed, by call call_2")
+          } else expect(listing).not.toContain(id)
+        }),
+      ))
+  }
 })

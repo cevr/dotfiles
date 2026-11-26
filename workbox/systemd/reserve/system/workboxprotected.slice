@@ -1,0 +1,9 @@
+[Unit]
+Description=Protected OpenCode server budget
+
+[Slice]
+CPUWeight=1000
+MemoryMin=2%
+MemoryLow=7%
+MemoryMax=9%
+MemorySwapMax=0

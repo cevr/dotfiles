@@ -2,16 +2,25 @@
 // its quota, the ledger the next process reads, the other hosts of the fleet,
 // and where this host keeps what it knows of the fleet. laws.ts states what
 // every implementation owes.
-import { Context, type Effect, Schema, type Stream } from "effect"
+import { Context, type Effect, type Option, Schema, type Stream } from "effect"
 import type { Event, LedgerState, PoolId } from "./account-pool.ts"
 import type { StoreRefreshes } from "./alerts.ts"
+import type { AntigravityReport } from "./antigravity-report.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
-import type { LimitsReport, Tally, Use } from "./limits.ts"
-import type { ClaimAnswer, QuotaReading } from "./quota.ts"
+import type { LimitsReport, Tally, Use, WorkGroup } from "./limits.ts"
+import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
-import type { Report, SourceStatus } from "./status.ts"
+import type { Hold, Report, SourceStatus, Start } from "./status.ts"
+
+export class HoldStoreUnavailable extends Schema.TaggedError<HoldStoreUnavailable>()("HoldStoreUnavailable", {
+  retryAt: Schema.Finite,
+}) {}
+
+export type Holds = Readonly<Record<string, Hold>>
+
+export class LaunchStoreUnavailable extends Schema.TaggedError<LaunchStoreUnavailable>()("LaunchStoreUnavailable", { message: Schema.String }) {}
 
 /**
  * Where a pool keeps what the next process needs: its holds, readings,
@@ -22,8 +31,17 @@ export class Ledger extends Context.Service<
   Ledger,
   {
     readonly restore: (pool: PoolId) => Effect.Effect<LedgerState>
+    /** The process-shared priced-step history, including other directory instances. */
+    readonly steps: (pool: PoolId) => Effect.Effect<LedgerState["steps"]>
+    /** Only the current hold records, never the historical ledger or an empty fallback on failure. */
+    readonly holds: (pool: PoolId, credentialID?: string) => Effect.Effect<Holds, HoldStoreUnavailable>
+    /** Serialize this host's hold publication and observation across activations. */
+    readonly withHolds: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+    /** Reuse a kept reading, or share one measurement (including publication) across the host's location copies. */
+    readonly firstReading: (pool: PoolId, credentialID: string, measure: Effect.Effect<Option.Option<QuotaReading>>) => Effect.Effect<Option.Option<QuotaReading>>
+    readonly firstReadingFailure: (pool: PoolId, credentialID: string) => Effect.Effect<Option.Option<UsageReadFailure>>
     /** Write what `events` change in the ledger. */
-    readonly record: (pool: PoolId, events: ReadonlyArray<Event>) => Effect.Effect<void>
+    readonly record: (pool: PoolId, events: ReadonlyArray<Event>, shared?: "unknown") => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/Ledger") {}
 
@@ -170,6 +188,8 @@ export class ResetsStore extends Context.Service<
   ResetsStore,
   {
     readonly read: Effect.Effect<ResetsState>
+    /** Read just the claim ledger to offer an observation, without reading waits, grants or reservations. */
+    readonly claims: Effect.Effect<ResetsState["claims"]>
     /** Write what `events` change; `state` is the state with them folded in. */
     readonly record: (events: ReadonlyArray<ResetsEvent>, state: ResetsState) => Effect.Effect<void>
   }
@@ -197,6 +217,8 @@ export class Limits extends Context.Service<
     readonly flush: Effect.Effect<void>
     /** The tally now. */
     readonly tally: Effect.Effect<Tally>
+    /** Estimate the shared weekly quota of whole completed agents from their actual token records. */
+    readonly workCosts: (pool: PoolId, groups: ReadonlyArray<WorkGroup>) => Effect.Effect<Readonly<Record<string, number>>>
   }
 >()("dotfiles-opencode/pool/Limits") {}
 
@@ -248,8 +270,26 @@ export class Owner extends Context.Service<
 export class FleetStore extends Context.Service<
   FleetStore,
   {
+    /** Serialize the host's read/decide/write facts across directory instances. */
+    readonly withState: <A, E, R>(operation: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+    /** Spending authority reads fail closed; the display's best-effort read is not admission evidence. */
+    readonly starts: Effect.Effect<ReadonlyArray<Start>, LaunchStoreUnavailable>
+    /** Write and confirm a frozen reservation under its stable launch id. */
+    readonly reserve: (start: Start) => Effect.Effect<Start, LaunchStoreUnavailable>
     readonly read: Effect.Effect<FleetState>
     /** Write what `events` change; `state` is the fleet with them folded in. */
     readonly record: (events: ReadonlyArray<FleetEvent>, state: FleetState) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/pool/FleetStore") {}
+
+/**
+ * Optional Antigravity report provider for the fleet's `report` RPC: carries
+ * this host's own limit events, reading, attempt floor and readableSignIn flag
+ * (never a token). Absent or failing leaves the fleet report without it.
+ */
+export class AntigravityReporter extends Context.Service<
+  AntigravityReporter,
+  {
+    readonly report: Effect.Effect<Option.Option<AntigravityReport>>
+  }
+>()("dotfiles-opencode/pool/AntigravityReporter") {}

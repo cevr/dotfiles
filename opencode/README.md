@@ -3,6 +3,15 @@
 Our orchestration harness and Prime look on OpenCode 2.x. The fork's public
 plugin hooks supply the UI; orchestration policy lives in this repository.
 
+Notification times include the calendar date, seconds, AM/PM, and the time zone
+(for example, `Nov 25, 2026, 2:00:00 PM EST`). Pool notices, wakes, and
+background question letters use the owner's Eastern time on both the Mac and
+the workbox, switching between EST and EDT with daylight saving time. Sabbath
+and latch notices use their configured place's time zone. The shared
+`decider/notification-time.ts` formatter changes prose only; timestamp fields
+in RPC responses, metadata, and storage keep their original numeric or ISO
+formats.
+
 ## Your daily `opencode`
 
 ```sh
@@ -1042,7 +1051,8 @@ The model (the domain files at `mods/orchestrate/`):
 
 - Facts: `SubagentStarted` (the agent, why it was routed there, its
   model, `fallback`, why it runs on Codex, when it does, and `lowered`, the
-  variant a worker asked for and does not run at),
+  variant a worker asked for and does not run at, and `fast`, what came of
+  a start's fast ask),
   `SubagentLatched` (a held start kept to start later: what holds it, why,
   when it opens, when it is decided again, and the fallback's hold) and
   `SubagentFinished` (the child session and how it ended).
@@ -1099,6 +1109,26 @@ the role's own (the model it would run on, at any variant or none, with or
 without its provider) runs as if it named none, reason `model-dropped`: at
 the role's effort, with the Codex fallback and the latch. Any other model a
 call names runs as named, with no fallback.
+
+Fast is asked per start, only when the owner asked for fast for that work:
+the subagent tool's optional `fast: true` (the plugin adds the field to the
+host's input and takes it out before the host's tool runs). The start then
+runs on the fast mode of the model it would run on (`<id>-fast` in the
+catalog, same variant), its Codex fallback's when held. Naming a fast mode
+as the model is the same ask, through the same path. With no fast mode
+offered it runs standard. Either way its `call` (or `latched`) line carries
+`fast` (`fast, as asked`, or that the model has none), and the parent's
+answer starts `orchestrate: this agent runs on <model>: <that>.`. A start is
+fast only because it asked: every start's model goes through one function
+(`asAsked` in model.ts), which first reduces a new start's model to its
+standard one wherever it came from (named, a fast parent's, the default, an
+agent's config, a latch's), then applies this start's ask. A new start that
+asks nothing under a fast parent runs standard, names that model to the host
+(which would otherwise inherit the parent's), and its line says the fast mode
+was not asked for. A follow-up keeps the mode its child started on unless it
+says `fast: false`, and its line says `fast, as it started`; a latch opens
+on its own start's ask. A row
+draws a fast mode as its model with `fast` (`sol 6.1 fast`).
 
 The units' logs (`unit-log.ts`): a planner's or implementor's start moves
 its unit, by the call's `<role> <unit> r<N>` description, to `plan` or
@@ -1288,6 +1318,80 @@ the Sabbath, a latched child and a Codex implementor (`tool-call.ts`); and
 whatever `mods/work` and `mods/guard` refuse (a red merge check never pushes;
 one land per host at a time).
 
+### Commitments
+
+What a run owes is one SQLite record per repository per host
+(`$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db`, the key from the
+checkout's origin, else from its repository's common git dir, a workspace
+keyed as its base; `mods/orchestrate/record.ts`, `sqlite/record.ts`), never
+prose: one commitment per promised outcome, its events and its rows written in
+one transaction (`user_version` 1, a daily backup beside it, seven kept). A
+file of a newer version is read and never written. Every free-text field
+(titles, quotes, refs, plans, reasons, notes) passes one boundary that holds it
+to one bounded line and redacts secret shapes.
+
+- **`commitments`** (the root's tool; a subagent is refused): `add` makes one
+  open, unowned commitment per part in one call, the call that records an
+  owner's approval (`source_kind: "owner-answer"`, `source_ref`, `quote`);
+  `assign` owns or re-owns one, with its waits (`after`: a commit on main,
+  another commitment closed, a date, a manual word) and a review-by time (7
+  days by default: every owned one has one); `order` starts an owner's and
+  answers all its open ones; `release`, `decide` (with why and a guarantee),
+  `defer` (keeps one open with why it waits), `reopen` (clears its reason, the
+  history keeps it), `invariant` (declares one from a committed document),
+  `word`, `route` (a hand-back), `list`, `history`, `import` (an Ergo
+  register, table to table; its closes read `historical, unclassified`).
+- **`follow_up`** (a worker's): one unowned commitment per finding, sourced to
+  the session and its idempotency key, with the owner it suggests and its
+  reason; it replaces a Follow-ups line.
+- **Reasons are data** (`mods/orchestrate/reasons.ts`): a class and a pointer
+  the plugin checks, never prose. A guarantee names an invariant the root
+  declared (bound to the document's blob at HEAD) and is the only close by
+  decision; a dependency names an open commitment whose chain is open and
+  acyclic (checked in the write's transaction); a measurement names a receipt
+  envelope under the checkout's `tmp/orchestrate/`, read through the host's
+  file system with its realpath contained and its bytes hashed into the event.
+  Each decided row has one close kind (guarantee, placed, historical; not-asked
+  is the spec-items unit's), bound to its state by the schema.
+- **Standings**, computed at each read and never stored: unowned, orphaned
+  (its owner's lane is gone), overdue (past review-by), due (every wait met,
+  not started) or held. Nobody says landed: a commitment lands only when the
+  commit a land event claimed for it is on the default branch, by ancestry.
+  A worker never closes one the owner approved; a root that does tells the
+  owner, who can have it reopened. A close is flagged, and listed first, when
+  the deciding session had no earlier event in this run; any earlier write of
+  that session in the run (a word, an add, an assign) avoids the flag, so it
+  says only that, not who the run's root is. A reopen keeps the flagged close
+  in the history.
+- **Created without the root remembering**: `orchestrate lane` gets or makes
+  the unit's commitment (owned by the unit, started) and its answer lists the
+  unit's open ones, and records the lane's workspace and start commit. Only a
+  land event claims: `orchestrate land`, the work tool's pushed land (its
+  answer's `pushed` and `landed` metadata, read by an `execute.after` hook), or
+  the root's `commitments({ action: "landed", id, head })` for a land by hand;
+  each claims the head it merged for the commitment whose lane that workspace
+  is. Status, the queue check and `list` only read; a status pass lands a
+  claimed head once git has it on the default branch. A lane removed with no
+  land is listed orphaned, its line naming the calls that resolve it.
+- **Where it is said**: `orchestrate status` and every `land` answer end with
+  the record's section (counts by standing, at most ten ids a listed standing,
+  owner-sourced first, and the `list` call for the rest), and the queue
+  check's ask carries it for a root that runs units or wrote to the record. A
+  record of held commitments says nothing.
+- **A host with no plugin** calls the same handlers through the CLI:
+  `bun cmd/orchestrate/record.ts <action> --json '<fields>' [--file <db>]`
+  (`list`, `history` and `export` open the file read-only; `import --json
+  '{"from":"<copy of register.db>","map":"ergo-register"}'` is idempotent).
+
+`cmd/orchestrate/record-model.sim.test.ts` holds the SQLite store to a
+reference model over generated runs with restarts and over every caller,
+operation, state, reason class, pointer kind and existence (nine broken
+stores go red),
+`commitments.sim.test.ts` the tools through the plugin, and
+`scripts/no-prose-state.test.ts` keeps every regular expression in
+orchestrate, status and the skill's scripts on an allow list each unit of the
+program shrinks.
+
 ## Pool
 
 `mods/pool` pools a provider's OAuth logins; its plugin is `cmd/pool`. It chooses the login each
@@ -1300,6 +1404,16 @@ names it. Other mods read it over its `dotfiles-opencode.pool` RPC
 pane draws `status`, and the sidebar asks `session` for the login a session
 is on (or would go out on next), by its label, and `alerts` for the login store's lost logins
 and failing refreshes.
+
+If a stored hold cannot be read, only that login is held; other logins keep
+serving. The pool keeps the original record beside its recovery time and
+rechecks with authenticated usage. A readable end is capped at seven days.
+Without a readable end, a known rate limit uses the usual five minutes;
+usage limits and sign-in are checked against fresh provider evidence. An
+unknown kind with no readable end gets 60 seconds. If usage cannot reveal
+that refusal, the next request may get one 429 with no spend; the ordinary
+429 path holds the login again rather than sending a retry loop. A temporary
+gap in a login listing does not erase its unexpired hold.
 
 A store login is lost while its file holds a refresh token the token endpoint
 refused; `alerts` names it with the slot file to sign it in to again. A
@@ -1404,53 +1518,67 @@ owner approved every reset in hand ahead of time (2026-11-15), so it never
 asks whether to claim one. One pure rule decides (`claim-rule.ts`
 `decideClaim`), on each review of a pool with fresh readings (`resets.ts`).
 
-Demand is a forecast of what runs now (2026-11-15: a start is almost never
-held any more). Each account's burn per window is measured over its readings
-of the last two hours in one window period (`burn.ts`, kept in memory; a
-restart, or a spent window, falls back to the period's average, and a
-forecast on an average it lacks a measure for says so: `, burn the window's
-average (none measured yet, as after a restart)`). The pool's burn on a
-window is its open accounts' (with none open, the rate it spent the others
-at), a start held adding its share of the agents running across the fleet.
-The agents running are the sessions busy now (from a step's start until the
-session goes idle; one not heard of for an hour lost its idle event) on this
-host and on each peer that answered in the last 10 minutes (its report's
-`busy`), however long ago they started: a run of hours counts as long as it
-works. That burn, run against the room left on the accounts not spent, says
-when the pool runs out, and the pool's first natural reset says whether that
-matters. With no agent running and no start held there is no forecast. The
-readings decide which windows exist: the 5-hour one is optional (on
-2026-11-15 four of the seven Claude logins read none), and the forecast
-stands on the weekly window and Fable's own week alone.
+Each account owns its weekly cadence and is paced toward 99% use before its
+reset, with five points of launch leeway. The optional 5-hour limit and
+Fable's separate weekly limit still bind. Fresh, approved Anthropic credits
+that empty the shared week add what a claim at the stop gives back (99% of the
+week each) to the pacing target; every usable count contributes. A Fable reset
+adds nothing: it gives back only what Fable spent, so pacing every model on it
+would spend into a hole the reset does not clear. Nor does any credit in the
+last 30 minutes before the week resets by itself, when no claim is made.
+An expiry also moves the exhaustion target to six hours before that credit
+expires. Scheduling accelerates existing quota; it cannot bypass a quota or
+count an unobserved refund. Stale stock or a stale shared week adds no capacity.
+OpenAI credits add no projected weekly capacity because they restart the week.
+Burn forecasts remain advisory and do not authorize an ordinary redemption.
 
-Capacity is taken in this order:
+Each usage window, the 5-hour and the weekly one on either provider, is in
+one of three states (`mods/pool/quota.ts` `WindowReading`):
 
-1. A reset about to expire unused, soonest expiry first. One that expires
-   within a day is just used, on anything it gives back: at once on a spent
-   window, else at its last call (6 hours before it expires, more than one
-   5-hour period) on the window it gives back most of. One that expires
-   later but before that window resets by itself is used once the window is
-   spent and the work would use it.
-2. A fresh account: while the forecast keeps room on the pool's accounts to
-   its first natural reset, the work goes there and no other reset is spent.
-3. Only when the pool is forecast to run out before that reset: a reset on
-   the most-used account near its limit (85% used, or its own run-out within
-   an hour), that frees the account (no other spent window still holds it),
-   when the work would use at least half of what it gives back before the
-   window resets by itself: the account whose week is freshest on a tie.
+- **Reported**: its use and reset were read. Only a reported window holds an
+  account or paces it, until its own reset.
+- **Absent**: the provider's successful usage answer says the account has no
+  such window: Anthropic's `five_hour: null` or `seven_day: null` (Ultra
+  accounts lost their 5-hour limit on 2026-11-24), a ChatGPT answer whose
+  two window slots hold no window of that length (a weekly-only plan). It
+  imposes nothing; it is read again within 30 minutes like any window. A
+  weekly-only account is paced on its week; an account with no week has
+  nothing to pace against and takes a start past the others' even line; one
+  with neither is admitted, its status saying it reports no usage windows.
+- **Unknown**: not read yet, a failed read, a missing field, or a shape the
+  reader does not know (named in the reading's `unrecognised` and the
+  status). It is never absent and never room by itself: a login waits for
+  one successful usage read in the last 30 minutes, then what that read
+  reported binds and the unknown window holds nothing more. A window a
+  response's headers leave out keeps its last reported reading until its
+  reset. An answer with no tracked window read either way is a failed read,
+  logged with its key names only.
 
-No claim lands inside 30 minutes of the window's own reset, nor a week-long
-window's under a day before it resets (but in a reset's last day), and an
-account takes one claim per window period, each judged again right before
-it is sent. A pool weighed with the forecast running out, or a start held,
-and no claim logs the reason for each no (`pool resets: no claim on <pool>:
-…`), only when it changes. After a claim the owner is told once, in the
-waiting session's tray, in one clause: `Claimed the weekly reset on
-<account>: weekly 88% used of 100% → 0% used, next reset 2026-11-18 12:00Z
-(the pool runs out before its reset: 7 agents running on 2 hosts, weekly
-88% used, forecast 100% in 50 min, reset in 3.0 days). 1 reset left this
-week; next expires 2026-12-15 12:00Z.` The notice has one choice, `OK`, and
-asks nothing. A question an older pool left open is withdrawn.
+A window that goes from reported to absent ends its hold at that read; one
+reported again binds at that read. Windows the pool does not know are shown,
+never binding; a refusal (a 429) holds whatever the readings say.
+
+Redemption follows these rules:
+
+1. Expiry first: within the last day, redeem on measured exhaustion or at the
+   six-hour last call, for any positive restoration, soonest expiry first.
+2. Otherwise, with running or held work, refill an exhausted account if the
+   reset frees it. Another fresh account or a slow burn does not veto it.
+   Shared weekly exhaustion uses the 99% safety stop; a model's own quota
+   uses 100%. Anthropic keeps its weekly deadline. A Fable reset clears its
+   own quota and subtracts its reported shared contribution, never a fixed half.
+3. OpenAI resets require weekly exhaustion, even if the 5-hour limit is spent;
+   redeem promptly with active or held work and pace against the restarted week.
+   Both providers wait if the natural weekly reset is within 30 minutes.
+
+One claim runs at a time per account. After success, another claim in the
+same cadence needs fresh usage and a new observed inventory generation.
+Unchanged stock and retries keep the same request identity. The send rechecks
+the rule against the provider's fresh reading under the fleet lease.
+After redemption the owner gets one notice with the actual before/after
+usage and resets remaining; it asks nothing. A pending observation never
+supplies refund room or authorizes another claim. A question an older pool
+left open is withdrawn.
 
 `resets: { auto: false }` claims nothing on its own; `resets: false` works
 none. `pool_push` still caps or shapes spending: a push's approved resets
@@ -1459,7 +1587,109 @@ only once every fleet peer granted the provider's lease; while a peer cannot
 be reached it is recorded unsent (`not sent: no agreement, <peer>
 unreachable`) and goes again later. `claim-rule.test.ts` holds the rule to
 its properties over generated weeks of steady burn, and against the same
-weeks with no reset spent.
+weeks with no reset spent. Quint models and trace replay cover admission and
+caller-ready reset decisions; `verify-pool-pace` documents their exact bounds.
+
+### Antigravity quota
+
+`mods/pool/antigravity` tracks Antigravity's (agy's) quota groups, Gemini and the
+Claude & GPT quota they share, each with its 5-hour and weekly window. It reads
+the same way T3 Code does (`antigravityUsageLimits.ts` at 55085df2).
+
+A read happens only when asked: the tool's `read` action or
+`bun cmd/pool/antigravity-read.ts`. Plugin start, `pool_push` status and the
+`/pool` pane only show the stored reading and its age; no timer reads. All
+plugin instances and processes on a host share one state file
+(`$XDG_STATE_HOME/opencode-pool/antigravity.json`, no token in it) under a lock.
+No read is made within 5 minutes of the last attempt, whoever made it, and
+failures back that off further. The lock names its owner, so a holder that
+stalled past a takeover saves nothing. A state file that does not decode counts
+as an attempt just made and is kept beside it as `.undecodable`. A failure anywhere in this code shows as an
+"unknown" row and never stops or delays the pool.
+
+A personal sign-in is read only from the token files of a managed profile, made
+as T3 makes one (default
+`$XDG_STATE_HOME/opencode-pool/antigravity/profiles/default`; `~/.gemini` is not
+read by default). One description in `mods/pool/antigravity/profile.ts` gives
+all of it: the layout, `antigravity-acp/settings.json`, the links into
+`~/.gemini`, the environment, and the launch `agy acp --gemini-dir <profile>
+--app-data-dir antigravity-acp`, with `--login` added for the sign-in.
+`bun cmd/pool/antigravity-read.ts --profile-env` makes the profile and prints the
+one line that signs agy in on it. T3's BROWSER helper and its TMPDIR are left
+out: both are local only and change nothing Google sees, but without the helper
+the sign-in may open the default browser. Every agy pane must start on this
+profile's launch line, or the token file expires about an hour after sign-in:
+nothing refreshes it, and T3 keeps it fresh by running every session on the
+profile. agy's interactive TUI, which the orchestrator's panes run, lists
+neither flag in `agy --help`. So for it the answer is "pane mode: token path
+unknown: reads unavailable", and a read needs a fresh sign-in. A personal
+sign-in never reads the keychain. For a business sign-in, the macOS keychain is read
+only with the owner's consent (`read` with `consent: true`, or `--consent`), and
+one consent buys exactly one attempt, whatever its outcome. The token it gives
+is held in memory only, so a restart, an expiry or a 401 means a new consent.
+
+The read itself is `v1internal:retrieveUserQuotaSummary`, then
+`fetchAvailableModels`, on Google's daily and production Code Assist hosts.
+One header rule covers every request: it sets exactly the header names T3's code
+sets (the bearer and Antigravity's user agent on the quota calls, none on the
+token refresh), and the runtime adds its own defaults. No request follows a
+redirect or sends a trace header (`source.test.ts` pins every request). It runs
+on Bun's fetch where T3 runs on Node's, so the TLS handshake and the runtime's
+default headers (user agent on the refresh, accept-encoding, connection) can
+differ.
+
+A group answers in one of these states:
+
+- limited until a time, from a limit an agy pane printed (recorded with the tool's
+  `limit` action, on every group when the pane names none) or from a full window;
+- limited, reset unknown, when the limit came with no reset time;
+- open, only from a reading with room;
+- not measured, when there is no reading and no live limit: usable, but never
+  called open;
+- unknown, when the reading leaves a window out.
+
+The `antigravity` tool answers `status`, `open`, `record` (alias `limit`), `gate`, `heartbeat`, `release`, `clear` and `read`. The
+same rows appear in `pool_push` status, in `orchestrate status` and `land`, in the `/pool` pane (the pool's
+`antigravity` RPC method) and from `bun cmd/pool/antigravity-read.ts`. The pool
+option `antigravity: false` turns all of this off.
+
+Across a fleet, each host includes its Antigravity record (limit events, latest
+reading, attempt floor, readable-sign-in bit and wire-safe reason kind — never a
+token, profile path or home directory) in its fleet report, decoded tolerantly
+on its own so an unknown future reason, field or garbage payload never drops a
+peer's Claude or OpenAI pool data. Every peer report is normalized ONCE at
+arrival onto this host's clock (`offset = receivedAt - report.at`, cancelling
+peer clock skew of any magnitude or sign; transit delay up to `TRANSIT_BOUND_MS`
+= 15 s only shifts normalized times slightly late, erring toward limited) and
+clamped ONCE against `receivedAt + MAX_RESET_HORIZON_MS` (7 days + 5 minutes) so
+nothing ever re-clamps against rolling `now`. Normalized reports merge as a
+commutative, associative, idempotent join-semilattice: the worse live reading
+wins, keyed limits take the latest reset (erring toward limited and letting a
+newer episode supersede an expired one), Error IDs (`id:*`) stay bounded in
+`seenLimitKeys`, and content-hash episode keys (`text:*`) suppress repeats only
+while live and are pruned once spent (past reset, cleared, or lifted by a later
+reading with room beyond `CLOCK_SKEW_BOUND_MS` = 5 min). When recording a pane
+frame that was not printed just now, callers pass `at` (epoch ms on the
+recording host's clock; future `at` values are refused) so frames older than
+their own reset are ignored.
+
+Only one host in the fleet makes active Google reads: the lowest fresh host id
+with a readable sign-in, obeying the 5-minute floor across all hosts' merged
+attempts. During a network partition where hosts cannot reach each other, each
+side sees the other as stale and elects its own reading host (one reader per
+side, matching two independent T3 instances); right after the partition heals,
+at most one extra read can land within a single fleet poll interval before the
+merged floor converges.
+
+Before starting or resuming an agy pane or worker, the start gate (`gate`) holds
+any limited group until its finite reset time (leaving unknown/absent windows
+and stale peers without limits unblocked) and enforces a cross-host Gemini
+concurrency cap counted from the fleet's live busy set (default 4 per agent and
+8 across the fleet, configurable via `antigravity.geminiCap`; a stale peer's
+last reported running agents count until its report ages past `BUSY_FRESH_MS`).
+A running external agy pane refreshes its busy slot with `heartbeat` (keeping it
+counted past `BUSY_MS` = 60 min while still running) and frees it on exit with
+`release`.
 
 ## Status
 
@@ -2140,7 +2370,13 @@ for good, as Claude Code's `claude/hooks/guard-destructive.ts` does. It runs
 in the tool registry's `execute.before` hook for `shell` (and `bash`), so it
 sees a direct call and a kernel cell's `tools.shell`, which the runtime runs
 through the same hooks. The model reads the refusal as the tool's error:
-`guard-destructive: <reason>.`
+`Refused by guard-destructive: <reason>.`
+
+An old-revision run can instead get `Not a refusal: a command-shape rule.
+Run it this way and continue:`. The next line is the same command with the
+Chrome shim set. The guard only prints that form if it passes the guard.
+If the guard hits its path limit without a definitive finding, it instead
+says `Cannot tell:` and asks the caller to split the command into parts it can check.
 
 It refuses:
 
@@ -2184,7 +2420,7 @@ only lists pass.
 It also refuses a subagent's foreground shell call that opens by sleeping 30
 seconds or more (`sleep 60`, `sleep 60 && tail log`, `sleep 1m; gh run
 view`; units and summed operands as GNU `sleep` reads them), as
-`guard-sleep: <reason>.`. The reason names the replacement: start what it
+`Refused by guard-sleep: <reason>.`. The reason names the replacement: start what it
 waits on with `background: true` and wait on the handle with
 `shell({ action: "wait", id, ms })`, or run a check of outside state as a
 background `until` loop and wait on that (wake and monitor refuse a
@@ -2195,7 +2431,7 @@ nothing. `sleep.ts` holds the rule; `Subagents` (`opencode/`: a session with
 a parent) is its contract.
 
 It refuses `git worktree add` in a checkout a workspace can copy, as
-`guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
+`Refused by guard-worktree: <reason>.`: a worktree is a full copy of the checkout, a
 workspace a copy-on-write one. A workspace can copy a checkout whose file system clones
 (`apfs`, `btrfs`, `xfs`, as `mount` names it), or one a base shares:
 the checkout itself, or a source with the same origin, SSH and HTTPS URLs
@@ -3961,7 +4197,7 @@ Effect's `Clock`; the worker's own clock stops while its tool calls run.
 
 Every role is an OpenCode subagent; its model is the config's.
 `bun run daily` binds every role (planner, implementor, verifier, worker)
-to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the fallback, on the ChatGPT
+to the newest Claude Opus, and puts the planner on the newest Fable first (below). Codex is the planner's fallback, on the ChatGPT
 subscription OpenCode signs in to itself (`opencode auth login openai`),
 used only when the pace holds a new Opus start.
 
@@ -3972,12 +4208,11 @@ used only when the pace holds a new Opus start.
 | held | held | latches, and opens on whichever opens first (Opus on a tie) |
 | Sabbath | (not asked) | latches until work resumes |
 
-The fallback is Codex's newest sol, at `high` (the verifier at `medium`), or
-the newest luna at `max` when the description ends in `(light)`, `(direct)`
-or `(mechanical)` (`codexFallback` in `role.ts`; `Models.newest` picks the
-latest release of the family). A call that names a `model` runs on it as is,
-with no fallback. A follow-up never falls back: a role already on Codex stays
-there, and the next new start tries Opus first again. The parent's answer
+The planner's fallback is Codex's newest sol at `high` (`roleModels` in `role.ts`).
+Verification runs only on Claude Opus. The guard honors an explicit Opus
+model, refuses Codex with the allowed form, and never inherits Codex from a
+parent. A held verifier latches on Opus, including a follow-up to its existing
+child. The parent's answer for a planner fallback
 starts with `orchestrate: this agent runs on <model>, the Codex fallback
 (<why>).`, and the call log's `call` line carries the same `fallback`.
 No Codex bridge, MCP server or thread tools are involved.
@@ -4009,10 +4244,20 @@ To see what admitted a start, read its line in `~/.cache/orchestrate/opencode-ag
 The shared Claude `budget.ts` scans `~/.claude/projects` transcripts, so it
 cannot measure OpenCode's load or estimate its agent costs. Instead, this
 pool reads provider quotas, including spend by other harnesses on the same
-accounts. It holds new starts when pooled weekly use exceeds a 99% even
-weekly allowance plus five percentage points of leeway, or every available
-account is at a hold line: its 5-hour window at 90% used of 100%, or its
-week at 99% used of 100%.
+accounts. Each usable account follows its own weekly cycle: a 99% even
+weekly allowance plus five percentage points of leeway. The pace pools only
+positive room on accounts that can serve the requested model now; an
+exhausted, refused, or ahead-of-pace account cannot cancel another account's
+room. With one usable account, admission is exactly that account's pace.
+Ordinary requests go only to accounts within their own line, including when
+moving a cached session. A 5-hour window at 90% used of 100%, or a week at
+99% used of 100%, still holds that account. Fleet starts not yet reflected
+in the readings count once against the usable room.
+
+`bun scripts/verify-pool-pace.ts` checks this rule with Quint 0.34.0 and
+Apalache, rejects four broken policies, and replays generated snapshots
+against the TypeScript admission function. The model's bounds and its
+source coverage are in `.claude/skills/verify-pool-pace/SKILL.md`.
 
 Every usage figure the owner or an agent reads (the pace's hold reasons and
 latches, the reset claim notices and claim log, `pool_push` plan and status,
@@ -4061,8 +4306,49 @@ ChatGPT account's own usage, the same numbers Codex CLI's `/status` shows:
 the `wham/usage` endpoint, then the `x-codex-primary/secondary-*` headers and
 `codex.rate_limits` frames on each response
 (`mods/pool/chatgpt/usage.ts`). The account counts every place it is spent,
-this host or another, OpenCode or Codex CLI. Its requests are never placed,
-and its token is never stored or shown. A new subagent on a Codex provider
+this host or another, OpenCode or Codex CLI. OpenCode selects its active
+login; the pool does not switch it. The pool can turn down a known durable
+hold during routing without reading usage. That early answer never admits a
+send: the pool checks the active OAuth login against the hold store at the
+concrete HTTP request or `response.create` frame, including on a socket
+another Step already used. Each check admits only that send; a retry must
+check again even when it retains the Step ID. Other frames are not gated:
+a new hold does not cut off a running stream. Hard holds and spent windows
+apply at the wire; the spend-evenly target and sign-in scope checks do not
+re-run there. The check does not fetch usage unless a sign-in or damaged-row
+recheck is due; one send reserves that appointment before reading usage.
+
+An API key or a route without a pool login sends as it did without the pool;
+`pace` and `status` identify it as `not-tracked-no-pool-login`. If an observed
+OAuth login disappears and that account has a recorded sign-in hold, the
+hold still applies until the pool sees a sign-in or another credential is
+selected. After restart, a signed-out route with no selected credential may
+send with configured authentication, but carries no token from the previous
+pool login. A tracked active login with unreadable hold authority is not sent.
+Provider aliases use the same hooks. Only the `anthropic` provider key takes
+the existing signed placement path; another `providers` key cannot switch
+the credential chosen by OpenCode. The token is never stored or shown by the pool.
+
+For OpenAI, a host with typed Step deferral retries the original Step at its hold's
+retry time. Older hosts stop it before sending and show when to retry.
+On the older WebSocket host alone, a hold first committed after the
+`model.request` check and before `experimental.ws.send` can be wrapped as a
+generic stream failure by the host. Those are the boundaries of that case,
+not a fixed elapsed-time bound; even then no held frame is written.
+`heldSend({ sessionID })` reports the last refusal and its `retryAt` as `held`
+before that time and `ended` at or after it. It is kept across restarts until
+the next admitted primary send, session deletion, or the scheduled pool scan
+after it has been ended for 24 hours. A caller never needs to parse an error
+message.
+
+A tracked OpenAI login without a usage reading waits up to 3 seconds for a
+shared first read. On failure or timeout the send goes out unmeasured; `status`
+includes `usageReadFailure.failedAt` and `nextTryAt`, 60 seconds later. Sends
+in that interval do not wait. An outstanding read can still publish its
+result within its 10-second bound. A measured login and an untracked route
+do not add a usage read on the send path.
+
+A new subagent on a Codex provider
 takes that pace when the orchestrate mod's `codex.pool` is set (daily sets
 `codex: { pool: true }`). When the pool has no reading (`measured: false`),
 or without `codex.pool`, it asks the orchestrate skill's

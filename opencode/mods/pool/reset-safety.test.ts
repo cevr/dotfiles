@@ -4,8 +4,9 @@
 //
 // - B1: one account takes one claim at a time. After a claim, nothing more is
 //   claimed on it until a reading newer than the claim shows what it did; one
-//   spent reading never spends two grants, and a window period takes one
-//   claim. The request id comes from the account, the kind and its period,
+//   spent reading never spends two grants; another redemption in the same
+//   period needs a fresh inventory generation. Its request id includes
+//   the account, kind, period and remaining credit count,
 //   not the grant.
 // - M1: a claim the pool decides on its own needs fresh evidence: a reading
 //   and a list of the grants read within FRESH_MS, and a known natural reset.
@@ -13,7 +14,7 @@
 // - M2: a reset is worth what it restores: less than MIN_RESTORE is never claimed.
 // - `auto: false` claims nothing on its own.
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Array as Arr, Effect, Option } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { carryOver, type QuotaWindow, type ResetCredit } from "./quota.ts"
 import { NATURAL_MS } from "./claim-rule.ts"
@@ -323,7 +324,7 @@ describe("M1 per field: each window and share is as fresh as its own read", () =
         const fable = window("7d:Fable", 1, T0 + 3 * DAY, share)
         const old = { at: T0 - age, windows: [fable] }
         const next = { at: T0, windows: [window("7d", 0.2, T0 + 3 * DAY)], resets: { available: 1, credits: [grant("f", expiresAt, FABLE)] } }
-        const reading = carryOver(old, next, T0)
+        const reading = carryOver(old, next)
         const label = `share ${JSON.stringify(share)}, Fable window read ${age / MINUTE} min before`
         const { events } = review([{ ...account([], []), reading }])
         if (age >= FRESH_MS) expect(claimsOf(events), label).toEqual([])
@@ -380,3 +381,45 @@ describe("a claim sent is remembered across a restart (claimOut)", () => {
 })
 
 test("EXPIRING_MS is the last day", () => expect(EXPIRING_MS).toBe(DAY))
+
+
+test("a second credit in one weekly cadence needs a fresh inventory generation and retains its own retry identity", () => {
+  const expiry = T0 + 2 * HOUR
+  const credits = [grant("g1", expiry, WEEKLY), grant("g2", expiry, WEEKLY)]
+  const reading = (at: number, remaining: ReadonlyArray<ResetCredit>, used = 1) => account([window("7d", used, T0 + 3 * DAY)], remaining, at)
+  const first = review([reading(T0, credits)])
+  const one = Option.getOrThrow(Arr.head(claimsOf(first.events)))
+  const settled = run([[T0 + MINUTE, SettleClaim.make({ key: one.key, outcome: "reset", before: [window("7d", 1, T0 + 3 * DAY)], after: [window("7d", 0, T0 + 3 * DAY)] })]], first.state)
+  // A new usage reading with the OLD inventory must not spend another grant.
+  expect(claimsOf(review([reading(T0 + HOUR, credits)], T0 + HOUR, settled.state).events)).toEqual([])
+  // The provider reports one fewer weekly credit, and work has exhausted the refill.
+  const remaining = [grant("g1", expiry, { ...WEEKLY, count: 0 }), grant("g2", expiry, WEEKLY)]
+  const second = review([reading(T0 + HOUR, remaining)], T0 + HOUR, settled.state)
+  const two = Option.getOrThrow(Arr.head(claimsOf(second.events)))
+  expect(two.creditID).toBe("g2")
+  expect(two.key).not.toBe(one.key)
+  expect(two.requestID).not.toBe(one.requestID)
+  // A restart and a retry keep this second request, rather than creating a third.
+  const again = review([reading(T0 + HOUR + RETRY_MS, remaining)], T0 + HOUR + RETRY_MS, second.state)
+  expect(claimsOf(again.events).map((reset) => [reset.key, reset.requestID])).toEqual([[two.key, two.requestID]])
+})
+
+
+test("unchanged inventory cannot redeem the same request again through another judged window", () => {
+  const deadline = T0 + 3 * DAY
+  const firstCredit = grant("g1", T0 + 2 * HOUR, FABLE)
+  const secondCredit = grant("g2", T0 + 2 * HOUR, FABLE)
+  const credits = [firstCredit, secondCredit]
+  const read = (at: number, week: number, own: number, part: number, stock = credits) => account([
+    window("7d", week, deadline), window("7d:Fable", own, deadline, { weeklyUsed: part }),
+  ], stock, at)
+  const first = review([read(T0, 1, 0.6, 0.3)])
+  const one = Option.getOrThrow(Arr.head(claimsOf(first.events)))
+  expect(one.key).toBe(expiringKey("claude", "a", "7d", deadline))
+  const settled = run([[T0 + MINUTE, SettleClaim.make({ key: one.key, outcome: "reset", before: [window("7d", 1, deadline)], after: [window("7d", 0.7, deadline)] })]], first.state)
+  // Usage changed, but the provider still lists the inventory used for the first claim.
+  expect(claimsOf(review([read(T0 + HOUR, 0.8, 1, 0.5)], T0 + HOUR, settled.state).events)).toEqual([])
+  // Only a fresh remaining-count generation permits the next redemption.
+  const depleted = [{ ...firstCredit, count: 0 }, secondCredit]
+  expect(claimsOf(review([read(T0 + HOUR, 0.8, 1, 0.5, depleted)], T0 + HOUR, settled.state).events)).toHaveLength(1)
+})

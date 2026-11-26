@@ -3,11 +3,12 @@ import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const root = process.cwd()
-const out = process.env.SCENARIO_OUT ?? "out"
-const theme = process.env.SCENARIO_THEME ?? "prime"
+const { env } = process
+const out = env.SCENARIO_OUT ?? "out"
+const theme = env.SCENARIO_THEME ?? "prime"
 const now = Date.parse("2026-11-04T15:00:00Z")
 const accounts = [
   { credentialID: "store:alpha", live: 1, load: 1, noRoom: false, reading: { at: now, windows: [{ name: "5h", utilization: 0.23, resetAt: now + 3600000 }, { name: "7d", utilization: 0.44, resetAt: now + 86400000 }] } },
@@ -37,13 +38,13 @@ const fake = `export default {id: "fixture.pool", async setup(ctx) {
 }}`
 
 export default OpenCodeDriver.use({
-  opencode: { dev: process.env.OPENCODE_DEV! },
+  opencode: { dev: env.OPENCODE_DEV! },
   config: { plugins: [
     { package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/agents.jsonl` } },
-    { package: `${root}/cmd/status`, options: { log: `${out}/agents.jsonl`, statusScript: join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
+    { package: `${root}/cmd/status`, options: { log: `${out}/agents.jsonl`, statusScript: env.SCENARIO_STATUS_SCRIPT ?? join(homedir(), ".claude/skills/orchestrate/scripts/status.ts") } },
   ] },
-  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: process.env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/cmd/prime`, `${root}/cmd/status`] },
-  tui: { viewport: { cols: Number(process.env.SCENARIO_COLS ?? 144), rows: 60 } },
+  tuiConfig: { animations: false, tabs: { mode: "off" }, theme: { name: theme, mode: env.SCENARIO_MODE === "light" ? "light" : "dark" }, plugins: [`${root}/cmd/prime`, `${root}/cmd/status`] },
+  tui: { viewport: { cols: Number(env.SCENARIO_COLS ?? 144), rows: 60 } },
   project: { git: true, files: {
     ".opencode/plugins/fixture/package.json": JSON.stringify({ name: "fixture-pool", type: "module", exports: { "./server": "./server.ts" } }),
     ".opencode/plugins/fixture/server.ts": fake,
@@ -57,8 +58,8 @@ export default OpenCodeDriver.use({
     const text = JSON.stringify(request)
     if (text.includes("You name conversations")) return Stream.make(Llm.text("Pool status"), Llm.finish())
     if (!text.includes("show-pool-fixture")) return Stream.fromEffect(Deferred.await(child)).pipe(Stream.drain, Stream.concat(Stream.make(Llm.text("agent done"), Llm.finish())))
-    // A verifier, not an implementor: the sim's model is a gpt one, and Codex never implements.
-    if (!text.includes("call_worker")) return Stream.make(Llm.toolCall({ index: 0, id: "call_worker", name: "subagent", input: { description: "verifier pane r1", prompt: "wait in fixture", agent: "worker", background: true } }), Llm.finish("tool-calls"))
+    // The fake GPT model may run a planner, not a verifier or an implementor.
+    if (!text.includes("call_worker")) return Stream.make(Llm.toolCall({ index: 0, id: "call_worker", name: "subagent", input: { description: "planner pane r1", prompt: "wait in fixture", agent: "worker", background: true } }), Llm.finish("tool-calls"))
     return Stream.make(Llm.text("Status fixture ready"), Llm.finish())
   })
   type Frame = { lines: readonly { spans: readonly { text: string }[] }[] }

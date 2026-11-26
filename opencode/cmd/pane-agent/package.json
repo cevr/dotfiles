@@ -1,0 +1,15 @@
+{
+  "name": "@dotfiles/opencode-cmd-pane-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Composition roots for @dotfiles/opencode-pane-agent: OpenCode server plugin and TUI Rex-pane binder.",
+  "exports": {
+    "./server": "./server.ts",
+    "./tui": "./tui.ts"
+  },
+  "dependencies": {
+    "@dotfiles/decider": "workspace:*",
+    "@dotfiles/opencode-pane-agent": "workspace:*"
+  }
+}

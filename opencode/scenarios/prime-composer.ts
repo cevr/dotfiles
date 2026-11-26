@@ -15,7 +15,7 @@
 // (scenarios/prime-composer-frames.ts).
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { alarmShows, CLOSED, closedDock, detailShows, noneShows, panelShows, type PanelFrame } from "./prime-composer-frames.ts"
 
 const root = process.cwd()

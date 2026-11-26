@@ -1,7 +1,7 @@
 // Opus first, Codex second, in real OpenCode with the Prime look: the
 // orchestrate and wakes plugins, a stand-in pool whose pace holds every new
 // agent on the first model's provider, and a second provider standing in for
-// Codex, with two sol models. The parent starts a planner (Codex plans and verifies, never implements);
+// Codex, with two sol models. The parent starts a planner, the only role with this fallback;
 // the pool holds its model, the Codex admission script admits the newest
 // sol, so the worker starts at once on it instead of latching; the call's
 // result, led by the line saying where it ran and why, and then its answer
@@ -17,7 +17,7 @@
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -105,6 +105,7 @@ export default OpenCodeDriver.use(
           options: { now: PIN, log: `${out}/agents.jsonl`, codex: { providers: ["codex"], script: admit } },
         },
         { package: `${root}/cmd/wake`, options: { backstop: "off" } },
+        { package: `${root}/cmd/kernel`, options: { codeOnly: false } },
         { package: pool },
       ],
     },
@@ -135,21 +136,15 @@ export default OpenCodeDriver.use(
       })
       const until = (name: string, ready: (frame: string) => boolean, times = 400) =>
         ui.capture().pipe(
-          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.void : Effect.fail("pending"))),
+          Effect.flatMap((frame) => (ready(text(frame)) && !text(frame).includes("Finishing startup") ? Effect.succeed(frame) : Effect.fail("pending"))),
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times }),
           Effect.tapError(() => ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${name}.timeout.txt`, text(frame))))),
         )
-      const save = (name: string) =>
-        Effect.gen(function* () {
-          const { images: _, ...frame } = yield* ui.capture()
-          writeFileSync(`${out}/${name}.txt`, text(frame))
-          writeFileSync(`${out}/${name}.json`, JSON.stringify(frame))
-          console.log("screenshot:", yield* ui.screenshot(name))
-        })
-
       yield* ui.submit(ASK)
-      yield* until("fallback-done", (frame) => frame.includes(HEARD), 600)
-      yield* save("fallback-done")
+      const { images: _, ...frame } = yield* until("fallback-done", (frame) => frame.includes(HEARD) && /^ *◆ planner sol 6\.1  Check the export  /m.test(frame), 600)
+      writeFileSync(`${out}/fallback-done.txt`, text(frame))
+      writeFileSync(`${out}/fallback-done.json`, JSON.stringify(frame))
+      console.log("screenshot:", yield* ui.screenshot("fallback-done"))
       writeFileSync(
         `${out}/fallback-requests.json`,
         JSON.stringify({

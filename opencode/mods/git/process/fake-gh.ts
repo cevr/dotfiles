@@ -7,6 +7,7 @@
 // tag), a job's log and `pr create`; anything else fails.
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { stamp } from "../../../tests/hang-guard.ts"
 
 export interface FakeCheck {
   readonly name: string
@@ -132,7 +133,7 @@ export const main = () => {
   if (args[0] === "api" && args[1] === "--include") {
     const path = args.at(-1) ?? ""
     const sent = args.find((arg) => arg.startsWith("If-None-Match: "))?.slice("If-None-Match: ".length)
-    const tag = world.tags?.[path] ?? `"${Date.now()}-${Math.random()}"`
+    const tag = world.tags?.[path] ?? `"${stamp()}-${Math.random()}"`
     if (sent !== undefined && sent.replace(/^W\//, "") === tag) {
       out(`HTTP/2.0 304 Not Modified\nEtag: ${tag}\n`)
       return fail("gh: HTTP 304")

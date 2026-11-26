@@ -25,7 +25,8 @@
 // `steer` when it carries the steer, `now` when it carries the second message.
 import { Effect, Schedule, Stream } from "effect"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -77,7 +78,7 @@ export default OpenCodeDriver.use(
           const kind = s.includes(NOW) ? "now" : s.includes(STEER) ? "steer" : "brief"
           appendFileSync(`${out}/requests.txt`, `${kind}\n`)
           if (kind === "now") return Stream.make(Llm.text(SHIPPED), Llm.finish())
-          stalled = Date.now()
+          stalled = stamp()
           const first = kind === "steer" ? STEERED : WORKING
           return Stream.make(Llm.text(first), Llm.pause(STALL), Llm.text(DONE), Llm.finish())
         }
@@ -146,6 +147,6 @@ export default OpenCodeDriver.use(
       yield* until("answered", (frame) => frame.includes(SHIPPED))
       yield* save("answered")
       // Let a stalled answer end (if nothing cut it) before the driver checks every model response settled.
-      yield* Effect.sleep(Math.max(0, stalled + STALL + 3_000 - Date.now()))
+      yield* Effect.sleep(Math.max(0, stalled + STALL + 3_000 - stamp()))
     }),
 )

@@ -2,11 +2,12 @@
 // fake live pool: no live call. It sends as the auth plugin does, places as the
 // pool does (away from the owner's live sessions and holds), fails over on a
 // 429 and stops when the pace or every account says so.
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setSystemTime, test } from "bun:test"
 import { costOf, create, Ledger, MODEL, poolTransport, useModel, useSleep, useTransport } from "./api.ts"
 import { type Live, Pool, PoolLimit, type Source, weeklyDrift } from "./pool.ts"
 import type { AccountStatus } from "../../mods/pool/status.ts"
 import type { Pace } from "../../mods/pool/pace.ts"
+import { nextRetryAt } from "../../mods/pool/pace.ts"
 
 const NOW = Date.UTC(2026, 10, 9, 12)
 const HOUR = 3_600_000
@@ -116,7 +117,7 @@ describe("the pool transport", () => {
   })
 
   test("pace: the live pool's no, then the eval accounts' own readings, stop the run", async () => {
-    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", retryAt: NOW + HOUR }
+    const wait: Pace = { ok: false, measured: true, reason: "the pool's weekly pace is over", reasonCode: "even-line", retryAt: nextRetryAt(NOW, [NOW + HOUR]) }
     const told = new Pool({ source: source(["store:a"]), live: live([account("store:a")], wait), now: () => NOW })
     expect(await told.pace()).toMatchObject({ ok: false, reason: "live pool: the pool's weekly pace is over" })
 
@@ -165,9 +166,9 @@ describe("the pool transport", () => {
     useSleep(async (ms) => {
       waited.push(ms)
       now += ms
+      setSystemTime(now)
     })
-    const realNow = Date.now
-    Date.now = () => now
+    setSystemTime(now)
     try {
       const ledger = new Ledger(1)
       const response = await create(ledger, { system: [{ type: "text", text: "You are a coding agent." }], tools: body.tools, messages: [{ role: "user", content: "hi" }], session: "s1" })
@@ -176,7 +177,7 @@ describe("the pool transport", () => {
       expect(waited).toHaveLength(1)
       expect(waited[0]).toBeLessThanOrEqual(5_250)
     } finally {
-      Date.now = realNow
+      setSystemTime()
     }
   })
 })

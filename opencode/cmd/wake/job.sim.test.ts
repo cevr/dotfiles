@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Jobs on the simulated host (sim/world.ts), at 20 seeds: tests/job.test.ts's
 // name and the claims it reads off the model's requests, the transcript and
 // the replies, moved off real OpenCode (it waited a real job's 3 s, a 10 s
@@ -5,17 +7,20 @@
 // the world's context (sim/plugins.ts); its jobs are the runner's memory
 // double, which this test drives as scenarios/job.ts's command would: it
 // starts, prints, appends a progress line to $JOB_DRIP, and 3 s later prints
-// its last line and exits 4. The server's poll finds the end on the world's
-// clock. What only a real process shows (a detached process group, its log
+// its last line and exits 4, then rings the wakes' `due` as the runner does
+// once its exit is written. The owner's own kill that sees the end is that
+// end's delivery, so no letter follows it (the other kills, the TUI's stop
+// and an ancestor's, are cmd/wake/job-events.sim.test.ts's). What only a real process shows (a detached process group, its log
 // file, a kill's signal) stays in tests/job.test.ts and
 // mods/wake/process/runner.test.ts.
 import { Effect } from "effect"
 import * as MemoryRunner from "@dotfiles/opencode-wake/memory/runner"
+import { WAKES } from "@dotfiles/opencode-wake/wake"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/job.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/job.sim.test.ts")
 
 const WORK = "/scratch/project"
 const KAPPA = `echo kappa-start; printf 'compiled\\n' >> "$JOB_DRIP"; sleep 3; echo KAPPA-DONE; exit 4`
@@ -98,7 +103,8 @@ seeded("a job's end steers a letter with its exit, log tail and note into the id
     yield* world.advance(3_000)
     if (kappa !== void 0) kappa.log += "KAPPA-DONE\n"
     MemoryRunner.ended(runner, id, 4, world.now())
-    // The server's poll finds the end; the letter wakes the idle session.
+    // The runner's call once its exit is written; the letter wakes the idle session.
+    yield* world.rpc(WAKES.id, "due", { id })
     yield* world.until(() => idle() && replies().includes("Woke on kappa."), 60_000)
 
     // The receipt: the id, the log, and that the end letter will come.

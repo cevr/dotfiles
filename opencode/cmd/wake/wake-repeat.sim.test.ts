@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A repeating monitor on the simulated host (sim/world.ts), at 20 seeds:
 // tests/wake-repeat.test.ts's name and the claims it reads off the model's
 // requests and the transcript, moved off real OpenCode (it waited out a
@@ -12,10 +14,10 @@
 // the built-in automation plugin off as daily writes it) stays in the real file.
 import { Effect } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/wake/wake-repeat.sim.test.ts")
+const { seeded } = simulationRunner("cmd/wake/wake-repeat.sim.test.ts")
 
 const WORK = "/scratch/project"
 const STATUS = "/scratch/wake-repeat-status.txt"

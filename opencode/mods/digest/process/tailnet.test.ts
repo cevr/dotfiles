@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/process/tailnet.ts: onNone: () => Effect.map(Effect.orElseSucceed(Effect.tryPromise(() => file(cli).exists()), () =
 // Tailscale's status, as `tailscale status --json` prints it (invented hosts), and the CLI that prints it:
 // - it is found only at absolute paths, never through PATH;
 // - no CLI, a failing one, a hanging one or one that prints nonsense gives no status, and says which (fake CLIs in a

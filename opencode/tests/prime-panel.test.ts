@@ -11,18 +11,17 @@
 // read too. Needs OPENCODE_DEV, a fork with the `session.composer.panel.*`
 // slots and a Terminals row's terminal in its input (panel-terminal-state).
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { BAR, FOOTERS, panelOf as panel, ROWS, SUBAGENTS, type Tab } from "../scenarios/prime-panel-rows.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-panel.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
 
-/** OpenCode's start, a scripted turn and two walks of the panel: well past its usual 20 seconds. */
-const SCENARIO_MS = 180_000
 const LANES = [
   { role: "implementor", unit: "Corpus HP r1" },
   { role: "implementor", unit: "EX3 later clauses r1" },
@@ -48,7 +47,7 @@ const scenario = async (dir: string) => {
   const errors = await new Response(run.stderr).text()
   const code = await run.exited
   const last = join(dir, "panel-80-monitors.txt")
-  expect({ code, ran: existsSync(last) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
+  expect({ code, ran: scratchExistsSync(last) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
   const read = (name: string) => panel(readFileSync(join(dir, `panel-${name}.txt`), "utf8"))
   return {
     wide: Object.fromEntries(NAMES.map((name) => [name, read(`160-${name}`)])),
@@ -135,6 +134,6 @@ describe.skipIf(!fork)("the background-work panel in the Prime look (OPENCODE_DE
       }
       expectSubagents(wide, narrow)
     }),
-    SCENARIO_MS,
+    hangGuard("fork-session"),
   )
 })

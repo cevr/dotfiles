@@ -1,6 +1,9 @@
 // The guard's routing: which agent a subagent call runs as.
 import { describe, expect, test } from "bun:test"
-import { codexFallback, definitions, ORCHESTRATOR, orchestrator, ROLES, route, unspecific, withSection } from "./role.ts"
+import { Exit, Schema } from "effect"
+import generated from "./agents.json"
+import { definitions, Generated, ORCHESTRATOR, orchestrator, type Role, roleModels, ROLES, route, unspecific, withSection } from "./role.ts"
+import { block } from "./round-policy.ts"
 
 describe("the orchestrator's section", () => {
   const system = [
@@ -22,6 +25,30 @@ describe("the agents' prompts", () => {
     for (const role of ROLES) {
       expect(definitions[role].system).toContain(role === "worker" ? "A compaction does not end your task" : "A compaction does not end your step")
       expect(definitions[role].system).not.toContain("At your first compaction")
+    }
+  })
+})
+
+describe("the round policy each definition carries, decoded at load", () => {
+  const decode = Schema.decodeUnknownExit(Generated)
+  const withSystem = (role: Role, system: string) => ({ ...generated, agents: { ...generated.agents, [role]: { ...generated.agents[role], system } } })
+  test("the shipped agents.json decodes, each role's system carrying its own policy", () => {
+    expect(Exit.isSuccess(decode(generated))).toBe(true)
+    for (const role of ROLES) expect([role, definitions[role].system.includes(block(role))]).toEqual([role, true])
+  })
+  test("a lost, swapped, doubled or edited policy fails the decode, naming the role and the part", () => {
+    const text = (role: Role) => generated.agents[role].system
+    const cases: ReadonlyArray<readonly [Role, string, string]> = [
+      ["planner", text("planner").replace(block("planner"), ""), "planner: 0 policy blocks open"],
+      ["implementor", text("implementor").replace(block("implementor"), () => block("planner")), "implementor: role: source implementor, shown planner"],
+      ["verifier", `${text("verifier")}\n${block("verifier")}`, "verifier: 2 policy blocks open"],
+      ["worker", text("worker").replace("`refused.what`", "`refused.allow`"), "worker: stop refusalForm"],
+      ["implementor", text("implementor").replace(" and `<unit dir>/blocked.md`", ""), "implementor: verdict blocked"],
+    ]
+    for (const [role, system, fault] of cases) {
+      expect([role, system !== text(role)]).toEqual([role, true])
+      const exit = decode(withSystem(role, system))
+      expect([role, Exit.isFailure(exit), String(exit).includes(fault)]).toEqual([role, true, true])
     }
   })
 })
@@ -75,8 +102,9 @@ describe("the guard's routing", () => {
 })
 
 describe("the Codex fallback", () => {
-  test("a planner or verifier runs on sol: the verifier at medium, the planner at high", () => {
-    expect(codexFallback("verifier")).toEqual({ family: "gpt-sol", variant: "medium" })
-    expect(codexFallback("planner")).toEqual({ family: "gpt-sol", variant: "high" })
+  test("only a planner has a fallback: sol at high; verification admits only Opus", () => {
+    expect(roleModels("verifier")).toEqual({ kind: "verification", primary: { providers: ["anthropic"], family: "claude-opus" } })
+    expect(roleModels("orchestrate-reviewer")).toEqual(roleModels("verifier"))
+    expect(roleModels("planner")).toEqual({ kind: "planning", fallback: { family: "gpt-sol", variant: "high" } })
   })
 })

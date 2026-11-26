@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at lint/test-env.test.ts: const child = Bun.spawn([path.join(ROOT, "node_modules/.bin/oxlint"), "-c", config, "--format",
 // dotfiles/no-module-env-in-tests, through the oxlint binary the gate runs
 // (its RuleTester needs Node, not Bun): every write form the rule's header
 // lists, on every spelling of the environment, is refused where it runs while

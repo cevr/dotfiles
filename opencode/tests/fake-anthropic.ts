@@ -1,3 +1,4 @@
+import { stamp } from "./hang-guard.ts"
 /**
  * A fake Anthropic API on a loopback port, for the pool's deterministic
  * tests: `POST /v1/messages` (streamed or not), `GET /api/oauth/usage` (with
@@ -42,6 +43,11 @@ export interface FakeQuota {
    * (`weekly_scoped_shares`), as the endpoint answered on 2026-11-09.
    */
   readonly fable?: FakeWindow & { readonly ofWeekly: number }
+  /**
+   * The unified windows the account has none of (its usage answer says
+   * `five_hour: null` or `seven_day: null`): a response's headers leave them out.
+   */
+  readonly without?: ReadonlyArray<"5h" | "7d">
 }
 
 /** What one request is answered with. */
@@ -60,7 +66,7 @@ export type FakeAnswer =
 /** What the token endpoint answers a refresh with. */
 export type FakeTokenAnswer =
   /** Rotate both tokens, after `delayMs` when given. */
-  | { readonly kind: "rotate"; readonly delayMs?: number }
+  | { readonly kind: "rotate"; readonly delayMs?: number; readonly beforeAnswer?: () => Promise<void> }
   /** A 503, as a token endpoint that is down. */
   | { readonly kind: "unavailable" }
   /** A 400 `invalid_grant`, as for a refresh token that was spent or revoked. */
@@ -218,15 +224,26 @@ export const unifiedHeaders = (
   quota: FakeQuota,
   status: "allowed" | "allowed_warning" | "rejected",
   claim: "five_hour" | "seven_day",
-): Record<string, string> => ({
-  "anthropic-ratelimit-unified-status": status,
-  "anthropic-ratelimit-unified-representative-claim": claim,
-  "anthropic-ratelimit-unified-reset": seconds(claim === "five_hour" ? quota.fiveHour.resetAt : quota.sevenDay.resetAt),
-  "anthropic-ratelimit-unified-5h-utilization": String(quota.fiveHour.utilization),
-  "anthropic-ratelimit-unified-5h-reset": seconds(quota.fiveHour.resetAt),
-  "anthropic-ratelimit-unified-7d-utilization": String(quota.sevenDay.utilization),
-  "anthropic-ratelimit-unified-7d-reset": seconds(quota.sevenDay.resetAt),
-})
+): Record<string, string> => {
+  const windows = [
+    ["5h", quota.fiveHour],
+    ["7d", quota.sevenDay],
+  ] as const
+  const without = Array.from(quota.without || [])
+  return {
+    "anthropic-ratelimit-unified-status": status,
+    "anthropic-ratelimit-unified-representative-claim": claim,
+    "anthropic-ratelimit-unified-reset": seconds(claim === "five_hour" ? quota.fiveHour.resetAt : quota.sevenDay.resetAt),
+    ...Object.fromEntries(
+      windows
+        .filter(([name]) => !without.includes(name))
+        .flatMap(([name, window]) => [
+          [`anthropic-ratelimit-unified-${name}-utilization`, String(window.utilization)],
+          [`anthropic-ratelimit-unified-${name}-reset`, seconds(window.resetAt)],
+        ]),
+    ),
+  }
+}
 
 const sse = (events: ReadonlyArray<Record<string, unknown>>) =>
   events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join("")
@@ -292,7 +309,7 @@ const replyBody = (answer: Extract<FakeAnswer, { kind: "ok" }>, model: string, s
 
 /** Serve the fake on a free loopback port. */
 export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic => {
-  const now = options.now ?? Date.now
+  const now = options.now ?? stamp
   const defaultQuota = (): FakeQuota => ({
     fiveHour: { utilization: 0.1, resetAt: now() + 3 * HOUR },
     sevenDay: { utilization: 0.2, resetAt: now() + 72 * HOUR },
@@ -530,7 +547,14 @@ export const startFakeAnthropic = (options: FakeAnthropicOptions): FakeAnthropic
         status: 429,
         headers: answer.retryAfterSeconds === undefined ? {} : { "retry-after": String(answer.retryAfterSeconds) },
       })
-    if (answer?.kind === "rotate" && answer.delayMs !== undefined) await Bun.sleep(answer.delayMs)
+    if (answer?.kind === "rotate") {
+      let waitForAnswer = answer.beforeAnswer
+      if (answer.delayMs !== undefined) {
+        const delay = answer.delayMs
+        waitForAnswer = () => Bun.sleep(delay)
+      }
+      if (waitForAnswer) await waitForAnswer()
+    }
     const rotated = fakeAccount()
     current.set(entry[0], rotated)
     return Response.json({

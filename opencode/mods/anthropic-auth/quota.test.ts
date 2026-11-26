@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { Array as Arr, Option, Schema } from 'effect'
+import { windowReading } from '@dotfiles/opencode-pool/quota'
 import {
   quotaProtocol,
   readUnifiedQuota,
   readUsageBody,
+  usageKeys,
   rejectedUntil,
   retryAfterUntil,
 } from './quota.ts'
@@ -120,6 +123,50 @@ describe('retryAfterUntil', () => {
 })
 
 describe('readUsageBody', () => {
+  test('each tracked field reads REPORTED, ABSENT (an explicit null) or UNKNOWN (missing or an unknown layout, named)', () => {
+    const weekly = { seven_day: { utilization: 20, resets_at: '2027-01-20T00:00:00Z' } }
+    const none = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))('null')
+    expect(readUsageBody({ ...weekly, five_hour: none }, NOW)).toMatchObject({ absent: [{ name: '5h', at: NOW }], unrecognised: [] })
+    expect(readUsageBody({ five_hour: none, seven_day: none }, NOW)).toEqual({
+      at: NOW, windows: [], absent: [{ name: '5h', at: NOW }, { name: '7d', at: NOW }], unrecognised: [],
+    })
+    expect(readUsageBody(weekly, NOW)).toEqual({ at: NOW, windows: [{ name: '7d', utilization: 0.2, resetAt: Date.parse('2027-01-20T00:00:00Z') }], unrecognised: [] })
+    for (const five_hour of [{}, { utilization: 'unread' }, 7]) {
+      const reading = readUsageBody({ ...weekly, five_hour }, NOW)
+      expect(reading).not.toHaveProperty('absent')
+      expect(reading).toMatchObject({ unrecognised: ['five_hour'] })
+    }
+    // Nothing tracked read either way (even with an untracked extra window): a failed read, its keys loggable without a value.
+    expect(readUsageBody({ five_hour: 'gone', session: { used: 3 } }, NOW)).toBeUndefined()
+    expect(readUsageBody({ seven_day_opus: { utilization: 20, resets_at: '2027-01-20T00:00:00Z' } }, NOW)).toBeUndefined()
+    expect(usageKeys(Option.some({ five_hour: 'gone', session: { used: 3 } }))).toBe('keys five_hour, session')
+    expect(readUsageBody({ ...weekly, five_hour: { utilization: 90, resets_at: '2027-01-15T10:00:00Z' } }, NOW)).toMatchObject({
+      windows: expect.arrayContaining([{ name: '5h', utilization: 0.9, resetAt: Date.parse('2027-01-15T10:00:00Z') }]),
+    })
+  })
+
+  test('every combination of the tracked fields maps to its three states: a window REPORTED, null ABSENT, missing or unknown UNKNOWN', () => {
+    const none = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Null))('null')
+    const layouts = [
+      { state: 'Reported', field: Option.some<unknown>({ utilization: 40, resets_at: '2027-01-15T10:00:00Z' }) },
+      { state: 'Absent', field: Option.some<unknown>(none) },
+      { state: 'Unknown', field: Option.none<unknown>() },
+      { state: 'Unknown', field: Option.some<unknown>({ used: '40%' }) },
+    ] as const
+    for (const [short, week] of Arr.cartesian(layouts, layouts)) {
+      const body = {
+        ...Option.match(short.field, { onNone: () => ({}), onSome: (five_hour) => ({ five_hour }) }),
+        ...Option.match(week.field, { onNone: () => ({}), onSome: (seven_day) => ({ seven_day }) }),
+      }
+      const reading = Option.fromUndefinedOr(readUsageBody(body, NOW))
+      // Nothing tracked read either way is a failed read; else each window is in its own state.
+      const read = short.state !== 'Unknown' || week.state !== 'Unknown'
+      expect([body, Option.isSome(reading)]).toEqual([body, read])
+      Option.map(reading, (reading) =>
+        expect([body, windowReading(reading, '5h')._tag, windowReading(reading, '7d')._tag]).toEqual([body, short.state, week.state]))
+    }
+  })
+
   test('turns percents into fractions and keeps other windows by name', () => {
     const reading = readUsageBody(
       {
@@ -147,13 +194,14 @@ describe('readUsageBody', () => {
           resetAt: Date.parse('2027-01-20T00:00:00Z'),
         },
       ],
+      unrecognised: [],
     })
   })
 
   test('reads model-scoped weekly windows by their model: the limits list as measured, and model_scoped', () => {
     // The shape /api/oauth/usage answered on 2026-11-09 (ids left out): Fable's
     // weekly window is a `weekly_scoped` entry of `limits`, scoped to its model.
-    const measured = {
+    const modelScopedReading = {
       five_hour: { utilization: 1, resets_at: '2026-11-10T02:30:00.291433+00:00' },
       seven_day: { utilization: 9, resets_at: '2026-11-16T09:00:00.291455+00:00' },
       seven_day_opus: null,
@@ -171,7 +219,7 @@ describe('readUsageBody', () => {
       ],
       weekly_scoped_shares: [{ limit_index: 2, used_percent_of_weekly: 0, allowance_percent_of_weekly: 50 }],
     }
-    expect(readUsageBody(measured, NOW)?.windows).toEqual([
+    expect(readUsageBody(modelScopedReading, NOW)?.windows).toEqual([
       { name: '5h', utilization: 0.01, resetAt: Date.parse('2026-11-10T02:30:00.291433+00:00') },
       { name: '7d', utilization: 0.09, resetAt: Date.parse('2026-11-16T09:00:00.291455+00:00') },
       // `weekly_scoped_shares` names Fable's entry (index 2): its whole allowance is half the weekly window, and its use took none of it.

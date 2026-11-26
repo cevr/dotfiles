@@ -53,7 +53,18 @@
     "effect/preferPredicateIsTagged": "error",
     "effect/requireForceKillAfter": "error",
     "effect/requireNamedEffectFn": "error",
-    "effect/requireSuppressionReason": "error"
+    "effect/requireSuppressionReason": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "rex-sdk",
+            "message": "Only mods/pane-agent/rex/ may import rex-sdk."
+          }
+        ]
+      }
+    ]
   },
   "overrides": [
     {
@@ -118,6 +129,7 @@
       "files": [
         "decider/*.ts"
       ],
+      "excludeFiles": ["decider/tui-clock.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -169,6 +181,7 @@
       "files": [
         "mods/pool/*.ts"
       ],
+      "excludeFiles": ["mods/pool/spend-authority.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -208,11 +221,13 @@
                   "*/**/effect",
                   "!@dotfiles/decider/*",
                   "!@dotfiles/opencode-digest/event",
+                  "!@dotfiles/opencode-digest/redact",
+                  "!@dotfiles/opencode-kernel/launch-status",
                   "!./*.ts",
                   "!./agents.json",
                   "!bun:test"
                 ],
-                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format (@dotfiles/opencode-digest/event), orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
+                "message": "The orchestrate domain fence: orchestrate's domain files import effect, @dotfiles/decider/*, the digest's event format and redaction, the kernel's launch-status contract, orchestrate's own root files (and the generated agents.json) and bun:test only; never @opencode/*, node:*, bun, a vendor package or one of orchestrate's folders."
               }
             ]
           }
@@ -346,6 +361,72 @@
     },
     {
       "files": [
+        "mods/pane-agent/*.ts"
+      ],
+      "excludeFiles": ["mods/pane-agent/laws.ts", "mods/pane-agent/model.test.ts", "mods/pane-agent/regressions.test.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!bun:test"
+                ],
+                "message": "The pane-agent domain fence: its domain files import effect, @dotfiles/decider/*, its own root files and bun:test only; never rex-sdk, @opencode/*, node:*, bun, or one of its folders (rex/, filestore/, filesystem/, opencode/, memory/)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/pane-agent/laws.ts",
+        "mods/pane-agent/model.test.ts",
+        "mods/pane-agent/regressions.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "*",
+                  "!effect",
+                  "!effect/*",
+                  "*/**/effect",
+                  "!@dotfiles/decider/*",
+                  "!./*.ts",
+                  "!./memory/doubles.ts",
+                  "!bun:test",
+                  "!../../tests/hang-guard.ts",
+                  "!../../sim-tui/effect-test.ts"
+                ],
+                "message": "The pane-agent domain test fence: laws and model tests keep the domain fence plus test harness and memory doubles only; never rex-sdk or live implementations."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "mods/pane-agent/rex/**"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": [
         "mods/rex/*.ts"
       ],
       "rules": {
@@ -399,6 +480,7 @@
       "files": [
         "mods/work/*.ts"
       ],
+      "excludeFiles": ["mods/work/laws.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -527,6 +609,7 @@
       "files": [
         "mods/auto-title/*.ts"
       ],
+      "excludeFiles": ["mods/auto-title/laws.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -604,6 +687,7 @@
       "files": [
         "mods/mail/*.ts"
       ],
+      "excludeFiles": ["mods/mail/model.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -701,6 +785,7 @@
       "files": [
         "mods/digest/*.ts"
       ],
+      "excludeFiles": ["mods/digest/agenthost.test.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
@@ -1066,10 +1151,11 @@
                   "*/**/effect",
                   "!@dotfiles/opencode-subagents/*",
                   "!@dotfiles/opencode-cache/line",
+                  "!@dotfiles/opencode-kernel/launch-status",
                   "!./*.ts",
                   "!bun:test"
                 ],
-                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain (@dotfiles/opencode-subagents/*), the cache mod's line measures (@dotfiles/opencode-cache/line), the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
+                "message": "The Prime domain fence: its domain files import effect, the subagent rows' domain, the cache mod's line measures, the kernel's launch-status contract, the mod's own root files and bun:test only; never @opencode/*, @opentui/*, solid-js, node:*, bun or one of the mod's folders. (`*/**/effect` takes back what `!effect` lets through: any path ending in `effect`, such as @opencode/plugin/effect.)"
               }
             ]
           }
@@ -1190,6 +1276,59 @@
       ],
       "rules": {
         "effect/noTryCatch": "error"
+      }
+    },
+    {
+      "files": [
+        "mods/pool/spend-authority.test.ts",
+        "mods/work/laws.ts",
+        "mods/mail/model.test.ts",
+        "mods/digest/agenthost.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!@dotfiles/decider/*", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts"],
+                "message": "Shared timing is a test-only dependency; all other domain test imports keep the production fence."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["decider/tui-clock.test.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!bun:test", "!./*.ts", "!../tests/global-slot.ts"],
+                "message": "Only the test may read the shared symbol registry; the decider keeps its own dependency fence."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["mods/auto-title/laws.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["*", "!effect", "!effect/*", "*/**/effect", "!./*.ts", "!bun:test", "!../../tests/hang-guard.ts", "!../../sim-tui/effect-test.ts"],
+                "message": "Shared timing is a test-only dependency; all other Auto Title law imports keep the production fence."
+              }
+            ]
+          }
+        ]
       }
     },
     {

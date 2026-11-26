@@ -14,7 +14,8 @@
 // - `busy.json`: from a steer's Enter, during a stalled turn, through a prompt sent to the queue, until both answered.
 import { Effect, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { watchdog } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -66,8 +67,8 @@ export default OpenCodeDriver.use(
       const record = (done: (frame: string) => boolean) =>
         Effect.gen(function* () {
           const frames: string[] = []
-          const deadline = Date.now() + 60_000
-          while (Date.now() < deadline) {
+          const deadline = watchdog(60_000)
+          while (!deadline.expired()) {
             const frame = text(yield* ui.capture())
             frames.push(frame)
             if (done(frame)) break

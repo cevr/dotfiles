@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { instructions, ROLES, type Role } from './agents.ts';
-import { render } from './ending.ts';
+import { block as render } from './round-policy.ts';
 
 const SKILL_DIR = resolve(import.meta.dir, '..');
 const REPO = resolve(SKILL_DIR, '..', '..');
@@ -73,13 +73,19 @@ describe('the modes', () => {
 });
 
 describe('the kept rules', () => {
+  test('both role guides forbid starting a review or verdict outside the verifying role', () => {
+    const rule = 'Always start a review or verdict as `verifier`, never as `worker`, `general`, or a role-less Codex thread: only the verifying role is routed to Opus.';
+    expect(protocol).toContain(rule);
+    expect(read(join(SKILL_DIR, 'references', 'hosts.md'))).toContain(rule);
+  });
+
   const kept: ReadonlyArray<readonly [string, RegExp]> = [
     ['a fresh verifier in a clean checkout', /fresh[^.\n]*clean checkout/i],
     ['the focused round gate, each leg under a minute', /focused[^.\n]*each leg under a minute/i],
     ['a receipt', /\breceipt\b/i],
     ['one full gate per host at a time', /one full gate per host at a time/i],
     ['a workspace per unit', /one workspace per unit/i],
-    ['Codex never implements', /Codex[^.\n]*never implements/],
+    ['verification is Claude Opus only and never Codex', /Verification and review run only on Claude Opus\. When Claude is held, latch and wait; never start a verifier on Codex\./],
     ['deploy is reserved', /reserved[^\n]*\bdeploy\b/i],
     ['publish is reserved', /reserved[^\n]*\bpublish\b/i],
     ['paid runs are reserved', /reserved[^\n]*paid runs/i],
@@ -150,7 +156,7 @@ describe('links and scripts resolve', () => {
 
 test('protocol.md still makes every role prompt, each smaller than at the base plus its end-of-step rows', () => {
   // Bytes of each role's instructions generated at 2541c442, the base of unit skill-modes. The decision table's rows
-  // (ending.ts) replaced the prose that said how a step ends, and a rule is never cut to fit: the bound grows by them.
+  // (round-policy.ts) replaced the prose that said how a step ends, and a rule is never cut to fit: the bound grows by them.
   const BASE: Record<Role, number> = { planner: 9461, implementor: 11411, verifier: 17653 };
   const safety = read(join(REPO, 'skills', 'loop', 'safety.md'));
   for (const role of Object.keys(ROLES) as Role[]) {

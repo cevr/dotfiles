@@ -4,9 +4,9 @@
 // session; the pool asks nothing, and withdraws any older question still
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
 import { TestClock } from "effect/testing"
-import { PoolId } from "../account-pool.ts"
+import { AccountsHeld, PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as FleetTest from "./fleet.ts"
 import * as LedgerTest from "./ledger.ts"
@@ -18,6 +18,7 @@ import * as ResetsTest from "./resets.ts"
 import * as Model from "../model.ts"
 import type { ClaimAnswer, QuotaReading, ResetCredit } from "../quota.ts"
 import { SEEN } from "../resets.ts"
+import { stamp } from "../../../tests/hang-guard.ts"
 
 const HOUR = 60 * 60_000
 const DAY = 24 * HOUR
@@ -51,7 +52,7 @@ interface Claimed {
 }
 
 /** The pool on memory layers: `readings` by pool and login, the claims sent recorded, each answered by `answer`. */
-const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>) => {
+const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>, usage?: Parameters<typeof QuotaTest.layer>[3]) => {
   const readings = new Map<PoolId, Map<string, QuotaReading>>([...connections.keys()].map((pool) => [pool, new Map()]))
   const claims: Array<Claimed> = []
   const owner = OwnerTest.empty()
@@ -69,7 +70,7 @@ const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ re
       const claim = { pool, ...input }
       claims.push(claim)
       return state.answer(claim)
-    }),
+    }, usage),
     LedgerTest.layer(),
     PeersTest.layer(new Map()),
     FleetTest.layer(),
@@ -90,7 +91,100 @@ const busy = (pool: Model.Pool["Service"], providerID: string) =>
   Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_busy_${n}`, providerID), { discard: true })
 
 /** Let the review a held pace forked run. */
-const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
+const settle = Effect.yieldNow
+
+test("a cached run on an ahead-of-pace login moves to a fresh week despite the other accounts' spend", () =>
+  scoped(Effect.gen(function* () {
+    const now = Date.parse("2026-11-25T19:00:00Z")
+    yield* TestClock.setTime(now)
+    const ids = ["cached", "spent", "fresh"]
+    const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
+      new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]))
+    const samples = fixture.readings.get(ANTHROPIC)!
+    samples.set("cached", reading(now, { fiveHour: 0, sevenDay: 0.2 }))
+    samples.set("spent", reading(now, { fiveHour: 0, sevenDay: 1 }))
+    samples.set("fresh", reading(now, { fiveHour: 0, sevenDay: 0, weekIn: 7 * DAY }))
+    const pool = yield* fixture.pool
+    const turn = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_dynamic", kind: "primary" } as const
+    expect((yield* pool.place(turn))?.credentialID).toBe("cached")
+    yield* TestClock.adjust(1)
+    samples.set("cached", reading(now + 1, { fiveHour: 0, sevenDay: 0.94 }))
+    const next = yield* pool.place(turn)
+    expect(next?.credentialID).toBe("fresh")
+    expect((yield* pool.session({ sessionID: turn.sessionID })).account?.credentialID).toBe("fresh")
+    expect(fixture.claims).toEqual([])
+  }).pipe(Effect.provide(TestClock.layer()))))
+
+test("dispatch starts every stale read together and ends a hung evidence round with a hold", () =>
+  scoped(Effect.gen(function* () {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"]
+    const tried: Array<string> = []
+    const now = 1_800_000_000_000
+    yield* TestClock.setTime(now)
+    const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
+      new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]),
+      (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)))
+    const pool = yield* fixture.pool
+    const request = yield* Effect.forkChild(Effect.result(pool.place({
+      providerID: "anthropic", sessionID: "hung", kind: "primary", model: "claude-haiku-4-5",
+    })))
+    yield* TestClock.adjust(1)
+    expect(tried.toSorted()).toEqual(ids)
+    yield* TestClock.adjust(19_998)
+    expect(request.pollUnsafe()).toBeUndefined()
+    yield* TestClock.adjust(1)
+    const finished = Option.fromUndefinedOr(request.pollUnsafe())
+    expect(Option.isSome(finished)).toBe(true)
+    if (Option.isSome(finished)) {
+      const deny = yield* Fiber.join(request)
+      expect(Result.match(deny, {
+        onSuccess: (placed) => placed,
+        onFailure: (error) => {
+          if (error._tag === "RequestHeld") return [error._tag, error.retryAt, error.reasonCode]
+          return [error._tag, error.retryAt]
+        },
+      })).toEqual(["RequestHeld", now + 80_000, "usage-unread"])
+    }
+  }).pipe(Effect.provide(TestClock.layer()))))
+
+test("an in-flight title's success cannot send a refused primary turn back to the same login", () =>
+  scoped(
+    Effect.gen(function* () {
+      const now = Date.parse("2026-11-23T00:00:00Z")
+      yield* TestClock.setTime(now)
+      const logins = new Map([[ANTHROPIC, [{ id: "alpha", label: "Alpha" }, { id: "beta", label: "Beta" }]]])
+      const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS }, logins)
+      const samples = fixture.readings.get(ANTHROPIC)!
+      const room = reading(now, { fiveHour: 0.1, sevenDay: 0.2 })
+      samples.set("alpha", room)
+      samples.set("beta", room)
+      const pool = yield* fixture.pool
+      const turn = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_owner", kind: "primary" } as const
+      const title = { ...turn, kind: "title" } as const
+      const primary = yield* pool.place(turn)
+      const auxiliary = yield* pool.place(title)
+      expect(auxiliary?.credentialID).toBe("alpha")
+
+      // Both requests have already left. Receive the primary's 429 first, then
+      // the title's 200 whose headers still say the account has room.
+      samples.set("alpha", {
+        ...reading(now, { sevenDay: 0.2 }),
+        refusal: { kind: "usage-limit", until: now + 2 * HOUR },
+      })
+      yield* pool.responded({ ...turn, status: 429 })
+      yield* TestClock.adjust(1)
+      samples.set("alpha", { ...room, at: now + 1, status: "allowed" })
+      yield* pool.responded({ ...title, status: 200 })
+      expect(yield* pool.retry({ ...turn, error: "provider.quota" })).toBe(true)
+      const retry = yield* pool.place(turn)
+      const replies = new Map([["alpha", 429], ["beta", 200]])
+      const primarySends = [primary, retry].flatMap((placed) =>
+        Option.toArray(Option.map(Option.fromUndefinedOr(placed), ({ credentialID }) => [credentialID, replies.get(credentialID)])),
+      )
+      expect(primarySends).toEqual([["alpha", 429], ["beta", 200]])
+    }).pipe(Effect.provide(TestClock.layer())),
+  ),
+)
 
 describe("Codex resets", () => {
   const config: Model.Config = { providers: {}, paced: { openai: OPENAI }, cacheLifeMs: CACHE_LIFE_MS, resets: { openai: "codex" } }
@@ -99,11 +193,11 @@ describe("Codex resets", () => {
   test("every account spent, a start held and work running: one credit is claimed on its own, once, the account read again, and the owner told", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const codex = world(config, logins)
-        codex.readings.get(OPENAI)!.set("codex-a", reading(now, { credits: [credit("credit-late", now, 20 * DAY)] }))
+        codex.readings.get(OPENAI)!.set("codex-a", reading(now, { sevenDay: 1, credits: [credit("credit-late", now, 20 * DAY)] }))
         // It expires before the week resets by itself: not one to keep in hand.
-        codex.readings.get(OPENAI)!.set("codex-b", reading(now, { credits: [credit("credit-soon", now, 2 * DAY)] }))
+        codex.readings.get(OPENAI)!.set("codex-b", reading(now, { sevenDay: 1, credits: [credit("credit-soon", now, 2 * DAY)] }))
         // The reset empties the windows and restarts the week, as Codex's does.
         codex.state.answer = (claim) => {
           codex.readings.get(OPENAI)!.set(claim.credentialID, reading(now, { fiveHour: 0, sevenDay: 0, weekIn: 7 * DAY }))
@@ -131,10 +225,10 @@ describe("Codex resets", () => {
       }),
     ))
 
-  test("one account with room: nothing is claimed", () =>
+  test("a spent Codex short window with weekly room left does not discard the week", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const codex = world(config, logins)
         codex.readings.get(OPENAI)!.set("codex-a", reading(now, { credits: [credit("credit-a", now, 2 * DAY)] }))
         codex.readings.get(OPENAI)!.set("codex-b", reading(now, { fiveHour: 0.1, credits: [credit("credit-b", now, 2 * DAY)] }))
@@ -156,10 +250,57 @@ describe("Claude resets", () => {
   const held = (claude: ReturnType<typeof world>, now: number, weekIn = 3 * DAY) =>
     claude.readings.get(ANTHROPIC)!.set("claude-a", reading(now, { weekIn, credits: [{ ...credit("grant-1", now, 120 * DAY), count: 2, clears: ["five_hour"] }] }))
 
+  test("a late title's room and an already-redeemed claim do not reopen a refused login", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.parse("2026-11-23T00:00:00Z")
+        const refusedUntil = now + HOUR
+        yield* TestClock.setTime(now)
+        const fixture = world(config, logins)
+        const samples = Option.getOrThrow(Option.fromNullishOr(fixture.readings.get(ANTHROPIC)))
+        const room = reading(now, { fiveHour: 0.2, sevenDay: 0.2 })
+        samples.set("claude-a", room)
+        const pool = yield* fixture.pool
+        const primary = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_owner", kind: "primary" } as const
+        const title = { ...primary, kind: "title" } as const
+        expect((yield* pool.place(primary))?.credentialID).toBe("claude-a")
+        expect((yield* pool.place(title))?.credentialID).toBe("claude-a")
+
+        samples.set("claude-a", { ...room, refusal: { kind: "usage-limit", until: refusedUntil } })
+        yield* pool.responded({ ...primary, status: 429 })
+        yield* TestClock.adjust(1)
+        samples.set("claude-a", { ...room, at: now + 1, status: "allowed" })
+        yield* pool.responded({ ...title, status: 200 })
+        expect(yield* pool.pace(primary.providerID, primary.model)).toMatchObject({
+          ok: false, reasonCode: "account-held", retryAt: refusedUntil,
+        })
+
+        // An expiring grant does not require a spent window, so the pool
+        // actually sends the claim even though the late title showed room.
+        const expires = { ...credit("expiring", now, 30 * 60_000), clears: ["five_hour"], requiresLimit: false }
+        samples.set("claude-a", reading(now + 1, { fiveHour: 0.2, sevenDay: 0.2, credits: [expires] }))
+        fixture.state.answer = () => {
+          samples.set("claude-a", reading(now + 1, { fiveHour: 0.2, sevenDay: 0.2 }))
+          return { outcome: "already-redeemed" }
+        }
+        yield* pool.sweep
+        expect(fixture.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "expiring"]])
+        expect((yield* pool.resets).claims.map((claim) => claim.outcome)).toEqual(["already-redeemed"])
+        const retry = yield* Effect.result(pool.place(primary))
+        expect(retry).toEqual(Result.fail(new AccountsHeld({
+          sessionID: primary.sessionID, kind: primary.kind, retryAt: refusedUntil, signIn: [],
+        })))
+
+        yield* TestClock.setTime(refusedUntil)
+        samples.set("claude-a", reading(refusedUntil, { fiveHour: 0.2, sevenDay: 0.2 }))
+        expect((yield* pool.place(primary))?.credentialID).toBe("claude-a")
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
   test("a held start with work running: a grant is claimed on its own, once, recorded with whether the week moved, and the owner told in the waiting session; nothing asked", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         // A Claude grant clears the 5-hour window and keeps the weekly reset.
@@ -174,7 +315,7 @@ describe("Claude resets", () => {
         yield* pool.reviewResets
         expect(claude.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "grant-1"]])
         expect(claude.owner.asked.map((question) => [question.sessionID, question.options.map((option) => option.label)])).toEqual([["ses_root", [SEEN]]])
-        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: 1 start held, 3 agents running on 1 host, 5h 100% used, forecast 100% now, reset in 2 h\)\. 1 reset left this week; next expires .*\.$/)
+        expect(claude.owner.asked[0]!.question).toMatch(/^Claimed the 5h reset on Claude A: 5h 100% used of 100% → 0% used \(the account reached its limit: 5h 100% used, 3 agents running, 1 start held; refill the measured limit\)\. 1 reset left this week; next expires .*\.$/)
         const status = yield* pool.resets
         expect(status.claims.map((claim) => [claim.provider, claim.outcome, claim.weekly])).toEqual([["claude", "reset", "kept"]])
         // Read, the notice leaves the tray.
@@ -187,7 +328,7 @@ describe("Claude resets", () => {
   test("no agent running and no start held: nothing claimed, nothing asked, however spent the pool; agents running across the fleet with no start held: the forecast runs it out before its reset, and a grant is claimed", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         const pool = yield* claude.pool
@@ -237,16 +378,13 @@ describe("Claude resets", () => {
         return { claude, before: before[0] ?? 0, resets: (yield* pool.resets).resets }
       }).pipe(Effect.provide(TestClock.layer()))
 
-    test("still busy at 3 hours, the week 85% used and forecast to run out in 1.5 h, days before its reset: a grant is claimed for the forecast", () =>
+    test("still busy at 3 hours and 85% used: an ordinary reset waits for measured exhaustion", () =>
       scoped(
         Effect.gen(function* () {
           const { claude, before, resets } = yield* run(false)
-          // Not near its limit until the last read: nothing claimed before it.
           expect(before).toBe(0)
-          expect(claude.claims.map((claim) => claim.creditID)).toEqual(["grant-1"])
-          expect(resets.map((reset) => [reset.why, reset.reason])).toEqual([
-            ["forecast", "the pool runs out before its reset: 4 agents running on 1 host, weekly 85% used, forecast 100% in 2 h, reset in 2.9 days"],
-          ])
+          expect(claude.claims).toEqual([])
+          expect(resets).toEqual([])
         }),
       ))
 
@@ -263,7 +401,7 @@ describe("Claude resets", () => {
   test("an older pool's question still open, about a reset or a push, is withdrawn", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const claude = world(config, logins)
         held(claude, now)
         const old = { sessionID: "ses_root", question: "Claim it?", header: "Claude reset · Claude A", options: [{ label: "Claim it" }], assume: "Don't claim" }

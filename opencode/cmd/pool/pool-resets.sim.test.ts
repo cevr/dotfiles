@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Rate-limit resets on the simulated host, each test at 20 seeds:
 // tests/pool-resets.test.ts's names and claims that rest on the pool and the
 // Anthropic auth plugin alone, moved off real OpenCode. The Claude logins
@@ -12,10 +14,10 @@ import * as ChatGPT from "../../sim/chatgpt.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-resets.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-resets.sim.test.ts")
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
@@ -174,7 +176,7 @@ seeded(
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
-      // ── The world's ChatGPT backend: one account, its 5-hour window spent, one credit that ends before its week resets ──
+      // ── The world's ChatGPT backend: one account, its shared week spent, one credit that ends before its week resets ──
       const backend = ChatGPT.make()
       // a and b: both 5-hour windows spent for two hours, a's week resetting in three days, b's in two.
       const quotas = new Map<string, FakeQuota>([
@@ -184,18 +186,20 @@ seeded(
       const quotaOf = (account: string): FakeQuota => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // The world's clock, once the world is made.
       const clock = { now: () => now }
+      const usedGrants = new Set<string>()
       const { world, accounts, pool, open, until, work } = yield* serve(seed, ["a", "b"], {
         chatgpt: backend,
         quota: quotaOf,
         // Two resets in hand on each account: not the last one, kept in reserve.
-        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2, endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
-        claim: (account) => {
+        grants: (account) => [{ id: `grant-${account}`, resetsLeft: 2 - Number(usedGrants.has(`grant-${account}`)), endsAt: now + 120 * DAY, clears: ["five_hour", "seven_day_overage_included"] }],
+        claim: (account, grant) => {
+          usedGrants.add(grant)
           quotas.set(account, { ...quotaOf(account), fiveHour: { utilization: 0, resetAt: clock.now() + 5 * HOUR } })
           return "reset"
         },
       })
       clock.now = world.now
-      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 40, 2 * DAY))
+      backend.accounts.set("acct-1", spentAccount(accounts[CHATGPT].access, "credit-1", now, 100, 2 * DAY))
       const claims = () => world.provider().claims()
 
       // ── No work: nothing running and no start held, the pool sweeping on ──
@@ -216,22 +220,23 @@ seeded(
       ])
 
       // ── Claude: three agents put to work while the 5-hour windows had room, then the windows spent under them; busy, with no start recorded:
-      // the forecast runs the pool out before its reset, one grant claimed on its own, nothing asked ──
+      // one exhausted account is refilled on its own, nothing asked ──
       const spent = new Map(quotas)
       for (const [account, quota] of spent) quotas.set(account, { ...quota, fiveHour: { ...quota.fiveHour, utilization: 0.5 } })
       yield* world.advance(7 * SECOND)
       yield* work(3)
       for (const [account, quota] of spent) quotas.set(account, quota)
       yield* world.until(() => claims().length > 0, CLAIM_LIMIT_MS, 250)
-      // The claimed account takes the work: the other is not claimed.
+      // Observation of the first refill holds another redemption during this interval.
       yield* until(() => false, "the pane pacing on", 20 * SECOND).pipe(Effect.ignore)
       expect(claims().map(({ grant, result }) => ({ grant, result }))).toMatchObject([{ result: "reset" }])
+      expect(claims()).toHaveLength(1)
       expect(String(claims()[0]?.requestID)).toMatch(/^pool-[0-9a-f]{24}$/)
-      // The tray holds the two notices and nothing else; each says why, in one clause.
+      // The tray holds one notice per claim and nothing else; each says why.
       const rows = yield* open
       expect(rows.map((each) => each.header)).toEqual(["Pool reset claimed", "Pool reset claimed"])
       expect(rows.map((each) => each.question).join("\n")).toContain("Claimed the Codex reset on ChatGPT")
-      expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the pool runs out before its reset: (\d+ starts? held, )?3 agents running on 1 host, /)
+      expect(rows.map((each) => each.question).join("\n")).toMatch(/Claimed the full reset on Claude [ab]: 5h 100% used of 100% → 0% used \(the account reached its limit: 5h 100% used, 3 agents running, \d+ starts? held; refill the measured limit\)/)
       const settled = yield* resetsOf(yield* pool("resets"))
       expect(settled.claims.map(({ provider, outcome }) => [provider, outcome]).toSorted()).toEqual([
         ["claude", "reset"],
@@ -247,12 +252,12 @@ seeded(
 )
 
 seeded(
-  "a spent week is not claimed while the forecast keeps room on a fresher account to the reset; a Fable reset about to expire unused is claimed on its own, gives Fable's part of the week back, and the owner is told",
+  "an exhausted week refills despite a fresher account; a later Fable expiry gives its part of the week back, with one notice per claim",
   ({ seed, expect }) =>
     Effect.gen(function* () {
       const now = World.START
       // A day and a half left of both weeks. c: Fable's own week spent, its allowance half the weekly window; 60% of the week used,
-      // so at the pool's burn its room outlasts the reset. d: its whole week spent.
+      // while d's whole week is spent. Fresh c does not veto d's refill.
       const quotas = new Map<string, FakeQuota>([
         [
           "c",
@@ -267,8 +272,10 @@ seeded(
       const quotaOf = (account: string) => Option.getOrThrow(Option.fromNullishOr(quotas.get(account)))
       // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
       let fableListed = false
+      let weeklyListed = false
       const claimed = new Set<string>()
       const grantsOf = (account: string): ReadonlyArray<FakeGrant> => {
+        if (account !== "c" && !weeklyListed) return []
         if (account !== "c") return [{ id: "weekly-d", resetsLeft: 2 - Number(claimed.has("weekly-d")), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
         if (!fableListed) return []
         return [
@@ -293,10 +300,17 @@ seeded(
       })
       const claims = () => world.provider().claims()
 
-      // ── Demand: three agents busy, the pane pacing a start each second: c's room outlasts the reset, so d's week is left ──
+      // ── Demand: a Fable start waits on c's own exhausted week and d's shared week.
+      // Record its session before listing d's grant, then let running work trigger the refill. ──
+      yield* world.advance(7 * SECOND)
+      expect(Schema.decodeUnknownSync(Paced)(yield* pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION })).ok).toBe(false)
+      weeklyListed = true
       yield* work(3)
-      yield* until(() => false, "a minute of starts", CLAIM_LIMIT_MS).pipe(Effect.ignore)
-      expect(claims()).toEqual([])
+      const weeklyNotice = yield* row(yield* until((rows) => rows.some((each) => each.header === "Pool reset claimed"), "the notice of d's claim"), "Pool reset claimed")
+      expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["d", "weekly-d"]])
+      expect(weeklyNotice.question).toContain("the account reached its limit")
+      expect(yield* questions("answer", { sessionID: SESSION, answers: [{ id: weeklyNotice.id, answer: "OK" }] })).toMatchObject({ ok: true })
+      yield* until((rows) => !rows.some((each) => each.id === weeklyNotice.id), "d's notice withdrawn", CLAIM_LIMIT_MS, false)
       expect(yield* open).toEqual([])
 
       // ── Use it or lose it: c's Fable reset, listed now, is claimed by itself and the owner told ──
@@ -305,8 +319,8 @@ seeded(
       expect(notice.question).toStartWith("Claimed the Fable reset on Claude c: ")
       expect(notice.question).toContain("(about to expire unused: ")
       // Fable's part of the week, as the usage endpoint reports it (`used_percent_of_weekly`: its use times its allowance share).
-      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset \S+ \S+ \(Fable's part 50% of the week as the usage endpoint reports it\)/)
-      expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["c", "fable-c"]])
+      expect(notice.question).toMatch(/weekly 60% used of 100% → ~10% used, next reset [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT) \(Fable's part 50% of the week as the usage endpoint reports it\)/)
+      expect(claims().map(({ account, grant }) => [account, grant])).toEqual([["d", "weekly-d"], ["c", "fable-c"]])
       const settled = yield* resetsOf(yield* pool("resets"))
       const fable = settled.claims.find((claim) => claim.label === "Claude c")
       expect(fable).toMatchObject({ outcome: "reset", weekly: "kept" })
@@ -320,7 +334,7 @@ seeded(
       yield* until((rows) => !rows.some((each) => each.id === notice.id), "the notice withdrawn", CLAIM_LIMIT_MS, false)
       // Each claim once.
       yield* world.advance(7 * SECOND)
-      expect(claims()).toHaveLength(1)
+      expect(claims()).toHaveLength(2)
       expect(yield* open).toEqual([])
     }),
 )

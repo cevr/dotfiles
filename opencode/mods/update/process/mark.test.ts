@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/process/mark.test.ts: Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-mark"]).stdout.toString().trim()),
 import { describe, expect, test } from "bun:test"
 import { file, spawnSync } from "bun"
 import { Effect, Option } from "effect"
@@ -11,7 +13,7 @@ const deadPid = () => spawnSync(["true"]).pid
 const ownPid = () => Number(spawnSync(["sh", "-c", "echo $PPID"]).stdout.toString().trim())
 
 /** A scratch directory for one test, removed after it. */
-const scratch = <A>(body: (path: string) => Effect.Effect<A>) =>
+const scratch = <A, E>(body: (path: string) => Effect.Effect<A, E>) =>
   Effect.acquireUseRelease(
     Effect.sync(() => spawnSync(["mktemp", "-d", "-t", "update-mark"]).stdout.toString().trim()),
     (dir) => body(`${dir}/handoff.json`),

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at scripts/effect-debt.ts: try: () => Bun.spawn([...argv], { cwd, env: environment, stdin: "ignore", stdout: "pipe", stder
 /**
  * Test isolation at its two seams. At the lint CLI: `.oxlintrc.json` refuses every generated
  * test-global write (process.env and the global objects, by assignment, update, delete or the
@@ -11,14 +13,16 @@
  * repo's own `dotfiles/no-module-env-in-tests` still refuses the computed root while a test file
  * loads; that retained coverage is asserted, the alias is not.
  *
- * @reads .oxlintrc.json lint/**
  */
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { scratchInput } from "../tests/read-path.ts"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Schema, type Scope } from "effect"
 import { HARD_CONFIG, spawn } from "./effect-debt.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -140,7 +144,7 @@ const RUNNER_GLOBAL = /^Import \w+ from your test library/u
 
 /** Lints `files` in `root` with the real hard config: the errors of one rule in one file. */
 const lint = Effect.fn("EffectIsolationTest.lint")(function* (root: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", HARD_CONFIG, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, HARD_CONFIG, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   const diagnostics = Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics
   return (file: string, code: string) => Arr.filter(diagnostics, (each) => each.filename === file && each.code === code && each.severity === "error")
@@ -204,7 +208,7 @@ describe(`${HARD_CONFIG}: effect/noTestGlobals over generated fixtures`, () => {
           }
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 
   test.concurrent(
@@ -221,7 +225,7 @@ describe(`${HARD_CONFIG}: effect/noTestGlobals over generated fixtures`, () => {
           for (const file of files) expect({ file, found: errors(file, "dotfiles(no-module-env-in-tests)").length }).toEqual({ file, found: 2 })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 
@@ -315,7 +319,7 @@ const runSuite = Effect.fn("EffectIsolationTest.runSuite")(function* (seed: numb
   const assignments = Arr.map([["PATH", CHILD_PATH], ["TMPDIR", tmpdir()], ...run.env, ["EFFECT_ISOLATION_OUT", out], ["EFFECT_ISOLATION_FAIL", run.outcome]], ([key, value]) => `${key}=${value}`)
   const answer = yield* spawn(["env", "-i", ...assignments, process.execPath, "test", "--timeout", "60000", "--preload", preload, suite.file, ...suite.only], REAL, CLI_TIMEOUT)
   const records = Arr.map(
-    Arr.filter(readFileSync(out, "utf8").split("\n"), (line) => line !== ""),
+    Arr.filter(readFileSync(scratchInput(out), "utf8").split("\n"), (line) => line !== ""),
     (line) => Schema.decodeUnknownSync(Snapshot)(line),
   )
   const label = { seed, suite: suite.file, outcome: run.outcome }
@@ -337,6 +341,6 @@ describe("the fixtures that wrote the process's env or registry, under generated
           { concurrency: 3, discard: true },
         ),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })

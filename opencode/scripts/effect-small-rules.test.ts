@@ -8,7 +8,6 @@
  * accumulator copy, folds generated fork histories as an independent model of a turn does, and
  * leaves its input as it was.
  *
- * @reads .oxlintrc.json lint/**
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -16,7 +15,9 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Option, Schema, type Scope } from "effect"
 import { forkTurns, type Turn } from "../mods/btw/turns.ts"
-import { HARD_CONFIG, spawn } from "./effect-debt.ts"
+import { lintFixture } from "../tests/lint-fixture.ts"
+import { HARD_CONFIG } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 120_000
@@ -222,7 +223,7 @@ const CODES = new Map<string, Rule>(Arr.map(RULES, (rule) => [`effect(${rule})`,
 
 /** Lints `files` in `root` with the real hard config: per file, per line, the four rules' errors. */
 const lint = Effect.fn("EffectSmallRulesTest.lint")(function* (root: string, files: ReadonlyArray<string>) {
-  const linted = yield* spawn([path.join(REAL, "node_modules/.bin/oxlint"), "--threads=3", "--format=json", "-c", HARD_CONFIG, ...files], root, CLI_TIMEOUT)
+  const linted = yield* lintFixture(root, HARD_CONFIG, files, CLI_TIMEOUT)
   expect({ stderr: linted.stderr }).toEqual({ stderr: "" })
   const found = Arr.flatMap(Schema.decodeUnknownSync(OxlintReport)(linted.stdout).diagnostics, (each) =>
     Option.toArray(
@@ -285,7 +286,7 @@ describe(`${HARD_CONFIG}: the four small rules over generated fixtures`, () => {
           expect(found.positions).toEqual(new Set(POSITIONS))
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("generated-schedule"),
   )
 })
 

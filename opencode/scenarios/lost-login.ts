@@ -10,8 +10,9 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { fakeAccount, startFakeAnthropic, type FakeTokenAnswer } from "../tests/fake-anthropic.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -32,9 +33,9 @@ mkdirSync(slots, { recursive: true })
 const login = (account: { access: string; refresh: string }, expires: number) =>
   JSON.stringify({ _tag: "Oauth", type: "oauth", ...account, expires, accountId: null, metadata: { owner: "store" } })
 /** An expiry already past: the login's token must refresh before it serves. */
-const expired = Date.now() - 1000
+const expired = stamp() - 1000
 writeFileSync(join(slots, "alpha"), login(accounts.alpha, expired))
-writeFileSync(join(slots, "beta"), login(accounts.beta, Date.now() + 8 * HOUR))
+writeFileSync(join(slots, "beta"), login(accounts.beta, stamp() + 8 * HOUR))
 
 // Each new value in the trigger file asks for alpha's token once, through the
 // credential registry the auth plugin reads; the outcome goes to `asked`.

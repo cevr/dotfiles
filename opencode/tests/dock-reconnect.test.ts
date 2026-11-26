@@ -1,3 +1,4 @@
+// @reads cmd/*
 // accept: one at a time (it bounds how soon the dock settles after the TUI's first read).
 // A subagent row leaves "running" once a service restart ends its turn.
 //
@@ -20,13 +21,18 @@
 // Before the restart the children's turns end unheard. After it the dock must
 // agree with the new service: no live row (no time in its state) for a child
 // it does not run, and no subagent count, within SETTLE_MS.
-import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { afterAll, describe, expect } from "bun:test"
+import { Effect } from "effect"
+import { it } from "effect-bun-test"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve, type ServedHost } from "../testbeds/gamut/pty-host.ts"
 import { freePort, ready, type Service } from "./service.ts"
 import { keptScratch } from "./scratch.ts"
+import { externalInput, matchingInput, scratchExistsSync as existsSync } from "./read-path.ts"
+import { forkFixture, spawnForkFixture } from "./scratch-child.ts"
+import { hangGuard, measured, watchdog } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -34,7 +40,6 @@ if (!fork) console.warn("tests/dock-reconnect.test.ts: skipped. Set OPENCODE_DEV
 const ROOT = join(import.meta.dir, "..")
 const TUI_PLUGINS = ["prime", "status", "git", "cache", "questions", "btw", "skills", "recover", "orchestrate", "escape"]
 const SERVER_PLUGINS = ["orchestrate", "status", "queue", "git", "idle-compact", "questions", "skills", "rift", "tool-names", "cache", "memory"]
-const TIMEOUT_MS = 180_000
 /** How long the dock has, once the TUI can read what runs on the new service, to drop the rows whose turns ended. */
 const SETTLE_MS = 20_000
 /** How long a TUI on a loaded host has to reconnect and make its first read. */
@@ -120,10 +125,10 @@ const sim = Bun.serve({
 })
 
 const until = async <A>(read: () => Promise<A> | A, done: (value: A) => boolean, label: (last: A) => string, ms: number): Promise<A> => {
-  const deadline = Date.now() + ms
+  const deadline = watchdog(ms)
   let last = await read()
   while (!done(last)) {
-    if (Date.now() > deadline) return expect.unreachable(label(last))
+    if (deadline.expired()) return expect.unreachable(label(last))
     await Bun.sleep(250)
     last = await read()
   }
@@ -141,7 +146,6 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   const work = join(root, "work")
   const launch = forkLaunch(fork ?? "", process.execPath)
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "",
     HOME: home,
     TERM: "xterm-256color",
     HERDR_ENV: "1",
@@ -158,7 +162,7 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
 
   /** The fork's CLI in the scratch HOME, run to its end; `service stop` in afterAll ends the service it leaves. */
   const opencode = async (...args: ReadonlyArray<string>) => {
-    const child = Bun.spawn([...launch.base, ...args], { cwd: work, env, stdout: "pipe", stderr: "pipe" })
+    const child = spawnForkFixture(fork ?? "", work, args, env)
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     return { code, out, err }
   }
@@ -177,7 +181,8 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
   let failActive = 0
   /** The TUI's reads of what runs turned away, and when the service first answered one: SETTLE_MS runs from then. */
   let activeTurnedAway = 0
-  let activeServedAt = 0
+  let activeServed = false
+  let firstActiveRead = () => {}
   const streams = new Set<AbortController>()
   const proxyServer = Bun.serve({
     hostname: "127.0.0.1",
@@ -198,7 +203,10 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
         activeTurnedAway++
         return Response.json({ code: "internal" }, { status: 500 })
       }
-      if (reading && activeServedAt === 0) activeServedAt = Date.now()
+      if (reading && !activeServed) {
+        activeServed = true
+        firstActiveRead()
+      }
       const target = await ready(serviceFile, () => "the service behind the proxy")
       const headers = new Headers(request.headers)
       headers.delete("host")
@@ -283,94 +291,140 @@ describe.skipIf(!fork)("the dock after a service restart ends a subagent's turn"
             },
           },
           // The owner's server plugins that need no login, network listener or OS job.
-          plugins: SERVER_PLUGINS.map((name) => join(ROOT, "cmd", name)),
+          plugins: SERVER_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))),
         }),
       )
       // The owner's TUI plugins, as daily writes them (herdr left out: it reports to a herdr socket).
       writeFileSync(
         join(home, ".config/opencode/cli.json"),
-        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => join(ROOT, "cmd", name)), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
+        JSON.stringify({ plugins: [...TUI_PLUGINS.map((name) => matchingInput("cmd/*", join(ROOT, "cmd", name))), "-opencode.btw"], session: { sidebar: "hide" }, theme: { name: "prime" } }),
       )
       // A port of its own: the other test files' scratch services would share the channel's fixed one (tests/service.ts).
       expect(await opencode("service", "set", "port", String(freePort()))).toMatchObject({ code: 0 })
       const started = await opencode("service", "start")
       expect(started).toMatchObject({ code: 0 })
       await ready(serviceFile, () => `the service (${started.err.slice(-500)})`)
-      return ((await import(join(fork ?? "", "packages/client/src/promise/index.ts"))) as ClientModule).OpenCode
+      return ((await import(externalInput(join(fork ?? "", "packages/client/src/promise/index.ts")))) as ClientModule).OpenCode
     })())
+
+  const parentOf = (name: string) => Effect.gen(function* () {
+    const OpenCode = yield* Effect.promise(boot)
+    const service = yield* Effect.promise(() => ready(serviceFile, () => "the service"))
+    const client = OpenCode.make({ baseUrl: service.url, headers: auth(service) })
+    const title = `Dock parent ${name}`
+    const parent = yield* Effect.promise(() => client.session.create({ location: { directory: work }, title }))
+    yield* Effect.promise(() => client.session.prompt({ sessionID: parent.id, text: "say parent-ready" }))
+    yield* Effect.promise(() => client.experimental.session.wait({ sessionID: parent.id }))
+    return { client, service, title, parent }
+  })
+
+  const openTui = (name: string, service: Service, sessionID: string) => {
+    const socket = join(root, `${name}.sock`)
+    const { argv: command, ...options } = forkFixture(fork ?? "", home, ["--server", proxyURL, "-s", sessionID], { ...env, OPENCODE_PASSWORD: service.password })
+    const host = serve({ socket, command, ...options, cols: 160, rows: 45 })
+    hosts.push(host)
+    const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" }).catch(() => ({ rows: [] as ReadonlyArray<string> }))).rows.join("\n")
+    return { host, screen, connected: () => until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000) }
+  }
+  const withTui = <E>(name: string, service: Service, sessionID: string, read: (screen: () => Promise<string>) => Effect.Effect<void, E>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => openTui(name, service, sessionID)),
+      ({ connected, screen }) => Effect.promise(connected).pipe(Effect.andThen(read(screen))),
+      ({ host }) => Effect.promise(() => host.stop()),
+    )
 
   /**
    * One restart under a TUI that shows a new parent with two working
    * children. After the new service serves, the proxy refuses the TUI's read
    * of what runs `refuseActiveReads` times and fails the next `failActiveReads`.
    */
-  const scenario = async (name: string, { refuseActiveReads = 0, failActiveReads = 0 }: { readonly refuseActiveReads?: number; readonly failActiveReads?: number } = {}) => {
-    const OpenCode = await boot()
-    const service = await ready(serviceFile, () => "the service")
-    const client = OpenCode.make({ baseUrl: service.url, headers: auth(service) })
-    const title = `Dock parent ${name}`
-    const parent = await client.session.create({ location: { directory: work }, title })
-    await client.session.prompt({ sessionID: parent.id, text: "say parent-ready" })
-    await client.experimental.session.wait({ sessionID: parent.id })
+  const scenario = (name: string, { refuseActiveReads = 0, failActiveReads = 0 }: { readonly refuseActiveReads?: number; readonly failActiveReads?: number } = {}) => Effect.gen(function* () {
+    yield* Effect.promise(kept.test(() => {}))
+    const { client, service, title, parent } = yield* parentOf(name)
+    yield* withTui(name, service, parent.id, (screen) => Effect.gen(function* () {
+      yield* Effect.promise(() => until(screen, (text) => text.includes(title), (last) => `${name}: the TUI never showed the parent:\n${last}`, START_MS))
 
-    const socket = join(root, `${name}.sock`)
-    const command = [...launch.base, "--server", proxyURL, "-s", parent.id] as [string, ...string[]]
-    const host = serve({ socket, cwd: home, command, env: { ...env, OPENCODE_PASSWORD: service.password }, cols: 160, rows: 45 })
-    hosts.push(host)
-    try {
-      await until(() => existsSync(socket), Boolean, () => `${name}: the terminal host`, 10_000)
-      const screen = async () => (await hostCall(socket, { op: "read", scope: "screen" }).catch(() => ({ rows: [] as ReadonlyArray<string> }))).rows.join("\n")
-      await until(screen, (text) => text.includes(title), (last) => `${name}: the TUI never showed the parent:\n${last}`, 60_000)
-
-      const children = await Promise.all(CHILDREN.map((child) => client.session.create({ parentID: parent.id, title: child })))
-      for (const child of children) await client.session.prompt({ sessionID: child.id, text: "hold" })
-      await until(
+      const children = yield* Effect.forEach(CHILDREN, (child) =>
+        Effect.promise(() => client.session.create({ parentID: parent.id, title: child })), { concurrency: 2 })
+      for (const child of children) yield* Effect.promise(() => client.session.prompt({ sessionID: child.id, text: "hold" }))
+      yield* Effect.promise(() => until(
         screen,
         (text) => CHILDREN.every((child) => liveRow(text, child)) && text.includes(`◆ ${CHILDREN.length} subagents`),
         (last) => `${name}: the dock never listed the children working:\n${last}`,
         30_000,
-      )
+      ))
 
       // The owner's timeline: the stream drops, the turns end unheard, the service restarts.
       drop()
       endHolds()
-      await until(() => active(service), (running) => children.every((child) => !(child.id in running)), () => `${name}: the children still run`, 30_000)
-      const before = await pid(service)
-      const restarted = await opencode("service", "restart")
+      yield* Effect.promise(() => until(() => active(service), (running) => children.every((child) => !(child.id in running)), () => `${name}: the children still run`, 30_000))
+      const before = yield* Effect.promise(() => pid(service))
+      const restarted = yield* Effect.promise(() => opencode("service", "restart"))
       expect(restarted).toMatchObject({ code: 0 })
-      const after = await ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`)
-      expect((await pid(after)).pid).not.toBe(before.pid)
+      const after = yield* Effect.promise(() => ready(serviceFile, () => `the restarted service (${restarted.err.slice(-500)})`))
+      expect((yield* Effect.promise(() => pid(after))).pid).not.toBe(before.pid)
       // Nothing resumes a turn that ended: the new service runs neither child.
-      const running = await active(after)
+      const running = yield* Effect.promise(() => active(after))
       expect(children.filter((child) => child.id in running)).toEqual([])
 
       refuseActive = refuseActiveReads
       failActive = failActiveReads
       activeTurnedAway = 0
-      activeServedAt = 0
-      held = false
       const stale = (text: string) => CHILDREN.filter((child) => liveRow(text, child))
       // The TUI still draws the parent: an empty screen has no rows either.
       const settled = (text: string) => text.includes(title) && stale(text).length === 0 && !/◆ \d+ subagents?/.test(text)
-      await until(
+      let finish = () => {}
+      measured("dock settles after its first active-session read", "< 20000 ms", ({ begin, end }) => {
+        firstActiveRead = begin
+        finish = end
+      })
+      activeServed = false
+      held = false
+      yield* Effect.promise(() => until(
         screen,
-        (text) => activeServedAt > 0 && settled(text),
-        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (the new service answered the TUI's read of what runs at ${activeServedAt}, 0 for never; ${activeTurnedAway} reads turned away):\n${last}`,
+        (text) => activeServed && settled(text),
+        (last) => `${name}: the dock still shows ${stale(last).join(", ") || "a subagent count"} (active read served: ${activeServed}; ${activeTurnedAway} reads turned away):\n${last}`,
         START_MS + SETTLE_MS,
-      )
-      expect(Date.now() - activeServedAt, `${name}: ms from the TUI's first answered read of what runs until the dock settled`).toBeLessThan(SETTLE_MS)
+      ))
+      finish()
       if (refuseActiveReads > 0 || failActiveReads > 0) expect(activeTurnedAway, `${name}: reads of what runs turned away`).toBeGreaterThan(0)
-    } finally {
+    }).pipe(Effect.ensuring(Effect.sync(() => {
       held = false
       refuseActive = 0
       failActive = 0
-      await host.stop()
-    }
-  }
+    }))))
+  })
 
-  test("rows of turns that ended while the TUI was away leave the dock once it reconnects", kept.test(() => scenario("reconnect")), TIMEOUT_MS)
+  it.live("rows of turns that ended while the TUI was away leave the dock once it reconnects", () => scenario("reconnect"), hangGuard("fork-session"))
 
-  test("they leave it when the new service still boots as the TUI reconnects, as the owner's did", kept.test(() => scenario("booting", { refuseActiveReads: 3 })), TIMEOUT_MS)
+  it.live("they leave it when the new service still boots as the TUI reconnects, as the owner's did", () => scenario("booting", { refuseActiveReads: 3 }), hangGuard("fork-session"))
 
-  test("they leave it when the TUI's first read of what runs after the reconnect fails", kept.test(() => scenario("failed-read", { failActiveReads: 1 })), TIMEOUT_MS)
+  it.live("they leave it when the TUI's first read of what runs after the reconnect fails", () => scenario("failed-read", { failActiveReads: 1 }), hangGuard("fork-session"))
+
+  it.live("a fresh TUI reads the finished and running children's words from the same service", () => Effect.gen(function* () {
+    yield* Effect.promise(kept.test(() => {}))
+    const { client, service, title, parent } = yield* parentOf("mixed")
+    const showsBoth = (text: string, activity: string) =>
+      /orchestrator\s+sim\s+Streaming child one\s+1 step\b/.test(text) &&
+      text.split("\n").some((line) => /orchestrator\s+sim\s+Streaming child two\b/.test(line) && line.includes(`${activity} ·`)) &&
+      /◆ 1 subagent\b/.test(text) && !text.includes("Checking")
+    yield* withTui("mixed-first", service, parent.id, (screen) => Effect.gen(function* () {
+      yield* Effect.promise(() => until(screen, (text) => text.includes(title), (last) => `first TUI did not open the parent:\n${last}`, START_MS))
+      const finished = yield* Effect.promise(() => client.session.create({ parentID: parent.id, title: CHILDREN[0] }))
+      const running = yield* Effect.promise(() => client.session.create({ parentID: parent.id, title: CHILDREN[1] }))
+      yield* Effect.promise(() => client.session.prompt({ sessionID: running.id, text: "hold" }))
+      yield* Effect.promise(() => client.session.prompt({ sessionID: finished.id, text: "say finished" }))
+      yield* Effect.promise(() => client.experimental.session.wait({ sessionID: finished.id }))
+      yield* Effect.promise(() => until(screen, (text) => showsBoth(text, "holding"), (last) => `wrong dock before TUI restart:\n${last}`, START_MS))
+    }))
+    yield* withTui("mixed-second", service, parent.id, (screen) => Effect.gen(function* () {
+      // The fork's text deltas are ephemeral; role/model, completed steps
+      // and the positive running count are present in the host snapshot.
+      yield* Effect.promise(() => until(screen, (text) => showsBoth(text, "starting") || showsBoth(text, "holding"),
+        (last) => `wrong dock after TUI restart:\n${last}`, SETTLE_MS))
+      endHolds()
+      yield* Effect.promise(() => until(screen, (text) => text.includes(title) && !/◆ \d+ subagents?/.test(text),
+        (last) => `dock still counts a finished child:\n${last}`, SETTLE_MS))
+    }))
+  }).pipe(Effect.ensuring(Effect.sync(endHolds))), hangGuard("fork-session"))
 })

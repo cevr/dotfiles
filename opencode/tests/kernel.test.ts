@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason dynamically loaded module at tests/kernel/run.ts: const importNativeModule = (file: string): Promise<object> => import(file)
 // accept: deep (33.8 s alone on a quiet host: 1-minute load 7.1–9.0 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The kernel in real OpenCode (the fork, through its SDK) on the scripted
 // model: two kernel calls in one session share a binding, the first reads a
@@ -9,14 +11,16 @@
 // is refused a session that is no descendant, and a child a cell started, once
 // finished, reaches its parent as its next message, which the parent answers. The kernel on its own is tested beside its code in mods/kernel.
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { join, resolve } from "node:path"
 import { Option, Schema } from "effect"
 import type { Result, Spec } from "./kernel/run.ts"
 import { envelopes } from "../mods/subagents/envelope.ts"
 import { ATTACH_CELL, ATTACH_TASK, cells, DONE, DROP_TASK, HELLO, KERNEL_TASK, MEMORY_TASK, QUEUED_PROMPT, REPORT_HEARD, REPORT_TASK, SELF, SHELL_TASK, STALL_TASK, STOP_TASK, SUBAGENT_TASK, isReport } from "./kernel/sim.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/kernel.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
@@ -36,18 +40,18 @@ const run = async (
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/kernel") } satisfies Spec))
-  const child = owned([process.execPath, join(import.meta.dir, "kernel/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = ownedCheckoutBun("tests/kernel/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
@@ -77,7 +81,6 @@ const toolParts = (messages: unknown): ToolPart[] =>
     .flatMap((message) => message.content ?? [])
     .filter((part): part is ToolPart => part.type === "tool")
 
-const RUN_MS = 150_000
 
 /** The drop run's cell wrote alpha's move to dropped through the skill's log.ts, with the orchestrate plugin loaded. */
 const droppedAlpha = (result: Result) => {
@@ -145,7 +148,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(turns[0]!.kernel).toContain("- tools.read(input: { ")
       expect(turns[0]!.kernel).toContain("- tools.subagent(input: { ")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -161,7 +164,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(next?.images).toHaveLength(1)
       expect(next?.images?.[0]).toStartWith("data:image/png;base64,")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -190,7 +193,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
         bothWait: "first\nlast\n",
       })
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -209,7 +212,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect((saved?.state.content ?? []).map((part) => part.text ?? "").join("")).toBe("Saved #1 (global).")
       expect(JSON.stringify(result.messages)).toContain(DONE)
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -225,7 +228,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(request.tools).toContain("kernel")
       expect(request.tools).toContain("execute")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -238,7 +241,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       })
       const [cell] = toolParts(result.messages)
       const text = (cell!.state.content ?? []).map((part) => part.text ?? "").join("")
-      expect(text).toMatch(/^refused: It is the Sabbath; agent work resumes at Sat 18:\d\d/)
+      expect(text).toMatch(/^refused: It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT/)
       expect(text).toContain("No agent starts now.")
       // The guard logged the refused call under the kernel call's id.
       const log = readFileSync(join(result.base, "agents.jsonl"), "utf8")
@@ -257,14 +260,14 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       // OpenCode runs every subagent in the background: the call ends as the worker starts, so it logs `running`.
       expect(calls.filter((call) => call.kind === "done").map((call) => call.status)).toEqual(["running"])
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
     "a cell's subagent handle stops a real child mid-turn: it reads stopped, the parent hears one cancelled notice and no completion, and a stop of a session that is no descendant (its own) is refused",
     () =>
       run("stop", { task: `${SELF}\n${STOP_TASK}`, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, stoppedChild),
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -293,7 +296,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
           "completed",
         ])
       }),
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -304,6 +307,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const line = `mkdir -p run/alpha && ${log} run/alpha new implement r1 && ${log} run/alpha implement dropped r1 superseded`
       return run("drop", { task: `${line}\n${DROP_TASK}`, denyExecute: true, orchestrate: { plugin: join(ROOT, "cmd/orchestrate"), now: "2026-11-04T15:00:00Z" } }, droppedAlpha)
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 })

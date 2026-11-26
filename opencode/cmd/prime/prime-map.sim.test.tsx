@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The transcript map (ctrl+x g) on the simulated TUI with Prime loaded: the
 // transcript with every turn folded to one line in Prime's look, in the
 // transcript's place. Three asks, each a thought and a shell call, then a

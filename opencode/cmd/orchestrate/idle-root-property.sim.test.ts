@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A generated property of the idle-root rules (mods/orchestrate/idle.ts), on
 // the simulated host at 20 seeds: the orchestrate, status and queue plugins
 // on the world, the status script printing run `p1` (alpha in implement, beta
@@ -17,10 +19,10 @@
 import { Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/idle-root-property.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/idle-root-property.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** Wednesday 4 November 2026, 10:00 in Knowlton: 14 commands at most a minute apart stay clear of the Sabbath. */

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at tests/accept-clock.test.ts: ChildProcess.make("bun", ["test", "./scripts/accept.test.ts", "-t", TIMED_RUNS], { env: { ACCEP
 // accept: one at a time (it bounds by the clock how soon a deep run gives the accept lock up and takes it back).
 // The wall-clock bounds of scripts/accept.test.ts's real runs of scripts/accept.ts. In the gate those runs
 // judge what happened and in what order, never how fast: a loaded host stretches real time many times over,
@@ -10,6 +12,7 @@ import { Effect, FileSystem, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { timedCounts, timedFilter } from "../scripts/accept-plan.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The real runs of scripts/accept.test.ts that carry a clock bound (scripts/accept-plan.ts `TIMED_RUNS`). */
 const TIMED_RUNS = timedFilter
@@ -49,6 +52,6 @@ describe("the accept lock by the clock", () => {
           passed: true,
         })
       }),
-    600_000,
+    hangGuard("deep-scenario"),
   )
 })

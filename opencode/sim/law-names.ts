@@ -78,6 +78,9 @@ export const LAW_FOLDER = "law"
 export const LAW_MOVED = "-moved"
 
 export const LAW = {
+  stop: "session.stop answers interrupted only for a live turn, drops the queued input and leaves a stopped session ready for a fresh prompt",
+  permission: "permission.assert returns void for an allowed resource and fails with a Tool.Error carrying the denied resource and rules",
+  skills: "skill.list reads the location's catalog, a skill.transform registers entries until disposed, and skill.reload refreshes a cached entry",
   storage: "storage keeps a plugin's values, pages a scan in key order, and forgets a removed key",
   prompt:
     "a prompt to an idle session is enqueued, delivered, and answered by the model in one execution that reads it, the answer the assistant message's text content; a second admission of its id is not taken again",
@@ -96,6 +99,9 @@ export const LAW = {
     "a session created with an id is that session when created again; sessions list by parent and directory, newest update first unless asc, up to a limit; an update's metadata is what get answers",
   steps:
     "each step of a turn publishes session.step.started then session.step.ended for its assistant message, on the session's agent and model, then session.execution.succeeded ends the turn; the host publishes no session.idle",
+  toolSuccess: "a successful local tool publishes session.tool.success once with its session, assistant message and call ids, after its completed part is readable",
+  toolFailed: "a failed local tool publishes session.tool.failed once with its session, assistant message and call ids, after its error part is readable",
+  revertCommitted: "a client's committed revert publishes session.revert.committed with the session and boundary ids after the boundary and later messages are gone",
   removed: "a removed session publishes session.deleted once and is gone",
   archived:
     "a plugin's update does not archive a session (the plugin host drops `archived`); a client's archive publishes session.archived once, and archiving it again publishes nothing; a list with archived: false leaves it out and archived: true lists it",
@@ -103,7 +109,7 @@ export const LAW = {
   agent:
     "an agent a transform adds publishes agent.updated and is in the catalog; a session created with it and a model answers both, and its requests run on them",
   socket:
-    "a turn on a model whose provider streams over a WebSocket runs experimental.ws.receive on each frame the provider sends, from response.created to response.completed, with the turn's model and kind",
+    "each WebSocket turn on a session resolves its model before model.request, then runs experimental.ws.send on response.create and experimental.ws.receive on each reply frame, with the turn's model and kind",
   catalog: "the catalog lists the configured model, its provider and the build agent, and refuses ones it does not have",
   http: "http.request runs after model.request for each request, carrying the headers model.request set; the request it leaves is the one sent, and http.response sees that request",
   retry:

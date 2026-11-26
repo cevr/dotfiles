@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/http/page.test.ts: expect(readFileSync(join(PAGE, STAMP), "utf8")).toBe(`${sourceHash(PAGE)}\n${distHash(PAGE)}\n`
 // The committed page is the page's source, built: dist/ carries the hash of everything the build read and of what it
 // wrote, and every file its index.html loads is in it. A source change that was not rebuilt (`bun run build` in
 // page/) and committed fails here, before a stale page ships; so does a hand edit of dist/ (the build's output no

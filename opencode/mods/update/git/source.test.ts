@@ -1,9 +1,14 @@
+// @reads all
+// @reads-reason subprocess reads at mods/update/git/source.test.ts: spawnSync(["rm", "-rf", root, home])
 import { describe, expect, test } from "bun:test"
-import { env as hostEnv, file, fileURLToPath, spawnSync, write } from "bun"
+import { env as hostEnv, file, spawnSync, write } from "bun"
 import { Effect, Exit, Option } from "effect"
 import { gitInit } from "../../../tests/git-repo.ts"
+import { matchingInput } from "../../../tests/read-path.ts"
 import { Source } from "../service.ts"
 import * as SourceLive from "./source.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
+
 
 /** Git with no config of the owner's: no signing, no hooks, a fixed identity. */
 const GIT_ENV = {
@@ -74,21 +79,30 @@ describe("the host's commands, over the checkout as it stands", () => {
           spawnSync(["rm", "-rf", root, home])
         }),
       ),
-    60_000,
+    hangGuard("installer"),
   )
 
   /** The host's commands scripts as the repo has them, each run under `sh` from its own place. */
   const SCRIPTS = [
-    { host: "the Mac", script: fileURLToPath(new URL("../../../../local-bin.sh", import.meta.url)) },
-    { host: "the workbox", script: fileURLToPath(new URL("../../../../workbox/install-bin.sh", import.meta.url)) },
+    { host: "the Mac", script: matchingInput("../local-bin.sh") },
+    { host: "the workbox", script: matchingInput("../workbox/install-bin.sh") },
   ] as const
   const TREE_SHOW = "opencode-2.3.0-prime.aaaaaaaa.bbbbbbbb.tree.plugins/opencode/cmd/rex/show.ts"
+  // This direct link test does not use the fleet's --apply dispatch.
+  const identityScript = matchingInput("../workbox/host-identity.sh")
+  const identity = sh(".", ["sh", "-c", '. "$1"; workbox_host_identity', "test", identityScript]).out
 
   for (const { host, script } of SCRIPTS)
     test(`on ${host}, rex-show links through current.plugins alone: into the tree when it holds the file; with none, no link is made and one that is there stays`, () =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const run = (home: string) => spawnSync(["sh", script], { cwd: home, env: { ...GIT_ENV, HOME: home, PATH: hostEnv.PATH ?? "" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode
+          const run = (home: string) => spawnSync(["sh", script], {
+            cwd: home,
+            env: { ...GIT_ENV, HOME: home, PATH: hostEnv.PATH ?? "", WORKBOX_EXPECT_MACHINE_ID: identity },
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          }).exitCode
           const rexShow = (home: string) => sh(home, ["readlink", ".local/bin/rex-show"]).out
           // With the installed build's tree.
           const treed = sh(".", ["mktemp", "-d", "-t", "update-bin-home"]).out
@@ -107,7 +121,7 @@ describe("the host's commands, over the checkout as it stands", () => {
           expect(rexShow(bare)).toBe("/nonexistent/loop-probe-x/show.ts")
           spawnSync(["rm", "-rf", treed, bare])
         }),
-      ))
+      ), hangGuard("installer"))
 
   /**
    * A scratch live checkout and an installed tree, each with its own `workbox/install-bin.sh` that writes
@@ -139,7 +153,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["cat", "ran"]).out).toBe("tree --apply")
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("a commands script that refuses (a file it will not install, a ~/.zshenv of the owner's) fails the commands with what it said, which the handoff logs", () =>
     Effect.runPromise(
@@ -150,7 +164,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(Option.map(failure, (failed) => failed.message)).toEqual(Option.some(said))
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("an installed tree with no workbox/ (a build from before it held one) fails the commands loudly, naming the tree, and runs the checkout's neither", () =>
     Effect.runPromise(
@@ -161,7 +175,7 @@ describe("the host's commands, over the checkout as it stands", () => {
         expect(sh(places.home, ["test", "-e", "ran"]).code).not.toBe(0)
         spawnSync(["rm", "-rf", places.dir])
       }),
-    ))
+    ), hangGuard("installer"))
 
   test("a host with no script runs nothing", () =>
     Effect.runPromise(

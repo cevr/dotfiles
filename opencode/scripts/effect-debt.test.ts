@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at scripts/effect-debt.test.ts: chain.reduce((from, name) => path.dirname(realpathSync(Bun.resolveSync(`${name}/package.json`,
 /**
  * The Effect lint policy at its public seams: the pure comparator over generated budgets and
  * counts, the `scripts/effect-debt.ts` command over real temporary workspaces (real oxlint and
@@ -7,14 +9,14 @@
  * It copies the real policy, configs and manifests into its workspaces by path, so a change of one of them alone
  * reaches it through no import: the merge check runs it on these (a5821de8 changed only the ignore lists, and
  * main went red here unseen).
- * @reads effect-debt.json .oxlintrc.json .oxlintrc.effect-debt.json package.json lint/** .gitattributes
  */
 import { describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readCheckoutFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Array as Arr, Effect, Order, Result, Schema, type Scope } from "effect"
 import { gitInit } from "../tests/git-repo.ts"
+import { installedInput, matchingInput, readScratchFileSync as readFileSync } from "../tests/read-path.ts"
 import { mergeConfig, mergePolicy } from "./effect-debt-merge.ts"
 import { MERGE_DRIVERS, registerMergeDriver } from "./merge-driver.ts"
 import {
@@ -41,12 +43,14 @@ import {
   SUPPRESSION,
   tighten,
 } from "./effect-debt.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const REAL = process.cwd()
 const CLI_TIMEOUT = 60_000
 const TEST_TIMEOUT = 120_000
 
-const readReal = (file: string) => readFileSync(path.join(REAL, file), "utf8")
+const readReal = (file: string) =>
+  readCheckoutFileSync(matchingInput("{effect-debt.json,.oxlintrc.json,.oxlintrc.effect-debt.json,package.json,bun.lock,lint/package.json,.gitattributes}", file), "utf8")
 const realPolicy = Schema.decodeUnknownSync(Schema.fromJsonString(Policy))(readReal(POLICY))
 const RULES = realPolicy.rules
 const KNOWN = new Set([...RULES, SUPPRESSION])
@@ -196,7 +200,7 @@ const Pinned = Schema.fromJsonString(
 const installedBeside = (moduleDir: string, name: string) => {
   const real = realpathSync(path.join(REAL, moduleDir))
   const scope = real.slice(0, real.lastIndexOf("/node_modules/") + "/node_modules".length)
-  return Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(scope, name, "package.json"), "utf8"))
+  return Schema.decodeUnknownSync(Pinned)(readCheckoutFileSync(installedInput(path.join(scope, name, "package.json")), "utf8"))
 }
 
 describe("the plugin never moves the runtime's effect", () => {
@@ -225,7 +229,7 @@ describe("the plugin never moves the runtime's effect", () => {
       ["opencode-drive", "@opencode/client", "@opencode/protocol", "effect"],
       ["opencode-drive", "@opencode/client", "@opencode/schema", "effect"],
     ])
-      expect({ chain, version: Schema.decodeUnknownSync(Pinned)(readFileSync(path.join(reached(chain), "package.json"), "utf8")).version }).toEqual({ chain, version: pinned })
+      expect({ chain, version: Schema.decodeUnknownSync(Pinned)(readCheckoutFileSync(installedInput(path.join(reached(chain), "package.json")), "utf8")).version }).toEqual({ chain, version: pinned })
     expect(Object.keys({ ...root.devDependencies, ...root.dependencies })).not.toContain("oxlint-plugin-effect")
     const lint = Schema.decodeUnknownSync(Pinned)(`{"version":"0",${readReal(LINT_MANIFEST).slice(1)}`)
     expect(installedBeside("lint/node_modules/oxlint-plugin-effect", "effect").version).toBe(lint.devDependencies?.effect ?? "")
@@ -474,7 +478,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect(checked.stdout).toContain("each (file, rule) at its budget")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -484,7 +488,7 @@ describe("effect-debt --check over a real workspace", () => {
         put(root, "mods/demo/added.ts", DEBT_SOURCE)
         return []
       }, "over: mods/demo/added.ts effect/noTryCatch has 1, budget 0; fix the new findings in mods/demo/added.ts"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -499,7 +503,7 @@ describe("effect-debt --check over a real workspace", () => {
         "over: cmd/demo/server.ts effect/noAsyncFunction",
         "lower: decider/demo.ts effect/noTryCatch has 0, budget 1",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -516,7 +520,7 @@ describe("effect-debt --check over a real workspace", () => {
         "lower: lint/demo.ts effect/noTryCatch has 0, budget 1",
         "over: lint/renamed.ts effect/noTryCatch has 1, budget 0",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -531,7 +535,7 @@ describe("effect-debt --check over a real workspace", () => {
         `over: testbeds/demo/run.ts ${SUPPRESSION} has 1, budget 0`,
         "lower: testbeds/demo/run.ts effect/noTryCatch has 0, budget 1",
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -546,7 +550,7 @@ describe("effect-debt --check over a real workspace", () => {
         `${DEBT_CONFIG}'s ignorePatterns differ from the policy's`,
         `${HARD_CONFIG}'s effect.testFiles differ from the policy's`,
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -561,7 +565,7 @@ describe("effect-debt --check over a real workspace", () => {
         put(root, HARD_CONFIG, ignoring(hardConfigText(), ignorePatterns))
         return []
       }, "lower: mods/demo/model.ts effect/noTryCatch has 0, budget 1"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -590,7 +594,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: malformed.code, problem: malformed.stderr.includes(`${POLICY} is not valid`) }).toEqual({ code: 1, problem: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -599,7 +603,7 @@ describe("effect-debt --check over a real workspace", () => {
       put(root, "mods/demo/broken.ts", "export const broken = (\n")
       return []
     }, "mods/demo/broken.ts: ", "(a parse or config error)"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -617,7 +621,7 @@ describe("effect-debt --check over a real workspace", () => {
         },
         `${DEBT_CONFIG} exempts effect/noTryCatch in mods/demo/added.ts; only ${EXEMPTABLE.join(", ")} can be exempted`,
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -639,7 +643,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: checked.code, empty: checked.stderr.includes(`no source files under ${root}`) }).toEqual({ code: 1, empty: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -656,7 +660,7 @@ describe("effect-debt --check over a real workspace", () => {
         ].join("\n")
         return ["--oxlint", fakeLinter(root, body)]
       }, "elsewhere/outside.ts: a diagnostic for a file outside the source list"),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -694,7 +698,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect({ code: unknown.code, said: unknown.stderr.includes("no-such-base") }).toEqual({ code: 1, said: true })
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -716,7 +720,7 @@ describe("effect-debt --check over a real workspace", () => {
           expect(Object.keys(written.budgets)).not.toContain("mods/demo/untracked.ts")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 })
 
@@ -743,7 +747,7 @@ const FAKES = [
 
 describe("effect-debt --check fails closed when the linter fails", () => {
   for (const [name, body, expected] of FAKES)
-    test.concurrent(`when oxlint ${name}`, () => failsAfter((root) => ["--oxlint", fakeLinter(root, body), "--timeout-ms", "2000"], expected), TEST_TIMEOUT)
+    test.concurrent(`when oxlint ${name}`, () => failsAfter((root) => ["--oxlint", fakeLinter(root, body), "--timeout-ms", "2000"], expected), hangGuard("installer"))
 })
 
 /** Each hard rule: a source it must refuse and one it must accept; test-only rules are written as `*.test.ts`. */
@@ -1014,7 +1018,7 @@ describe("merge by key: two units' edits of the policy and its config merge with
           expect(merged.exemptions.slice(-2)).toEqual([exemptionOf("mods/demo/theirs.ts", "effect/noNodeBuiltinImport"), exemptionOf("mods/demo/ours.ts", "effect/noGlobals")])
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test.concurrent(
@@ -1035,7 +1039,7 @@ describe("merge by key: two units' edits of the policy and its config merge with
           expect(text).toContain(">>>>>>> theirs")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 
   test("the driver refuses a file it does not own and a wrong argument count, writing nothing", () =>
@@ -1060,7 +1064,7 @@ describe("the merge driver's registration (bun run daily, and the update plugin'
   const checkout = Effect.fn("EffectDebtTest.checkout")(function* (routed: boolean) {
     const root = yield* scratch
     gitInit(root, ["-q"])
-    put(root, MERGE_DRIVERS, readFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
+    put(root, MERGE_DRIVERS, readCheckoutFileSync(path.join(DOTFILES, MERGE_DRIVERS), "utf8"))
     if (routed) put(root, "opencode/.gitattributes", readReal(".gitattributes"))
     return root
   })
@@ -1132,6 +1136,6 @@ describe(`${HARD_CONFIG}: the hard rules`, () => {
           for (const [file] of FENCES) expect(Arr.map(errorsIn(file), (each) => each.code)).toContain("eslint(no-restricted-imports)")
         }),
       ),
-    TEST_TIMEOUT,
+    hangGuard("installer"),
   )
 })

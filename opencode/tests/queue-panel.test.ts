@@ -10,13 +10,15 @@
 // question form with its choices (the queue's own when the agent gave none)
 // and a line of one's own; a pick or an answer typed reaches the agent as one
 // message, and the tab marks the item answered.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { PICKED, REPLY, TYPED } from "../scenarios/queue-panel.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 /** The Queue tab's lines, in order. */
 const PLAN = [
@@ -62,9 +64,9 @@ describe.skipIf(!fork)("the Queue tab", () => {
     const code = await child.exited
     const timeouts = readdirSync(out)
       .filter((name) => name.endsWith(".timeout.txt"))
-      .map((name) => readFileSync(join(out, name), "utf8"))
+      .map((name) => readScratchFileSync(join(out, name), "utf8"))
     expect(code, `${output}${errors}`.slice(-5000) + timeouts.join("\n")).toBe(0)
-    const frame = (name: string) => readFileSync(join(out, `queue-panel-${name}.txt`), "utf8")
+    const frame = (name: string) => readScratchFileSync(join(out, `queue-panel-${name}.txt`), "utf8")
 
     const bar = frame("bar")
     expect(bar).toContain(REPLY)
@@ -92,5 +94,5 @@ describe.skipIf(!fork)("the Queue tab", () => {
     const answered = panel(frame("answered"))
     expect(answered).toContain("! Close old Claude panes · needs you · answered: Keep the two newest")
     expect(answered).toContain("○ Merge workers, run daily · next · answered: Run it tonight")
-  }), 150_000)
+  }), hangGuard("fork-turn"))
 })

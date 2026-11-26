@@ -6,12 +6,14 @@
 // (rows.ts, `compact`) draws none, the count line above them still opening
 // every one; resized back, they return. Past six rows the wheel over them
 // scrolls them in place, the count line under them saying where they are.
+import { rowOf, type PaneWorkerView } from "@dotfiles/opencode-pane-agent/worker"
 import { columns, format, sameSegments, spinner, stateTone, type Columns, type Kind } from "@dotfiles/opencode-subagents/line"
 import { keptMemo } from "@dotfiles/opencode-subagents/solid/kept"
 import { subagents, visible, type Row as SubagentRow } from "@dotfiles/opencode-subagents/subagent-row"
 import type { BoxRenderable, MouseEvent, RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, Index, Show, type Accessor } from "solid-js"
+import { Option } from "effect"
+import { createEffect, createMemo, createSignal, Index, on, Show, type Accessor } from "solid-js"
 import { wholeSecond } from "../clock.ts"
 import { compact, countLine, scrolled, windowed } from "../rows.ts"
 import { useNow } from "./clock.ts"
@@ -31,9 +33,14 @@ export function SubagentRows(props: { host: Host; sessionID: string; child: bool
 }
 
 function Rows(props: { host: Host; sessionID: string; child: boolean }) {
+  const paneWorkers = props.host.paneAgents(() => Option.some(props.sessionID))
+  const paneById = createMemo(() => new Map(paneWorkers().map((worker) => [worker.id, worker] as const)))
   const all = createMemo(() => {
     const family = props.host.subagents(props.sessionID)
-    return subagents(family, family.root)
+    const subagentList = subagents(family, family.root)
+    const paneRows = paneWorkers().map(rowOf)
+    if (paneRows.length === 0) return subagentList
+    return [...subagentList, ...paneRows]
   })
   // The clock ticks while a row works, waits or lingers in view, and settles once none does.
   // Whether rows are live depends on the clock, so the clock follows a signal set after both
@@ -50,7 +57,7 @@ function Rows(props: { host: Host; sessionID: string; child: boolean }) {
   // The strip mounts again when it was hidden (no rows) and comes back, so its scroll starts at the top then.
   return (
     <Show when={list().length > 0}>
-      <Strip host={props.host} sessionID={props.sessionID} child={props.child} list={list} now={now} />
+      <Strip host={props.host} sessionID={props.sessionID} child={props.child} list={list} now={now} paneById={paneById} />
     </Show>
   )
 }
@@ -61,7 +68,14 @@ function Rows(props: { host: Host; sessionID: string; child: boolean }) {
  * stays. The offset is a place in the list, so ticks and rows changing state
  * keep it, and a row leaving while scrolled clamps it (rows.ts, `windowed`).
  */
-function Strip(props: { host: Host; sessionID: string; child: boolean; list: Accessor<ReadonlyArray<SubagentRow>>; now: Accessor<number> }) {
+function Strip(props: {
+  host: Host
+  sessionID: string
+  child: boolean
+  list: Accessor<ReadonlyArray<SubagentRow>>
+  now: Accessor<number>
+  paneById: Accessor<ReadonlyMap<string, PaneWorkerView>>
+}) {
   const [offset, setOffset] = createSignal(0)
   const shown = createMemo(() => windowed(props.list(), offset()))
   // Kept clamped, so a step after rows left starts from the window drawn.
@@ -98,6 +112,7 @@ function Strip(props: { host: Host; sessionID: string; child: boolean; list: Acc
             now={props.now}
             marked={props.child && row().id === props.sessionID}
             marking={props.child}
+            paneWorker={props.paneById().get(row().id)}
           />
         )}
       </Index>
@@ -112,6 +127,20 @@ function Strip(props: { host: Host; sessionID: string; child: boolean; list: Acc
   )
 }
 
+const paneDetailMessage = (worker: PaneWorkerView): string => {
+  const lines = [
+    `Harness: ${worker.harness}`,
+    `State: ${worker.state} (${worker.update})`,
+    `Rex pane: ${worker.blockId} (session ${worker.rexSessionId})`,
+    `Result file: ${worker.resultFile}`,
+  ]
+  const tail = Option.filter(Option.fromUndefinedOr(worker.lastLines), (text) => text.length > 0)
+  if (Option.isSome(tail)) {
+    lines.push("", "Last lines:", tail.value)
+  }
+  return lines.join("\n")
+}
+
 function Row(props: {
   host: Host
   row: SubagentRow
@@ -120,9 +149,39 @@ function Row(props: {
   now: Accessor<number>
   marked: boolean
   marking: boolean
+  paneWorker?: PaneWorkerView
 }) {
+  const paneWorker = () => Option.fromUndefinedOr(props.paneWorker)
+  // Demand follows the rendered child, not the family, a timer tick, or a
+  // streamed token. A fresh TUI must request the same history as a warm one.
+  createEffect(
+    on(
+      () => props.row.id,
+      (sessionID) => {
+        if (Option.isNone(paneWorker())) props.host.syncSubagentMessages(sessionID)
+      },
+    ),
+  )
   const theme = () => props.host.theme()
-  const link = useSessionLink(props.host, () => (props.marked ? undefined : props.row.id))
+  const link = useSessionLink(props.host, () =>
+    Option.getOrUndefined(
+      Option.filter(Option.some(props.row.id), () => !props.marked && Option.isNone(paneWorker())),
+    ),
+  )
+  const [paneHover, setPaneHover] = createSignal(false)
+  const handlers = () =>
+    Option.match(paneWorker(), {
+      onNone: () => link.handlers,
+      onSome: (worker) => ({
+        onMouseOver: () => setPaneHover(true),
+        onMouseOut: () => setPaneHover(false),
+        onMouseUp: () => {
+          if (!props.host.selecting()) {
+            props.host.showDetail(`${worker.role} ${worker.harness} · ${worker.unit}`, paneDetailMessage(worker))
+          }
+        },
+      }),
+    })
   // A reading that draws the same words keeps the segments, so it requests no frame.
   const segments = keptMemo(
     () =>
@@ -143,7 +202,7 @@ function Row(props: {
     if (tone === "info") return theme().text.feedback.info.base
     return theme().text.muted
   }
-  const bright = () => link.hover() || props.marked
+  const bright = () => link.hover() || paneHover() || props.marked
   const color = (kind: Kind): RGBA => {
     if (kind === "lead") return stateColor()
     if (kind === "role") return roleColor(theme(), props.row.tone)
@@ -155,7 +214,7 @@ function Row(props: {
     return bright() ? theme().text.base : theme().text.muted
   }
   return (
-    <box height={1} flexShrink={0} {...link.handlers}>
+    <box height={1} flexShrink={0} {...handlers()}>
       <text wrapMode="none" truncate>
         <Index each={segments()}>
           {(segment) => {

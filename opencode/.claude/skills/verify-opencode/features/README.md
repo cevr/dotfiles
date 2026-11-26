@@ -48,10 +48,14 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 ## Features
 
 - [Orchestrate's machine and the land](orchestrate.md): role starts, the batch machine's refusals, the land of a batch.
+- [Commitment reasons](commitment-reasons.md): a follow-up's, a deferral's and a decision's reason as checked data: invariants, dependencies, receipts.
 - [Nothing is hard, in the role prompts](nothing-is-hard-rule.md): the owner's standing rule in each role's and the worker's prompt, the unchanged refusal rule.
 - [Account pool](pool.md): the login each request goes out on, failover on a refused login, resets.
 - [Session mail](mail.md): `sessions` and `message`, a woken idle receiver, a steer into a running one, paired hosts.
 - [Wake latch](wake-latch.md): a subagent start held as a latch, `wake_list`, the reopen.
+- [Durable job events](durable-job-events.md): a job's end reaches its session once, from the runner's call, the start or the sweep; `park`, no polling.
+- [Host check leases](host-check-leases.md): one queue and launcher boundary for heavy checks, with scoped ownership and current host supply.
+- [Host resource ownership](host-resource-ownership.md): one durable holder frontier for bound executions, adopted owners, shared caches and observations.
 - [Work](work.md): the `work` tool and its alias `rift`: create, list, remove and land a workspace, with no worktree tools.
 - [Guard](guard.md): refused destructive commands, a subagent's long sleep, heavy commands niced.
 - [Queue](queue.md): the agent's live queue, the tool, the RPC, the sidebar.
@@ -63,3 +67,4 @@ Name user paths, tool calls, keys, commands and observable words. Keep source se
 - [Rex panes](rex.md): `rex-show` in a showcase pane beside the caller's, the pane a subagent's shell names.
 - [Service restart and background shells](service-restart.md): a background shell across `service restart`, a signal stop and a systemd scope stop, with the Linux leg on the installed build.
 - [Model at the next compaction](model-next.md): `/model-next`, the picker's `at next compaction`, the tray line, the apply at a compaction or an expired cache's wake.
+- [Child lifecycle](settle-child-attempts.md): held and continuing children, typed diagnostics, settlement, and rebuilt kernel handles.

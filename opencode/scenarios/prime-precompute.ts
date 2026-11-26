@@ -17,7 +17,8 @@
 // Each frame is a `.txt` of its text and a `.json` of its styled lines.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -67,14 +68,14 @@ export default OpenCodeDriver.use(
       yield* llm.serve((req) => {
         const s = JSON.stringify(req)
         if (s.includes("You name conversations")) {
-          requests.push({ kind: "title", at: Date.now() })
+          requests.push({ kind: "title", at: stamp() })
           return Stream.make(Llm.text("build check"), Llm.finish())
         }
         if (s.includes("summarize the conversation above")) {
-          requests.push({ kind: "summary", at: Date.now() })
+          requests.push({ kind: "summary", at: stamp() })
           return Stream.make(Llm.text(SUMMARY), usage(88_000, 500), Llm.finish())
         }
-        requests.push({ kind: "step", at: Date.now() })
+        requests.push({ kind: "step", at: stamp() })
         steps += 1
         // A tool step on a small prompt, the answer near the ceiling; then a tool step past it, and the answer on the summary.
         if (steps === 1) return shell("call_build", 20_000)
@@ -106,7 +107,7 @@ export default OpenCodeDriver.use(
       yield* summarized
       yield* Effect.sleep("500 millis")
       yield* save("held")
-      next = Date.now()
+      next = stamp()
       yield* ui.submit(NEXT)
       yield* until("swapped", (frame) => frame.includes(DONE) && frame.includes("◇ Compacted automatically"))
       yield* Effect.sleep("500 millis")

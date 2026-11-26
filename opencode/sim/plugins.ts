@@ -48,7 +48,7 @@ import { callsIn } from "@dotfiles/opencode-orchestrate/ledger"
 import { HEARTBEAT_MS, IDLE, type Reported, reportsOf, type Seen } from "@dotfiles/opencode-orchestrate/idle"
 import type { Pace } from "@dotfiles/opencode-orchestrate/pace"
 import { StepLog, UnitLogs } from "@dotfiles/opencode-orchestrate/service"
-import { hosted, make as makeOrchestrate } from "@dotfiles/opencode-cmd-orchestrate/server"
+import { hosted, make as makeOrchestrate, type RecordLayer } from "@dotfiles/opencode-cmd-orchestrate/server"
 import { make as makeQueue } from "@dotfiles/opencode-cmd-queue/server"
 import { make as makeDigest } from "@dotfiles/opencode-cmd-digest/server"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
@@ -71,11 +71,11 @@ const checksOf = (world: World) =>
     Checks.of({
       run: (command, _cwd, timeoutMs) =>
         Effect.gen(function* () {
-          const process = world.processes(command, world.now())
-          yield* Effect.sleep(Math.min(process.ms, timeoutMs))
-          world.record("check", { command, exitCode: process.exitCode, stdout: process.stdout })
-          if (process.ms > timeoutMs) return { exitCode: 124, stdout: "", stderr: "", timedOut: true }
-          return { exitCode: process.exitCode, stdout: process.stdout, stderr: "", timedOut: false }
+          const runResult = world.processes(command, world.now())
+          yield* Effect.sleep(Math.min(runResult.ms, timeoutMs))
+          world.record("check", { command, exitCode: runResult.exitCode, stdout: runResult.stdout })
+          if (runResult.ms > timeoutMs) return { exitCode: 124, stdout: "", stderr: "", timedOut: true }
+          return { exitCode: runResult.exitCode, stdout: runResult.stdout, stderr: "", timedOut: false }
         }),
     }),
   )
@@ -212,7 +212,7 @@ export const stepLogOf = (lines: ReadonlyArray<unknown>) => {
  * script, the skill's files) its memory doubles, as `cmd/orchestrate/server.test.ts` holds them. The call log is one
  * for the plugin's life, its restarts too, as its file is.
  */
-export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
+export const orchestrate = (doubles: OrchestrateDoubles = {}, record?: RecordLayer) => {
   const lines = doubles.lines ?? []
   return makeOrchestrate((ctx, options, start, background) =>
     Layer.mergeAll(
@@ -229,15 +229,17 @@ export const orchestrate = (doubles: OrchestrateDoubles = {}) => {
       RunFilesTest.layer(doubles.files ?? new Map()),
       WorkGitTest.layer(doubles.workGit ?? WorkGitTest.world()),
     ),
+    void 0,
+    record,
   )
 }
 
 /** A command in the world's shell, from a plugin's fiber: what it prints, after the time it runs. */
 const shellOf = (world: World, command: string) =>
   Effect.suspend(() => {
-    const process = world.processes(command, world.now())
-    world.record("process", { command, exitCode: process.exitCode })
-    return Effect.sleep(process.ms).pipe(Effect.as(process))
+    const runResult = world.processes(command, world.now())
+    world.record("process", { command, exitCode: runResult.exitCode })
+    return Effect.sleep(runResult.ms).pipe(Effect.as(runResult))
   })
 
 /** How long the status script may run for one run, as the process adapter's timeout (`process/run-tables.ts`). */

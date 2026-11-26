@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at cmd/rex/feed-pty.test.ts: return Bun.spawn([process.execPath, SHOW, "view", "--session", "session:pty", "--spool", root],
 // The feed as its pane runs it: `rex-show view` in a real terminal (a pty
 // from Bun.spawn's `terminal`, the child in its own process group, killed
 // when the case ends), its spool showing a feed of a stand-in Sideshow (a
@@ -19,6 +21,7 @@ import { fileURLToPath } from "node:url"
 import { Feed, Spooled } from "@dotfiles/opencode-rex/spool"
 import { Array as Arr, Duration, Effect, Option, Queue, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const encodeSpooled = Schema.encodeSync(Schema.fromJsonString(Spooled))
 
@@ -167,6 +170,6 @@ describe("the feed in a terminal", () => {
         expect(yield* Effect.promise(() => child.exited)).toBe(0)
       }),
     ),
-    30_000,
+    hangGuard("local-fixture"),
   )
 })

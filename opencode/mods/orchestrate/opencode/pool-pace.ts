@@ -1,10 +1,9 @@
-// The pool's pace over OpenCode's RPC: the pool mod reads provider quota, so
-// OpenCode's own spend counts. No pool, a failure, a timeout or an answer
-// that is not a pace all fail open, as an unreachable host does, and the
-// reply says which, for the call log. Each new agent is told to the pool's
-// `started`; a tell that fails is lost.
-import { Cause, Effect, Layer, Schema } from "effect"
-import { Answered, FailedOpen, Pace } from "../pace.ts"
+// Worker admission over the pool RPC: modern hosts negotiate and persist a
+// frozen launch estimate before the worker starts. An outage holds the launch;
+// an absent pool remains optional. Older pools use quote-and-record until both
+// hosts have upgraded. Binding the child enables completed-work learning.
+import { Cause, Clock, Effect, Layer, Option, Schema } from "effect"
+import { Answered, FailedOpen, Pace, type PaceReply } from "../pace.ts"
 import { PoolPace } from "../service.ts"
 
 /**
@@ -28,9 +27,41 @@ const ABSENT = new Set(["rpc.unavailable", "rpc.method_not_found"])
 const MAX_WHY = 200
 
 const decode = Schema.decodeUnknownOption(Pace)
+const absent = (cause: Cause.Cause<unknown>) => Option.exists(
+  Schema.decodeUnknownOption(Schema.Struct({ type: Schema.String }))(Cause.squash(cause)),
+  (failure) => ABSENT.has(failure.type),
+)
 
-export const layer = (ask: Ask, tell: Tell) =>
+export type Reserve = (input: { readonly providerID: string; readonly model: string; readonly sessionID: string; readonly launchID: string }) => Effect.Effect<unknown, unknown>
+export type Bind = (input: { readonly launchID: string; readonly sessionID: string }) => Effect.Effect<unknown, unknown>
+
+export const layer = (ask: Ask, tell: Tell, reserve = Option.none<Reserve>(), bind = Option.none<Bind>()) =>
   Layer.succeed(PoolPace, {
+    reserveLaunch: Effect.fn("PoolPace.reserveLaunch")(function* (providerID: string, model: string, sessionID: string, launchID: string) {
+      const input = { providerID, model: bareId(model), sessionID, launchID }
+      // The orchestrator already obtained the legacy quote (or Codex's own
+      // admission) before this call. Record that start once; do not ask a
+      // different legacy authority again and change the selected fallback.
+      const legacy = tell({ providerID }).pipe(
+        Effect.timeoutOption(TIMEOUT), Effect.ignoreCause,
+        Effect.as(FailedOpen.make({ why: "pool does not support negotiated launches; kept the prior admission" })),
+      )
+      const held = Clock.currentTimeMillis.pipe(Effect.map((now) => Answered.make({ pace: {
+        ok: false, measured: true, reason: "launch agreement is unavailable; no worker was started", retryAt: now + 60_000,
+      } })))
+      if (Option.isNone(reserve)) return yield* legacy
+      return yield* reserve.value(input).pipe(
+        Effect.timeoutOption("25 seconds"),
+        Effect.flatMap((answer): Effect.Effect<PaceReply> => Option.match(Option.flatMap(answer, decode), {
+          onNone: () => held, onSome: (pace) => Effect.succeed(Answered.make({ pace })),
+        })),
+        Effect.catchCause((cause): Effect.Effect<PaceReply> => { if (absent(cause)) return legacy; return held }),
+      )
+    }),
+    bindLaunch: (launchID, sessionID) => Option.match(bind, {
+      onNone: () => Effect.void,
+      onSome: (run) => run({ launchID, sessionID }).pipe(Effect.timeoutOption(TIMEOUT), Effect.asVoid, Effect.ignoreCause),
+    }),
     pace: Effect.fn("PoolPace.pace")(
       function* (providerID: string, model?: string, sessionID?: string) {
         const id = model === undefined ? undefined : bareId(model)

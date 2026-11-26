@@ -5,11 +5,13 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Random } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
+import { FORM_CASES } from "../../../sim/witness-cases.ts"
+import { assertEffectWitnessCases } from "../../../sim/witnesses.ts"
 import type { FormInput } from "../form.ts"
 import type { Question } from "../question.ts"
 import { FormRefused, type FormHost, opener, type PendingForm, QuestionsUnread } from "./form.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-const TIMEOUT_MS = 10_000
 
 const asked = (sessionID: string, id: string, askedAt: number): Question => ({ id, sessionID, question: `${sessionID} ${id}?`, assume: "no", askedAt })
 
@@ -33,7 +35,10 @@ const host = (options: Options) =>
     const gate = { now: yield* Deferred.make<void>() }
     const view: FormHost = {
       pending: () => listed,
-      read: (sessionID) => Effect.suspend(() => (options.unreadable === true ? Effect.fail(new QuestionsUnread({ sessionID })) : Effect.succeed(state.open))),
+      read: (sessionID) => Effect.suspend(() => {
+        if (options.unreadable === true) return Effect.fail(new QuestionsUnread({ sessionID }))
+        return Effect.succeed(state.open)
+      }),
       create: (sessionID, input) =>
         Effect.gen(function* () {
           if (options.hold === true) yield* Deferred.await(gate.now)
@@ -47,7 +52,10 @@ const host = (options: Options) =>
           cancelled.push(formID)
           listed.splice(0, listed.length, ...listed.filter((form) => form.id !== formID))
         }),
-      asker: (sessionID) => (sessionID === "ses_child" ? "implementor auth r1" : sessionID),
+      asker: (sessionID) => {
+        if (sessionID === "ses_child") return "implementor auth r1"
+        return sessionID
+      },
     }
     /** Lets every held create through, and holds the next ones. */
     const release = Effect.gen(function* () {
@@ -82,7 +90,7 @@ describe("opening the questions form", () => {
         ],
       ])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -98,7 +106,7 @@ describe("opening the questions form", () => {
       expect(yield* forms.open("ses_root")).toBe("already")
       expect(keys(stand.made)).toEqual([["ses_root", ["ask_user_async:q1"]]])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -111,7 +119,7 @@ describe("opening the questions form", () => {
       expect(yield* opener(none.view).open("ses_root")).toBe("none")
       expect(none.made).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -123,7 +131,7 @@ describe("opening the questions form", () => {
       const failing = yield* host({ open: [asked("ses_root", "q1", 1)], failing: true })
       expect(yield* opener(failing.view).open("ses_root")).toBe("failed")
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   effectTest(
@@ -142,7 +150,7 @@ describe("opening the questions form", () => {
       expect(yield* opener(live.view).open("ses_root")).toBe("already")
       expect(live.cancelled).toEqual([])
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 
   /** One generated run: opens (clicks), slow creates let through and submits, in a seeded order. */
@@ -178,9 +186,40 @@ describe("opening the questions form", () => {
     Effect.gen(function* () {
       const runs = yield* Effect.forEach(Array.from({ length: 200 }, (_, seed) => seed), run)
       expect(runs.filter((each) => each.most > 1 || each.shownAgain.length > 0)).toEqual([])
-      // Not vacuous: forms were shown.
-      expect(runs.some((each) => each.most === 1)).toBe(true)
     }),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
+
+  const play = (click: boolean, submit: boolean) => Effect.gen(function* () {
+    const stand = yield* host({ open: [asked("ses_root", "q1", 1)], hold: true })
+    const forms = opener(stand.view)
+    const open = () => {
+      if (click) return forms.open("ses_root")
+      return Effect.succeed("no click")
+    }
+    const opening = yield* Effect.forkChild(open())
+    yield* Effect.yieldNow
+    yield* stand.release
+    const first = yield* Fiber.join(opening)
+    const listed = () => stand.view.pending("ses_root").map((form) => form.fields.map((field) => field.key))
+    const pending = listed()
+    const submitted: Array<string> = []
+    if (submit) submitted.push(...(yield* stand.submit))
+    else for (const form of stand.view.pending("ses_root")) yield* stand.view.cancel("ses_root", form.id)
+    const reopened = yield* Effect.forkChild(open())
+    yield* Effect.yieldNow
+    yield* stand.release
+    return { pending, first, submitted, next: yield* Fiber.join(reopened), listed: listed() }
+  })
+  effectTest("W: a released open lists the pending form; answered keys do not return on reopen", assertEffectWitnessCases(FORM_CASES, {
+    "opened form": { expected: [["ask_user_async:q1"]], run: (cause) => Effect.map(play(cause, false), (run) => run.pending) },
+    "submitted form": {
+      expected: { next: "none", listed: [] },
+      run: (cause) => Effect.map(play(true, cause), ({ first, submitted, next, listed }) => {
+        if (cause) expect({ first, submitted }).toEqual({ first: "opened", submitted: ["ask_user_async:q1"] })
+        else expect({ next, listed }).toEqual({ next: "opened", listed: [["ask_user_async:q1"]] })
+        return { next, listed }
+      }),
+    },
+  }), hangGuard("in-memory"))
 })

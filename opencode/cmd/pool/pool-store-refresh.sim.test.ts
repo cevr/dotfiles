@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A store account whose refresh is rate-limited, on the simulated host, at 20
 // seeds: tests/pool-store-refresh.test.ts's name and claims, moved off real
 // OpenCode. Two accounts in a login store the pool reads in place (memory
@@ -11,10 +13,10 @@ import { decodeStoredOAuth, encodeRefresh } from "@dotfiles/opencode-pool/store/
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-store-refresh.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-store-refresh.sim.test.ts")
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"
@@ -98,7 +100,7 @@ seeded("the turn completes on the second account, with no error row", ({ seed, e
   }),
 )
 
-seeded("a store account that must sign in again fails the request as a 401 that says so, and the turn completes on the second account", ({ seed, expect }) =>
+seeded("a store account that must sign in again is found by the dispatch's own read of it, and the turn completes on the second account", ({ seed, expect }) =>
   Effect.gen(function* () {
     const accounts = Provider.accounts(seed, ["alpha", "beta"])
     const world = World.make({
@@ -139,11 +141,12 @@ seeded("a store account that must sign in again fails the request as a 401 that 
 
     expect(transcript).toContain("Hello from the second store account.")
     expect(world.messages(session).filter((message) => message.type === "error")).toEqual([])
-    // alpha's request failed as the auth plugin's 401 naming the sign-in, and the pool's retry hook sent it again at once.
+    // The dispatch read alpha's week, which it had no reading of: the read's refresh was refused, so alpha is held for a
+    // sign-in before any request is placed on it, and no request fails as a 401 to be retried.
     const trace = world.trace()
-    expect(trace).toContain('"tag":"Authentication"')
     expect(trace).toContain(`The store account \\"alpha\\" could not refresh (400). Sign in to it again.`)
-    expect(trace).toContain('"retry":true,"delay":0')
+    expect(trace).toContain('"key":"anthropic/hold/store:alpha","value":{"kind":"signin"')
+    expect(trace).not.toContain('"tag":"Authentication"')
     // Each trade was of alpha's refresh token, refused; nothing reached Anthropic's messages API on alpha.
     const trades = received.filter((request) => request.path === "/v1/oauth/token")
     expect(trades.length).toBeGreaterThan(0)

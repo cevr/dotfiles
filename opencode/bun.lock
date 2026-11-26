@@ -151,6 +151,14 @@
         "@dotfiles/opencode-work": "workspace:*",
       },
     },
+    "cmd/pane-agent": {
+      "name": "@dotfiles/opencode-cmd-pane-agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "@dotfiles/opencode-pane-agent": "workspace:*",
+      },
+    },
     "cmd/pool": {
       "name": "@dotfiles/opencode-cmd-pool",
       "version": "0.0.0",
@@ -377,8 +385,17 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-digest": "workspace:*",
+        "@dotfiles/opencode-kernel": "workspace:*",
         "@dotfiles/opencode-update": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
+      },
+    },
+    "mods/pane-agent": {
+      "name": "@dotfiles/opencode-pane-agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@dotfiles/decider": "workspace:*",
+        "rex-sdk": "github:dmmulroy/rex-sdk#55f8b98c28f2a8b525b24bc1a42bdf69511e4e0e",
       },
     },
     "mods/pool": {
@@ -394,7 +411,9 @@
       "dependencies": {
         "@dotfiles/decider": "workspace:*",
         "@dotfiles/opencode-cache": "workspace:*",
+        "@dotfiles/opencode-kernel": "workspace:*",
         "@dotfiles/opencode-model-next": "workspace:*",
+        "@dotfiles/opencode-pane-agent": "workspace:*",
         "@dotfiles/opencode-queue": "workspace:*",
         "@dotfiles/opencode-subagents": "workspace:*",
         "@dotfiles/opencode-wake": "workspace:*",
@@ -516,9 +535,13 @@
       "version": "0.0.0",
     },
   },
+  "patchedDependencies": {
+    "rex-sdk@github:dmmulroy/rex-sdk#55f8b98": "patches/rex-sdk@github%3Admmulroy%2Frex-sdk#55f8b98.patch",
+  },
   "overrides": {
     "@effect/platform-node": "4.1.0",
     "@effect/platform-node-shared": "4.1.0",
+    "@types/node": "24.12.2",
     "effect": "4.1.0",
   },
   "packages": {
@@ -565,6 +588,8 @@
     "@dotfiles/opencode-cmd-model-next": ["@dotfiles/opencode-cmd-model-next@workspace:cmd/model-next"],
 
     "@dotfiles/opencode-cmd-orchestrate": ["@dotfiles/opencode-cmd-orchestrate@workspace:cmd/orchestrate"],
+
+    "@dotfiles/opencode-cmd-pane-agent": ["@dotfiles/opencode-cmd-pane-agent@workspace:cmd/pane-agent"],
 
     "@dotfiles/opencode-cmd-pool": ["@dotfiles/opencode-cmd-pool@workspace:cmd/pool"],
 
@@ -615,6 +640,8 @@
     "@dotfiles/opencode-model-next": ["@dotfiles/opencode-model-next@workspace:mods/model-next"],
 
     "@dotfiles/opencode-orchestrate": ["@dotfiles/opencode-orchestrate@workspace:mods/orchestrate"],
+
+    "@dotfiles/opencode-pane-agent": ["@dotfiles/opencode-pane-agent@workspace:mods/pane-agent"],
 
     "@dotfiles/opencode-pool": ["@dotfiles/opencode-pool@workspace:mods/pool"],
 
@@ -780,7 +807,7 @@
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
-    "@types/node": ["@types/node@26.6.6", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog=="],
+    "@types/node": ["@types/node@24.12.2", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-A1sre26ke7HDIuY/M23nd9gfB+nrmhtYyMINbjI1zHJxYteKR6qSMX56FsmjMcDb3SMcjJg5BiRRgOCC/yBD0g=="],
 
     "@types/ws": ["@types/ws@8.18.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w=="],
 
@@ -874,13 +901,15 @@
 
     "redis": ["redis@6.3.1", "", { "dependencies": { "@redis/bloom": "6.3.1", "@redis/client": "6.3.1", "@redis/json": "6.3.1", "@redis/search": "6.3.1", "@redis/time-series": "6.3.1" } }, "sha512-mV96ZKxQ4CGn3SyEGaY0Lb9YA443mdVey3c+mdr0NAUaBxiOZGoYCWX8PoM55kictSOmxlJRtZJxIsmZm3jL+w=="],
 
+    "rex-sdk": ["rex-sdk@github:dmmulroy/rex-sdk#55f8b98", { "dependencies": { "effect": "4.1.0", "ws": "^8.22.0" }, "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" }, "optionalPeers": ["@earendil-works/pi-coding-agent", "typebox"], "hasInstallScript": true }, "dmmulroy-rex-sdk-55f8b98", "sha512-VyoX0Kg1JWdVwBcVKed73K6dYZ8a1wYTWg6fQez24Anuwp0u0fg7aoNkzca/7hhd7G6pcLWECb8P1ugEWKVH5Q=="],
+
     "tslib": ["tslib@2.9.1", "", {}, "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA=="],
 
     "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 
     "undici": ["undici@8.12.3", "", {}, "sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw=="],
 
-    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
+    "undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
 
     "ws": ["ws@8.22.1", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g=="],
 

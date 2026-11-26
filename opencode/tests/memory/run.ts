@@ -12,8 +12,10 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { externalInput, matchingInput, readScratchFileSync as readFileSync, scratchInput } from "../read-path.ts"
 import { join } from "node:path"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { AGAIN_TASK, RECALL_TASK, SAVE_TASK, serve } from "./sim.ts"
 
 export interface Spec {
@@ -33,6 +35,7 @@ export interface Result {
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
+scratchInput(spec.base)
 const work = join(spec.base, "work")
 const config = join(spec.base, "config")
 mkdirSync(work, { recursive: true })
@@ -56,7 +59,7 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.plugin, options: { path: db } }],
+  plugins: [{ package: matchingInput("cmd/memory", spec.plugin), options: { path: db } }],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -72,16 +75,16 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 
 try {
-  const opencode = await OpenCode.create({
+  const opencode = await OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
     database: { path: join(spec.base, "opencode.db") },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
   try {
     const messages: Record<string, unknown> = {}
     for (const task of spec.tasks ?? [SAVE_TASK, RECALL_TASK, AGAIN_TASK]) {

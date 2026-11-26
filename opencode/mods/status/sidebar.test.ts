@@ -165,6 +165,23 @@ describe("sidebarLines", () => {
     }
   })
 
+  test("when both windows are absent it says no usage windows reported; weekly-only shows only week", () => {
+    const none = {
+      account: { label: "alpha", on: "placed" as const, reading: { windows: [], absent: [{ name: "5h" }, { name: "7d" }] } },
+    }
+    expect(sidebarLines(none, now)).toEqual([
+      { text: "alpha", tone: "base" },
+      { text: "no usage windows reported", tone: "muted" },
+    ])
+    const ultra = {
+      account: { label: "ultra", on: "placed" as const, reading: { windows: [{ name: "7d", utilization: 0.2 }], absent: [{ name: "5h" }] } },
+    }
+    expect(sidebarLines(ultra, now)).toEqual([
+      { text: "ultra", tone: "base" },
+      { text: "week 20%/100% used", tone: "muted" },
+    ])
+  })
+
   test("nothing when the pool names no account", () => {
     expect(sidebarLines({}, now)).toEqual([])
   })

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, probeTimeout } from "./hang-guard.ts"
 
 /** A body that never returns, so its test runs out of time. */
 const hang = () => Effect.runPromise(Effect.never)
@@ -8,8 +9,6 @@ const hang = () => Effect.runPromise(Effect.never)
 /** How long a hanging case waits before Bun gives up on it. */
 const HANG_MS = 50
 
-/** How long a setup that returns in time may take. */
-const SETUP_MS = 5_000
 
 /** A body that returns, but only well after HANG_MS, and before a waiting test ends. */
 const late = () => Effect.runPromise(Effect.sleep(`${HANG_MS * 3} millis`))
@@ -31,24 +30,24 @@ describe("failing", () => {
 
 describe("setup-failing", () => {
   const kept = keptScratch(true, "kept-setup-failing-")
-  test("setup", ...kept.setup(() => expect("set up").toBe("broken"), SETUP_MS))
+  test("setup", kept.test(() => expect("set up").toBe("broken")), hangGuard("in-memory"))
 })
 
 describe("setup-passing", () => {
   const kept = keptScratch(true, "kept-setup-passing-")
-  test("setup", ...kept.setup(() => expect(kept.dir("frames-")).toContain(kept.path), SETUP_MS))
+  test("setup", kept.test(() => expect(kept.dir("frames-")).toContain(kept.path)), hangGuard("in-memory"))
   test("first", kept.test(() => expect(kept.path).not.toBe("")))
 })
 
 describe("timing-out", () => {
   const kept = keptScratch(true, "kept-timing-out-")
-  test("hangs", kept.test(hang), HANG_MS)
+  test("hangs", kept.test(hang), probeTimeout(50, "verify cleanup and diagnostics when Bun interrupts a hanging body"))
   test("after", kept.test(() => expect(kept.path).not.toBe("")))
 })
 
 describe("setup-timing-out", () => {
   const kept = keptScratch(true, "kept-setup-timing-out-")
-  test("setup", ...kept.setup(hang, HANG_MS))
+  test("setup", kept.test(hang), probeTimeout(50, "verify cleanup and diagnostics when Bun interrupts setup"))
 })
 
 describe("closing", () => {
@@ -59,20 +58,20 @@ describe("closing", () => {
 
 describe("closing-after-timeout", () => {
   const kept = keptScratch(true, "kept-closing-after-timeout-", true)
-  test("hangs", kept.test(hang), HANG_MS)
+  test("hangs", kept.test(hang), probeTimeout(50, "verify cleanup and diagnostics when Bun interrupts a hanging body"))
   test("closes", () => kept.done())
 })
 
 describe("late-writer", () => {
   const kept = keptScratch(true, "kept-late-writer-")
   const writeLate = () => Effect.runPromise(Effect.sleep(`${HANG_MS * 3} millis`).pipe(Effect.andThen(Effect.sync(() => kept.dir("scenario-"))), Effect.asVoid))
-  test("hangs then writes", kept.test(writeLate), HANG_MS)
+  test("hangs then writes", kept.test(writeLate), probeTimeout(50, "verify that a timed-out body cannot recreate its cleaned directory"))
 })
 
 describe("closing-after-late-setup", () => {
   const kept = keptScratch(true, "kept-closing-after-late-setup-", true)
-  test("setup", ...kept.setup(late, HANG_MS))
-  test("waits", wait, HANG_MS * 12)
+  test("setup", kept.test(late), probeTimeout(50, "verify that late-returning setup still releases its directory"))
+  test("waits", wait)
   test("closes", () => kept.done())
 })
 

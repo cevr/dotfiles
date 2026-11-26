@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A generated property over faults, on the simulated host at 20 seeds: the
 // questions plugin loaded for two directories, each with a root session and
 // a subagent of it; the seed choosing up to 40 commands of questions asked
@@ -23,10 +25,10 @@ import { formOf } from "@dotfiles/opencode-questions/form"
 import { Question, QUESTIONS, Sheet } from "@dotfiles/opencode-questions/question"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator, line, plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/questions/questions-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/questions/questions-faults.sim.test.ts")
 
 const DIRECTORIES = ["/scratch/a", "/scratch/b"] as const
 /** Questions one session asks at most: under the open cap, so none is dropped for another. */

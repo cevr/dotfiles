@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/orchestrate/git/work-git.test.ts: Effect.sync(() => spawnSync([...argv], { cwd, env: ENV, stdin: "ignore", stdout: "pipe", stderr
 // WorkGit over real git in a scratch folder: a base with its default branch `main`, and lanes copied from it whole
 // (as `work` copies one), whose commits the base never fetched. Each head is read in the base with the lanes'
 // objects borrowed: on main (merged), patch-equivalent (cherry-picked; rebased then squash-merged), absent (its own
@@ -12,6 +14,7 @@ import { scratch } from "../../../tests/scratch.ts"
 import { OnMain } from "../lost.ts"
 import { WorkGit } from "../service.ts"
 import * as Live from "./work-git.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const ENV = {
   GIT_AUTHOR_NAME: "Lost Test",
@@ -112,7 +115,7 @@ effectTest(
       expect(tagOf(yield* git.heads(base, "main", [own(alphaHead, alpha)]), alphaHead)).toEqual(Option.some("Landed"))
     }),
   ).pipe(Effect.provide(Live.layer)),
-  60_000,
+  hangGuard("process-fixture"),
 )
 
 effectTest(
@@ -136,7 +139,7 @@ effectTest(
       expect([...held]).toEqual([busy])
     }),
   ).pipe(Effect.provide(Layer.fresh(Live.layer))),
-  30_000,
+  hangGuard("local-fixture"),
 )
 
 describe("Ergo's `work --json list -status`, read when the installed `work` gives it", () => {

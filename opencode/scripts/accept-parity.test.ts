@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess argv at scripts/accept-parity.test.ts: const child = yield* spawner.spawn(ChildProcess.make(command, args, { cwd: ROOT, env, extendEnv
 // No assertion lost: a real acceptance test leaves real OpenCode only through
 // a parity manifest (tests/parity.json, and each tests/parity/*.json beside it,
 // each with its own baseline), and only for a simulated test, under the same
@@ -16,14 +18,17 @@
 // A baseline count is the `expect(` calls in the test's body in the real file
 // at the baseline commit; this test checks the manifest's against it.
 import * as BunServices from "@effect/platform-bun/BunServices"
+import { Glob } from "bun"
 import { Effect, FileSystem, Path, Schema, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { NAMES } from "../sim/law-names.ts"
-import { BUDGET_MS } from "../sim/seed.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
+import { matchingInput } from "../tests/read-path.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
+const INPUTS = "{tests/parity.json,tests/parity/*.json,tests/*.test.ts,**/*.sim.test.ts,**/*.sim.test.tsx}"
 
 const Carried = Schema.Literals(["simulated", "real", "both"])
 const Manifest = Schema.Struct({
@@ -42,17 +47,16 @@ const Manifest = Schema.Struct({
 const read = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    return yield* fs.readFileString(path.join(ROOT, file))
+    return yield* fs.readFileString(matchingInput(INPUTS, file))
   })
 
 /** A real file's text, or none once every test of it has moved to its simulated file and the file is gone. */
 const readReal = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
-    const path = yield* Path.Path
-    if (!(yield* fs.exists(path.join(ROOT, file)))) return ""
-    return yield* fs.readFileString(path.join(ROOT, file))
+    const at = matchingInput("tests/*.test.ts", file)
+    if (!(yield* fs.exists(at))) return ""
+    return yield* fs.readFileString(at)
   })
 
 /** One manifest, decoded, and its files as `[real file, entry]` pairs. */
@@ -67,12 +71,8 @@ const decode = (file: string) =>
  * each with its own baseline), held to the same three rules.
  */
 const manifests = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const path = yield* Path.Path
-  const dir = path.join(ROOT, "tests/parity")
-  const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
-  const more = names.filter((name) => name.endsWith(".json")).toSorted()
-  return yield* Effect.forEach(["tests/parity.json", ...more.map((name) => `tests/parity/${name}`)], decode)
+  const more = [...new Glob("tests/parity/*.json").scanSync({ cwd: ROOT })].sort()
+  return yield* Effect.forEach(["tests/parity.json", ...more], decode)
 })
 
 type Decoded = Effect.Success<ReturnType<typeof decode>>
@@ -106,7 +106,10 @@ const output = (command: string, args: ReadonlyArray<string>, env: Readonly<Reco
   }).pipe(Effect.scoped)
 
 /** A file's text at a commit, from opencode/. */
-const at = (commit: string, file: string) => output("git", ["show", `${commit}:./${file}`]).pipe(Effect.map((run) => run.stdout))
+const at = (commit: string, file: string) => {
+  const input = matchingInput("tests/*.test.ts", file).slice(ROOT.length + 1)
+  return output("git", ["show", `${commit}:./${input}`]).pipe(Effect.map((run) => run.stdout))
+}
 
 /** A test's title: the literal `test(`, `seeded(`, or effect-bun-test's `it.live(` or `it.effect(` opens with. */
 const TITLE = /\b(?:test(?:\.skipIf\([^\n]*?\))?|seeded|it\.(?:live|effect))\(\s*"([^"]+)"/g
@@ -135,7 +138,8 @@ export const expects = (source: string) => {
 const simulatedCounts = (files: ReadonlyArray<string>) =>
   output(process.execPath, ["test", ...files.map((file) => `./${file}`)], { SIM_EXPECTS: "1" }).pipe(
     Effect.map((run) => {
-      const lines = `${run.stdout}\n${run.stderr}`.split("\n")
+      const output = `${run.stdout}\n${run.stderr}`
+      const lines = output.split("\n")
       const counts = new Map(
         files.map((file) => {
           const prefix = `sim-expects ${file} `
@@ -143,17 +147,14 @@ const simulatedCounts = (files: ReadonlyArray<string>) =>
           return [file, new Map(own.map((line) => [line.slice(prefix.length, line.lastIndexOf(" ")), Number(line.slice(line.lastIndexOf(" ") + 1))]))] as const
         }),
       )
-      return { counts, code: run.code }
+      return { counts, code: run.code, output }
     }),
   )
 
-/** The simulated run's wall-clock ceiling, only a guard against a hung run: the CPU budgets of 20 simulated files (10 today), for a host loaded 30 times over. */
-const SIMULATED_CEILING_MS = 20 * BUDGET_MS * 30
 
 describe("no assertion lost", () => {
-  const live = it.live.layer(BunServices.layer)
 
-  live("the manifest names every baseline test with its baseline expect() calls", () =>
+  it.live.layer(BunServices.layer)("the manifest names every baseline test with its baseline expect() calls", () =>
     Effect.gen(function* () {
       for (const { baseline, entries, retired } of yield* manifests)
       for (const [file, entry] of entries) {
@@ -166,9 +167,10 @@ describe("no assertion lost", () => {
         )
       }
     }),
+    hangGuard("local-fixture"),
   )
 
-  live("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
+  it.live.layer(BunServices.layer)("a title is a test's, a seeded body's, or an Effect test's (it.live, it.effect), with its expect() calls", () =>
     Effect.sync(() => {
       const source = [
         'test("plain", async () => { expect(1) })',
@@ -181,13 +183,13 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live("every baseline name exists today where the manifest says", () =>
+  it.live.layer(BunServices.layer)("every baseline name exists today where the manifest says", () =>
     Effect.gen(function* () {
       for (const manifest of yield* manifests) expect(yield* misplaced(manifest)).toEqual([])
     }),
   )
 
-  live("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
+  it.live.layer(BunServices.layer)("a name the TUI manifest says is simulated but its simulated file lacks is found", () =>
     Effect.gen(function* () {
       const tui = yield* decode("tests/parity/tui.json")
       const [file, entry] = tui.entries[0] ?? ["", { simulated: "", tests: [] }]
@@ -199,14 +201,14 @@ describe("no assertion lost", () => {
     }),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "each file's simulated and remaining real expect() calls are at least the baseline's",
     () =>
       Effect.gen(function* () {
         const entries = (yield* manifests).flatMap((manifest) => manifest.entries)
         const run = yield* simulatedCounts([...new Set(entries.map(([, entry]) => entry.simulated))])
         // A file over its CPU budget fails in the child (sim/seed.ts); its counts then judge nothing.
-        expect({ simulatedRun: run.code }).toEqual({ simulatedRun: 0 })
+        expect({ simulatedRun: run.code }, run.output).toEqual({ simulatedRun: 0 })
         for (const [file, entry] of entries) {
           const simulated = run.counts.get(entry.simulated) ?? new Map<string, number>()
           const real = expects(yield* readReal(file))
@@ -219,10 +221,10 @@ describe("no assertion lost", () => {
           expect({ file, atLeastBaseline: carried.reduce((sum, calls) => sum + calls, 0) >= baseline }).toEqual({ file, atLeastBaseline: true })
         }
       }),
-    SIMULATED_CEILING_MS,
+    hangGuard("sim-parity"),
   )
 
-  live(
+  it.live.layer(BunServices.layer)(
     "a name leaves its real file only in the commit that adds it to its simulated file, and a retired name names what carries it",
     () =>
       Effect.gen(function* () {
@@ -248,6 +250,6 @@ describe("no assertion lost", () => {
         const carriers = new Set([...NAMES, ...simulatedNames.flat()])
         for (const item of retired) expect({ name: item.name, carriedBy: carriers.has(item.by) }).toEqual({ name: item.name, carriedBy: true })
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })

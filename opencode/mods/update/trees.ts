@@ -130,6 +130,14 @@ export const COMMANDS: ReadonlyArray<Command> = [
     ],
   },
   {
+    path: "cmd/guard/host-admit.ts",
+    packages: ["effect", "@effect/platform-bun"],
+    probes: [
+      { args: ["--version"], exit: 0, says: "host-admit 1" },
+      { args: ["holder", "list", "--json"], exit: 0, says: '"complete":true' },
+    ],
+  },
+  {
     path: "cmd/image/key.ts",
     packages: ["effect"],
     probes: [
@@ -153,6 +161,19 @@ export const COMMANDS: ReadonlyArray<Command> = [
     probes: [
       { args: ["--help"], exit: 2, says: "usage: bun opencode/cmd/memory/cli.ts" },
       { args: ["list", "--db", "$SCRATCH/memory.db"], exit: 0, says: "no notes" },
+    ],
+  },
+  {
+    path: "cmd/orchestrate/record.ts",
+    packages: ["effect", "@effect/platform-bun"],
+    probes: [
+      { args: [], exit: 1, says: "usage: bun cmd/orchestrate/record.ts <action>" },
+      // A write on a scratch record: the SQLite store, the platform's files and the evidence layer, on the tree's install.
+      {
+        args: ["add", "--json", '{"source_kind":"plan-part","source_ref":"probe:1","parts":[{"id":"a1","title":"one"}]}', "--file", "$SCRATCH/record.db", "--checkout", "$SCRATCH"],
+        exit: 0,
+        says: "commitments: added a1. Unowned until assigned: a1.",
+      },
     ],
   },
   // Its commands drive Rex, a separate prerequisite: outside a Rex pane it refuses.
@@ -210,6 +231,7 @@ export const SERVER_PLUGINS: ReadonlyArray<string> = [
   "memory",
   "stall",
   "rex",
+  "pane-agent",
   "escape",
   "update",
 ]
@@ -241,7 +263,7 @@ export const TUI_FIRST = "prime"
  * in the sidebar's layout, with the Queue section after them all. Order only: which plugins load is
  * derived (`tuiPluginsOf`).
  */
-export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
+export const TUI_ORDER: ReadonlyArray<string> = [TUI_FIRST, "status", "herdr", "rex", "pane-agent", "git", "cache", "questions", "model-next", "btw", "skills", "recover", "orchestrate", "escape"]
 
 /** A plugin's place: its index in `TUI_ORDER`, and after every listed one for a plugin it does not list. */
 const placeOf = (name: string): number => Option.getOrElse(Arr.findFirstIndex(TUI_ORDER, (listed) => listed === name), () => TUI_ORDER.length)

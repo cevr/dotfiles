@@ -17,21 +17,19 @@ export const WAIT_MS = 30_000
 /** How long a wait sleeps between two looks. */
 const LOOK_MS = 5
 
-/**
- * Looks every LOOK_MS for `ms`: a count of looks, each after a real sleep, so the wait lasts at
- * least `ms` (longer on a loaded machine, never shorter).
- */
-const looks = (ms: number) => ({ schedule: Schedule.spaced(`${LOOK_MS} millis`), times: Math.ceil(ms / LOOK_MS) })
-
 /** A wait whose condition never came, named. */
 class WaitedInVain extends Data.TaggedError("WaitedInVain")<{ readonly message: string }> {}
 
 /** A condition not met yet: the wait looks again. */
 class NotYet extends Data.TaggedError("NotYet")<{}> {}
 
-/** Runs `look` until it succeeds, for `ms` at least; when it never does, `orElse`. */
+/** The deadline is independent of the number of looks the host got to make. */
 const within = <E>(look: Effect.Effect<void, NotYet>, ms: number, orElse: () => Effect.Effect<void, E>): Promise<void> =>
-  Effect.runPromise(look.pipe(Effect.retry(looks(ms)), Effect.catchTag("NotYet", orElse)))
+  Effect.runPromise(look.pipe(
+    Effect.retry({ schedule: Schedule.spaced(LOOK_MS), times: Math.ceil(ms / LOOK_MS) }),
+    Effect.catchTag("NotYet", orElse),
+    Effect.timeoutOrElse({ duration: ms, orElse }),
+  ))
 
 /** Waits, in real time, until `done` holds; past `ms` it rejects with `waited <ms> ms in vain for <what>`. */
 export const waitUntil = (what: string, done: () => boolean, ms = WAIT_MS): Promise<void> =>

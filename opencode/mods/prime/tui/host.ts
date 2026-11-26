@@ -2,6 +2,7 @@
 // its rows use. The components own this contract; opencode/host.ts fills it
 // from OpenCode's plugin context, handing the host's values over as they are,
 // so every read stays reactive inside a Solid computation.
+import type { PaneWorkerView } from "@dotfiles/opencode-pane-agent/worker"
 import type { FormInput as QueueForm } from "@dotfiles/opencode-queue/answer"
 import type { Live } from "@dotfiles/opencode-queue/board"
 import type { Item } from "@dotfiles/opencode-queue/item"
@@ -141,6 +142,10 @@ export interface Host {
   familyIDs(sessionID: string): ReadonlyArray<string>
   /** The session's family as the subagent rows read it. */
   subagents(sessionID: string): Family
+  /** The pane-agent workers of the session the accessor names; empty when none or plugin absent. */
+  paneAgents(sessionID: Accessor<Option.Option<string>>): Accessor<ReadonlyArray<PaneWorkerView>>
+  /** Read the host's persisted transcript for a child in the dock's visible window. */
+  syncSubagentMessages(sessionID: string): void
   /** How many of the session's shell commands are running. */
   shells(sessionID: string): number
   /** The session's shell commands, from the same registry as the count. */

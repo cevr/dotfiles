@@ -12,8 +12,8 @@ import { explain } from "../queue.ts"
 import { type NoteKind, NoteRefused, QueueHost } from "../service.ts"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as MemoryStore from "./store.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
-const TIMEOUT_MS = 10_000
 const T0 = Date.parse("2026-11-18T12:00:00Z")
 
 interface Note {
@@ -57,7 +57,7 @@ const answerTest = <A, E>(name: string, body: (world: World) => Effect.Effect<A,
       Effect.provide(queues.pipe(Layer.provide(Layer.mergeAll(MemoryStore.layer(MemoryStore.empty()), hostOf(world), MemoryDigest.writer())))),
       Effect.provide(TestClock.layer()),
     ),
-    TIMEOUT_MS,
+    hangGuard("in-memory"),
   )
 }
 

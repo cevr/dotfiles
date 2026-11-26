@@ -2,7 +2,7 @@
 // `queue` tool: directly (QUEUE_VIA=direct, the default) or from a kernel
 // cell (QUEUE_VIA=kernel, the kernel as the agent's runtime, as daily loads
 // it), with the orchestrate plugin giving the subagents their roles. The
-// model starts a background implementor, sets the queue with an item linked
+// model starts a background planner, sets the queue with an item linked
 // to its session, starts a second (untyped, so orchestrate's worker) that no
 // item names, and later marks one item done. Each subagent thinks one thought
 // and waits. The sidebar draws only the items; Prime's rows beneath the
@@ -15,15 +15,16 @@
 // messages, to check which calls are tool parts).
 import { Deferred, Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
 const via = process.env.QUEUE_VIA === "kernel" ? "kernel" : "direct"
 const label = `queue-${via}`
 
-// A verifier, not an implementor: the sim's model is a gpt one, and Codex never implements.
-const MONEY = { description: "Fix money parsing", prompt: "Worker brief money.", agent: "verifier", background: true }
+// The fake GPT model may run a planner, not a verifier or an implementor.
+const MONEY = { description: "Fix money parsing", prompt: "Worker brief money.", agent: "planner", background: true }
 const FORGOTTEN = { description: "Forgotten worker", prompt: "Worker brief forgotten.", background: true }
 /** What each subagent thinks before it waits: its row's update. */
 const THOUGHTS: ReadonlyArray<readonly [string, string]> = [
@@ -32,7 +33,7 @@ const THOUGHTS: ReadonlyArray<readonly [string, string]> = [
 ]
 
 // Tomorrow at 09:30 local, so the row reads `◷ <Mon> <d> 09:30`.
-const tomorrow = new Date()
+const tomorrow = new Date(stamp())
 tomorrow.setDate(tomorrow.getDate() + 1)
 tomorrow.setHours(9, 30, 0, 0)
 
@@ -56,12 +57,13 @@ const call = (id: string, direct: ReadonlyArray<{ readonly name: string; readonl
 
 const step = (...parts: ReadonlyArray<ReturnType<typeof Llm.toolCall>>) => Stream.make(...parts, Llm.finish("tool-calls"))
 
-type Entry = string | { readonly package: string; readonly options: Readonly<Record<string, string>> }
+type Entry = { readonly package: string; readonly options: Readonly<Record<string, string | boolean>> }
 const plugins: Array<Entry> = [
   { package: `${root}/cmd/queue`, options: { dir: `${out}/${label}-queues` } },
   // A Wednesday afternoon, so the Sabbath never stops the subagents.
   { package: `${root}/cmd/orchestrate`, options: { now: "2026-11-04T15:00:00Z", log: `${out}/${label}-agents.jsonl` } },
-  ...(via === "kernel" ? [`${root}/cmd/kernel`] : []),
+  // Prime and Queue read child state from Kernel even when the model calls the tools directly.
+  { package: `${root}/cmd/kernel`, options: { codeOnly: via === "kernel" } },
 ]
 
 export default OpenCodeDriver.use(
@@ -97,7 +99,8 @@ export default OpenCodeDriver.use(
         }
         if (!s.includes("call_start")) return step(...call("call_start", [{ name: "subagent", input: MONEY }], `await tools.subagent(${JSON.stringify(MONEY)})`))
         if (!s.includes("call_set")) {
-          const money = /sessionID[^A-Za-z0-9]{1,12}(ses_[A-Za-z0-9]+)/.exec(s)?.[1]
+          // The direct lifecycle receipt is prose; the kernel cell's output may carry the structured field.
+          const money = /(?:Subagent +|sessionID[^A-Za-z0-9]{1,12})(ses_[A-Za-z0-9]+)/.exec(s)?.[1]
           if (money === undefined) return Stream.make(Llm.text("No session id in the worker's result"), Llm.finish())
           const set = { set: items(money) }
           return step(
@@ -126,7 +129,7 @@ export default OpenCodeDriver.use(
         (frame) =>
           frame.includes("Queue fixture ready") &&
           frame.includes("● Money parsing worker") &&
-          /^ [◇◈◆] verifier +gpt +Fix money parsing /m.test(frame) &&
+          /^ [◇◈◆] planner +gpt +Fix money parsing /m.test(frame) &&
           /^ [◇◈◆] worker +gpt +Forgotten worker /m.test(frame),
       )
       writeFileSync(`${out}/${label}-set.txt`, text(yield* ui.capture()))

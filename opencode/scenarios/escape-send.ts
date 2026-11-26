@@ -17,7 +17,8 @@
 // - `requests.json`: for each model request after the first, the user texts it carries, in order.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -113,7 +114,7 @@ export default OpenCodeDriver.use(
       yield* Effect.sleep("500 millis")
       yield* save("before")
       yield* chord
-      const pressed = Date.now()
+      const pressed = stamp()
       const cut = yield* shell.awaitInterrupted().pipe(Effect.timeout("5 seconds"), Effect.option)
       writeFileSync(`${out}/tool.txt`, cut._tag === "Some" ? "interrupted" : "running")
       if (cut._tag === "None") yield* shell.succeed({ output: "done\n", exit: 0 })
@@ -121,7 +122,7 @@ export default OpenCodeDriver.use(
       yield* until("next", (frame) => frame.includes(`┃ ${DRAFT}`) && !frame.includes("◌"))
       yield* chord
       // Past the stop check, the next turn still answering: a toast that the first press did not stop the turn would show.
-      yield* Effect.sleep(`${Math.max(0, pressed + CHECKED_MS - Date.now())} millis`)
+      yield* Effect.sleep(`${Math.max(0, pressed + CHECKED_MS - stamp())} millis`)
       yield* save("checked")
       // Settled: the last prompt answered and no turn running.
       yield* until("after", (frame) => frame.lastIndexOf(ANSWER) > frame.indexOf(`┃ ${DRAFT}`) && !frame.includes("Executing"))

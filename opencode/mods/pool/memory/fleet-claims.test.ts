@@ -18,7 +18,8 @@
 //   reading right before the send: nothing more is spent.
 // - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Clock, Context, Effect, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
 import * as Lease from "../lease.ts"
@@ -31,6 +32,7 @@ import * as ResetsTest from "./resets.ts"
 import * as Model from "../model.ts"
 import type { ClaimAnswer, QuotaReading, ResetCredit } from "../quota.ts"
 import { PeerUnreachable, Quota } from "../service.ts"
+import { stamp } from "../../../tests/hang-guard.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -49,7 +51,7 @@ const provider = (windows: Record<string, { utilization: number; resetAt: number
   const reading = (): QuotaReading => {
     const credits = grants.map((grant) => ({ ...grant, count: counts.get(grant.id) ?? 0, usable: (counts.get(grant.id) ?? 0) > 0 }))
     return {
-      at: Date.now(),
+      at: stamp(),
       windows: Object.entries(windows).map(([name, window]) => ({ name, ...window })),
       resets: { available: credits.filter((credit) => credit.usable).length, credits },
     }
@@ -223,7 +225,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("both online, both deciding to claim on divergent fresh readings at once: one grant spent, under the lease the other granted; the other backs off or finds it done", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.mac.view.snapshot = left
@@ -243,15 +245,19 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("the other host offline (no answer): no claim sent, recorded failed naming it, nothing asked (it goes again later)", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.workbox.view.snapshot = right
         hosts.workbox.link = "silent"
         const [, workbox] = yield* hosts.start
-        const started = Date.now()
-        yield* workbox.sweep
-        expect(Date.now() - started).toBeGreaterThanOrEqual(WAIT_MS)
+        const clock = yield* TestClock.make()
+        yield* clock.setTime(now)
+        const attempt = yield* Effect.forkChild(workbox.sweep.pipe(Effect.provideService(Clock.Clock, clock)))
+        yield* clock.adjust(WAIT_MS - 1)
+        expect(attempt.pollUnsafe()).toBeUndefined()
+        yield* clock.adjust(1)
+        yield* Fiber.join(attempt)
         expect(account.sent).toEqual([])
         expect((yield* unagreed(hosts.workbox)).map((claim) => claim.message)).toEqual(["not sent: no agreement, mac unreachable"])
       }),
@@ -260,7 +266,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("the link down between them, both online, readings that lag and list the same grants: nothing spent, both record it unsent", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         for (const [host, snapshot] of [
@@ -282,7 +288,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("the link down, the hosts' grant lists differing (round 4, B1: two request ids, the second grant for 0%): nothing spent", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         const partial: QuotaReading = { ...right, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
@@ -305,7 +311,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("both online, the hosts' grant lists differing (no reset id in common): one grant spent, the lease being the provider's", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.mac.view.snapshot = { ...left, resets: { available: 1, credits: [full("g1", now)] } }
@@ -320,7 +326,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("the Mac gone mid-claim (its claim never comes back, its link silent): the workbox sends nothing, and records it unsent", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.mac.view.snapshot = left
@@ -331,7 +337,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
         while (!hosts.mac.view.claiming) yield* sleep(5)
         hosts.workbox.link = "silent"
         yield* sleep(LEASE_MS + 50)
-        hosts.workbox.view.snapshot = { ...right, at: Date.now() }
+        hosts.workbox.view.snapshot = { ...right, at: stamp() }
         yield* workbox.sweep
         expect(account.sent).toEqual([])
         expect(yield* unagreed(hosts.workbox)).toHaveLength(1)
@@ -341,7 +347,7 @@ describe("one account read by two hosts, claimed at one provider, no host the ma
   test("a claim made outside the fleet while the lease is asked (the owner in Claude's app) shows in the reading right before the send: nothing more is spent", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.workbox.view.snapshot = right
@@ -405,7 +411,7 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
     test(`the workbox ${Math.abs(minutes)} min ${minutes < 0 ? "behind" : "ahead"}${differ ? ", its grant list lagging (only g2: another request id)" : ""}, its reading seconds later not showing the Mac's claim: one claim sent`, () =>
       scoped(
         Effect.gen(function* () {
-          const { account, left, right } = verifierCase(Date.now())
+          const { account, left, right } = verifierCase(stamp())
           const hosts = fleet(account)
           hosts.mac.view.snapshot = left
           yield* hosts.start
@@ -413,7 +419,7 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
           const workbox = onClock(hosts.workbox, minutes * MINUTE)
           yield* mac.sweep
           expect(account.spent()).toHaveLength(1)
-          hosts.workbox.view.snapshot = { ...right, at: Date.now() + minutes * MINUTE, ...(differ ? { resets: { available: 1, credits: [right.resets!.credits[0]!] } } : {}) }
+          hosts.workbox.view.snapshot = { ...right, at: stamp() + minutes * MINUTE, ...(differ ? { resets: { available: 1, credits: [right.resets!.credits[0]!] } } : {}) }
           hosts.workbox.view.lags = true
           yield* workbox.sweep
           expect(account.sent).toHaveLength(1)
@@ -425,7 +431,7 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
   test("the Mac's release lost and the workbox's loan to it run out, the workbox 6 min ahead: the Mac's store refuses the workbox's ask on the Mac's clock; one claim sent", () =>
     scoped(
       Effect.gen(function* () {
-        const { account, left, right } = verifierCase(Date.now())
+        const { account, left, right } = verifierCase(stamp())
         const hosts = fleet(account)
         hosts.mac.view.snapshot = left
         const claim = account.claim
@@ -440,7 +446,7 @@ describe("the hosts' clocks minutes apart (round 5, M1): no time of one host is 
         yield* mac.sweep
         expect(account.spent()).toHaveLength(1)
         yield* sleep(LEASE_MS + 50)
-        hosts.workbox.view.snapshot = { ...right, at: Date.now() + 6 * MINUTE, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
+        hosts.workbox.view.snapshot = { ...right, at: stamp() + 6 * MINUTE, resets: { available: 1, credits: [right.resets!.credits[0]!] } }
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
@@ -454,7 +460,7 @@ describe("a host's own claim (test strength, round 5)", () => {
   test("its release to the peer lost and the peer's loan run out, the host reads the account again, lagging its claim and ranking another window first (another decision): its store holds its own next claim off; one grant spent", () =>
     scoped(
       Effect.gen(function* () {
-        const { account, left, right } = verifierCase(Date.now())
+        const { account, left, right } = verifierCase(stamp())
         const hosts = fleet(account)
         hosts.workbox.view.snapshot = right
         const claim = account.claim
@@ -469,8 +475,11 @@ describe("a host's own claim (test strength, round 5)", () => {
         yield* sleep(LEASE_MS + 50)
         hosts.workbox.link = "up"
         account.claim = claim
-        // Read again: the provider has not shown the claim yet, and this reading ranks the five-hour window first: another reset's key.
-        hosts.workbox.view.snapshot = { ...left, at: Date.now() }
+        // Inventory reflects the real redemption, but usage still lags and ranks
+        // the five-hour window first: the lower count makes this a new request.
+        const inventory = account.reading().resets!
+        expect(inventory.credits.map((credit) => [credit.id, credit.count])).toEqual([["g1", 1], ["g2", 0]])
+        hosts.workbox.view.snapshot = { ...left, at: stamp(), resets: inventory }
         hosts.workbox.view.lags = true
         yield* workbox.sweep
         expect(account.sent).toHaveLength(1)
@@ -484,7 +493,7 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
   test("a restarted lender lends nothing while the lease it lent may be live, and sends no claim with the borrower unreachable", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, right } = verifierCase(now)
         const hosts = fleet(account)
         const [, workbox] = yield* hosts.start
@@ -504,7 +513,7 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
   test("both restarted after the workbox's claim, the Mac's reading lagging it: the workbox's store remembers the claim and refuses the Mac's ask; one grant spent", () =>
     scoped(
       Effect.gen(function* () {
-        const now = Date.now()
+        const now = stamp()
         const { account, left, right } = verifierCase(now)
         const hosts = fleet(account)
         hosts.workbox.view.snapshot = right
@@ -527,7 +536,7 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
   test("with automatic claims off on both, neither online host claims, nor asks", () =>
     scoped(
       Effect.gen(function* () {
-        const { account } = verifierCase(Date.now())
+        const { account } = verifierCase(stamp())
         const hosts = fleet(account)
         hosts.mac.auto = false
         hosts.workbox.auto = false

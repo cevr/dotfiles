@@ -21,7 +21,9 @@
  * @module
  */
 
-import { whenOwnerGone } from "./owner.ts"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import { Effect } from "effect"
+import { ownerGone } from "./owner.ts"
 
 /** One message of an OpenAI chat request, as much of it as the script reads. */
 interface ChatMessage {
@@ -145,15 +147,23 @@ export const serveSim = () => {
   })
 }
 
+/** Run the CLI server, advertising its port until the owner ends. */
+export const runOwnedSim = (portFile: string): void =>
+  BunRuntime.runMain(Effect.scoped(Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(serveSim),
+      (running) => Effect.promise(() => running.stop(true)),
+    )
+    yield* Effect.promise(() => Bun.write(portFile, `${server.port}\n`))
+    console.log(`sim model on http://127.0.0.1:${server.port}`)
+    yield* ownerGone
+  })))
+
 if (import.meta.main) {
   const portFile = Bun.argv[2]
   if (portFile === undefined) {
     console.error("usage: bun sim-model.ts <port file>")
     process.exit(2)
   }
-  const server = serveSim()
-  await Bun.write(portFile, `${server.port}\n`)
-  console.log(`sim model on http://127.0.0.1:${server.port}`)
-  // A run with an owner (`GAMUT_OWNER`) ends with it.
-  whenOwnerGone(() => void server.stop(true))
+  runOwnedSim(portFile)
 }

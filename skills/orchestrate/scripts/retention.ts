@@ -3,10 +3,11 @@
 // pins this list both ways: a sentence lost with no entry is red, and so is an entry whose sentence still stands or
 // whose destination is gone. Every other sentence of those prompts is kept word for word.
 //   reworded  the rule stands in the prompt as `now`, word for word (a later accepted unit or this one rewrote it);
-//   moved     the rule is one or more cells of ending.ts's two functions, rendered into the role's block;
+//   moved     the rule is one or more rows, verdict rules or stop fields of the round policy (round-policy.ts), rendered into the role's block;
 //   replaced  this design decides it differently, by the design line `by`, at the cells in `to`.
 // A destination: `F1 <role> <state>` (a label), `F2 <role> <verdict>` (a verdict rule and its files),
 // `F2 <role> evidence <stop>` (what a stop writes), `REQUIRED <role>` (the role's required-work line).
+import { immutable } from '../../../opencode/mods/orchestrate/immutable.ts';
 
 export const INSTALLED = '4afe1fda';
 
@@ -17,7 +18,7 @@ export type Fate =
 
 const TABLE_ROW = (role: 'planner' | 'implementor', ...verdicts: string[]): Fate => ({ kind: 'moved', to: verdicts.map((verdict) => `F2 ${role} ${verdict}`) });
 
-export const RETENTION: Readonly<Record<string, Fate>> = {
+export const RETENTION: Readonly<Record<string, Fate>> = immutable<Readonly<Record<string, Fate>>>({
   'When it is done, end with a final message whose **first line** is:': {
     kind: 'reworded',
     now: "Your final message's **first line** is:",
@@ -33,6 +34,14 @@ export const RETENTION: Readonly<Record<string, Fate>> = {
   'A compaction does not end your step: after one, read the spec and `state.md` again and go on.': {
     kind: 'reworded',
     now: 'A compaction does not end your step, nor does a long context: after one, read the spec and `state.md` again and go on.',
+  },
+  '**Refusals.** At the first permission or classifier refusal, stop that step and report the exact `!` command, or the allow rule, that would let it through.': {
+    kind: 'reworded',
+    now: "**Refusals.** If a permission rule, hook or classifier refuses this session's own tool call, stop the step and report the rule and any exact `!` command or allow rule it names.",
+  },
+  "Never wrap a check in a launcher of your own (`systemd-run`, `nohup`, `setsid`, a scope): yours escapes the host's niced, memory-capped one.": {
+    kind: 'reworded',
+    now: "Never invent a launcher that escapes a host cap; use any capped scope the run's spec requires.",
   },
   'When something blocks you, write `<unit dir>/blocked.md` (what blocks you, what you tried, the options and your pick) and end with verdict `blocked` and that path.': {
     kind: 'replaced',
@@ -93,4 +102,4 @@ export const RETENTION: Readonly<Record<string, Fate>> = {
     kind: 'moved',
     to: ['F2 verifier stuck', 'F2 verifier changes', 'F2 verifier accepted', 'F1 verifier unclear', 'REQUIRED verifier'],
   },
-};
+});

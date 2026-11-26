@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, fleetRows, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, antigravityRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -101,6 +101,42 @@ describe("accountRows", () => {
       "  5-hour reset · clears 5h · paused",
     ])
     expect(accountRows(decoded, now)[1]?.windows.slice(2)).toEqual(["  Codex reset · until 2026-11-20 · clears every window"])
+  })
+
+  test("absent windows, no usage windows at all, unknown extra windows, and unrecognised fields are named explicitly", () => {
+    const pools = {
+      anthropic: {
+        accounts: [
+          {
+            credentialID: "ultra",
+            reading: { windows: [{ name: "7d", utilization: 0.25, resetAt: now + 3_600_000 }], absent: [{ name: "5h" }] },
+          },
+          {
+            credentialID: "none",
+            reading: { windows: [], absent: [{ name: "5h" }, { name: "7d" }] },
+          },
+          {
+            credentialID: "changed",
+            reading: {
+              windows: [
+                { name: "7d", utilization: 0.2, resetAt: now + 3_600_000 },
+                { name: "seven_day_newcomer", utilization: 1 },
+              ],
+              unrecognised: ["five_hour"],
+            },
+          },
+        ],
+      },
+    }
+    const rows = accountRows(Schema.decodeUnknownSync(PanePools)(pools), now)
+    expect(rows[0]?.windows).toEqual(["  5h none: not on this account", "  7d 25%/100% used · reset 2026-11-04 16:00Z"])
+    expect(rows[1]?.windows).toEqual(["  5h none: not on this account", "  7d none: not on this account", "  no usage windows reported"])
+    expect(rows[2]?.windows).toEqual([
+      "  5h unknown · reset unknown",
+      "  7d 20%/100% used · reset 2026-11-04 16:00Z",
+      "  seven_day_newcomer 100%/100% used · not a window the pool paces by",
+      "  usage fields not read: five_hour",
+    ])
   })
 
   test("no pools, no rows", () => {
@@ -260,5 +296,24 @@ describe("unavailable", () => {
     expect(unavailable(false, false)).toEqual([])
     expect(unavailable(true, false)).toEqual(["Pool unavailable; keeping last reading"])
     expect(unavailable(true, true)).toEqual(["Pool unavailable; keeping last reading", "Agents and runs unavailable; keeping last reading"])
+  })
+})
+
+describe("antigravityRows", () => {
+  test("projects merged per-group Antigravity rows and flags limited, stale or unavailable rows", () => {
+    const read = Schema.decodeUnknownSync(PaneAntigravity)({
+      lines: [
+        "antigravity / Gemini · open",
+        "  5h 12% used of 100% · reset Nov 25, 2026, 1:00:00 AM EST",
+        "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 10:05:00 PM EST (a pane's limit)",
+        "  peer workbox · stale (12 min ago): ssh timed out",
+      ],
+    })
+    expect(antigravityRows(read)).toEqual([
+      { warn: false, detail: false, text: "antigravity / Gemini · open" },
+      { warn: false, detail: true, text: "  5h 12% used of 100% · reset Nov 25, 2026, 1:00:00 AM EST" },
+      { warn: true, detail: false, text: "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 10:05:00 PM EST (a pane's limit)" },
+      { warn: true, detail: true, text: "  peer workbox · stale (12 min ago): ssh timed out" },
+    ])
   })
 })

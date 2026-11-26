@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/orchestrate/filestore/run-files.ts: const namesIn = (dir: string) => Effect.tryPromise(() => Array.fromAsync(new Glob("*").scan({ c
 // The heavy-check footer at the plugin seam: the composition root on a
 // stand-in host whose cores, load and heavy agents working the test fixes
 // (memory/heavy-host.ts), with every other outside system a test layer. It
@@ -35,6 +37,7 @@ import { HostUnread, Remind, RootHolds, Runs, Steer, Tell } from "@dotfiles/open
 import { TestClock } from "effect/testing"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Orchestrate, { make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** Wednesday 4 November 2026, 10:00 in Knowlton: no Sabbath. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
@@ -43,7 +46,6 @@ const NOW = Date.UTC(2026, 10, 4, 15)
 const SPAWNED = "You are a subagent spawned by another session."
 const MODEL = { providerID: "anthropic", id: "claude-opus" }
 const HELD = { anthropic: { ok: false, measured: true, reason: "all pool accounts are held", retryAt: NOW + 600_000 } }
-const TIMEOUT_MS = 30_000
 /** The units' log writer: the plugin finds no unit dir in these tests, so it never runs it. */
 const LOG_SCRIPT = "/nonexistent/loop-probe-x/log.ts"
 
@@ -221,7 +223,7 @@ const start = (world: World) =>
     return { call, idle, begin, land, open, ran, kept }
   })
 
-const scenario = <A, E>(name: string, body: Effect.Effect<A, E, import("effect").Scope.Scope>) => effectTest(name, Effect.scoped(body), TIMEOUT_MS)
+const scenario = <A, E>(name: string, body: Effect.Effect<A, E, import("effect").Scope.Scope>) => effectTest(name, Effect.scoped(body), hangGuard("local-fixture"))
 
 const count = (text: string) => text.split(FOOTER_MARK).length - 1
 /** The prompt ends with exactly one footer, and it is `footer`. */

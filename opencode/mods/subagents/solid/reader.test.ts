@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason dynamically loaded module at mods/subagents/solid/reader.test.ts: mock.module("solid-js", () => import(REACTIVE.core))
 // The family read through a Solid store, as OpenCode's TUI holds the session
 // data: a token streamed into one message re-reads that message alone, never
 // the rest of a long family. Bun's tests resolve solid-js to its server build,
@@ -223,6 +225,8 @@ test("two readings of a session are the same while every field it carries is, an
   const withLatch = (over: Partial<Latch>): Session => ({ ...base, latch: { ...latch, ...over } })
   const withTime = (over: Partial<Session["time"]>): Session => ({ ...base, time: { ...time, ...over } })
   const withShell = (over: Shell): Session => ({ ...base, shells: [over, base.shells[1]!] })
+  const lifecycle = { kind: "failed", revision: 2, sinceReload: false, at: 2, waitingOn: "", diagnostic: false } as const
+  const withLifecycle = (change: Partial<NonNullable<Session["lifecycle"]>>): Session => ({ ...base, lifecycle: { ...lifecycle, ...change } })
   const changed = {
     id: [{ ...base, id: "b" }],
     parentID: [{ ...base, parentID: "other" }, without(base, "parentID")],
@@ -244,11 +248,23 @@ test("two readings of a session are the same while every field it carries is, an
     "latch.hold": [withLatch({ hold: "sabbath" })],
     "latch.reason": [withLatch({ reason: "other" })],
     "latch.opensAt": [withLatch({ opensAt: 9 })],
+    "latch.recheckAt": [withLatch({ recheckAt: 9 })],
     "latch.at": [withLatch({ at: 9 })],
     "latch.cancelledAt": [withLatch({ cancelledAt: 9 }), { ...base, latch: without(latch, "cancelledAt") }],
     "latch.failed": [withLatch({ failed: "other" }), { ...base, latch: without(latch, "failed") }],
     permissions: [{ ...base, permissions: ["edit b.ts"] }, { ...base, permissions: [] }],
     questions: [{ ...base, questions: ["What?"] }, { ...base, questions: [] }],
+    wakePending: [{ ...base, wakePending: true }],
+    execution: [{ ...base, execution: { kind: "undetermined", at: 2 } }, { ...base, execution: { kind: "failed", at: 3 } }],
+    "execution.kind": [{ ...base, execution: { kind: "none" } }],
+    "execution.at": [{ ...base, execution: { kind: "failed", at: 9 } }],
+    lifecycle: [withLifecycle({})],
+    "lifecycle.kind": [withLifecycle({ kind: "continuing" })],
+    "lifecycle.revision": [withLifecycle({ revision: 4 })],
+    "lifecycle.sinceReload": [withLifecycle({ sinceReload: true })],
+    "lifecycle.waitingOn": [withLifecycle({ waitingOn: "Wake" })],
+    "lifecycle.diagnostic": [withLifecycle({ diagnostic: true })],
+    "lifecycle.at": [withLifecycle({ at: 8 })],
     // Compared as one value: the transcript memo keeps the array while no item changes.
     messages: [{ ...base, messages: [...messages] }],
   } satisfies { readonly [P in Paths<Session, "messages">]: ReadonlyArray<Session> }

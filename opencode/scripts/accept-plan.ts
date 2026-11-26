@@ -91,8 +91,7 @@ export const FIXED_SEEDS = 20
 /** The largest seed a swarm starts from, so its seeds stay inside a 32-bit integer for a day's swarm and more. */
 const SEED_SPAN = 1_000_000_000
 
-/** Whether a file is a simulated suite. */
-export const isSimSuite = (file: string) => /\.sim\.test\.tsx?$/.test(file)
+export { isSimSuite } from "./test-population.ts"
 
 /** The swarm's box in a land run of `budgetMs`: a third of it (20 s of 60). */
 export const swarmBox = (budgetMs: number) => Math.floor(budgetMs / 3)
@@ -102,8 +101,11 @@ export const LONG_SWARM_MS = 600_000
 export const LONG_SWARM_EVERY_MS = 24 * 60 * 60 * 1000
 
 /** The simulated suites a change reaches: those whose reach (`reachOf`, the suite itself included) holds a changed file. */
-export const reachedSuites = (suites: ReadonlyArray<string>, reachOf: (suite: string) => ReadonlySet<string>, changed: ReadonlyArray<string>) =>
-  suites.filter((suite) => changed.some((file) => file === suite || reachOf(suite).has(file)))
+export const reachedSuites = (suites: ReadonlyArray<string>, reachOf: (suite: string) => Pick<ReadonlySet<string>, "has">, changed: ReadonlyArray<string>) =>
+  suites.filter((suite) => {
+    const inputs = reachOf(suite)
+    return changed.some((file) => file === suite || inputs.has(file))
+  })
 
 /** A swarm's first seed, from the head's hash and what the swarm is for (`land`, `daily:<date>`): fresh for each head, past the fixed seeds. */
 export const swarmFirst = (head: string, label: string) => FIXED_SEEDS + 1 + (Number(BigInt(Bun.hash(`${head}:${label}`)) % BigInt(SEED_SPAN)))

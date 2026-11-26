@@ -14,7 +14,11 @@
  *   runs as the role. A new role subagent runs at the role's reasoning effort,
  *   as a variant of the model it would run on, when that model has one. A
  *   worker asked or inheriting `#max` runs at its model's default effort
- *   unless its description ends `(mechanical)`, and its answer says so. Each
+ *   unless its description ends `(mechanical)`, and its answer says so. A
+ *   start with `fast: true` (a field this plugin adds to the subagent tool,
+ *   for when the owner asked fast), or naming a fast mode, runs on the fast
+ *   mode of the model it would run on, when there is one; its answer says
+ *   which. Each
  *   call is a line in a JSONL log a status pane can read.
  * - Compaction: each role and each primary agent compacts at one fixed
  *   window, `WINDOW` in compaction.ts (400k tokens). The window is the
@@ -83,11 +87,9 @@
  *   the parent. A pace hold is decided again at least every two minutes,
  *   since a pace may open early. With no wakes plugin the held call is
  *   refused with the hold's reason and the time it opens.
- * - Opus first, Codex second: a new agent the pace holds on its own model
- *   (the newest Opus), that named no model (or named its own: dropped, `model-dropped`), starts at once on the newest
- *   Codex model for its role when the Codex pace has room: sol (the verifier
- *   at medium, the rest at high), or luna at max for a step whose description
- *   ends `(light)`, `(direct)` or `(mechanical)`. The call log's line says
+ * - Only a held planner can move from Opus to the newest Codex sol at high.
+ *   A verifier runs on Claude Opus only and latches if held, even when continued.
+ *   The call log's planner fallback line says
  *   `fallback: <first model> held: <reason>`, and the parent reads that line
  *   first in the subagent call's result. Held on both, it latches on whichever
  *   opens first, and each open tries the first model before the fallback.
@@ -127,10 +129,12 @@
  * provider's pace, here and on the owner's other hosts, until its spend shows
  * in a reading.
  */
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Agent, Plugin, Tool } from "@opencode/plugin/effect"
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, SchemaGetter, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Context, DateTime, Effect, type Fiber, FileSystem, Layer, Match, Option, Path, Predicate, Schema, SchemaGetter, type Scope, Stream } from "effect"
+import type { ChildProcessSpawner } from "effect/process"
 import { DIGEST, DigestLog } from "@dotfiles/opencode-digest/event"
 import * as Relay from "@dotfiles/opencode-digest/relay"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
@@ -138,8 +142,12 @@ import * as Digest from "./digest.ts"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import { QUEUE } from "@dotfiles/opencode-queue/queue"
 import { STATUS } from "@dotfiles/opencode-status/status"
-import { Latch, MARK_KEY, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
+import { Latch, readMark, MARK_KEY, type Mark, type Opened, OPENER } from "@dotfiles/opencode-wake/latch"
 import { WAKES } from "@dotfiles/opencode-wake/wake"
+import { Observation } from "../../mods/kernel/child-lifecycle.ts"
+import { LaunchStatus, readLaunchStatus } from "../../mods/kernel/launch-status.ts"
+import { CHILD_ROWS, readRows, type OwnerAnswer } from "../../mods/kernel/opencode/child-row.ts"
+import { observedPhase } from "../../mods/kernel/opencode/subagents.ts"
 import * as CodexAdmissionLive from "@dotfiles/opencode-orchestrate/codex/admission"
 import { keepMessage, WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import * as CallLogLive from "@dotfiles/opencode-orchestrate/filestore/call-log"
@@ -151,7 +159,7 @@ import * as RunRecordsLive from "@dotfiles/opencode-orchestrate/filestore/run-re
 import * as GitFleet from "@dotfiles/opencode-orchestrate/git/fleet"
 import * as GitMainLine from "@dotfiles/opencode-orchestrate/git/main-line"
 import * as GitWorkGit from "@dotfiles/opencode-orchestrate/git/work-git"
-import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING } from "@dotfiles/opencode-orchestrate/lost-now"
+import { type Listed as Listing, LOST, LostAsk, lostAnswer, lostNow, NOTHING, withRecordSection } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as RunFilesLive from "@dotfiles/opencode-orchestrate/filestore/run-files"
 import * as PrincipleFiles from "@dotfiles/opencode-orchestrate/filestore/principles"
 import * as Principles from "@dotfiles/opencode-orchestrate/principles"
@@ -168,8 +176,16 @@ import * as PoolPaceLive from "@dotfiles/opencode-orchestrate/opencode/pool-pace
 import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
-import type { PaceHeld } from "@dotfiles/opencode-orchestrate/pace"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import * as PoolStatus from "@dotfiles/opencode-orchestrate/pool-status"
+import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
+import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
+import { type Actor, Command as RecordCommand, openOf, type Snapshot } from "@dotfiles/opencode-orchestrate/record"
+import * as ErgoRegister from "@dotfiles/opencode-orchestrate/sqlite/ergo-register"
+import { platform } from "@dotfiles/opencode-orchestrate/node/platform"
+import * as SqliteRecord from "@dotfiles/opencode-orchestrate/sqlite/record"
+import { failureText, printed, type Printable, printable } from "@dotfiles/opencode-orchestrate/printable"
+import * as Reasons from "@dotfiles/opencode-orchestrate/reasons"
 import { Subagents } from "@dotfiles/opencode-orchestrate/asking"
 import * as Asking from "@dotfiles/opencode-orchestrate/opencode/asking"
 import * as DocumentsLive from "@dotfiles/opencode-orchestrate/node/documents"
@@ -177,9 +193,11 @@ import { Created, Inspected, LandAnswered, Listed, RIFT_RPC, workriftName } from
 import { samePlace } from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import { definitions, ORCHESTRATOR, orchestrator, ROLE_CACHE_TTL, ROLES, withSection } from "@dotfiles/opencode-orchestrate/role"
 import { heldUntil } from "@dotfiles/opencode-orchestrate/restart-hold"
-import { KNOWLTON, local, Place, rest, type SabbathRest } from "@dotfiles/opencode-orchestrate/sabbath"
+import { KNOWLTON, local, Place, rest } from "@dotfiles/opencode-orchestrate/sabbath"
 import {
   type CallLog,
+  CommitmentRecord,
+  Evidence,
   type CodexAdmission,
   HeavyHost,
   type Latches,
@@ -201,7 +219,7 @@ import {
   UnitLogs,
   type WorkGit,
 } from "@dotfiles/opencode-orchestrate/service"
-import type { CodexNeverImplements, Status, StillLatched } from "@dotfiles/opencode-orchestrate/tool-call"
+import type { Status } from "@dotfiles/opencode-orchestrate/tool-call"
 
 export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
@@ -264,8 +282,42 @@ export const Options = Schema.Struct({
   fleet: Schema.optional(Schema.Struct({ dotfiles: Schema.String, fork: Schema.String })),
   /** Who a subagent's question goes to: its orchestrator (`ask_orchestrator`, mods/orchestrate/asking.ts), or `owner` as before. */
   subagents: Subagents.pipe(withDefault<Subagents>(SUBAGENTS)),
+  /** The commitment record's SQLite file; default `$XDG_STATE_HOME/opencode-orchestrate/<repo key>.db` of this location's checkout. */
+  record: Schema.optional(Schema.String),
 })
 export type Options = typeof Options.Type
+
+/**
+ * The commitment record a plugin keeps its runs' commitments in, with the reader of the evidence its reasons point at
+ * (reasons.ts), on what it needs of the host: `R`, the host's files, paths and processes for the live record (the
+ * fork's plugin host gives them), nothing for a stand-in.
+ */
+export type RecordLayer<R = never> = (ctx: Plugin.Context, options: Options) => Layer.Layer<CommitmentRecord | Evidence, never, R>
+
+/** What the live record needs of the host: its files, paths and processes, as the fork's plugin host provides them. */
+export type HostServices = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+
+/**
+ * The record on this host's file for the checkout's repository (`options.record`, else the repository's key under the
+ * state dir). A file that does not open gives a record that refuses every call with why: the plugin still starts.
+ */
+export const liveRecord: RecordLayer<HostServices> = (ctx, options) =>
+  Layer.merge(
+    SqliteRecord.layerOrFailed(
+    Option.match(Option.fromUndefinedOr(options.record), {
+      onSome: Effect.succeed,
+      onNone: () => Effect.flatMap(SqliteRecord.keyOfCheckout(ctx.location.directory), (key) => SqliteRecord.pathOf(Option.some(TuiDirs.dirs().state), key)),
+    }),
+    ),
+    Reasons.evidenceLayer,
+  ).pipe(Layer.provide(platform))
+
+/** A record in memory, one per plugin start: what a host with no record file (a test's) keeps. */
+export const memoryRecord: RecordLayer = () => Layer.merge(MemoryRecord.layer, Reasons.noEvidence)
+
+/** The file `options.record` names when it names one (a test's scratch file, kept across a restart), else memory. */
+export const namedRecord: RecordLayer = (ctx, options) =>
+  Option.match(Option.fromUndefinedOr(options.record), { onNone: () => memoryRecord(ctx, options), onSome: (record) => Layer.merge(SqliteRecord.layerScratch(record), Reasons.noEvidence) })
 
 /** The outside systems the model runs on. */
 export type Externals =
@@ -316,6 +368,7 @@ export const stepSessionOf = (session: StepHostSession): SessionsLive.Session =>
   ...(session.parentID === undefined ? {} : { parentID: session.parentID }),
   ...(session.agent === undefined ? {} : { agent: session.agent }),
   started: session.time.busy !== undefined || session.outcome !== undefined,
+  ...Option.match(Option.fromUndefinedOr(msOf(session.time.busy)), { onNone: () => ({}), onSome: (busySince) => ({ busySince }) }),
   stopped: session.outcome === "interrupted",
   ...(session.metadata?.[MARK_KEY] === undefined ? {} : { latch: session.metadata[MARK_KEY] }),
   directory: session.location.directory,
@@ -399,6 +452,8 @@ export const hosted = (ctx: Plugin.Context, start: LatchesLive.Start, background
     PoolPaceLive.layer(
       (input) => ctx.rpc(POOL_STATUS).pace(input),
       (input) => ctx.rpc(POOL_STATUS).started(input),
+      Option.some((input) => ctx.rpc(POOL_STATUS).reserveLaunch(input)),
+      Option.some((input) => ctx.rpc(POOL_STATUS).bindLaunch(input)),
     ),
     LatchesLive.layer((ask) => ctx.rpc(WAKES).latch(ask), start),
     RunsLive.layer(() => ctx.rpc(STATUS).status({})),
@@ -424,13 +479,21 @@ const msOf = (time: unknown): number | undefined => {
 const synthetic = (ctx: Plugin.Context) => (input: SteerLive.Synthetic) =>
   ctx.session.synthetic({ ...input, sessionID: input.sessionID as SessionID, metadata: { ...input.metadata } } satisfies SyntheticInput)
 
-/** A time as the model reads it: ISO 8601, and the owner's local time. */
-const timeOf = (ms: number, place: Place) => `${new Date(ms).toISOString()} (${local(ms, place)} ${place.timeZone})`
+/** The ISO 8601 instant a readable time names: rounded up to the second, as `formatNotificationTime` rounds. */
+const isoOf = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(Math.ceil(ms / 1000) * 1000)).replace(".000Z", "Z")
+
+/**
+ * A dated, zoned time as the model reads it at the configured place, then its ISO instant in brackets, so a model
+ * that compares or computes with it reads the exact time (review of 0d76ebba: the Eastern wording dropped it).
+ */
+const timeOf = (ms: number, place: Place) => `${formatNotificationTime(ms, place.timeZone)} [${isoOf(ms)}]`
 
 const whoseOf = (whose: string | undefined) => (whose === "codex" ? "the Codex account's" : "the pool's")
 
 /** What the model reads when a call is refused. */
-const refusal = (tool: string, rejection: SabbathRest | PaceHeld | StillLatched | CodexNeverImplements, place: Place): Tool.Error => {
+const refusal = (tool: string, rejection: Model.StartRefusal, place: Place): Tool.Error => {
+  if (rejection._tag === "VerificationRequiresOpus")
+    return new Tool.Error({ message: `orchestrate: ${Model.verificationRefusal(rejection)}`, error: rejection })
   if (rejection._tag === "CodexNeverImplements")
     return new Tool.Error({
       message: `orchestrate: Codex never implements. This ${rejection.agent} would run on ${rejection.model}, and the host offers no Opus model for it. Do not name another model: start it again once an Opus model is offered.`,
@@ -462,35 +525,120 @@ interface Telling {
 const tellingOf = (fields: Telling): Telling =>
   Object.fromEntries(Object.entries(fields).filter(([, value]) => Predicate.isString(value) && value !== ""))
 
-/** What a latched call answers, as the subagent tool's output: why it waits, when it opens, and that its result wakes the parent. */
-const latchedResult = (latched: Model.LatchedStart, place: Place) => {
-  const event = latched.latched
-  const holds = event.hold === "sabbath" ? event.why : `${whoseOf(event.whose)} pace holds this agent: ${event.why}.`
+type HeldTiming = Pick<Mark, "hold" | "reason" | "opensAt"> & {
+  readonly recheck: Option.Option<number>
+  readonly words: string
+}
+
+/** Render a confirmed hold, or an explicit legacy Wake receipt in a standalone install. */
+const latchedResult = (latched: Model.LatchedStart, place: Place, timing: HeldTiming, observation: Option.Option<Observation>) => {
+  const { hold, reason, opensAt, recheck, words } = timing
   const latch = {
     id: latched.id,
-    hold: event.hold,
-    reason: event.why,
-    opensAt: event.opensAt,
-    opens: new Date(event.opensAt).toISOString(),
-    local: local(event.opensAt, place),
+    hold,
+    reason,
+    opensAt,
+    ...Option.match(recheck, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
+    opens: new Date(opensAt).toISOString(),
+    local: local(opensAt, place),
   }
   const output = [
-    `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${holds}`,
-    `It starts by itself in the background when the latch opens, about ${timeOf(event.opensAt, place)}${event.recheckAt < event.opensAt ? `, or sooner: it is decided again at ${new Date(event.recheckAt).toISOString()}` : ""}. You will be woken with its result, as for a background subagent.`,
+    `The subagent is latched (sessionID: ${latched.child}, latch ${latched.id}). ${words}`,
+    `It starts by itself in the background when the latch opens, about ${timeOf(opensAt, place)}${Option.getOrElse(
+      Option.map(Option.filter(recheck, (at) => at < opensAt), (at) => `, or sooner: it is decided again at ${timeOf(at, place)}`),
+      () => "",
+    )}. You will be woken with its result, as for a background subagent.`,
     "Go on with other work, or end your turn. Do not start it again, poll or wait for it. wake_list shows the latch; wake_cancel cancels it.",
   ].join("\n")
   return {
     // `note` and `model` are what a kernel cell's handle reads of the answer (mods/kernel/worker/subagent-handle.ts).
-    output: { sessionID: latched.child, status: "latched" as const, output, latch, ...tellingOf({ note: output, model: event.model }) },
+    output: { sessionID: latched.child, status: "latched" as const, output, latch, ...tellingOf({ note: output, model: latched.latched.model }),
+      ...Option.match(observation, { onNone: () => ({}), onSome: (observation) => ({ observation }) }),
+    },
     content: output,
     metadata: { sessionID: latched.child, status: "latched", latch },
   }
 }
 
+const LatchChild = Schema.String.check(Schema.isStartingWith("ses")).pipe(Schema.brand("SessionID"))
+const latchChild = Schema.decodeUnknownOption(LatchChild)
+const recheckFrom = (mark: ReturnType<typeof readMark>) => {
+  if (mark._tag === "Unreadable") return Option.none()
+  return Option.fromUndefinedOr(mark.mark.recheckAt)
+}
+const recheckOf = (ctx: Plugin.Context, child: string) =>
+  Effect.option(Effect.flatMap(Effect.fromOption(latchChild(child)), (sessionID) => ctx.session.get({ sessionID }))).pipe(
+    Effect.map(Option.flatMap((info) => recheckFrom(readMark(info.metadata)))),
+  )
+const ownerUnavailable = Schema.is(Schema.Union([
+  Schema.Struct({ type: Schema.Literal("rpc.unavailable") }),
+  // The simulation host reports unregistered RPC methods with this tag.
+  Schema.Struct({ _tag: Schema.Literal("RpcNotFoundError") }),
+]))
+const LAUNCH_OWNER_DEADLINE = "2 seconds"
+
+const startObservation = (ctx: Plugin.Context, child: string) => ctx.rpc(CHILD_ROWS).read({ children: [child] }).pipe(
+  Effect.timeout(LAUNCH_OWNER_DEADLINE),
+  Effect.match({
+    onFailure: (error) => ({ standalone: ownerUnavailable(error), answer: Option.none<OwnerAnswer>() }),
+    onSuccess: (reply) => ({
+      standalone: false,
+      answer: Option.flatMap(readRows(reply), ({ rows }) =>
+        Arr.findFirst(rows, (row) => row.child === child && row.observation.child === child)),
+    }),
+  }),
+)
+
+const launchStatus = (observation: Observation): LaunchStatus => {
+  if (observation.basis !== "current") return "unknown"
+  switch (observation.phase._tag) {
+    case "Settled": return "completed"
+    case "Latched": return "latched"
+    case "Unknown": return "unknown"
+    case "Running":
+    case "Recovering":
+    case "Continuing": return "running"
+  }
+  return observation.phase satisfies never
+}
+const launchResult = (sessionID: string, answer: Option.Option<OwnerAnswer>, model?: string) => {
+  const observation = Option.map(answer, ({ observation }) => observation)
+  const status = Option.getOrElse(Option.map(observation, launchStatus), () => "unknown" as const)
+  const phase = Option.getOrElse(Option.map(observation, observedPhase), () => "unknown (no current observation)")
+  const output = `Subagent ${sessionID}: ${phase}. Do not poll or duplicate its work.`
+  return {
+    output: { sessionID, status, output, ...tellingOf({ model }),
+      ...Option.match(observation, { onNone: () => ({}), onSome: (observation) => ({ observation }) }),
+    },
+    content: output,
+    metadata: { sessionID, status },
+  }
+}
+type LaunchReply = ReturnType<typeof latchedResult> | ReturnType<typeof launchResult>
+const heldAnswer = (ctx: Plugin.Context, latched: Model.LatchedStart, place: Place) => startObservation(ctx, latched.child).pipe(
+  Effect.flatMap(({ standalone, answer }): Effect.Effect<LaunchReply, never> => {
+    if (standalone) {
+      const { hold, why, whose, opensAt } = latched.latched
+      const words = hold === "sabbath" ? why : `${whoseOf(whose)} pace holds this agent: ${why}.`
+      return recheckOf(ctx, latched.child).pipe(Effect.map((recheck) =>
+        latchedResult(latched, place, { hold, reason: why, opensAt, recheck, words }, Option.none())))
+    }
+    if (Option.isSome(answer)) {
+      const { observation, mark } = answer.value
+      if (launchStatus(observation) === "latched" && mark._tag === "Readable") {
+        const { reason, recheckAt } = mark.mark
+        const timing = { ...mark.mark, recheck: Option.fromUndefinedOr(recheckAt), words: reason }
+        return Effect.succeed(latchedResult(latched, place, timing, Option.some(observation)))
+      }
+    }
+    return Effect.succeed(launchResult(latched.child, answer, latched.latched.model))
+  }),
+)
+
 /** The subagent tool's output, widened with the latched answer. */
 const SubagentOutput = Schema.Struct({
   sessionID: Schema.String,
-  status: Schema.Literals(["completed", "running", "latched"]),
+  status: LaunchStatus,
   output: Schema.String,
   latch: Schema.optionalKey(
     Schema.Struct({
@@ -498,6 +646,7 @@ const SubagentOutput = Schema.Struct({
       hold: Schema.Literals(["pace", "sabbath"]),
       reason: Schema.String,
       opensAt: Schema.Number,
+      recheckAt: Schema.optionalKey(Schema.Number),
       opens: Schema.String,
       local: Schema.String,
     }),
@@ -506,6 +655,7 @@ const SubagentOutput = Schema.Struct({
   note: Schema.optionalKey(Schema.String),
   /** The model it runs on, when the guard chose one. */
   model: Schema.optionalKey(Schema.String),
+  observation: Schema.optionalKey(Observation),
 })
 
 /** What the parent reads first in a fallback agent's answer: where it ran, and why. */
@@ -515,6 +665,28 @@ const fallbackNote = (started: { readonly model?: string; readonly fallback?: st
 /** What the parent reads first in a lowered worker's answer: the effort it runs at, and why. */
 const effortNote = (started: { readonly model?: string; readonly lowered?: string }) =>
   `orchestrate: this worker runs on ${started.model ?? "its model"} at the model's default effort, not ${started.lowered}: a worker runs at ${started.lowered} only when its description ends \`(mechanical)\`. Bulk model work (a critique of many images, a sweep) is a script, not a worker at ${started.lowered}.`
+
+/** What the parent reads first in the answer of a start that asked fast: the model it runs on, and whether it is fast. */
+const fastNote = (model: Option.Option<string>, fast: string) => `orchestrate: this agent runs on ${Option.getOrElse(model, () => "its model")}: ${fast}.`
+
+/**
+ * The subagent tool's `fast` field. Fast is the owner's call, per start (owner, 2026-11-24: "if the owner says
+ * something like, hey, do this in fast mode"); the plugin cannot hear the owner, so the field's own description says it.
+ */
+const FastField = Schema.optionalKey(Schema.Boolean).annotate({
+  description:
+    "Only when the owner asked for fast for this work: true runs it on the fast mode of the model it would run on. A follow-up keeps its mode unless set.",
+})
+
+/** A tool's input that is a struct schema (the host's subagent input is one), which fields can be added to. */
+const isStruct = (input: Tool.Info["input"]): input is Schema.Struct<{ readonly [field: string]: Schema.Codec<unknown, unknown> }> =>
+  Schema.isSchema(input) && "mapFields" in input && "fields" in input
+
+/** The subagent tool's input with `fast`, when the host's input is a struct; any other input is kept as it is. */
+const withFast = (input: Tool.Info["input"]): Tool.Info["input"] => {
+  if (isStruct(input)) return input.mapFields((fields) => ({ ...fields, fast: FastField }))
+  return input
+}
 
 /** A started fallback's note, by the call it answers: a kernel cell's calls share one id, so the description is part of the key. */
 const noteKey = (sessionID: string, callID: string, input: unknown) =>
@@ -541,14 +713,25 @@ const HEAVY_READ = "2 seconds"
 /** A subagent call's prompt, when its input has one. */
 const decodePrompted = Schema.decodeUnknownOption(Schema.Struct({ prompt: Schema.String }))
 
+/** The record's actors of a land event (`orchestrate land`'s, the work tool's) and of the status's pass. */
+const ORCHESTRATE_LAND = "orchestrate-land"
+const WORK_LAND = "work-land"
+const ORCHESTRATE_PASS = "orchestrate-pass"
+/** The work plugin's tool and its alias: a land through either is a land event. */
+const WORK_TOOLS: ReadonlyArray<string> = ["work", "rift"]
+
+/** Start a finite background task with the plugin's lifetime, not the caller's. */
+type ForkTask = (scope: Scope.Scope) => <A, E, R>(task: Effect.Effect<A, E, R>) => Effect.Effect<Fiber.Fiber<A, E>, never, R>
+
 /**
  * The plugin on `externals`: the live systems in OpenCode, test layers in the seam tests. `heavy` is the host the
  * heavy-check footer reads; the plugin OpenCode loads always has it (`liveHeavy`), and only the seam tests written
  * before the footer leave it out.
  */
-export const make = (
+export const withTaskFork = (forkTask: ForkTask) => <R = never>(
   externals: (ctx: Plugin.Context, options: Options, start: LatchesLive.Start, background: Background) => Layer.Layer<Externals>,
   heavy?: (ctx: Plugin.Context, options: Options, background: Background) => Layer.Layer<HeavyHost>,
+  record: RecordLayer<R> = namedRecord,
 ) =>
   Plugin.define({
     id: "dotfiles-opencode.orchestrate",
@@ -633,6 +816,7 @@ export const make = (
       const verdicts = Context.get(services, Model.Verdicts)
       const idleRoots = Context.get(services, Model.IdleRoots)
       const scope = yield* Effect.scope
+      const fork = forkTask(scope)
 
       // An idle root with ready work is steered once per idle period (idle.ts). The decision runs on
       // the plugin's scope, so the session goes idle at once; the nudge wakes it.
@@ -645,7 +829,7 @@ export const make = (
               ? Effect.logWarning("orchestrate: the nudge did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
               : Effect.logDebug("orchestrate: no nudge").pipe(Effect.annotateLogs({ sessionID, why: outcome.why, detail: outcome.detail }))
       const background = (sessionID: string, work: Effect.Effect<Model.IdleOutcome | undefined>) =>
-        work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid)
+        work.pipe(Effect.flatMap(logged(sessionID)), Effect.ignoreCause, fork, Effect.asVoid)
       yield* ctx.session.hook("experimental.idle", (event) =>
         idleRoots.idle(event.sessionID, event.background.length).pipe(Effect.flatMap((decide) => background(event.sessionID, decide))),
       )
@@ -659,7 +843,7 @@ export const make = (
             ? Effect.logWarning("orchestrate: the skill note did not reach the root").pipe(Effect.annotateLogs({ sessionID, message: outcome.message }))
             : Effect.logDebug("orchestrate: no skill note").pipe(Effect.annotateLogs({ sessionID, why: outcome.why }))
       yield* ctx.session.hook("experimental.idle", (event) =>
-        drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, Effect.forkIn(scope), Effect.asVoid),
+        drifts.idle(event.sessionID).pipe(Effect.flatMap(driftLogged(event.sessionID)), Effect.ignoreCause, fork, Effect.asVoid),
       )
       // The `orchestrate` tool's reads (mods/orchestrate/tools.ts), at each call: the run tables (the status plugin's
       // RPC, through `Runs`) and the base's workspaces (the rift RPC). Its lanes, its verify checkout and
@@ -695,6 +879,43 @@ export const make = (
       const runFiles = Context.get(services, RunFiles)
       const unitLogs = Context.get(services, UnitLogs)
       const checkout = ctx.location.directory
+      // The commitment record (mods/orchestrate/record.ts): this repository's file on this host, opened for the
+      // plugin's life; every read and write is a call's own, and nothing of it is kept here.
+      const recordServices = yield* Layer.build(record(ctx, options))
+      const commitments = Context.get(recordServices, CommitmentRecord)
+      // What the host's files say of a reason's referent: a receipt, a declared invariant's document (reasons.ts).
+      const evidence = Context.get(recordServices, Evidence)
+      const warnRecord = (title: Printable, detail: Printable) => Effect.logWarning(title, detail)
+      const recordFailure = (cause: Cause.Cause<Printable>) => Effect.fail(failureText(cause))
+      const recordProblem = <A, B, R>(work: Effect.Effect<A, Printable, R>, report: (why: Printable) => Effect.Effect<B>) =>
+        Effect.catchCause(work, (cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
+          return report(failureText(cause))
+        })
+      /** The facts a standing needs, read now: the default branch's commits, and the owners whose lane is gone. */
+      const factsNow = (sessionID: string, snapshot: Snapshot) =>
+        Effect.gen(function* () {
+          const listed = yield* lanesNow(sessionID)
+          const lanes = Option.as(listed.source, { rifts: listed.rifts, workrift: listed.workrift })
+          const now = yield* Clock.currentTimeMillis
+          return yield* Commitments.factsOf(mainLine, checkout, (owners) => Effect.succeed(Commitments.goneOf(owners, lanes)), snapshot, now)
+        })
+      /**
+       * The record's section and its keys, read for `sessionID`; a record that does not read says so. With `pass` (the
+       * status), the claims standing are weighed first (`Commitments.passed`): a claimed head git now has on the default
+       * branch lands. No read claims a commit.
+       */
+      const recordSection = (sessionID: string, pass: boolean) => recordProblem(
+        Effect.gen(function* () {
+          if (pass) yield* passNow(sessionID)
+          const snapshot = yield* commitments.read
+          const listed = Commitments.listedOf(snapshot, yield* factsNow(sessionID, snapshot))
+          return { lines: Commitments.sectionOf(listed), keys: Commitments.sectionKeys(listed) }
+        }).pipe(Effect.mapError((failed) => failed.message)),
+        (why) => warnRecord(printable("orchestrate: the commitment record did not read"), why).pipe(
+          Effect.as({ lines: [printed`Commitments: the record did not read: ${why}`], keys: ["record-unread"] }),
+        ),
+      )
       // The run's facts go to the digest through its RPC, held while the digest plugin is not up (cmd/orchestrate/digest.ts).
       const digest = Digest.make(Context.get(yield* Layer.build(Relay.layer((line) => ctx.rpc(DIGEST).append({ line }))), DigestLog), checkout)
       /** The run dirs the run tables name, once each. */
@@ -769,14 +990,41 @@ export const make = (
             Match.when(true, () => lanesNow(ask.sessionID)),
             Match.orElse(() => Effect.succeed<Listing>({ source: Option.none(), rifts: [], workrift: false })),
           )
-          const answer = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          const lost = yield* lostAnswer(ask.sessionID, checkout, tables, listed, started, ask.hashes).pipe(Effect.provideContext(services))
+          // The record's section, to a root that runs units or has written to the record.
+          const writes = yield* Effect.map(Effect.orElseSucceed(commitments.events, () => []), (events) => events.some((event) => event.actor.id === ask.sessionID))
+          const answer = yield* Match.value(orchestrates || writes).pipe(
+            Match.when(true, () => Effect.map(recordSection(ask.sessionID, false), (section) => withRecordSection(lost, section))),
+            Match.orElse(() => Effect.succeed(lost)),
+          )
           const ms = (yield* Clock.currentTimeMillis) - started
           yield* Effect.logInfo("orchestrate: read lost work for the queue check").pipe(
             Effect.annotateLogs({ sessionID: ask.sessionID, lanes: listed.rifts.length, hashes: ask.hashes.length, lines: answer.lines.length, ms }),
           )
           return answer
         })
-      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane and the next call. */
+      /** Pool quota rows (Claude, OpenAI and Antigravity per group) for status and land; bounded to 500 ms so a pool restart never stalls status, empty when absent or unreadable. */
+      const poolQuotaRows = Effect.gen(function* () {
+        const client = ctx.rpc(POOL_STATUS)
+        const [pools, agy] = yield* Effect.all(
+          [
+            Effect.suspend(() => client.status({})).pipe(
+              Effect.timeoutOption("500 millis"),
+              Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodePools)),
+              Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.PoolSnapshot>())),
+            ),
+            Effect.suspend(() => client.antigravity({})).pipe(
+              Effect.timeoutOption("500 millis"),
+              Effect.map((answer) => Option.flatMap(answer, PoolStatus.decodeAntigravity)),
+              Effect.catchCause(() => Effect.succeed(Option.none<PoolStatus.AntigravitySnapshot>())),
+            ),
+          ],
+          { concurrency: 2 },
+        )
+        return PoolStatus.poolStatusRows(pools, agy)
+      })
+
+      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane, commitments and pool rows. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
@@ -788,7 +1036,9 @@ export const make = (
             Match.when(true, () => Tools.statusAnswer(tables, listed.rifts, listed.workrift, since, now)),
             Match.orElse(() => Tools.statusAnswer([], [], false, since, now)),
           )
-          return [...lost, answer].join("\n")
+          const section = yield* recordSection(sessionID, true)
+          const quota = yield* poolQuotaRows
+          return [...lost, answer, ...section.lines, ...quota].join("\n")
         })
 
       // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's
@@ -873,7 +1123,7 @@ export const make = (
               : Effect.void,
           ),
           Effect.ignoreCause,
-          Effect.forkIn(scope),
+          fork,
           Effect.asVoid,
         )
       }
@@ -1011,7 +1261,7 @@ export const make = (
       // A latched call's answer, by its child: the call's input names the child, and the
       // subagent tool answers it from here instead of starting it. A kernel cell's calls
       // share one call id, so the child, not the call, is the key.
-      const latched = new Map<string, ReturnType<typeof latchedResult>>()
+      const latched = new Map<string, Model.LatchedStart>()
       // What a started call's answer tells, by its call (noteKey): a fallback's or lowered worker's note, put first in
       // the subagent tool's answer, and the model it runs on; both also as fields of its output.
       const tellings = new Map<string, Telling>()
@@ -1022,8 +1272,26 @@ export const make = (
       yield* ctx.tool.transform((editor) =>
         editor.update(SUBAGENT, (tool) => {
           const execute = tool.execute
+          const executeOwned = (...args: Parameters<typeof execute>) => execute(...args).pipe(
+            Effect.flatMap((result) => {
+              const output = result.output
+              if (!isObject(output) || !Predicate.isString(output.sessionID)) return Effect.succeed(result)
+              const child = output.sessionID
+              return startObservation(ctx, child).pipe(Effect.map(({ standalone, answer }) => {
+                if (standalone) return result
+                const witnessed = launchResult(child, answer)
+                // The pinned tool says `running` only after it has admitted and started the job.
+                // An owner read that has not seen that start yet does not revoke its receipt.
+                if (witnessed.output.status === "unknown" && output.status === "running") {
+                  return { ...result, metadata: { ...result.metadata, sessionID: child, status: "running" } }
+                }
+                return { ...result, ...witnessed }
+              }))
+            }),
+          )
           subagent = execute
           tool.output = SubagentOutput
+          tool.input = withFast(tool.input)
           tool.execute = (input, context) => {
             const child = isObject(input) && typeof input.sessionID === "string" ? input.sessionID : undefined
             const answer = child === undefined ? undefined : latched.get(child)
@@ -1032,7 +1300,7 @@ export const make = (
             if (tells !== undefined) {
               tellings.delete(key)
               const said = (text: string) => [tells.note, text].filter(Predicate.isString).join("\n")
-              return execute(input, context).pipe(
+              return executeOwned(input, context).pipe(
                 Effect.map((result) => ({
                   ...result,
                   output: isObject(result.output) && typeof result.output.output === "string" ? { ...result.output, output: said(result.output.output), ...tells } : result.output,
@@ -1040,9 +1308,9 @@ export const make = (
                 })),
               )
             }
-            if (child === undefined || answer === undefined) return execute(input, context)
+            if (child === undefined || answer === undefined) return executeOwned(input, context)
             latched.delete(child)
-            return Effect.succeed(answer)
+            return heldAnswer(ctx, answer, options.place)
           }
         }),
       )
@@ -1055,6 +1323,7 @@ export const make = (
               Effect.flatMap(
                 (latch): Effect.Effect<Opened> =>
                   orchestrate.openLatch({
+                    setAt: latch.setAt,
                     parent: latch.sessionID,
                     from: latch.subagent.from,
                     messageID: latch.subagent.messageID,
@@ -1099,7 +1368,7 @@ export const make = (
           Effect.flatMap((tables) => unitDirOf(unit, tables)),
           Effect.orElseSucceed(() => Option.none<string>()),
           Effect.flatMap((dir) => digest.lane(root, unit, lane, Option.map(dir, dirname))),
-          Effect.forkIn(scope),
+          fork,
           Effect.asVoid,
         )
 
@@ -1125,13 +1394,14 @@ export const make = (
               onSome: (text) => describeRift({ sessionID, path: found.path, purpose: text }).pipe(Effect.map((answer) => answer.rift)),
             })
             yield* noteLane(sessionID, unit, lane)
-            return Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)])
+            return { answer: Tools.laneAnswer(unit, lane, false, [...warnings, ...Tools.laneWarnings(unit, lane, listed.workrift)]), start: Option.none<string>(), path: lane.path }
           }
           // `mark`: the lane is marked as made here, on its branch, so a later switch to another branch is refused.
           const ask = { sessionID, branch, name: decided.make, mark: true, ...Option.match(purpose, { onNone: () => ({}), onSome: (text) => ({ purpose: text }) }) }
           const created = yield* createRift(Option.match(source, { onNone: () => ask, onSome: (directory) => ({ ...ask, source: directory }) }))
           yield* noteLane(sessionID, unit, created.rift)
-          return Tools.laneAnswer(unit, created.rift, true, warnings)
+          // The record keeps the lane's workspace (a land of it claims for the unit) and the commit it started at (shown only).
+          return { answer: Tools.laneAnswer(unit, created.rift, true, warnings), start: Option.some(created.rift.head), path: created.rift.path }
         })
 
       /** A verify's clean checkout: the workspace `verify-<batch>` detached at `at`, answered when it exists, else made. */
@@ -1225,8 +1495,121 @@ export const make = (
               { discard: true },
             ).pipe(Effect.andThen(digest.landed(sessionID, rifts.map((rift) => rift.unit), pushed))),
           { discard: true })
-          return Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text)
+          // The land event: each workspace the work land pushed, with the head it merged (its structured answer, the one
+          // source of what landed); a land that did not push names none.
+          yield* landRecorded(sessionID, ORCHESTRATE_LAND, landed.landed ?? [])
+          const section = yield* recordSection(sessionID, false)
+          const quota = yield* poolQuotaRows
+          return [Tools.landAnswer([...due, ...Tools.changesWarnings(files), ...resolved.warnings], landed.text), ...section.lines, ...quota].join("\n")
         })
+
+      /** Who calls the record: the root, or a subagent's session as a worker. */
+      const actorOf = (sessionID: string) => Effect.map(isChild(sessionID), (child): Actor => ({ id: sessionID, role: Match.value(child).pipe(Match.when(true, () => "worker" as const), Match.orElse(() => "root" as const)) }))
+      /** Only printable text crosses the record tool's host boundary, even when the handler throws. */
+      const recordCall = (
+        work: Effect.Effect<Printable, Printable, CommitmentRecord | Evidence>,
+        metadata: { readonly action: Commitments.CommitmentsInput["action"] } | { readonly id: Printable },
+      ) =>
+        work.pipe(
+          Effect.provideService(CommitmentRecord, commitments),
+          Effect.provideService(Evidence, evidence),
+          Effect.catchCauseIf(Cause.hasDies, recordFailure),
+          Effect.mapError((why) => new Tool.Error({ message: why })),
+          Effect.map((text) => ({ content: [{ type: "text" as const, text }], metadata })),
+        )
+      /** The record's reads: the standing's facts for the session, and an import's register from a copy of its file. */
+      const readsOf = (sessionID: string): Commitments.Reads => ({
+        facts: (snapshot) => factsNow(sessionID, snapshot),
+        register: ErgoRegister.registerReads,
+        checkout,
+      })
+      /** The lane hook: the unit's commitment got or made, owned by the unit and started; its open ones named after the lane's answer. */
+      const laneRecorded = (input: Tools.OrchestrateInput, sessionID: string, made: { readonly answer: string; readonly start: Option.Option<string>; readonly path: string }) => recordProblem(
+        Effect.gen(function* () {
+          const unit = input.unit ?? ""
+          const answer = made.answer
+          const now = yield* Clock.currentTimeMillis
+          const done = yield* commitments.run(RecordCommand.cases.lane.make({ run: input.run ?? Commitments.DEFAULT_RUN, unit, startHead: made.start, path: Option.some(made.path) }), {
+            actor: { id: sessionID, role: "root" },
+            now,
+          })
+          return Commitments.beforeStart(answer, Commitments.laneLine(unit, openOf(done.snapshot, unit)))
+        }).pipe(Effect.mapError(Commitments.whyOf)),
+        (why) => Effect.succeed(Commitments.beforeStart(made.answer, printed`${why}: the unit's commitment was not recorded.`)),
+      )
+
+      /**
+       * A land event recorded (taken from unit 2's "pass after a land"): each workspace a land pushed, with the head it
+       * merged, claims for the open commitment whose lane it is (`Commitments.landClaimsOf`), as `by`'s hand-back routed
+       * at once; then one pass, where git's ancestry alone decides landed. A workspace no commitment recorded claims
+       * nothing, and the same event again claims nothing new. A record that refuses is logged and fails no land.
+       */
+      const landRecorded = (sessionID: string, by: string, landed: ReadonlyArray<Commitments.LandedLane>) => recordProblem(
+        Effect.gen(function* () {
+          const actor: Actor = { id: by, role: "plugin" }
+          const now = yield* Clock.currentTimeMillis
+          const claims = Commitments.landClaimsOf(yield* commitments.read, landed)
+          yield* Commitments.claimsRecorded(claims, by, sessionID, actor, now, (snapshot) => factsNow(sessionID, snapshot)).pipe(Effect.provideService(CommitmentRecord, commitments))
+        }).pipe(Effect.mapError(Commitments.whyOf)),
+        (why) => warnRecord(printable("orchestrate: the land's claims were not recorded"), why),
+      )
+      /** The status's pass: the claims standing weighed against git now; it claims nothing (`Commitments.passed`). */
+      const passNow = (sessionID: string) => recordProblem(
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          yield* Commitments.passed({ id: ORCHESTRATE_PASS, role: "plugin" }, now, (snapshot) => factsNow(sessionID, snapshot)).pipe(Effect.provideService(CommitmentRecord, commitments))
+        }).pipe(Effect.mapError(Commitments.whyOf)),
+        (why) => warnRecord(printable("orchestrate: the status's pass was not recorded"), why),
+      )
+
+      // A land through the work plugin's tool (`work`, or its alias `rift`) is a land event too: its pushed answer's
+      // structured result (`pushed`, `landed`) names each workspace and the head it merged. Absent or malformed (a land
+      // that did not push, an older work plugin) is no event, and nothing here fails the tool's call.
+      yield* ctx.tool.hook("execute.after", (event) => {
+        if (!WORK_TOOLS.includes(event.tool) || event.status !== "completed") return Effect.void
+        return Option.match(Commitments.workLandedOf(event.result.metadata), {
+          onNone: () => Effect.void,
+          onSome: (landed) => landRecorded(event.sessionID, WORK_LAND, landed),
+        }).pipe(Effect.catchCauseIf(Cause.hasDies, (cause) =>
+          warnRecord(printable("orchestrate: a work land's event was not read"), failureText(cause)),
+        ))
+      })
+
+      // The `commitments` tool (mods/orchestrate/commitments-tool.ts): the root's reads and writes of the record. A
+      // subagent's call is refused, as its lane, land or verify is.
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Commitments.COMMITMENTS,
+          description: Commitments.COMMITMENTS_DESCRIPTION,
+          input: Commitments.CommitmentsInput,
+          options: { codemode: false },
+          execute: (input, context) => recordCall(
+            Effect.gen(function* () {
+              if (yield* isChild(context.sessionID)) return yield* Effect.fail(printable(Commitments.PARENT_REFUSAL))
+              const now = yield* Clock.currentTimeMillis
+              return yield* Commitments.answerOf(input, { id: context.sessionID, role: "root" }, now, readsOf(context.sessionID))
+            }),
+            { action: input.action },
+          ),
+        }),
+      )
+      // The `follow_up` tool: a worker files one unowned commitment; it closes, owns or re-owns nothing.
+      yield* ctx.tool.transform((editor) =>
+        editor.add({
+          name: Commitments.FOLLOW_UP,
+          description: Commitments.FOLLOW_UP_DESCRIPTION,
+          input: Commitments.FollowUpInput,
+          options: { codemode: false },
+          execute: (input, context) => recordCall(
+            Effect.gen(function* () {
+              const actor = yield* actorOf(context.sessionID)
+              const now = yield* Clock.currentTimeMillis
+              return yield* Commitments.followUpOf(input, actor, context.id, now, checkout)
+            }),
+            { id: printable(input.id) },
+          ),
+        }),
+      )
 
       yield* ctx.tool.transform((editor) =>
         editor.add({
@@ -1241,7 +1624,7 @@ export const make = (
               if (Option.isSome(refused)) return yield* failWith(refused.value)
               const text = yield* Match.value(input.action).pipe(
                 Match.when("status", () => status(context.sessionID)),
-                Match.when("lane", () => lane(input, context.sessionID)),
+                Match.when("lane", () => lane(input, context.sessionID).pipe(Effect.flatMap((made) => laneRecorded(input, context.sessionID, made)))),
                 Match.when("verify", () => verify(input, context.sessionID)),
                 Match.when("land", () => land(input, context.sessionID)),
                 Match.exhaustive,
@@ -1275,11 +1658,13 @@ export const make = (
         const key = noteKey(event.sessionID, event.id, event.input)
         return orchestrate.startSubagent({ call, from: event.agent, messageID: event.messageID, input: event.input }).pipe(
           Effect.mapError((rejection) => refusal(event.tool, rejection, options.place)),
-          Effect.map((outcome) => {
-            if (Option.isNone(outcome) || !isObject(event.input)) return outcome
+          Effect.flatMap((outcome) => {
+            if (Option.isNone(outcome) || !isObject(event.input)) return Effect.succeed(outcome)
             const routed = outcome.value._tag === "LatchedStart" ? outcome.value.latched : outcome.value
             // Run the call as the guard routed it, on the role's model when one was chosen.
             const input: Record<string, unknown> = { ...event.input, agent: routed.agent }
+            // Fast is decided here (the model it runs on says it): the host's own tool never sees the field.
+            delete input.fast
             if (routed.model !== undefined) input.model = routed.model
             // A named model was dropped (the role's own, or a Codex model an implementor named): with no variant chosen,
             // the role runs on its own model, a follow-up on its child's.
@@ -1290,16 +1675,20 @@ export const make = (
               const said = [
                 ...(outcome.value.fallback === undefined ? [] : [fallbackNote(outcome.value)]),
                 ...(outcome.value.lowered === undefined ? [] : [effortNote(outcome.value)]),
+                ...Option.match(Option.fromUndefinedOr(outcome.value.fast), { onNone: () => [], onSome: (fast) => [fastNote(Option.fromUndefinedOr(routed.model), fast)] }),
               ]
               tellings.set(key, tellingOf({ note: said.join("\n"), model: outcome.value.model }))
             }
             // A latched call names its child, whose answer the subagent tool gives back at once.
             if (outcome.value._tag === "LatchedStart") {
-              latched.set(outcome.value.child, latchedResult(outcome.value, options.place))
-              input.sessionID = outcome.value.child
+              const kept = outcome.value
+              latched.set(kept.child, kept)
+              input.sessionID = kept.child
+              event.input = input
+              return Effect.succeed(outcome)
             }
             event.input = input
-            return outcome
+            return Effect.succeed(outcome)
           }),
           // A step's start is a digest line once the host runs the call (`execute.after`): held here with its time, as
           // a later hook or the host may still refuse it.
@@ -1351,8 +1740,8 @@ export const make = (
           // What still runs of its own: a step idle with its shell or subagent running has not ended.
           backgrounds.set(event.sessionID, event.background.filter((work) => work.sessionID === event.sessionID).length)
           yield* orchestrate.handBack({ sessionID: event.sessionID })
-          yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, Effect.forkIn(scope))
-          yield* noteHandBack(event.sessionID).pipe(Effect.forkIn(scope))
+          yield* verdicts.handBack(event.sessionID).pipe(Effect.ignoreCause, fork)
+          yield* noteHandBack(event.sessionID).pipe(fork)
         }),
       )
       yield* ctx.tool.hook("execute.after", (event) => {
@@ -1365,16 +1754,14 @@ export const make = (
         starting.delete(key)
         const noted = Option.filter(begun, () => event.status === "completed").pipe(
           Option.map((step) =>
-            digest.started(event.sessionID, Option.orElse(Option.fromUndefinedOr(child), () => step.child), step.agent, step.description, step.t).pipe(Effect.forkIn(scope), Effect.asVoid),
+            digest.started(event.sessionID, Option.orElse(Option.fromUndefinedOr(child), () => step.child), step.agent, step.description, step.t).pipe(fork, Effect.asVoid),
           ),
           Option.getOrElse(() => Effect.void),
         )
-        const status: Status =
-          event.status === "error"
-            ? "error"
-            : isObject(metadata) && (metadata.status === "running" || metadata.status === "latched")
-              ? metadata.status
-              : "completed"
+        const launch = Option.flatMap(Option.liftPredicate(metadata, isObject), ({ status }) => readLaunchStatus(status))
+        const status: Status = event.status === "error"
+          ? "error"
+          : Option.getOrElse(launch, () => "completed")
         return Effect.andThen(
           noted,
           orchestrate.finishSubagent({
@@ -1387,4 +1774,6 @@ export const make = (
     }),
   })
 
-export default make(live, liveHeavy)
+export const make = withTaskFork(Effect.forkIn)
+
+export default make(live, liveHeavy, liveRecord)

@@ -12,7 +12,8 @@
  * message as the latest call read it (empty until a call reads it); `note`
  * what the latest call did when it says (a stop), and from the start what it
  * answered of where it runs (a fallback model, a lowered effort, a latch);
- * `model` the model its start named, when it named one. Its
+ * `model` what its start named, not an observed effective route;
+ * `observation` describes lifecycle separately from notices and last words. Its
  * data fields are plain and enumerable, so it prints, serializes and survives
  * a kernel restart as data; its methods are not enumerable, so a restart
  * drops them, and `tools.subagent.handle(h.sessionID)` builds a live one again.
@@ -23,7 +24,10 @@
  * @module
  */
 import { Option, Schema } from "effect"
+import { Hold, Observation, Phase } from "../child-lifecycle.ts"
 import type { Json } from "../frame.ts"
+import { readLaunchStatus } from "../launch-status.ts"
+import { observedState } from "../subagents.ts"
 
 /** A subagent as the subagents tool answers it. */
 export interface SubagentHandleData {
@@ -35,6 +39,7 @@ export interface SubagentHandleData {
   readonly note: string
   /** The model it runs on, when its start named one. */
   readonly model?: string
+  readonly observation?: Observation
 }
 
 /** A live handle: the data, updated in place by each method. */
@@ -68,46 +73,118 @@ const listedOf = (result: Json): ReadonlyArray<Json> => {
 }
 
 const METHODS = ["stop", "read", "refresh"]
+const decodeObservation = Schema.decodeUnknownOption(Observation)
+
+const observationOf = (raw: Json, child: string) => Option.filter(decodeObservation(raw), (observed) => observed.child === child)
+
+const unknown = (child: string): Observation => ({ version: 1, child, phase: Phase.cases.Unknown.make({}) })
+const revisionOf = (observation: Option.Option<Observation>) => Option.flatMap(observation, (current) => Option.fromUndefinedOr(current.revision))
+const observationFields = (observed: Option.Option<Observation>) => {
+  if (Option.isSome(observed)) return { observation: observed.value }
+  return {}
+}
+
+const shouldReplace = (
+  old: Option.Option<Observation>,
+  next: Option.Option<Observation>,
+  request: number,
+  seen: number,
+) => {
+  const previous = revisionOf(old)
+  if (Option.isNone(previous)) return request >= seen
+  const current = revisionOf(next)
+  if (Option.isNone(current) || current.value < previous.value) return false
+  return current.value > previous.value || request >= seen
+}
 
 /** `data` as a live handle whose methods reach the subagents tool through `call`. */
 export const makeSubagentHandle = (data: SubagentHandleData, call: CallTool): SubagentHandle => {
-  const update = (input: JsonRecord) =>
-    call("subagents", { ...input, sessionID: handle.sessionID }).then((result) => {
-      for (const view of listedOf(result).slice(0, 1)) Object.assign(handle, recordOf(view))
+  const latestState = (view: SubagentHandleData): SubagentHandleData => {
+    if (view.observation && Option.isSome(revisionOf(Option.some(view.observation)))) {
+      return { ...view, state: observedState(view.observation) }
+    }
+    return view
+  }
+  let snapshot = latestState(data)
+  let issued = 0
+  let read = 0
+  const render = (request: number) => {
+    const observation = Option.fromUndefinedOr(snapshot.observation)
+    const pendingTerminal = request < issued && Option.isSome(revisionOf(observation))
+      && Option.exists(observation, ({ phase }) => phase._tag === "Settled")
+    let shown = snapshot
+    if (pendingTerminal) shown = { ...snapshot, state: "running", observation: unknown(data.sessionID) }
+    // Plain enumerable data properties are required by the worker's snapshot codec.
+    Object.defineProperties(handle, Object.getOwnPropertyDescriptors(shown))
+  }
+  const update = (input: JsonRecord) => {
+    const request = ++issued
+    render(read)
+    return call("subagents", { ...input, sessionID: data.sessionID }).then((result) => {
+      const view = recordOf(listedOf(result)[0])
+      if (view.sessionID !== data.sessionID) return handle
+      const next = observationOf(view.observation, data.sessionID)
+      if (Option.isSome(Option.fromUndefinedOr(view.observation)) && Option.isNone(next)) return handle
+      if (!shouldReplace(Option.fromUndefinedOr(snapshot.observation), next, request, read)) return handle
+      const decoded = decodeView(view)
+      if (Option.isNone(decoded)) return handle
+      read = Math.max(read, request)
+      snapshot = latestState({ ...snapshot, ...decoded.value, ...observationFields(next) })
+      render(request)
       return handle
     })
+  }
   const handle: SubagentHandle = {
-    ...data,
+    ...snapshot,
     stop: () => update({ action: "stop" }),
     read: () => update({ action: "get" }),
     refresh: () => update({ action: "get" }),
   }
+  if (!data.observation)
+    Object.defineProperty(handle, "observation", { value: unknown(data.sessionID), enumerable: false, configurable: true })
   for (const method of METHODS) Object.defineProperty(handle, method, { enumerable: false })
   return handle
 }
 
+const ViewFields = Schema.Struct({
+  sessionID: Schema.String,
+  description: Schema.String,
+  agent: Schema.String,
+  state: Schema.Literals(["running", "done", "stopped", "failed"]),
+  message: Schema.String,
+  note: Schema.String,
+})
+const decodeView = Schema.decodeUnknownOption(ViewFields)
+const requireView = Schema.decodeUnknownSync(ViewFields)
+
 /** A live handle of one subagent as a subagents tool answer gives it. */
 const handleOfView = (view: Json, call: CallTool): SubagentHandle => {
   const fields = recordOf(view)
-  return makeSubagentHandle(
-    {
-      sessionID: String(fields.sessionID),
-      description: String(fields.description),
-      agent: String(fields.agent),
-      state: stateOf(fields.state),
-      message: String(fields.message),
-      note: String(fields.note),
-    },
-    call,
-  )
+  const data = requireView(fields)
+  const observation = observationOf(fields.observation, data.sessionID)
+  return makeSubagentHandle({ ...data, ...observationFields(observation) }, call)
 }
-
-const STATES: ReadonlyArray<SubagentHandleData["state"]> = ["running", "done", "stopped", "failed"]
-const stateOf = (value: Json): SubagentHandleData["state"] => STATES.find((state) => state === value) || "running"
 
 /** What a start answers of where it runs, beside its session: the orchestrate plugin's fallback, effort or latch note, and its model. */
 const Started = Schema.Struct({ note: Schema.optionalKey(Schema.String), model: Schema.optionalKey(Schema.String) })
 const decodeStarted = Schema.decodeUnknownOption(Started)
+const Latch = Schema.Struct({
+  hold: Schema.optionalKey(Schema.Literals(["pace", "sabbath"])),
+  opensAt: Schema.optionalKey(Schema.Finite),
+  recheckAt: Schema.optionalKey(Schema.Finite),
+})
+const decodeLatch = Schema.decodeUnknownOption(Latch)
+
+const latchOf = (raw: Json, child: string): Observation => {
+  const latch = Option.getOrElse(decodeLatch(raw), () => Latch.make({}))
+  const fields = (hold: Hold) => ({ ...latch, hold })
+  const hold = (() => {
+    if (latch.hold === "pace") return Hold.cases.Pace.make({})
+    if (latch.hold === "sabbath") return Hold.cases.Sabbath.make({})
+    return Hold.cases.Unknown.make({})
+  })()
+  return { version: 1, child, phase: Phase.cases.Latched.make(fields(hold)) }
+}
 
 /**
  * `tools.subagent(input)`: starts a subagent (or sends one more work, with its sessionID) and resolves to its live
@@ -116,15 +193,31 @@ const decodeStarted = Schema.decodeUnknownOption(Started)
 export const runSubagent = (input: Json, call: CallTool): Promise<SubagentHandle> =>
   call("subagent", input).then((result) => {
     const asked = recordOf(input)
+    const started = recordOf(result)
+    const child = String(started.sessionID)
+    const observed = observationOf(started.observation, child)
+    const observation = Option.orElse(observed, () =>
+      Option.flatMap(readLaunchStatus(started.status), (status) => {
+        switch (status) {
+          case "latched": return Option.some(latchOf(started.latch, child))
+          case "checking":
+          case "unknown": return Option.some(unknown(child))
+          case "running":
+          case "completed": return Option.none()
+        }
+        return status satisfies never
+      }),
+    )
     return makeSubagentHandle(
       {
-        sessionID: String(recordOf(result).sessionID),
+        sessionID: child,
         description: String(asked.description),
         agent: String(asked.agent),
         state: "running",
         message: "",
         note: "",
         ...Option.getOrElse(decodeStarted(result), () => ({})),
+        ...observationFields(observation),
       },
       call,
     )

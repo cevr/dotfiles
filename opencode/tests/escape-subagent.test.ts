@@ -8,12 +8,14 @@
 // end and the message reaches it then, the parent on screen. Ctrl+Enter in the
 // subagent's view is what interrupts it, and sends at once. Needs OPENCODE_DEV,
 // the fork.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readdirSync, readFileSync } from "node:fs"
+import { readdirSync } from "node:fs"
 import { join } from "node:path"
 import { composerRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/escape-subagent.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -35,7 +37,7 @@ const ASK = "Fix the money parsing in a worker."
 
 describe.skipIf(!fork)("a subagent's view opens on its prompt, and Escape there goes back to the parent, never interrupting (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "escape-subagent-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("escape-subagent-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/escape-subagent.ts"], {
       cwd: root,
@@ -45,8 +47,8 @@ describe.skipIf(!fork)("a subagent's view opens on its prompt, and Escape there 
     })
     const [code, stdout, stderr] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readFileSync(join(out, name), "utf8"))
-  }, 300_000))
+    for (const name of readdirSync(out)) if (name.endsWith(".txt")) saved.set(name, readScratchFileSync(join(out, name), "utf8"))
+  }), hangGuard("acceptance"))
 
   test("the subagent's view opens on its prompt, its picker closed, the subagent running, and the prompt takes what is typed", kept.test(() => {
     expect(picker("entered")).toBe(false)

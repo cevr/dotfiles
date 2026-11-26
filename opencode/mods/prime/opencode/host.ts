@@ -5,7 +5,7 @@
 // The part, the context usage and the goal are worked out here from the
 // host's base reads (`partOf`, `contextUsage`, `opencode/goal.ts`).
 import { fromContext as answerFormsOf, openAnswer } from "@dotfiles/opencode-queue/opencode/answer"
-import { familyReader } from "@dotfiles/opencode-subagents/solid/reader"
+import { ownerRows } from "@dotfiles/opencode-subagents/solid/owner-rows"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Goal } from "../goal.ts"
 import { partOf } from "../session.ts"
@@ -17,6 +17,7 @@ import { updateAvailable, type UpstreamReading } from "../update.ts"
 import { contextUsage, effectiveWindow } from "../usage.ts"
 import type { asks } from "./asks.ts"
 import { killJob, readJobs } from "./jobs.ts"
+import { readPaneAgents } from "./pane-agent.ts"
 import { pendingLeader } from "../pending.ts"
 import { openPending } from "./pending.ts"
 import { queues } from "./queue.ts"
@@ -41,7 +42,7 @@ export function host(
 ): Host {
   const data = context.data
   // The rows, the dock's count and the hints all read the family; a token re-reads only its own message.
-  const family = familyReader()
+  const family = ownerRows(context)
   const queue = queues(context, family)
   const answerForms = answerFormsOf(context)
   // The tab openTab asked for, until the panel's tab bar shows it.
@@ -88,6 +89,11 @@ export function host(
     familyIDs: (sessionID) => data.session.family(sessionID),
     // The same registry as the shells count, so a row waits on a shell exactly while the dock counts it.
     subagents: (sessionID) => family(data, sessionID, context.location),
+    paneAgents: (sessionID) => readPaneAgents(context, sessionID),
+    // The host syncs only the open transcript on route entry. Drawing a row
+    // also needs that child's messages; the host coalesces and retains this
+    // read, and the family observes its result through the native store.
+    syncSubagentMessages: (sessionID) => void data.session.message.sync(sessionID).catch(() => void 0),
     shells: (sessionID) =>
       data.shell.list(context.location).filter((shell) => shell.metadata.sessionID === sessionID).length,
     shellList: (sessionID) =>

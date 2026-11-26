@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at sim-tui/static.test.ts: const names = yield* fs.readDirectory(path.join(ROOT, dir))
 // No wall time in a simulated TUI file: a `*.sim.test.tsx`, and every file of
 // sim-tui/ but the fixture boot (app.ts, the one that holds the clocks), never
 // names a real timer or a real clock (`Bun.sleep`, `setTimeout`,
@@ -9,7 +11,7 @@ import { describe, expect, test } from "bun:test"
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem"
 import * as NodePath from "@effect/platform-node/NodePath"
 import { Effect, FileSystem, Layer, Path, PlatformError } from "effect"
-import * as Seed from "../sim/seed.ts"
+import { simulationTest } from "../sim/seed.ts"
 
 /** opencode/: the tests run from it. */
 const ROOT = process.cwd()
@@ -62,7 +64,7 @@ describe("no wall time in a simulated TUI file", () => {
     expect(wallTime("yield* tui.advance(500)\nconst at = tui.elapsed()")).toEqual([])
   })
 
-  Seed.effect(
+  simulationTest(
     "no *.sim.test.tsx names one",
     Effect.gen(function* () {
       const found = (yield* Effect.forEach(["cmd", "mods"], (dir) => files(dir, (name) => name.endsWith(".sim.test.tsx")))).flat()
@@ -71,7 +73,7 @@ describe("no wall time in a simulated TUI file", () => {
     }).pipe(Effect.provide(Platform)),
   )
 
-  Seed.effect(
+  simulationTest(
     "no file of sim-tui/ but the fixture boot names one",
     Effect.gen(function* () {
       const found = (yield* files("sim-tui", (name) => /\.tsx?$/.test(name))).filter((file) => !EXEMPT.has(file))

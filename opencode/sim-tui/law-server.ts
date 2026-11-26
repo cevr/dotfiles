@@ -6,6 +6,8 @@
 // sim-tui, because sim-tui resolves the fork's Effect, the one the host's
 // Effects run on and the laws are written against.
 import { Data, Effect, Option, Predicate, Schedule, Schema, Stream } from "effect"
+import { testHostOptions } from "../scripts/test-host.ts"
+import { externalInput } from "../tests/read-path.ts"
 import { type Answer, type Call, LAWS, type LawServer, LawServerError, type Sent } from "./client-laws.ts"
 import type { ModelRef } from "./server.ts"
 
@@ -122,7 +124,7 @@ interface HostModule {
   readonly EmbeddedHost: { readonly create: (options: RealOptions["create"]) => Effect.Effect<Host, unknown> }
 }
 const isHostModule = (value: Partial<HostModule>): value is HostModule => Predicate.isFunction(value.EmbeddedHost?.create)
-const loadHost = (file: string): Promise<Partial<HostModule>> => import(file)
+const loadHost = (file: string): Promise<Partial<HostModule>> => import(externalInput(file))
 
 export interface RealOptions {
   /** The fork's checkout. */
@@ -147,7 +149,7 @@ export const real = (options: RealOptions): Promise<ReadonlyArray<Outcome>> =>
       })
       if (!isHostModule(module)) return yield* new LawServerError({ message: "the fork's embedded host has no create" })
       const host = yield* Effect.acquireRelease(
-        module.EmbeddedHost.create(options.create).pipe(Effect.mapError((cause) => new LawServerError({ message: "OpenCode did not start", cause }))),
+        module.EmbeddedHost.create(testHostOptions(options.create)).pipe(Effect.mapError((cause) => new LawServerError({ message: "OpenCode did not start", cause }))),
         (started) => Effect.promise(() => started.close()),
       )
       const server = yield* overHttp({ fetch: host.fetch, directory: options.directory, model: options.model })

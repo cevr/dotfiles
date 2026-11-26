@@ -3,13 +3,14 @@
 // compaction request's prompt and summary tokens and how long it took, and
 // at All (Ctrl+O) the host's whole block, its rule and the summary. It needs
 // OPENCODE_DEV, a fork with the `session.message.compaction` slot.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { isTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-compaction.test.ts: skipped. Set OPENCODE_DEV to the fork with the compaction slot to run it.")
@@ -31,7 +32,7 @@ const LINE = /^ {2}◇ Compacted · 171k → 6k tokens · 1\.\ds$/
 
 describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host's block at All (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-compaction-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-compaction-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-compaction.ts"], {
       cwd: root,
@@ -45,8 +46,8 @@ describe.skipIf(!fork)("a compaction is one line in the Prime look, and the host
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
-  }, 300_000))
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `${files[name]}.txt`), "utf8").split("\n")
+  }), hangGuard("acceptance"))
 
   test("Details: the compaction is one line, without its summary", kept.test(() => {
     const shown = transcript(frames.details)

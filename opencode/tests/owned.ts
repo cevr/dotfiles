@@ -30,14 +30,20 @@
 // given, so a scenario driving OpenCode from source loads its own plugins and not the installed
 // tree's. A newer build keeps its binding out of the environment and drops an inherited one itself;
 // this stays for shells of older installed builds and for children the fork does not reach.
+// Native hosts inherit the test watcher policy here; a scenario that needs file events opts in
+// at its private driver launch, not in the parent test process.
 import { outsideBuild } from "../scripts/bound-env.ts"
 import { descendants, type Proc, stop, survivors, table, watch, type Watch } from "../scripts/leaks.ts"
 import { outsidePanes } from "../scripts/pane-env.ts"
 import { NO_FREE_MODELS, releaseFlags } from "../scripts/release-flags.ts"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { unboundBuild } from "../testbeds/gamut/gamut.ts"
-import { type ChildTemp, childTemp, parentEnv, scratch } from "./scratch.ts"
+import { type ChildTemp, childTemp, parentEnv, scratch, scratchRoot } from "./scratch.ts"
+import { checkOwnedCommand, scratchInput } from "./read-path.ts"
+import { checkoutBun, checkoutTests, driveScenarioFixture, forkFixture, scratchShell } from "./scratch-child.ts"
 // What this test process starts is stopped once it is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { watchdog } from "./hang-guard.ts"
 
 /** How often a running child's descendants are sampled. */
 const SAMPLE_MS = 1000
@@ -53,6 +59,48 @@ const temps = new Map<number, ChildTemp>()
 
 /** The children `owned` started, each to the end of its cleanup. */
 const releases = new Map<number, Promise<void>>()
+
+/** Process-group fixture, not a shell command over the test runner's checkout. */
+export const ownedScratchShell = (cwd: string, program: string) => {
+  const { script, ...options } = scratchShell(cwd, program)
+  return owned(["/bin/sh", script], { ...options, stdin: "pipe", stdout: "pipe", stderr: "ignore" })
+}
+
+/** Exercise the owned TMPDIR lifecycle without accepting arbitrary shell text or argv. */
+export const ownedTempFixture = (temporary?: string) => {
+  const temp = temporary && scratchInput(temporary)
+  const env = { PATH: "/usr/bin:/bin", HOME: temp || scratchRoot(), TMPDIR: temp, TEST_READS_SCRATCH_CHILD: "sh" }
+  return owned(["/bin/sh", "-c", 'mkdir -p "$TMPDIR/opencode-drive/run-x" "$TMPDIR/opencode" && printf %s "$TMPDIR"'], {
+    cwd: temp || scratchRoot(),
+    env,
+    stdin: "ignore", stdout: "pipe", stderr: "ignore",
+  })
+}
+
+/** Reaper-owned Bun entry with the same checked paths and environment as a plain fixture child. */
+export const ownedCheckoutBun = (...args: Parameters<typeof checkoutBun>) => {
+  const { argv, ...options } = checkoutBun(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+/** Reaper-owned launch of the explicit nested Bun test entries. */
+export const ownedCheckoutTests = (...args: Parameters<typeof checkoutTests>) => {
+  const { argv, ...options } = checkoutTests(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+}
+
+/** A reaper-owned Drive process loading one checked scenario from this checkout. */
+export const ownedDriveScenario = (...args: Parameters<typeof driveScenarioFixture>) => {
+  const { argv, ...options } = driveScenarioFixture(...args)
+  return owned(argv, { ...options, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+}
+
+export const ownedForkFixture = <const Out extends "pipe" | "ignore", const Err extends "pipe" | "ignore">(
+  input: Parameters<typeof forkFixture>, stdio: { readonly stdout: Out; readonly stderr: Err },
+) => {
+  const { argv, ...options } = forkFixture(...input)
+  return owned(argv, { ...options, ...stdio, stdin: "ignore" })
+}
 
 const terminate = (procs: ReadonlyArray<Proc>) => {
   for (const proc of procs)
@@ -96,6 +144,7 @@ export const owned = <
   command: ReadonlyArray<string>,
   options?: Bun.SpawnOptions.SpawnOptions<In, Out, Err>,
 ): Bun.Subprocess<In, Out, Err> => {
+  checkOwnedCommand(command, options?.cwd)
   const childOwn = childTemp(options?.env)
   // An installed build by its own path binds its plugin tree over the test's config: the child runs a clone of it, in a folder
   // removed with the child's TMPDIR (and made empty for any other program).
@@ -108,7 +157,7 @@ export const owned = <
     },
   }
   const [program = "", ...rest] = command
-  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsideBuild(outsidePanes(temp.env, parentEnv), parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS }, detached: true })
+  const child = Bun.spawn([unboundBuild(program, build.path), ...rest], { ...options, env: { ...outsideBuild(outsidePanes(temp.env, parentEnv), parentEnv), OPENCODE_FLAGS: releaseFlags(temp.env["OPENCODE_FLAGS"] || ""), ...NO_FREE_MODELS, ...testHostEnv() }, detached: true })
   const watching = watch(child.pid, SAMPLE_MS)
   running.set(child.pid, watching)
   temps.set(child.pid, temp)
@@ -116,8 +165,8 @@ export const owned = <
     running.delete(child.pid)
     const left = survivors(watching.stop(), table())
     if (signalGroup(child.pid, "SIGTERM")) {
-      const deadline = Date.now() + GRACE_MS
-      while (signalGroup(child.pid, 0) && Date.now() < deadline) await Bun.sleep(50)
+      const deadline = watchdog(GRACE_MS)
+      while (signalGroup(child.pid, 0) && !deadline.expired()) await Bun.sleep(50)
       signalGroup(child.pid, "SIGKILL")
     }
     await stop(left, GRACE_MS)
@@ -131,3 +180,6 @@ export const owned = <
 
 /** To await: settles once the owned child `pid`, all it started and its own TMPDIR are gone (nothing to wait for once they are). */
 export const released = (pid: number) => releases.get(pid)
+
+/** Refresh and return what an owned child has started, while the child is still running. */
+export const observed = (pid: number) => running.get(pid)?.sample()

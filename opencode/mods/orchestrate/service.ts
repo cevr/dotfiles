@@ -3,6 +3,7 @@
 // after their dependency: filestore/, opencode/, codex/ and memory/.
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { CallLine } from "./call-line.ts"
+import type { EvidenceRefused, RecordFailed } from "./printable.ts"
 import type { FleetOutcome } from "./fleet.ts"
 import type { HeavyReading } from "./heavy.ts"
 import type { Holds, Run } from "./idle.ts"
@@ -12,6 +13,8 @@ import type { Relation } from "./skill-drift.ts"
 import type { Hold } from "./tool-call.ts"
 import type { HeadSeen, LaneStatus } from "./lost.ts"
 import type { Merge, UnitFiles, Verified } from "./tools.ts"
+import type { Command, Context as RecordContext, RecordEvent, RecordRefused, Snapshot, StoredEvent, SubjectKind } from "./record.ts"
+import type { DocumentSeen, ReceiptSeen } from "./reasons.ts"
 import type { Transition } from "./unit-log.ts"
 
 /** Where the call log's lines go, in order. Appending never fails: a lost line costs the pane a row, not the call. */
@@ -47,7 +50,7 @@ export class Sessions extends Context.Service<
     /** The agent the session runs as. */
     readonly agentOf: (sessionID: string) => Effect.Effect<string | undefined>
     /** Whether the session has run a turn, or is running one. A session it cannot read has not. */
-    readonly startedOf: (sessionID: string) => Effect.Effect<boolean>
+    readonly startedOf: (sessionID: string, since?: number) => Effect.Effect<boolean>
     /**
      * Whether the session's last turn was stopped (interrupted) rather than ended: its last words are then no
      * hand-back, whatever an earlier turn wrote. A session it cannot read was not.
@@ -68,6 +71,8 @@ export class Sessions extends Context.Service<
 
 /** A model the host offers: the variants it runs at, its family (such as `gpt-sol`), release (epoch ms) and status. */
 export interface Offered extends ModelRef {
+  /** The model the provider is asked with: another model's id when the catalog made this one a mode of it (`gpt-6.2-sol-fast` asks `gpt-6.2-sol`). */
+  readonly modelID?: string
   readonly variants: ReadonlyArray<{ readonly id: string }>
   readonly family?: string
   readonly time?: { readonly released: number }
@@ -78,6 +83,8 @@ export interface Offered extends ModelRef {
 export class Models extends Context.Service<
   Models,
   {
+    /** The model already bound to a session, not the configured model of its agent. */
+    readonly current: (sessionID: string) => Effect.Effect<Option.Option<ModelRef>>
     /**
      * The model an agent started from the session runs on, in the subagent
      * tool's order: the agent's own, else the session's, else the default.
@@ -89,7 +96,8 @@ export class Models extends Context.Service<
      * The newest model of `family` (such as `gpt-sol`) on one of `providers`
      * the session's host offers, as `provider/id#variant`, or `provider/id`
      * when it does not offer `variant`. Newest is the latest release; a
-     * deprecated model is never one.
+     * deprecated model is never one, nor a mode of another (a fast,
+     * ultrafast or pro variant: owner, 2026-11-24).
      */
     readonly newest: (sessionID: string, providers: ReadonlyArray<string>, family: string, variant: string) => Effect.Effect<string | undefined>
     /**
@@ -98,6 +106,14 @@ export class Models extends Context.Service<
      * without that variant, and none when it does not offer the model.
      */
     readonly at: (sessionID: string, model: string, variant: string | undefined) => Effect.Effect<string | undefined>
+    /**
+     * The fast mode of `model` (`provider/id[#variant]`) the session's host offers: the catalog's `<id>-fast`, a mode
+     * of the same model, at `model`'s variant when the mode offers it, bare when it does not. A fast mode is its own.
+     * None when the host offers no fast mode of it (or not `model`). Only a start that asks fast runs on one.
+     */
+    readonly fast: (sessionID: string, model: string) => Effect.Effect<Option.Option<string>>
+    /** The model a fast mode `model` is a mode of (`provider/<its modelID>[#variant]`); none for any other model. */
+    readonly standardOf: (sessionID: string, model: string) => Effect.Effect<Option.Option<string>>
   }
 >()("dotfiles-opencode/orchestrate/Models") {}
 
@@ -120,6 +136,8 @@ export class PoolPace extends Context.Service<
     readonly pace: (providerID: string, model?: string, sessionID?: string) => Effect.Effect<PaceReply>
     /** A new agent started on the provider: the pool counts it until its spend shows. Telling never fails. */
     readonly started: (providerID: string) => Effect.Effect<void>
+    readonly reserveLaunch: (providerID: string, model: string, sessionID: string, launchID: string) => Effect.Effect<PaceReply>
+    readonly bindLaunch: (launchID: string, sessionID: string) => Effect.Effect<void>
   }
 >()("dotfiles-opencode/orchestrate/PoolPace") {}
 
@@ -141,6 +159,8 @@ export interface LatchRequest {
   readonly from: string
   readonly messageID: string
   readonly callID: string
+  /** Existing child for a held verification follow-up; otherwise a new child is made. */
+  readonly child?: string
   readonly agent: string
   readonly description: string
   readonly prompt: string
@@ -404,6 +424,52 @@ export class HeavyHost extends Context.Service<
     readonly read: (except: Option.Option<string>) => Effect.Effect<HeavyReading, HostUnread>
   }
 >()("dotfiles-opencode/orchestrate/HeavyHost") {}
+
+// ── The commitment record (record.ts, standing.ts) ──
+
+/**
+ * The record's store could not do what was asked: busy past its timeout (another writer held it), a file it cannot
+ * open, or a file of a newer version than this code writes (it then reads, and refuses every write). The caller sees
+ * it; nothing is lost silently.
+ */
+export { RecordFailed } from "./printable.ts"
+
+/**
+ * The commitment record of one repository on this host: what its runs owe, and the history of every change.
+ * - `run`: one command decided against the record as it stands, in one immediate transaction: its events appended and
+ *   the rows they fold to written together, or nothing written (a refusal, a failure). Answers the events and the
+ *   rows after them.
+ * - `replayed`: prove an exact follow-up from the original canonical command before reading external evidence.
+ *   A negative answer is advisory: `run` decides again inside its write transaction.
+ * - `read`: the rows as they stand.
+ * - `history`: the events about one subject, oldest first; `events`: every event, oldest first (the replay law, export).
+ */
+export class CommitmentRecord extends Context.Service<
+  CommitmentRecord,
+  {
+    readonly run: (command: Command, context: RecordContext) => Effect.Effect<{ readonly events: ReadonlyArray<RecordEvent>; readonly snapshot: Snapshot }, RecordRefused | RecordFailed>
+    readonly replayed: (command: Extract<Command, { _tag: "add" }>, context: RecordContext) => Effect.Effect<boolean, RecordRefused | RecordFailed>
+    readonly read: Effect.Effect<Snapshot, RecordFailed>
+    readonly history: (subjectKind: SubjectKind, subjectId: string) => Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
+    readonly events: Effect.Effect<ReadonlyArray<StoredEvent>, RecordFailed>
+  }
+>()("dotfiles-opencode/orchestrate/CommitmentRecord") {}
+
+/** Why the host's files do not back a reason's referent, in words that name no value. */
+export { EvidenceRefused } from "./printable.ts"
+
+/**
+ * What the host's files say of a reason's referent (reasons.ts): a receipt under the checkout's evidence root, read
+ * and hashed, or a declared invariant's document as git holds it at HEAD. An observation of a real port, never a
+ * caller's word: the record takes what this answers, and no tool input carries it.
+ */
+export class Evidence extends Context.Service<
+  Evidence,
+  {
+    readonly receipt: (checkout: string, path: string) => Effect.Effect<ReceiptSeen, EvidenceRefused>
+    readonly document: (checkout: string, path: string) => Effect.Effect<DocumentSeen, EvidenceRefused>
+  }
+>()("dotfiles-opencode/orchestrate/Evidence") {}
 
 /** Steers a session with one note, marked `DRIFT_MARK`, which wakes it if idle. */
 export class Tell extends Context.Service<

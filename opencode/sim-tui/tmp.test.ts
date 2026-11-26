@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at sim-tui/tmp.test.ts: ChildProcess.make(process.execPath, ["test", "--timeout", String(RUN_MS), fixture], {
 // The simulated TUI leaves nothing in the temp directory, however its file
 // ends: a sim file, green and red, run as a child `bun test` with TMPDIR at a
 // fresh folder, leaves that folder empty. The harness's folders (the clock's
@@ -7,6 +9,7 @@ import { expect } from "bun:test"
 import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "./effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const RUN_MS = 120_000
 const CASES = [
@@ -40,5 +43,5 @@ for (const { fixture, ends } of CASES)
       expect(`${stdout}\n${stderr}`).toMatch(ends)
       expect(yield* fs.readDirectory(tmp)).toEqual([])
     }),
-    RUN_MS,
+    hangGuard("installer"),
   )

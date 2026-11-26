@@ -27,6 +27,7 @@
 // keeps them; the lease table goes with the process, and starts quiet.
 import { describe, expect, test } from "bun:test"
 import * as Lease from "./lease.ts"
+import { hangGuard, measured } from "../../tests/hang-guard.ts"
 
 const NAMES = ["mac", "workbox", "spare"]
 const T0 = Date.parse("2026-11-11T12:00:00Z")
@@ -297,25 +298,6 @@ const explore = (bounds: Bounds, mutant: Mutant = {}): Explored => {
   return { states: seen.size, spendsOne }
 }
 
-/**
- * A search's cost is judged on this process's CPU (user and system), never on the wall clock: a loaded host
- * stretches the wall time of the same search many times over (60 s at a 1-minute load of 423 on 12 cores), and
- * a gate unit test does not judge real time. Each exhaustive test runs its searches through `searched`, then
- * checks their CPU against its own budget (`CPU_MS`).
- */
-const searched = (run: () => void) => {
-  const before = process.cpuUsage()
-  run()
-  const used = process.cpuUsage(before)
-  return Math.round((used.user + used.system) / 1000)
-}
-
-/** A CPU budget's wall-clock ceiling: only a guard against a hung search, sized for a host loaded 30 times over. */
-const wallFor = (cpuMs: number) => cpuMs * 30
-
-/** Each exhaustive test's CPU budget, in ms: about three times its CPU at a 1-minute load near 40 on 12 cores (2026-11-13: 13.3, 6.9, 46.2, 3.8, 2.3 and 2.0 s). */
-const CPU_MS = { two: 40_000, outside: 21_000, skews: 140_000, three: 12_000, crossClock: 7000, noQuiet: 6000 }
-
 /** Two hosts whose readings lag: each runs twice (a back-off, a restart), two steps of time, a cut, a restart, a lost answer. */
 const TWO: Omit<Bounds, "yes"> = { hosts: 2, runs: 2, advance: 2, cut: 1, restart: 1, lost: 1, lag: true, outside: 0 }
 /** Two hosts whose readings do not lag, and a claim made outside the fleet. */
@@ -332,45 +314,41 @@ const YES2: ReadonlyArray<ReadonlyArray<boolean>> = [
 
 describe("the spend authority, every interleaving within small bounds", () => {
   test("two hosts, each with or without the owner's yes, over link cuts, lost answers, a restart and time: at most one grant spent but past a peer the owner's yes passed over", () => {
-    const cpu = searched(() => {
+    measured("exhaustive two-host spend authority", "< 40000 cpu-ms", ({ cpu }) => cpu(() => {
       for (const yes of YES2) {
         const found = explore({ ...TWO, yes })
         expect(found.counterexample, `yes ${yes}`).toBeUndefined()
         expect(found.spendsOne, `yes ${yes}`).toBe(true)
       }
-    })
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.two)
-  }, wallFor(CPU_MS.two))
+    }))
+  }, hangGuard("isolated-seed-trio"))
 
   test("two hosts whose readings do not lag, and the owner claiming in Claude's app meanwhile: no host spends a second grant unasked", () => {
-    const cpu = searched(() => {
+    measured("exhaustive two-host spend authority with an outside claimant", "< 21000 cpu-ms", ({ cpu }) => cpu(() => {
       const found = explore({ ...OUTSIDE, yes: [false, false] })
       expect(found.counterexample).toBeUndefined()
       expect(found.spendsOne).toBe(true)
-    })
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.outside)
-  }, wallFor(CPU_MS.outside))
+    }))
+  }, hangGuard("outside-claim-search"))
 
   test("two hosts whose clocks are SETTLE_MS or twice it apart, either way, each with or without the owner's yes: the same", () => {
-    const cpu = searched(() => {
+    measured("exhaustive two-host spend authority under clock skew", "< 140000 cpu-ms", ({ cpu }) => cpu(() => {
       for (const skew of SKEWS)
         for (const yes of YES2) {
           const found = explore({ ...TWO, yes, clocks: [0, skew] })
           expect(found.counterexample, `skew ${skew} yes ${yes}`).toBeUndefined()
           expect(found.spendsOne, `skew ${skew} yes ${yes}`).toBe(true)
         }
-    })
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.skews)
-  }, wallFor(CPU_MS.skews))
+    }))
+  }, hangGuard("skewed-clock-search"))
 
   test("three hosts, none with a yes: one grant at most", () => {
-    const cpu = searched(() => {
+    measured("exhaustive three-host spend authority", "< 12000 cpu-ms", ({ cpu }) => cpu(() => {
       const found = explore({ ...THREE, yes: [false, false, false] })
       expect(found.counterexample).toBeUndefined()
       expect(found.spendsOne).toBe(true)
-    })
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.three)
-  }, wallFor(CPU_MS.three))
+    }))
+  }, hangGuard("three-host-search"))
 })
 
 describe("the model reaches what breaks it", () => {
@@ -385,12 +363,11 @@ describe("the model reaches what breaks it", () => {
   })
 
   test("a host that judges a peer's claim by the claimer's clock and an ask by the asker's (round 5, M1) spends two grants once the clocks are SETTLE_MS apart, and only then", () => {
-    const cpu = searched(() => {
+    measured("cross-clock spend-authority mutation search", "< 7000 cpu-ms", ({ cpu }) => cpu(() => {
       for (const skew of [Lease.SETTLE_MS, -Lease.SETTLE_MS]) expect(explore({ ...TWO, yes: [false, false], clocks: [0, skew] }, { crossClock: true }).counterexample?.spends.length, `skew ${skew}`).toBe(2)
       expect(explore({ ...TWO, yes: [false, false] }, { crossClock: true }).counterexample).toBeUndefined()
-    })
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.crossClock)
-  }, wallFor(CPU_MS.crossClock))
+    }))
+  }, hangGuard("cross-clock-search"))
 
   test("a restarted host that forgets the claim it sent spends two grants", () => {
     const found = explore({ ...TWO, yes: [false, false] }, { forgets: true })
@@ -402,7 +379,8 @@ describe("the model reaches what breaks it", () => {
   })
 
   test("without the quiet after a restart, still one grant: a lease the restarted lender forgot, its borrower holds and refuses others with; the quiet is a second guard", () => {
-    const cpu = searched(() => expect(explore({ ...TWO, yes: [false, false] }, { noQuiet: true }).counterexample).toBeUndefined())
-    expect(cpu, "CPU ms").toBeLessThan(CPU_MS.noQuiet)
-  }, wallFor(CPU_MS.noQuiet))
+    measured("no-quiet spend-authority mutation search", "< 6000 cpu-ms", ({ cpu }) =>
+      cpu(() => expect(explore({ ...TWO, yes: [false, false] }, { noQuiet: true }).counterexample).toBeUndefined()),
+    )
+  }, hangGuard("fork-session"))
 })

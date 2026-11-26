@@ -36,6 +36,7 @@ import { Array as Arr, Cause, Clock, Config, Console, Data, Duration, Effect, Ex
 import { Command, Flag } from "effect/cli"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { testHostEnv } from "./test-host.ts"
 
 // ── Input ───────────────────────────────────────────────────────────────
 
@@ -304,7 +305,7 @@ export const serviceEnv = (paths: RunPaths, host: Readonly<Record<string, string
     TMPDIR: paths.tmp,
     OPENCODE_DB: `${paths.run}/opencode.db`,
     OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_DISABLE_FILEWATCHER: "true",
+    ...testHostEnv(),
     RESTART_LEG_RUN: paths.run,
   }
 }
@@ -896,11 +897,17 @@ const listUnits = (input: Input) =>
     return Effect.succeed(unitsOf(listed.out))
   })
 
+export const hostRefusal = (input: Input, system: string) => {
+  if (input.noSystemd && system === "Linux") return Option.some("--no-systemd is the Mac smoke; on Linux the leg runs with systemd")
+  if (!input.noSystemd && system !== "Linux") return Option.some(`${system} has no user systemd: the leg runs on Linux (the workbox); --dry-run prints its commands anywhere, --no-systemd smokes cases a and c here`)
+  return Option.none<string>()
+}
+
 const preflight = Effect.fn("RestartLeg.preflight")(function* (input: Input) {
   const fs = yield* FileSystem.FileSystem
   const system = (yield* exec(["uname", "-s"], Option.none(), 60_000)).out.trim()
-  if (input.noSystemd && system === "Linux") return yield* new Refused({ reason: "--no-systemd is the Mac smoke; on Linux the leg runs with systemd" })
-  if (!input.noSystemd && system !== "Linux") return yield* new Refused({ reason: `${system} has no user systemd: the leg runs on Linux (the workbox); --dry-run prints its commands anywhere, --no-systemd smokes cases a and c here` })
+  const incompatible = hostRefusal(input, system)
+  if (Option.isSome(incompatible)) return yield* new Refused({ reason: incompatible.value })
   if (!isRunDir(input.root, input.run)) return yield* new Refused({ reason: `${input.run} is not a ${RUN_PREFIX}* dir right under ${input.root}` })
   if (!(yield* fs.exists(input.root))) return yield* new Refused({ reason: `the scratch root ${input.root} does not exist` })
   if (yield* fs.exists(input.run)) return yield* new Refused({ reason: `${input.run} exists already` })
@@ -1014,7 +1021,7 @@ const runId = Effect.gen(function* () {
   return runIdOf(yield* Clock.currentTimeMillis, yield* Random.nextIntBetween(10_000, 99_999))
 })
 
-const command = Command.make(
+export const restartCommand = <R>(launch: (input: Input) => Effect.Effect<unknown, Effect.Error<ReturnType<typeof drive>>, R>) => Command.make(
   "restart-leg",
   {
     root: Flag.String("root").pipe(Flag.withDescription("The scratch root; the run dir is <root>/restart-leg-<id> (on the workbox: /dev/shm)")),
@@ -1033,7 +1040,7 @@ const command = Command.make(
     const made = inputOf(flags, home, yield* runId)
     if (Result.isFailure(made)) return yield* Console.error(`restart-leg: ${made.failure}`).pipe(Effect.andThen(new Exited({ code: 2 })))
     if (made.success.dryRun) return yield* Effect.forEach(planOf(made.success), (line) => Console.log(line), { discard: true })
-    yield* drive(made.success).pipe(
+    yield* launch(made.success).pipe(
       Effect.scoped,
       Effect.catchTags({
         Refused: (refused) => Console.error(`restart-leg: REFUSED: ${refused.reason}`).pipe(Effect.andThen(new Exited({ code: 2 }))),
@@ -1046,7 +1053,7 @@ const command = Command.make(
 
 const live = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer, BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 }))
 
-const exitCodeOf = <E, A>(exit: Exit.Exit<A, E>): number =>
+export const exitCodeOf = <E, A>(exit: Exit.Exit<A, E>): number =>
   Exit.match(exit, {
     onSuccess: () => 0,
     onFailure: (cause) => Option.getOrElse(Option.map(Option.flatMap(Cause.findErrorOption(cause), decodeExited), (exited) => exited.code), () => 2),
@@ -1054,7 +1061,7 @@ const exitCodeOf = <E, A>(exit: Exit.Exit<A, E>): number =>
 
 if (import.meta.main)
   BunRuntime.runMain(
-    Command.run(command, { version: "1.0.0" }).pipe(
+    Command.run(restartCommand(drive), { version: "1.0.0" }).pipe(
       Effect.tapError((error) => Option.match(decodeExited(error), { onNone: () => Console.error(`restart-leg: ${String(error)}`), onSome: () => Effect.void })),
       Effect.provide(live),
     ),

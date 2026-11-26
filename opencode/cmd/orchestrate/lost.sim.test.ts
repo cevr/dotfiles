@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Finished work that never reached main, as `orchestrate status` says it on the simulated host (orch-tools-world.ts:
 // the real orchestrate, rift and status plugins on their memory layers; git's answers in memory/work-git.ts). A unit
 // handed back ready whose head is not on main is named first once it is past the threshold, never before, and no longer
@@ -8,10 +10,10 @@ import { LOST } from "@dotfiles/opencode-orchestrate/lost-now"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import { Effect, Fiber, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { boot, HAND_BACK, RUN_DIR, requestHeadFor, WORK } from "./orch-tools-world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/lost.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/lost.sim.test.ts")
 
 const ORCHESTRATE = "orchestrate"
 const READY = "/nonexistent/loop-probe-x/request.md"

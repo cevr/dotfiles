@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A generated property over faults, on the simulated host at 20 seeds: the
 // orchestrate plugin with the pool's pace (a fixture plugin's, as the real
 // run's) and no wakes, the seed choosing up to 16 commands: a root's subagent
@@ -8,18 +10,19 @@
 //
 // After each call: the root's turn ends, a fault or not (the plugin's own
 // timeout on the pace, never the host's); the call starts one child, on the
-// role its asked agent maps to, exactly when the pace admits it (open, failed
-// open on a fault, or a soft hold on an agent that never runs on Codex), and
+// role its asked agent maps to, exactly when the pace admits it (open, or
+// failed open on a fault; a soft hold holds every role), and
 // otherwise answers with the pace's hold and when it opens, and starts none.
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
 import { Plugin } from "@opencode/plugin/effect"
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate-faults.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate-faults.sim.test.ts")
 
 const WORK = "/scratch/work"
 /** Wednesday 4 November 2026, 10:00 in Knowlton: 16 commands at most an hour apart stay clear of the Sabbath. */
@@ -35,9 +38,6 @@ const ASKED = [
   { asked: Option.some("planner"), role: "planner" },
   { asked: Option.some("worker"), role: "worker" },
 ] as const
-/** The roles that run on Codex too: a soft hold (the spend-evenly target alone) holds them. */
-const ON_CODEX = new Set(["planner", "verifier"])
-
 type Answer = "open" | "held" | "soft"
 type Fault = World.RpcFault | "none"
 
@@ -117,7 +117,7 @@ const isCallResult = (message: World.Message): message is Extract<World.Message,
 
 const run = (seed: number, check: (outcome: { readonly admitted: boolean; readonly role: string; readonly children: ReadonlyArray<string>; readonly output: string; readonly rested: boolean }) => void) =>
   Effect.gen(function* () {
-    const world = World.make({ seed, start: Date.parse(WEDNESDAY), script: model })
+    const world = World.make({ seed, start: Date.parse(WEDNESDAY), script: model, models: [World.SIM_MODEL, SIM_OPUS] })
     const state: RunState = { answer: "open", fault: "none" }
     yield* world.load(Plugins.orchestrate(), { directory: WORK, options: { now: WEDNESDAY } })
     yield* world.load(pace(state, () => world.now()), { directory: WORK })
@@ -137,7 +137,8 @@ const run = (seed: number, check: (outcome: { readonly admitted: boolean; readon
         yield* world.prompt(root, `${CALL}${Schema.encodeSync(SubagentInput)(input)}`)
         // The pace's own timeout is 8 s; a minute is room for the call, the child's turn and the root's close.
         yield* world.until(rested, 60_000).pipe(Effect.ignore)
-        const admitted = state.fault !== "none" || state.answer === "open" || (state.answer === "soft" && !ON_CODEX.has(role))
+        // A soft hold (the spend-evenly target alone) holds every role: the pool's request boundary would hold it anyway.
+        const admitted = state.fault !== "none" || state.answer === "open"
         const children = world.sessions
           .values()
           .filter((session) => Option.contains(session.parentID, root))

@@ -20,8 +20,9 @@
 import { Option, Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
-import type { AccountStatus, SessionAccount } from "./status.ts"
-import { accountWide, type QuotaReading } from "./quota.ts"
+import type { AccountStatus, Hold, SessionAccount } from "./status.ts"
+import { tracked, type QuotaReading } from "./quota.ts"
+export { DEFAULT_HOLD_MS } from "./hold.ts"
 
 const MINUTE = 60_000
 
@@ -34,8 +35,6 @@ export const WINDOW_MS = 7 * 24 * 60 * MINUTE
 export const CACHE_LIFE_MS = 5 * MINUTE
 /** A pin with no request for this long belongs to a run that stopped without going idle. */
 export const PIN_IDLE_MS = 30 * MINUTE
-/** A refusal without a time, or a refused response without a reading, holds the account this long. */
-export const DEFAULT_HOLD_MS = 5 * MINUTE
 /** The share of an account's 5-hour window a pool spends before the account has no room. */
 export const FIVE_HOUR_SHARE = 0.9
 /** The share of any other window a pool spends before the account has no room. */
@@ -169,8 +168,12 @@ const shareOf = (window: string) => (window === "5h" ? FIVE_HOUR_SHARE : OTHER_W
 
 export const held = (state: AccountPoolState, credentialID: string, now: number): boolean => {
   const hold = state.holds[credentialID]
-  return hold !== undefined && hold.until > now
+  return hold !== undefined && liveHold(hold, now)
 }
+
+/** A sign-in's date is an appointment to check again, not an expiry. */
+export const liveHold = (hold: Hold, now: number): boolean =>
+  hold.kind === "signin" || hold.kind === "record-unreadable" || hold.until > now
 
 /** The newest reading, with each window that has since reset read as empty. */
 const freshReading = (state: AccountPoolState, credentialID: string, now: number): QuotaReading | undefined => {
@@ -184,9 +187,9 @@ const freshReading = (state: AccountPoolState, credentialID: string, now: number
   }
 }
 
-/** At its share: a window of the whole account spent to the pool's share of it; a model's own window limits only that model. */
+/** At its share: a tracked window spent to the pool's share of it; a model's own window limits only that model, and an unknown window never binds. */
 const noRoom = (reading: QuotaReading | undefined): boolean =>
-  reading !== undefined && reading.windows.some((window) => accountWide(window) && window.utilization >= shareOf(window.name))
+  reading !== undefined && reading.windows.some((window) => tracked(window.name) && window.utilization >= shareOf(window.name))
 
 /** Each session whose run, or cache, is on an account now. */
 const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<string, string> => {
@@ -202,9 +205,17 @@ const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<s
  * The accounts in placement order for a new run of `sessionID`; none when the
  * pool has no account. The account the session's cache is on comes first
  * while it lives; with none, the account `cacheOf`'s cache is on (a fork
- * reads its source's cache).
+ * reads its source's cache). With `eligible`, the request's admission, an
+ * account it leaves out goes after every one it names, its cache too.
  */
-export const rank = (state: AccountPoolState, sessionID: string, now: number, rules: Rules, cacheOf?: string): ReadonlyArray<string> => {
+export const rank = (
+  state: AccountPoolState,
+  sessionID: string,
+  now: number,
+  rules: Rules,
+  cacheOf?: string,
+  eligible?: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
   const [first, ...others] = state.credentials
   if (first === undefined) return []
   const steps = state.steps.filter((step) => now - step.at < WINDOW_MS)
@@ -221,6 +232,7 @@ export const rank = (state: AccountPoolState, sessionID: string, now: number, ru
       held: held(state, credentialID, now),
       noRoom: noRoom(reading),
       ...(weekly?.resetAt === undefined ? {} : { weeklyResetAt: weekly.resetAt }),
+      eligible: Option.match(Option.fromUndefinedOr(eligible), { onNone: () => true, onSome: (ids) => ids.includes(credentialID) }),
     }
   }
   const liveCache = (owner: string | undefined) => {
@@ -288,7 +300,7 @@ export const sessionAccount = (
   return {
     credentialID,
     on: placed === undefined ? "next" : "placed",
-    ...(hold !== undefined && hold.until > now ? { hold } : {}),
+    ...(hold !== undefined && liveHold(hold, now) ? { hold } : {}),
     ...(reading === undefined ? {} : { reading }),
   }
 }
@@ -301,8 +313,12 @@ export const status = (state: AccountPoolState, now: number, rules: Rules): Read
     const reading = state.readings[credentialID]
     return {
       credentialID,
-      ...(hold !== undefined && hold.until > now ? { hold } : {}),
+      ...(hold !== undefined && liveHold(hold, now) ? { hold } : {}),
       ...(reading === undefined ? {} : { reading }),
+      ...Option.match(Option.fromUndefinedOr(state.usageReadFailures[credentialID]), {
+        onNone: () => ({}),
+        onSome: (usageReadFailure) => ({ usageReadFailure }),
+      }),
       load: state.steps
         .filter((step) => step.credentialID === credentialID && now - step.at < WINDOW_MS)
         .reduce((total, step) => total + step.cost, 0),

@@ -23,8 +23,9 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { main as memory } from "../cmd/memory/cli.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = resolve(process.env.SCENARIO_OUT || "out")
@@ -123,7 +124,7 @@ export default OpenCodeDriver.use(
           Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 300 }),
           Effect.tapError(() => ui.capture().pipe(Effect.map((frame) => writeFileSync(`${out}/${label}.timeout.txt`, text(frame))))),
         )
-      yield* Effect.promise(() => memory(["add", "The owner reads replies in the Prime look.", "--scope", "global"], { db: MEMORY_DB, now: Date.now() })).pipe(
+      yield* Effect.promise(() => memory(["add", "The owner reads replies in the Prime look.", "--scope", "global"], { db: MEMORY_DB, now: stamp() })).pipe(
         Effect.filterOrFail((added) => added.code === 0, (added) => `memory add failed: ${added.out}`),
       )
       yield* ui.submit(ASK)

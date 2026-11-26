@@ -13,7 +13,10 @@ import {
   CLAUDE_CODE_VERSION,
 } from '@dotfiles/opencode-anthropic-auth/version'
 import { effectTest } from '../../sim-tui/effect-test.ts'
+import { Handoff, type HandoffInput } from '../../mods/pool/handoff.ts'
 import Plugin, { type Env, type Fetch, make, makeShared } from './server.ts'
+import { hangGuard, stamp } from "../../tests/hang-guard.ts"
+
 
 type Host = Parameters<(typeof Plugin)['effect']>[0]
 
@@ -179,7 +182,7 @@ function controlled() {
 /** A clock the test can move: the wall clock shifted by `advance`. */
 function shiftedClock() {
   let offset = 0
-  const now = () => Date.now() + offset
+  const now = () => stamp() + offset
   const clock: Clock.Clock = {
     currentTimeMillisUnsafe: now,
     currentTimeMillis: Effect.sync(now),
@@ -201,13 +204,14 @@ function shiftedClock() {
  * The host's integration as promises, the way a test sets it up, and what
  * the plugin registers on the host once a test starts it with `plugin.setup`.
  */
-function makeMockContext() {
+function makeMockContext(directory = '/scratch/anthropic-auth-seam') {
   const integrationMethods: Registration[] = []
   const hooks = new Map<string, HostHook>()
   const rpcHandlers = new Map<string, QuotaHandlers>()
   const rpcEvents: Array<{ id: string; name: string; payload: Tree }> = []
   const connections: Array<{ type: 'credential'; id: string; label: string }> = []
   const agentSettings = new Map<string, Record<string, unknown>>()
+  const handoffs: Array<unknown> = []
   const { clock, advance } = shiftedClock()
   const ctx = {
     integration: {
@@ -269,7 +273,13 @@ function makeMockContext() {
           Effect.tryPromise({ try: () => ctx.integration.connection.resolve(connection), catch: (error) => error }),
       },
     },
-    rpc: {
+    location: { directory },
+    rpc: Object.assign(() => ({
+      handoff: (input: HandoffInput) => Effect.sync(() => {
+        handoffs.push(input)
+        return Handoff.cases.Send.make({})
+      }),
+    }), {
       register: (definition: { id: string }, handlers: Record<'reading' | 'usage' | 'claim', HostHandler>) =>
         Effect.sync(() => {
           rpcHandlers.set(definition.id, {
@@ -285,7 +295,7 @@ function makeMockContext() {
             dispose: Effect.void,
           }
         }),
-    },
+    }),
     session: {
       hook: (name: string, callback: HostHook) =>
         Effect.sync(() => {
@@ -315,6 +325,7 @@ function makeMockContext() {
       },
     },
     integrationMethods,
+    handoffs,
     sessionHooks,
   }
 }
@@ -346,11 +357,42 @@ const plugin = {
   },
 }
 
-function createMockContext(): Mocked {
-  const mocked = makeMockContext()
+function createMockContext(directory?: string): Mocked {
+  const mocked = makeMockContext(directory)
   hosts.set(mocked.ctx, mocked)
   return mocked
 }
+
+effectTest('a retired request hook delegates to its own location’s current preparation, not another location', Effect.gen(function* () {
+  const proc = freshProcess()
+  const retired = createMockContext('/scratch/handoff-a')
+  const current = createMockContext('/scratch/handoff-a')
+  const beside = createMockContext('/scratch/handoff-b')
+  for (const [id, fixture] of [['retired', retired], ['current', current], ['beside', beside]] as const) {
+    fixture.connections.push({ type: 'credential', id, label: id })
+    fixture.ctx.integration.connection.resolve.mockResolvedValue({
+      type: 'oauth', methodID: 'claude-max', refresh: 'unused', access: `test-${id}`, expires: 9_000_000_000_000,
+    })
+  }
+  const closeRetired = yield* Effect.promise(() => plugin.setup(retired.ctx, proc))
+  yield* Effect.acquireRelease(Effect.promise(() => plugin.setup(current.ctx, proc)), (close) => Effect.promise(close))
+  yield* Effect.acquireRelease(Effect.promise(() => plugin.setup(beside.ctx, proc)), (close) => Effect.promise(close))
+  yield* Effect.promise(closeRetired)
+  for (const [id, owner] of [['current', retired], ['beside', beside]] as const) {
+    const event = {
+      sessionID: `ses_${id}`, agent: 'build', kind: 'primary', model: { providerID: 'anthropic', id: 'claude-haiku-4-5' },
+      request: new Request('https://api.anthropic.com/v1/messages', {
+        method: 'POST', body: '{}',
+        headers: { 'x-opencode-pool-handoff': '1', 'x-opencode-credential-id': id },
+      }),
+    }
+    yield* Effect.promise(() => owner.sessionHooks.get('http.request')(event))
+    expect(event.request.headers.get('authorization')).toBe(`Bearer test-${id}`)
+  }
+  expect(retired.handoffs).toHaveLength(0)
+  expect(current.handoffs).toHaveLength(1)
+  expect(beside.handoffs).toHaveLength(1)
+}).pipe(Effect.scoped), hangGuard("unit-law"))
 
 describe('default export', () => {
   test('is a v2 plugin definition with an id and an effect', () => {
@@ -386,7 +428,7 @@ describe('integration registration', () => {
       methodID: 'claude-max',
       refresh: 'fixture-refresh-value',
       access: 'fixture-access-value',
-      expires: Date.now() + 60_000,
+      expires: stamp() + 60_000,
     }
 
     const label = registration.label(credential)
@@ -440,7 +482,7 @@ describe('integration registration', () => {
       expect<unknown>(credential.methodID).toBe('claude-max')
       expect<unknown>(credential.access).toBe('access-1')
       expect<unknown>(credential.refresh).toBe('refresh-1')
-      expect(credential.expires).toBeGreaterThan(Date.now())
+      expect(credential.expires).toBeGreaterThan(stamp())
     } finally {
       network.fetch = originalFetch
     }
@@ -487,7 +529,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: 'old-refresh',
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       })
 
       expect<unknown>(rotated).toEqual({
@@ -520,7 +562,7 @@ describe('integration registration', () => {
           methodID: 'claude-max',
           refresh: 'old-refresh',
           access: 'old-access',
-          expires: Date.now() - 1000,
+          expires: stamp() - 1000,
         }),
       ).rejects.toThrow('Anthropic token refresh failed: 403')
     } finally {
@@ -555,7 +597,7 @@ describe('integration registration', () => {
           methodID: 'claude-max',
           refresh,
           access: 'old-access',
-          expires: Date.now() - 1000,
+          expires: stamp() - 1000,
         }),
       ).rejects.toThrow()
       expect(fetchSpy).not.toHaveBeenCalled()
@@ -590,7 +632,7 @@ describe('integration registration', () => {
           methodID: 'claude-max',
           refresh,
           access: 'old-access',
-          expires: Date.now() - 1000,
+          expires: stamp() - 1000,
         })
         const tokens = Array.from(
           { length: 256 },
@@ -670,7 +712,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: 'old-refresh',
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
 
       const results = await Promise.all(
@@ -718,7 +760,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: 'old-' + 'refresh',
         access: 'old-' + 'access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
 
       const firstRefresh = firstRegistration.refresh(credential)
@@ -772,7 +814,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh,
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
 
       await expect(firstRegistration.refresh(credential)).rejects.toThrow()
@@ -801,7 +843,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh,
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
       await expect(registration.refresh(credential)).rejects.toThrow()
       await expect(registration.refresh(credential)).rejects.toThrow()
@@ -839,7 +881,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: 'first-' + 'refresh',
         access: 'old-' + 'access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       })
       const second = await firstOf(secondContext.integrationMethods).refresh(
         {
@@ -847,7 +889,7 @@ describe('integration registration', () => {
           methodID: 'claude-max',
           refresh: 'second-' + 'refresh',
           access: 'old-' + 'access',
-          expires: Date.now() - 1000,
+          expires: stamp() - 1000,
         },
       )
 
@@ -887,7 +929,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: 'old-refresh',
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
 
       const first = await registration.refresh(credential)
@@ -933,7 +975,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh: `${prefix}-${index}`,
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       })
       for (let index = 0; index < 256; index++) {
         await registration.refresh(credential(index))
@@ -975,7 +1017,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh,
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       }
       await registration.refresh(credential)
       await registration.refresh(credential)
@@ -1015,7 +1057,7 @@ describe('integration registration', () => {
         methodID: 'claude-max',
         refresh,
         access: 'old-access',
-        expires: Date.now() - 1000,
+        expires: stamp() - 1000,
       })
 
       const [first, second] = await Promise.all([
@@ -1044,7 +1086,7 @@ describe('session http.request hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'my-access-token',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     return mocked
@@ -1586,7 +1628,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'my-access-token',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     return mocked
@@ -1734,7 +1776,7 @@ describe('session http.response hook', () => {
       expect(sent.request.headers.get('user-agent')).toBe(`claude-cli/${V1} (external, cli)`)
       expect(yield* Effect.promise(() => sent.request.clone().text())).toContain(`cc_version=${V1}.`)
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   describe('the installed Claude Code release (CLAUDE_CODE_INSTALLED_VERSION)', () => {
@@ -1764,7 +1806,7 @@ describe('session http.response hook', () => {
       Effect.gen(function* () {
         expect(yield* reports(freshProcess(Option.some(V2)), V2)).toBe(true)
       }),
-      5_000,
+      hangGuard("local-fixture"),
     )
 
     effectTest(
@@ -1775,7 +1817,7 @@ describe('session http.response hook', () => {
           expect([value, yield* reports(freshProcess(value), V0)]).toEqual([value, true])
         }
       }),
-      5_000,
+      hangGuard("local-fixture"),
     )
 
     effectTest(
@@ -1797,7 +1839,7 @@ describe('session http.response hook', () => {
 
         expect(yield* reports(proc, V2)).toBe(true)
       }),
-      5_000,
+      hangGuard("local-fixture"),
     )
   })
 
@@ -1962,7 +2004,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2238,7 +2280,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2376,7 +2418,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2448,7 +2490,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     const cleanup = await plugin.setup(ctx)
@@ -2551,7 +2593,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2614,7 +2656,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'my-access-token',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2796,7 +2838,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'my-access-token',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2858,7 +2900,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -2916,7 +2958,7 @@ describe('session http.response hook', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'a',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -3362,7 +3404,7 @@ describe('response transform concurrency bounds', () => {
         methodID: 'claude-max',
         refresh: 'r',
         access: 'fixture-access',
-        expires: Date.now() + 100000,
+        expires: stamp() + 100000,
       }),
     )
     await plugin.setup(ctx)
@@ -3457,7 +3499,7 @@ describe('multiple Anthropic connections and HTTP 429', () => {
           connection.id === connectionA.id
             ? 'fixture-access-a'
             : 'fixture-access-b',
-        expires: Date.now() + 60_000,
+        expires: stamp() + 60_000,
       }),
     )
     await plugin.setup(ctx)
@@ -3578,7 +3620,7 @@ describe('credential choice, wire extras and quota readings', () => {
       'cred-a': `fixture-access-a-${crypto.randomUUID()}`,
       'cred-b': `fixture-access-b-${crypto.randomUUID()}`,
     }
-    const expires = Date.now() + 8 * HOUR
+    const expires = stamp() + 8 * HOUR
     mocked.connections.push(
       { type: 'credential', id: 'cred-a', label: 'Anthropic 1' },
       { type: 'credential', id: 'cred-b', label: 'Anthropic 2' },
@@ -3685,7 +3727,7 @@ describe('credential choice, wire extras and quota readings', () => {
       expect(yield* Effect.promise(() => onA.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
       expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${CLAUDE_CODE_VERSION}.`)
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -3704,7 +3746,7 @@ describe('credential choice, wire extras and quota readings', () => {
       )
       expect(yield* Effect.promise(() => onB.clone().text())).toContain(`cc_version=${installed}.`)
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   describe('the cache-lifetime header', () => {
@@ -3907,8 +3949,8 @@ describe('credential choice, wire extras and quota readings', () => {
     const sent = await send(sessionHooks, {
       'x-opencode-credential-id': 'cred-b',
     })
-    const fiveHourReset = Date.now() + 2 * HOUR
-    const weeklyReset = Date.now() + 50 * HOUR
+    const fiveHourReset = stamp() + 2 * HOUR
+    const weeklyReset = stamp() + 50 * HOUR
 
     await answer(
       sessionHooks,
@@ -3962,7 +4004,7 @@ describe('credential choice, wire extras and quota readings', () => {
     const sent = await send(sessionHooks, {
       'x-opencode-credential-id': 'cred-a',
     })
-    const reset = Date.now() + 3 * HOUR
+    const reset = stamp() + 3 * HOUR
 
     const response = await answer(
       sessionHooks,
@@ -3986,7 +4028,7 @@ describe('credential choice, wire extras and quota readings', () => {
             'anthropic-ratelimit-unified-5h-reset': seconds(reset),
             'anthropic-ratelimit-unified-7d-utilization': '0.3',
             'anthropic-ratelimit-unified-7d-reset': seconds(
-              Date.now() + 90 * HOUR,
+              stamp() + 90 * HOUR,
             ),
           },
         },
@@ -4010,7 +4052,7 @@ describe('credential choice, wire extras and quota readings', () => {
     const sent = await send(sessionHooks, {
       'x-opencode-credential-id': 'cred-b',
     })
-    const before = Date.now()
+    const before = stamp()
 
     await answer(
       sessionHooks,
@@ -4031,7 +4073,7 @@ describe('credential choice, wire extras and quota readings', () => {
     const refusal = lastOf(rpcEvents).payload.reading.refusal
     expect<unknown>(refusal.kind).toBe('rate-limit')
     expect(refusal.until).toBeGreaterThanOrEqual(before + 20_000)
-    expect(refusal.until).toBeLessThanOrEqual(Date.now() + 20_000)
+    expect(refusal.until).toBeLessThanOrEqual(stamp() + 20_000)
   })
 
   test('a 401 refuses the credential until the host refreshes its token', async () => {
@@ -4085,7 +4127,7 @@ describe('credential choice, wire extras and quota readings', () => {
     const refusal = lastOf(rpcEvents).payload.reading.refusal
     expect<unknown>(lastOf(rpcEvents).payload.credentialID).toBe('cred-a')
     expect<unknown>(refusal.kind).toBe('signin')
-    expect(refusal.until).toBeGreaterThan(Date.now() + 29 * 60_000)
+    expect(refusal.until).toBeGreaterThan(stamp() + 29 * 60_000)
   })
 
   test('reads the usage endpoint for one credential and keeps a live refusal', async () => {
@@ -4106,7 +4148,7 @@ describe('credential choice, wire extras and quota readings', () => {
         { status: 429, headers: { 'retry-after': '600' } },
       ),
     )
-    const fiveHourReset = new Date(Date.now() + HOUR).toISOString()
+    const fiveHourReset = new Date(stamp() + HOUR).toISOString()
     const seen: Request[] = []
     const originalFetch = network.fetch
     network.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
@@ -4149,7 +4191,7 @@ describe('credential choice, wire extras and quota readings', () => {
         if (path === '/api/oauth/profile') return Response.json({ account: { uuid: 'acct-1' }, organization: { uuid: 'org-1' } })
         if (path === '/api/organizations/org-1/reset_rate_limits') return claim()
         return Response.json({
-          five_hour: { utilization: 0, resets_at: new Date(Date.now() + 5 * HOUR).toISOString() },
+          five_hour: { utilization: 0, resets_at: new Date(stamp() + 5 * HOUR).toISOString() },
           seven_day: { utilization: 40, resets_at: null },
         })
       })
@@ -4256,7 +4298,7 @@ describe('credential choice, wire extras and quota readings', () => {
       const access = `fixture-sourced-${crypto.randomUUID()}`
       const { ctx, sessionHooks, source, remove } = withSource(async () => ({
         access,
-        expires: Date.now() + HOUR,
+        expires: stamp() + HOUR,
       }))
       try {
         await plugin.setup(ctx)
@@ -4279,7 +4321,7 @@ describe('credential choice, wire extras and quota readings', () => {
 
     test("a credential no source owns still goes through the host's connections", async () => {
       const { ctx, sessionHooks, accessOf, source, remove } = withSource(
-        async () => ({ access: 'unused', expires: Date.now() + HOUR }),
+        async () => ({ access: 'unused', expires: stamp() + HOUR }),
       )
       try {
         await plugin.setup(ctx)
@@ -4297,7 +4339,7 @@ describe('credential choice, wire extras and quota readings', () => {
     })
 
     test("a source's passing failure holds the credential as rate-limited until its retryAt, and the request answers a retryable 429", async () => {
-      const retryAt = Date.now() + 60_000
+      const retryAt = stamp() + 60_000
       const { ctx, sessionHooks, rpcEvents, remove } = withSource(async () => {
         throw Object.assign(new Error('token endpoint unavailable'), {
           retryAt,
@@ -4346,7 +4388,7 @@ describe('credential choice, wire extras and quota readings', () => {
     })
 
     test('a refused request waits for the soonest refused login, at most fifteen minutes', async () => {
-      let retryAt = Date.now() + 2 * HOUR
+      let retryAt = stamp() + 2 * HOUR
       const { ctx, sessionHooks, remove } = withSource(async () => {
         throw Object.assign(new Error('token endpoint paused'), { retryAt })
       })
@@ -4362,9 +4404,9 @@ describe('credential choice, wire extras and quota readings', () => {
         expect(await retryAfterOf('src:one')).toBe(15 * 60)
 
         // Another login refused until sooner sets the wait.
-        retryAt = Date.now() + 90_000
+        retryAt = stamp() + 90_000
         expect(await retryAfterOf('src:two')).toBeLessThanOrEqual(90)
-        retryAt = Date.now() + 10 * 60_000
+        retryAt = stamp() + 10 * 60_000
         expect(await retryAfterOf('src:three')).toBeLessThanOrEqual(90)
       } finally {
         remove()
@@ -4373,7 +4415,7 @@ describe('credential choice, wire extras and quota readings', () => {
 
     test("a refused request's answer publishes no second refusal", async () => {
       const { ctx, sessionHooks, rpcEvents, remove } = withSource(async () => {
-        throw Object.assign(new Error('busy'), { retryAt: Date.now() + 5_000 })
+        throw Object.assign(new Error('busy'), { retryAt: stamp() + 5_000 })
       })
       try {
         await plugin.setup(ctx)
@@ -4420,7 +4462,7 @@ describe('credential choice, wire extras and quota readings', () => {
     test('an answer without a usable token fails the request as a 401 that says why', async () => {
       const { ctx, sessionHooks, remove } = withSource(async () => ({
         access: '',
-        expires: Date.now() + HOUR,
+        expires: stamp() + HOUR,
       }))
       try {
         await plugin.setup(ctx)
@@ -4443,14 +4485,14 @@ describe('credential choice, wire extras and quota readings', () => {
     test('a 401 tells the source which token was rejected, and holds the credential only briefly', async () => {
       const access = `fixture-sourced-${crypto.randomUUID()}`
       const { ctx, sessionHooks, rpcEvents, rejected, remove } = withSource(
-        async () => ({ access, expires: Date.now() + 8 * HOUR }),
+        async () => ({ access, expires: stamp() + 8 * HOUR }),
       )
       try {
         await plugin.setup(ctx)
         const sent = await send(sessionHooks, {
           'x-opencode-credential-id': 'src:one',
         })
-        const before = Date.now()
+        const before = stamp()
 
         await answer(
           sessionHooks,
@@ -4468,7 +4510,7 @@ describe('credential choice, wire extras and quota readings', () => {
         const refusal = lastOf(rpcEvents).payload.reading.refusal
         expect<unknown>(refusal.kind).toBe('unauthorized')
         expect(refusal.until).toBeGreaterThanOrEqual(before + 60_000)
-        expect(refusal.until).toBeLessThanOrEqual(Date.now() + 60_000)
+        expect(refusal.until).toBeLessThanOrEqual(stamp() + 60_000)
       } finally {
         remove()
       }
@@ -4477,8 +4519,8 @@ describe('credential choice, wire extras and quota readings', () => {
     test("the usage read uses the source's token", async () => {
       const access = `fixture-sourced-${crypto.randomUUID()}`
       const { ctx, rpcHandlers, source, remove } = withSource(
-        async () => ({ access, expires: Date.now() + HOUR }),
-        async () => ({ access, expires: Date.now() + HOUR }),
+        async () => ({ access, expires: stamp() + HOUR }),
+        async () => ({ access, expires: stamp() + HOUR }),
       )
       const seen: Request[] = []
       const originalFetch = network.fetch
@@ -4509,7 +4551,7 @@ describe('credential choice, wire extras and quota readings', () => {
     })
 
     test('the usage read skips a sourced credential whose token is due a refresh, keeping its reading', async () => {
-      const retryAt = Date.now() + 60_000
+      const retryAt = stamp() + 60_000
       const { ctx, sessionHooks, rpcHandlers, source, remove } = withSource(
         async () => {
           throw Object.assign(new Error('token endpoint paused'), { retryAt })
@@ -4544,7 +4586,7 @@ describe('credential choice, wire extras and quota readings', () => {
     test('a sourced credential with no reading and no good token is resolved to read it, once its reading is recent it is skipped', async () => {
       const access = `fixture-sourced-${crypto.randomUUID()}`
       const { ctx, rpcHandlers, source, remove } = withSource(
-        async () => ({ access, expires: Date.now() + HOUR }),
+        async () => ({ access, expires: stamp() + HOUR }),
         async () => undefined,
       )
       const originalFetch = network.fetch
@@ -4573,7 +4615,7 @@ describe('credential choice, wire extras and quota readings', () => {
     test('a source without peek is resolved for an unread usage read', async () => {
       const { ctx, rpcHandlers, source, remove } = withSource(async () => ({
         access: `fixture-sourced-${crypto.randomUUID()}`,
-        expires: Date.now() + HOUR,
+        expires: stamp() + HOUR,
       }))
       const originalFetch = network.fetch
       network.fetch = mock(async () =>

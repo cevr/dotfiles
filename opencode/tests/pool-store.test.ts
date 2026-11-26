@@ -8,15 +8,19 @@
 // disk or on two real processes as well (tests/parity.json says which).
 import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, scratchExistsSync as existsSync, scratchInput } from "./read-path.ts"
 import { join } from "node:path"
-import { Clock, Effect, Option } from "effect"
+import { Clock, Effect, Option, Schema } from "effect"
 import { it } from "effect-bun-test"
-import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, StoreSource, storeProcess } from "../mods/pool/store/store.ts"
+import { decodeStoredOAuth, STORE_PREFIX, StoreCredentialError, SlotStoreSource as StoreSource, storeProcess } from "../mods/pool/store/store.ts"
 import { fakeAccount, startFakeAnthropic, type FakeAccount, type FakeAnthropic, type FakeTokenAnswer } from "./fake-anthropic.ts"
-import { openSlotStore, type SlotStore } from "./store/store.ts"
-import { owned } from "./owned.ts"
+import { openSlotStore, scratchSlotFiles, type SlotStore } from "./store/store.ts"
+import { ownedCheckoutBun } from "./owned.ts"
+import { RefreshRequest } from "./store/refresh-request.ts"
 import { scratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
+import { waitUntil } from "./wait.ts"
 
 const HOUR = 3_600_000
 const root = scratch("pool-store-").path
@@ -54,7 +58,7 @@ const bench = async (
   const dir = mkdtempSync(join(root, "store-"))
   const store = openSlotStore(dir)
   for (const [label, account] of Object.entries(accounts)) {
-    await store.signIn(label, { ...account, expires: options.expires ?? Date.now() + 8 * HOUR }, {
+    await store.signIn(label, { ...account, expires: options.expires ?? stamp() + 8 * HOUR }, {
       signedInAt: options.signedInAt ?? 1_700_000_000_000,
     })
   }
@@ -66,9 +70,9 @@ const bench = async (
     store,
     fake,
     tokenURL,
-    source: new StoreSource({ dir, tokenURL }),
+    source: new StoreSource({ dir, tokenURL, files: scratchSlotFiles }),
     trades: () => fake.received.filter((request) => request.path === "/v1/oauth/token").length,
-    file: (label) => readFileSync(join(dir, ".slots/anthropic", label), "utf8"),
+    file: (label) => readFileSync(scratchInput(join(dir, ".slots/anthropic", label)), "utf8"),
   }
 }
 
@@ -93,7 +97,7 @@ const readOnly = <A, E>(slots: string, use: Effect.Effect<A, E>): Effect.Effect<
 describe("the pool's source over a login store", () => {
   test("a stale token is refreshed once and written back in the store's exact shape, mode 0600", async () => {
     const account = fakeAccount()
-    const ours = await bench({ alpha: account }, { expires: Date.now() - 1000 })
+    const ours = await bench({ alpha: account }, { expires: stamp() - 1000 })
     const resolved = await ours.source.resolve(`${STORE_PREFIX}alpha`)
     const rotated = ours.fake.tokens("alpha")
     expect(ours.trades()).toBe(1)
@@ -104,7 +108,7 @@ describe("the pool's source over a login store", () => {
     expect(ours.file("alpha")).toBe(
       `{"_tag":"Oauth","type":"oauth","access":"${rotated.access}","refresh":"${rotated.refresh}","expires":${resolved.expires},"accountId":null,"metadata":{"owner":"store"},"signedInAt":1700000000000}`,
     )
-    expect(statSync(join(ours.dir, ".slots/anthropic/alpha")).mode & 0o777).toBe(0o600)
+    expect(statSync(scratchInput(join(ours.dir, ".slots/anthropic/alpha"))).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(ours.dir, ".slots/anthropic"))).toEqual(["alpha"])
 
     // It decodes back, its sign-in stamp and owner kept.
@@ -122,29 +126,49 @@ describe("the pool's source over a login store", () => {
     expect(ours.trades()).toBe(1)
   })
 
-  test("two processes refreshing the same stale slot at once make one refresh call", async () => {
-    const { dir, fake, tokenURL, trades } = await bench(
-      { alpha: fakeAccount() },
-      { expires: Date.now() - 1000, token: () => ({ kind: "rotate", delayMs: 1500 }) },
-    )
-    const worker = join(import.meta.dir, "store/refresh-worker.ts")
-    const spawn = () =>
-      owned([process.execPath, worker, dir, tokenURL, `${STORE_PREFIX}alpha`], { stdout: "pipe", stderr: "pipe" })
-    const runs = [spawn(), spawn()]
-    const outputs = await Promise.all(
-      runs.map(async (run) => {
-        const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text()])
-        expect(await run.exited, stderr).toBe(0)
-        const [served, began] = stdout.trim().split(" ")
-        return { served, began: Number(began) }
-      }),
-    )
-    const served = fingerprint(fake.tokens("alpha").access)
-    expect(outputs.map((output) => output.served)).toEqual([served, served])
-    expect(trades()).toBe(1)
-    // Both asked while the other's refresh (1.5 s at the endpoint) could be in flight: a real race.
-    expect(Math.abs(outputs[0]!.began - outputs[1]!.began)).toBeLessThan(1000)
-  }, 30_000)
+  it.live("two processes refreshing the same stale slot at once make one refresh call", () =>
+    Effect.gen(function* () {
+      const released = join(mkdtempSync(join(root, "held-refresh-")), "released")
+      const release = Effect.sync(() => writeFileSync(released, ""))
+      const { dir, fake, tokenURL, trades } = yield* Effect.promise(() => bench(
+        { alpha: fakeAccount() },
+        {
+          expires: stamp() - 1000,
+          token: () => ({ kind: "rotate", beforeAnswer: () => waitUntil("release the held token response", () => existsSync(released), 10_000) }),
+        },
+      ))
+      const held = join(dir, "held")
+      const spawn = (busy: string) => {
+        const request = join(dir, `${busy}.json`)
+        writeFileSync(request, Schema.encodeSync(RefreshRequest)({ dir, tokenURL, credentialID: `${STORE_PREFIX}alpha`, busyFile: join(dir, busy) }))
+        return ownedCheckoutBun("tests/store/refresh-worker.ts", {
+          scratchArgs: [request],
+          scratch: { HOME: dir, TMPDIR: dir, XDG_CONFIG_HOME: dir, XDG_CACHE_HOME: dir, XDG_DATA_HOME: dir, XDG_STATE_HOME: dir },
+          external: {}, values: {},
+        })
+      }
+      const output = (run: ReturnType<typeof spawn>) =>
+        Effect.gen(function* () {
+          const [stdout, stderr, code] = yield* Effect.all([
+            Effect.promise(() => new Response(run.stdout).text()),
+            Effect.promise(() => new Response(run.stderr).text()),
+            Effect.promise(() => run.exited),
+          ], { concurrency: "unbounded" })
+          expect(code, stderr).toBe(0)
+          return stdout.trim()
+        })
+      const outputs = yield* Effect.gen(function* () {
+        const first = spawn("unexpected-first-wait")
+        yield* Effect.promise(() => waitUntil("the first worker to reach the held token endpoint", () => trades() === 1, 10_000))
+        const second = spawn("held")
+        yield* Effect.promise(() => waitUntil("the second worker to see the first worker's SQLite lock held", () => existsSync(held), 10_000))
+        yield* release
+        return yield* Effect.all([output(first), output(second)], { concurrency: "unbounded" })
+      }).pipe(Effect.ensuring(release))
+      const served = fingerprint(fake.tokens("alpha").access)
+      expect(outputs).toEqual([served, served])
+      expect(trades()).toBe(1)
+    }), hangGuard("local-fixture"))
   it.live("a refresh whose write failed is held, and written later only over the login it replaced", () =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
@@ -192,7 +216,7 @@ describe("the pool's source over a login store", () => {
       const { dir, fake, source, tokenURL, trades, file } = yield* Effect.promise(() => bench({ alpha: fakeAccount() }, { expires: now - 1000 }))
       const slots = join(dir, ".slots/anthropic")
       const alpha = `${STORE_PREFIX}alpha`
-      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5 })
+      const theirs = new StoreSource({ dir, tokenURL, process: storeProcess(), lockPolls: 5, files: scratchSlotFiles })
       const { served, busy } = yield* readOnly(
         slots,
         Effect.all({

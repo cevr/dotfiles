@@ -3,10 +3,11 @@
 // them still running. Each seed waits 100 ms of wall time and says it ran.
 import { expect } from "bun:test"
 import { Console, Effect } from "effect"
-import * as Seed from "../seed.ts"
+import { simulationRunner, simulationTest } from "../seed.ts"
+import { simulationBudget } from "../budget.ts"
 
 const ran: Array<number> = []
-const { seeded } = Seed.runner("sim/fixtures/seed-timeout.fixture.ts", { timeoutMs: 300 })
+const { seeded } = simulationRunner("sim/fixtures/seed-timeout.fixture.ts", { budget: simulationBudget(300) })
 
 seeded("seeds that run past the timeout", ({ seed }) =>
   Effect.gen(function* () {
@@ -15,7 +16,7 @@ seeded("seeds that run past the timeout", ({ seed }) =>
   }),
 )
 
-Seed.effect(
+simulationTest(
   "the next test sees none of the timed-out test's seeds run",
   Effect.gen(function* () {
     const before = ran.length

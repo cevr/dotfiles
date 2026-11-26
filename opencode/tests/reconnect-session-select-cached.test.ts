@@ -1,15 +1,19 @@
+// @reads cmd/*
 // accept: deep (57.5 s alone on a quiet host: 1-minute load 152.2–145.3 on 12 cores; it drives a TUI from source to its session picker, then restarts the service and holds it booting for 8 s)
 // A pane at home selects a cached session while the service boots, and submits.
 // The shared world and the cases' bodies: tests/reconnect/fixture.ts.
 import { describe } from "bun:test"
-import { reconnectTest, selectWhileBooting, SUITE, test, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { it } from "effect-bun-test"
+import { reconnectTest, selectWhileBooting, SUITE, TIMEOUT_MS } from "./reconnect/fixture.ts"
+import { Platform } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 describe.skipIf(!forkRuns)(SUITE, () => {
   const kept = keptScratch(forkRuns, "rs-select-cached-")
-  test(
+  it.scopedLive.layer(Platform)(
     "selecting a cached session from home during service boot and submitting waits without an error toast",
     reconnectTest(kept, (fixture) => selectWhileBooting(fixture, "cached")),
-    TIMEOUT_MS,
+    hangGuard("fork-session"),
   )
 })

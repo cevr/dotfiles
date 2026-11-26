@@ -5,11 +5,13 @@
 // at all; the goal line above the composer (the only place a goal shows)
 // follows the goal through active, paused, resumed and cancelled, each in its
 // state's colour.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 type Rgba = readonly [number, number, number, number]
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string; fg: Rgba }> }> }
@@ -46,7 +48,7 @@ const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-goal.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 describe.skipIf(!fork)("Prime's dock and goal line", () => {
   const kept = keptScratch(Boolean(fork), "prime-goal-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-goal-")
     const child = owned(["bunx", "opencode-drive", "run", "scenarios/prime-goal.ts"], {
       cwd: join(import.meta.dir, ".."),
@@ -60,10 +62,10 @@ describe.skipIf(!fork)("Prime's dock and goal line", () => {
     if (code !== 0) throw new Error(`prime-goal scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
     for (const name of names)
       frames[name] = {
-        lines: readFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n"),
-        frame: JSON.parse(readFileSync(join(out, `${label}-${name}.json`), "utf8")),
+        lines: readScratchFileSync(join(out, `${label}-${name}.txt`), "utf8").split("\n"),
+        frame: JSON.parse(readScratchFileSync(join(out, `${label}-${name}.json`), "utf8")),
       }
-  }, 240_000))
+  }), hangGuard("generated-schedule"))
 
   test("the dock: shells, then the wakes in the success colour; no goal before one is set", kept.test(() => {
     const dock = frames.dock

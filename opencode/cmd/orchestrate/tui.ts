@@ -34,7 +34,9 @@ export type Host = Pick<Plugin.Context, "location"> & {
 }
 
 /** Start reporting drafts; the cleanup stops it. */
-export const report = (ctx: Host, client: string = crypto.randomUUID(), now: () => number = Date.now) => {
+const afterKey = (look: () => void) => { setTimeout(look, 0) }
+
+export const report = (ctx: Host, client: string = crypto.randomUUID(), now: () => number = Date.now, defer = afterKey) => {
   let last: Reported | undefined
   const look = () => {
     const route = ctx.ui.router.current()
@@ -50,7 +52,7 @@ export const report = (ctx: Host, client: string = crypto.randomUUID(), now: () 
     }
   }
   // The editor takes the key in the same dispatch; read its text once it has.
-  const later = () => void setTimeout(look, 0)
+  const later = () => defer(look)
   ctx.renderer.keyInput.on("keypress", later)
   ctx.renderer.keyInput.on("paste", later)
   const timer = setInterval(look, HEARTBEAT_MS)

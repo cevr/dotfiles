@@ -9,11 +9,13 @@
 // requests run on the simulated host: cmd/orchestrate/idle-root.sim.test.ts
 // (tests/parity/orchestrate.json). What stays here is what the TUI draws: the
 // root's answer, the draft in the composer and the sidebar's wait.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/idle-root.test.ts: skipped. Set OPENCODE_DEV to the fork.")
@@ -31,7 +33,7 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     const timeout = join(out, "idle-root-timeout.txt")
     if (code !== 0) throw new Error(`idle-root scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
-    const frame = (name: string) => readFileSync(join(out, `idle-root-${name}.txt`), "utf8")
+    const frame = (name: string) => readScratchFileSync(join(out, `idle-root-${name}.txt`), "utf8")
 
     // The root's answer on screen while its planner runs.
     expect(frame("started")).toContain("Started alpha's planner.")
@@ -39,5 +41,5 @@ describe.skipIf(!fork)("an idle root with units to move", () => {
     expect(frame("drafted")).toContain("half a thought")
     // The named wait in the sidebar.
     expect(frame("nudged")).toMatch(/… Owner review of alpha/)
-  }), 200_000)
+  }), hangGuard("fork-transition"))
 })

@@ -2,11 +2,12 @@
 // and asserts on the frames it saves: the text of each row, and the colour of a
 // few key cells. It needs OPENCODE_DEV, the fork with the plugin hook points.
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync } from "./read-path.ts"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork)
@@ -79,7 +80,7 @@ function load(out: string, name: string): Saved {
 
 describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-scenario-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-demo.ts"], {
       cwd: root,
@@ -105,7 +106,7 @@ describe.skipIf(!fork)("the Prime look on the demo scenario (OPENCODE_DEV)", () 
     frames.details = load(out, label)
     frames.all = load(out, `${label}-all`)
     frames.overview = load(out, `${label}-overview`)
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("the top bar centres the title and the cost", kept.test(() => {
     for (const saved of Object.values(frames)) {

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at cmd/git/server.test.ts: const run = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd:
 // The plugin seam: the composition root on a stand-in host, with the live
 // adapters over a real git checkout in a scratch directory and a scratch PATH
 // holding git, and, as each test says, a stand-in `gh` and `hunk`. It checks

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The pool's failover on the simulated host, each test at 20 seeds:
 // tests/pool-failover.test.ts's names and claims, moved off real OpenCode. Two
 // Anthropic logins OpenCode holds, the Anthropic auth plugin and the pool, as
@@ -7,19 +9,78 @@
 // login answers an agent turn with a plan-limit 429; the run must finish on
 // the second, and the provider must have seen exactly that. The seed varies
 // how long each answer streams, the order of fibers and the tokens.
-import { DateTime, Effect, Option } from "effect"
+import { Config, Console, Effect, Option, Schema } from "effect"
+import { UNREADABLE_HOLD_MS } from "@dotfiles/opencode-pool/hold"
+import { Pace } from "@dotfiles/opencode-pool/pace"
+import { quotaProtocol, type QuotaReading } from "@dotfiles/opencode-pool/quota"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
-import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { below, generator, line } from "../../sim/runtime.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/pool/pool-failover.sim.test.ts")
+const { seeded } = simulationRunner("cmd/pool/pool-failover.sim.test.ts")
+const isolated = simulationRunner("cmd/pool/pool-failover.sim.test.ts", { past: [10285280, 10286953] })
 
 const HOUR = 3_600_000
 const WORK = "/scratch/work"
 /** How long the real run waited for OpenCode to finish. */
 const RUN_LIMIT_MS = 120_000
+const OTHER = "/scratch/other"
+const POOL_STORE = "dotfiles-opencode.pool"
+const decodePace = Schema.decodeUnknownSync(Pace)
+
+seeded("a waiter rechecks a damaged hold only at its distinct retry times over thirty minutes", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const minute = 60_000
+    const accounts = Provider.accounts(seed, ["first"])
+    const world = World.make({
+      seed, script: () => World.say(""),
+      integrations: { anthropic: Object.entries(accounts).map(([id, account]) => ({ id, label: id, ...account, expires: World.START + HOUR })) },
+    })
+    const start = world.now()
+    const first = start + UNREADABLE_HOLD_MS
+    const end = start + 30 * minute
+    const reads: Array<number> = []
+    yield* world.load({
+      id: "sim.recovery-reader",
+      effect: (ctx) => ctx.rpc.register(quotaProtocol("anthropic"), {
+        reading: () => Effect.succeed({ reading: {} }),
+        claim: () => Effect.succeed({ outcome: "failed" }),
+        usage: () => Effect.sync(() => {
+          const at = world.now()
+          reads.push(at)
+          const reading: QuotaReading = {
+            at, usage: { at, samples: 1 }, windows: [
+              { name: "5h", utilization: 0, resetAt: start + HOUR },
+              { name: "7d", utilization: 0, resetAt: start + 5 * 24 * HOUR },
+            ],
+            ...Option.match(Option.filter(Option.some(end), (until) => until > at), {
+              onNone: () => ({}), onSome: (until) => ({ refusal: { kind: "rate-limit" as const, until } }),
+            }),
+          }
+          return { reading }
+        }),
+      }).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: WORK })
+    yield* world.load({
+      id: POOL_STORE,
+      effect: (ctx) => ctx.storage.set("anthropic/hold/first", { kind: "future-kind", at: start, until: first }).pipe(Effect.orDie),
+    }, { directory: OTHER })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    const wakeups: Array<number> = []
+    for (let turn = 0; turn <= 2; turn++) {
+      const pace = decodePace(yield* world.rpc(POOL_STORE, "pace", { providerID: "anthropic", dispatch: true }))
+      if (pace.ok) break
+      expect(pace.retryAt).toBeGreaterThan(world.now())
+      yield* world.advance(pace.retryAt - world.now())
+      wakeups.push(world.now())
+    }
+    expect(wakeups).toEqual([first, end])
+    expect(reads).toEqual(wakeups)
+    expect(yield* world.rpc(POOL_STORE, "pace", { providerID: "anthropic", dispatch: true })).toMatchObject({ ok: true, eligible: ["first"] })
+  }),
+)
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */
 const firstRefused =
@@ -113,7 +174,7 @@ const bothSpent = ({ account, body }: Provider.RequestInfo): Provider.Answer => 
 }
 
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at ([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT))$/
 
 seeded(
   "with both logins spent, the run ends on the pool's own refusal and when the first opens, never sent on a spent login again",
@@ -132,8 +193,112 @@ seeded(
         return [message.message]
       })
       expect(ends).toHaveLength(1)
-      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      const opens = Option.fromUndefinedOr(POOL_REFUSAL.exec(ends.join(""))?.[1]).pipe(Option.map((text) => Date.parse(text)), Option.filter(Number.isFinite))
       expect(Option.isSome(opens), ends.join("")).toBe(true)
-      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (World.START + HOUR))).toBeLessThan(5_000)
+      expect(Math.abs(Option.getOrElse(opens, () => 0) - (World.START + HOUR)), ends.join("")).toBeLessThan(5_000)
     }),
+)
+
+seeded("a two-copy hold interleaved with a pending request is checked at the final hook, through reload too", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const random = generator(`pool-handoff:${seed}`)
+    const wait = 10 + below(random, 30)
+    const reload = below(random, 2) === 0
+    const accounts = Provider.accounts(seed, ["first", "second"])
+    const world = World.make({
+      seed, script: () => World.say(""),
+      anthropic: { accounts, script: firstRefused(World.START + 3 * HOUR) },
+      integrations: {
+        anthropic: Object.entries(accounts).map(([name, account]) => ({ id: name, label: name, ...account, expires: World.START + 8 * HOUR })),
+      },
+    })
+    const pool = Plugins.pool()
+    const auth = Plugins.anthropicAuth(world.provider())
+    const target = "ses_handoff_target"
+    // Delay only before auth. Place in WORK, publish a refusal from OTHER,
+    // optionally reload both copies, then release the old request to auth.
+    yield* world.load({
+      id: "sim.pool-handoff-barrier",
+      effect: (ctx) => ctx.session.hook("http.request", (event) => {
+        if (event.sessionID !== target) return Effect.void
+        return Effect.sleep(wait)
+      }).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: WORK })
+    for (const directory of [WORK, OTHER]) {
+      yield* world.load(auth, { directory })
+      yield* world.load(pool, { directory, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    }
+    const one = yield* world.session(WORK, { id: target })
+    const two = yield* world.session(OTHER)
+    yield* world.prompt(one, "pending")
+    yield* world.prompt(two, "record the refusal")
+    expect(world.provider().received().some((request) => request.account === "first" && request.status === 429)).toBe(true)
+    if (reload) yield* world.restart
+    yield* world.advance(wait * 4)
+    yield* world.until(() => world.sessions.get(one)?.running === false, RUN_LIMIT_MS)
+    expect(world.messages(one).map(line).join("\n")).toContain("Hello from the second login.")
+    expect(world.inFlightAtRefusal()).toBe(0)
+  }),
+)
+
+seeded("a refusal committed after the final hook counts as in flight, and the 429 re-places the turn", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const accounts = Provider.accounts(seed, ["first", "second"])
+    const resetAt = World.START + 3 * HOUR
+    const world = World.make({
+      seed, script: () => World.say(""), bodyMaterialization: true,
+      anthropic: { accounts, script: firstRefused(resetAt) },
+      integrations: {
+        anthropic: Object.entries(accounts).map(([name, account]) => ({ id: name, label: name, ...account, expires: World.START + 8 * HOUR })),
+      },
+    })
+    yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: WORK })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    const session = yield* world.session(WORK)
+    yield* world.prompt(session, "in flight")
+    // Commit the other copy's hold while this request is inside the host's
+    // body-materialization window, not before the auth hook decided.
+    expect(world.provider().received().filter((request) => request.path === "/v1/messages")).toHaveLength(0)
+    const records = Option.getOrThrow(Option.fromUndefinedOr(world.storage.get(POOL_STORE)))
+    records.set("anthropic/hold/first", { kind: "rate-limit", at: world.now(), until: resetAt, refusedUntil: resetAt })
+    yield* world.until(() => world.sessions.get(session)?.running === false, RUN_LIMIT_MS)
+    expect(world.inFlightAtRefusal()).toBeGreaterThan(0)
+    expect(world.messages(session).map(line).join("\n")).toContain("Hello from the second login.")
+    if (Option.isSome(yield* Config.option(Config.Int("SIM_SWARM_COUNT")))) {
+      yield* Console.log(`pool-in-flight-at-refusal ${seed} ${world.inFlightAtRefusal()}`)
+    }
+  }),
+)
+
+isolated.seeded("a separate writer publishes a hold after the answering copy placed its request, without a quota event", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const wait = 20 + below(generator(`pool-isolated-handoff:${seed}`), 40)
+    const accounts = Provider.accounts(seed, ["first", "second"])
+    const world = World.make({
+      seed, script: () => World.say(""),
+      anthropic: { accounts, script: ({ account }) => ({ kind: "ok", text: `answered on ${account}` }) },
+      integrations: { anthropic: Object.entries(accounts).map(([id, account]) => ({ id, label: id, ...account, expires: World.START + 8 * HOUR })) },
+    })
+    yield* world.load({
+      id: "sim.handoff-barrier",
+      effect: (ctx) => ctx.session.hook("http.request", () => Effect.sleep(wait)).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: WORK })
+    yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: WORK })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    yield* world.load({
+      id: POOL_STORE,
+      effect: (ctx) => ctx.session.hook("model.request", () =>
+        ctx.storage.set("anthropic/hold/first", { kind: "rate-limit", at: world.now(), until: world.now() + HOUR }),
+      ).pipe(Effect.orDie, Effect.asVoid),
+    }, { directory: OTHER })
+    const target = yield* world.session(WORK)
+    const writer = yield* world.session(OTHER, { model: World.SIM_MODEL })
+    yield* world.prompt(target, "pause a signed-in login before auth")
+    const records = Option.getOrThrow(Option.fromUndefinedOr(world.storage.get(POOL_STORE)))
+    expect(records.get(`anthropic/cache/${target}`)).toMatchObject({ credentialID: "first" })
+    yield* world.prompt(writer, "commit the refusal in the other copy")
+    expect(records.has("anthropic/hold/first")).toBe(true)
+    yield* world.until(() => world.sessions.get(target)?.running === false, RUN_LIMIT_MS)
+    expect(world.provider().received().filter((request) => request.path === "/v1/messages").map((request) => request.account)).toEqual(["second", "second"])
+  }),
 )

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // Idle compaction on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/idle-compact.test.ts's names and claims, moved off real
 // OpenCode (it waited out a 20 s cache in real time). The plugin is the one
@@ -9,7 +11,7 @@
 import { Effect } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import {
   ANSWER,
@@ -28,7 +30,7 @@ import {
   WAKE_MS,
 } from "../../tests/idle-compact/sim.ts"
 
-const { seeded } = Seed.runner("cmd/idle-compact/idle-compact.sim.test.ts")
+const { seeded } = simulationRunner("cmd/idle-compact/idle-compact.sim.test.ts")
 
 /** A reply's usage for a prompt of `prompt` tokens: as the real sim reports, 400 read from the cache and 500 written. */
 const usage = (prompt: number): World.Usage => ({ input: prompt - 900, read: 400, write: 500 })

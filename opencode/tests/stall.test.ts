@@ -14,14 +14,16 @@
 // - A second 3 s stall inside the cooldown writes nothing more: the log says
 //   it is skipped, and the capture stays the only one.
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { Effect, Schedule, Schema } from "effect"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { ROOT } from "../scripts/agents.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { ready } from "./service.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const runs = Boolean(fork)
@@ -29,13 +31,13 @@ if (!runs) console.warn("tests/stall.test.ts: skipped. Set OPENCODE_DEV to the f
 
 const THRESHOLD_MS = 2_000
 const CAPTURE_MS = 3_000
-const TIMEOUT_MS = 150_000
 
 /** The test-only plugin: an RPC that holds the server's main thread, in a named function the profile must show. */
-const FIXTURE = `function blockTheEventLoop(ms) {
-  const end = performance.now() + ms
+const FIXTURE = `import { watchdog } from "${import.meta.resolve("./hang-guard.ts")}"
+function blockTheEventLoop(ms) {
+  const end = watchdog(ms)
   let turns = 0
-  while (performance.now() < end) turns++
+  while (!end.expired()) turns++
   return turns
 }
 export default { id: "fixture.stall", async setup(ctx) {
@@ -89,7 +91,6 @@ const serve = Effect.gen(function* () {
   )
   const launch = forkLaunch(fork ?? "", process.execPath)
   const env = {
-    PATH: process.env.PATH ?? "",
     HOME: home,
     XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local/share"),
@@ -100,7 +101,7 @@ const serve = Effect.gen(function* () {
     ...launch.env,
   }
   yield* Effect.acquireRelease(
-    Effect.sync(() => owned([...launch.base, "serve", "--service", "--port", "0"], { cwd: join(base, "work"), env, stdout: "ignore", stderr: "ignore" })),
+    Effect.sync(() => ownedForkFixture([fork ?? "", join(base, "work"), ["serve", "--service", "--port", "0"], env], { stdout: "ignore", stderr: "ignore" })),
     (child) =>
       Effect.promise(() => {
         child.kill()
@@ -154,7 +155,7 @@ describe.skipIf(!runs)("the stall watchdog (real OpenCode service)", () => {
             expect(yield* block(3_000)).toBeGreaterThan(0)
             const [name = ""] = yield* until(profiles, (found) => found.length > 0, seen("a capture"))
             expect(name).toMatch(/^stall-\d{8}T\d{9}Z-\d+ms-\d+\.cpuprofile$/)
-            expect(Number(/-(\d+)ms-/.exec(name)?.[1])).toBeGreaterThanOrEqual(THRESHOLD_MS)
+            measured("stall profile filename identifies a threshold crossing", ">= 2000 ms", ({ sample }) => sample(Number(/-(\d+)ms-/.exec(name)?.[1])))
 
             const profile = decodeProfile(readFileSync(join(logDir, name), "utf8"))
             expect(profile.endTime).toBeGreaterThan(profile.startTime)
@@ -166,7 +167,7 @@ describe.skipIf(!runs)("the stall watchdog (real OpenCode service)", () => {
 
             const summary = decodeSummary(readFileSync(join(logDir, name.replace(/\.cpuprofile$/, ".json")), "utf8"))
             expect(summary.profile).toBe(join(logDir, name))
-            expect(summary.stall.lagMs).toBeGreaterThanOrEqual(THRESHOLD_MS)
+            measured("stall summary records a threshold crossing", ">= 2000 ms", ({ sample }) => sample(summary.stall.lagMs))
             expect(summary.stall.rssAfter).toBeGreaterThan(0)
             yield* until(logText, (text) => text.includes(`CPU profile ${join(logDir, name)}`), seen("the log line naming the capture"))
 
@@ -178,6 +179,6 @@ describe.skipIf(!runs)("the stall watchdog (real OpenCode service)", () => {
         ),
       ),
     ),
-    TIMEOUT_MS,
+    hangGuard("fork-turn"),
   )
 })

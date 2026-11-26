@@ -126,7 +126,7 @@ const world = (config: Partial<Model.Config> = {}, fleet: Fleet = { host: "workb
 }
 
 /** Let the review a held pace forked run: a real moment, on the test clock too. */
-const settle = Effect.promise(() => new Promise<void>((done) => setTimeout(done, 20)))
+const settle = TestClock.adjust(0)
 const onTestClock = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     yield* TestClock.setTime(T0)
@@ -150,9 +150,9 @@ describe("asked push", () => {
         const started = yield* pool.push({ action: "start", goal: "ergo", hours: 2, resets: 1, sessionID: "ses_owner" })
         expect(started.ok).toBe(true)
         expect(started.pushes).toHaveLength(1)
-        expect(started.text).toContain('"ergo" (asked): host workbox; until 2026-11-11 14:00Z')
+        expect(started.text).toContain('"ergo" (asked): host workbox; until Nov 11, 2026, 9:00:00 AM EST')
         expect(started.text).toContain("up to 1 reset, 0 spent")
-        expect(started.text).toContain("Pool anthropic: 2 accounts, their weeks at 50% used of 100% on average, the first resetting by itself 2026-11-14 12:00Z; together they use 1.04% of a week per hour")
+        expect(started.text).toContain("Pool anthropic: 2 accounts, their weeks at 50% used of 100% on average, the first resetting by itself Nov 14, 2026, 7:00:00 AM EST; together they use 1.04% of a week per hour")
         expect(started.text).toContain("1. full reset on Max A (anthropic): gives back 50% of a week")
         expect(started.text).toContain("Host load 42.0 on 16 cores (over its cores): a push raises no CPU gate")
 
@@ -229,7 +229,7 @@ describe("use it or lose it", () => {
         yield* pool.pace("anthropic", "claude-opus-5-5", "ses_owner")
         yield* pool.reviewPushes
         const status = yield* pool.resets
-        expect(status.forecast).toEqual([expect.stringContaining("4 of its 4 resets (weekly reset; each gives back ≈99% of a week) expire unused by 2026-11-21 12:00Z")])
+        expect(status.forecast).toEqual([expect.stringContaining("4 of its 4 resets (weekly reset; each gives back ≈99% of a week) expire unused by Nov 21, 2026, 7:00:00 AM EST")])
         yield* pool.reviewResets
         expect(w.owner.asked).toEqual([])
         expect((yield* pool.push({ action: "status" })).pushes).toEqual([])
@@ -268,9 +268,9 @@ describe("the owner's limits", () => {
     w.readings.set("a", reading(at, 1, 1, weekAt, [grant("g-a", T0 + 30 * DAY, FULL)]))
     w.readings.set("b", reading(at, 1, 1, weekAt, [grant("g-b", T0 + 30 * DAY, FULL)]))
   }
-  const roomy = (w: ReturnType<typeof world>) => {
-    w.readings.set("a", reading(T0, 0.3, 0.5, weekAt, [grant("g-a", T0 + 30 * DAY, FULL)]))
-    w.readings.set("b", reading(T0, 0.3, 0.5, weekAt))
+  const roomy = (w: ReturnType<typeof world>, at = T0) => {
+    w.readings.set("a", reading(at, 0.3, 0.5, weekAt, [grant("g-a", T0 + 30 * DAY, FULL)]))
+    w.readings.set("b", reading(at, 0.3, 0.5, weekAt))
   }
 
   test("P1 a push for the peer starts there, by the names each host knows (daily.ts FLEET: the Mac's workbox is bite-cristian); session and run stay on the asking host", () =>
@@ -372,8 +372,12 @@ describe("the owner's limits", () => {
         const pool = yield* w.pool
         for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
         yield* pool.push({ action: "start", goal: "ergo", hours: 1, resets: 3, sessionID: "ses_owner" })
-        expect((yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")).ok).toBe(true)
+        const lifted = yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")
+        expect(lifted.ok).toBe(true)
+        expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x", true)).toEqual(lifted)
         yield* TestClock.adjust(61 * MINUTE)
+        // The provider has a fresh reading; no pool sweep has ended the push.
+        roomy(w, T0 + 61 * MINUTE)
         for (let start = 0; start < 3; start++) yield* pool.started("anthropic")
         // No sweep has run: the push is still recorded, and past its end it does nothing.
         expect(yield* pool.pace("anthropic", "claude-opus-5-5", "ses_x")).toMatchObject({ ok: false, soft: true })

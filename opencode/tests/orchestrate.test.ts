@@ -1,3 +1,4 @@
+// @reads ../agents/*.md ../skills/orchestrate/scripts/log.ts cmd/orchestrate
 // accept: deep (36.5 s alone on a quiet host: 1-minute load 5.3–6.2 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The orchestrate port: the role agents against the orchestrate skill they
 // come from, and a run of real OpenCode (the fork, through its SDK) on
@@ -7,15 +8,19 @@
 // The plugin's rules on their own are tested beside mods/orchestrate and cmd/orchestrate.
 import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { matchingInput, readScratchFileSync, scratchExistsSync } from "./read-path.ts"
+import { checkoutAgents } from "./agent-fixture.ts"
+import { spawnCheckoutBunSync } from "./scratch-child.ts"
 import { join, resolve } from "node:path"
-import { build, DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
+import { DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
 import { effort, ORCHESTRATOR, orchestrator, ROLES } from "../mods/orchestrate/role.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
-import { owned } from "./owned.ts"
+import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
-const skill = existsSync(join(DEFAULT_SOURCE, "scripts/agents.ts"))
+const skill = existsSync(matchingInput("../skills/orchestrate/scripts/agents.ts"))
 const CLAUDE_AGENTS = resolve(ROOT, "../agents")
 if (!fork) console.warn("tests/orchestrate.test.ts: the OpenCode runs skip. Set OPENCODE_DEV to the fork.")
 if (!skill) console.warn(`tests/orchestrate.test.ts: the agent checks skip. No orchestrate skill at ${DEFAULT_SOURCE}.`)
@@ -28,10 +33,10 @@ const WEDNESDAY = "2026-11-04T15:00:00Z"
 
 describe.skipIf(!skill)("the role agents", () => {
   test("each role's prompt and description are the Claude Code agent's, word for word", async () => {
-    const built = JSON.parse((await build(ROOT)).text) as { agents: Record<string, { description: string; system: string }> }
+    const built = JSON.parse(checkoutAgents(ROOT).text) as { agents: Record<string, { description: string; system: string }> }
     expect(Object.keys(built.agents)).toEqual([...ROLES])
     for (const role of ROLES) {
-      const claude = parseAgent(readFileSync(join(CLAUDE_AGENTS, `${role}.md`), "utf8"))
+      const claude = parseAgent(readFileSync(matchingInput("../agents/*.md", join(CLAUDE_AGENTS, `${role}.md`)), "utf8"))
       expect(built.agents[role]!.system).toBe(claude.body.trim())
       expect(built.agents[role]!.description).toBe(claude.fields.description!)
     }
@@ -45,7 +50,7 @@ describe.skipIf(!skill)("the role agents", () => {
       const rule = rules.findLast((candidate) => candidate.action === "*" || candidate.action === action)
       return rule?.resource === "*" && rule.effect === "deny"
     }
-    const written = JSON.parse(readFileSync(join(ROOT, OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
+    const written = JSON.parse(readFileSync(matchingInput(OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
     for (const role of ROLES) {
       expect([role, disabled("ask_user_async", written.agents[role]!.permissions)]).toEqual([role, false])
       expect([role, disabled("question", written.agents[role]!.permissions)]).toEqual([role, true])
@@ -56,12 +61,18 @@ describe.skipIf(!skill)("the role agents", () => {
     const root = join(scratch, "check")
     mkdirSync(join(root, "mods/orchestrate"), { recursive: true })
     const file = join(root, OUT)
-    const check = () =>
-      Bun.spawnSync([process.execPath, join(ROOT, "scripts/agents.ts"), "--check", "--root", root], { stderr: "pipe" })
+    const request = join(root, "args.json")
+    writeFileSync(request, JSON.stringify(["--check", "--root", root]))
+    const check = () => spawnCheckoutBunSync("scripts/fixtures/agents-check.ts", {
+      scratchArgs: [request],
+      scratch: { HOME: root, TMPDIR: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_STATE_HOME: root, XDG_CACHE_HOME: root },
+      external: {},
+      values: {},
+    })
     expect(check().exitCode).toBe(1)
-    cpSync(join(ROOT, OUT), file)
+    cpSync(matchingInput(OUT), file)
     expect(check().exitCode).toBe(0)
-    writeFileSync(file, readFileSync(file, "utf8").replace("Writes one orchestrate unit", "Writes an orchestrate unit"))
+    writeFileSync(file, readScratchFileSync(file, "utf8").replace("Writes one orchestrate unit", "Writes an orchestrate unit"))
     const edited = check()
     expect(edited.exitCode).toBe(1)
     expect(edited.stderr.toString()).toContain(`stale: ${file}`)
@@ -75,30 +86,29 @@ const run = async (name: string, spec: Omit<Spec, "base" | "fork" | "plugin">): 
   mkdirSync(home, { recursive: true })
   const file = join(base, "spec.json")
   writeFileSync(file, JSON.stringify({ ...spec, base, fork: resolve(fork!), plugin: join(ROOT, "cmd/orchestrate") }))
-  const child = owned([process.execPath, join(import.meta.dir, "orchestrate/run.ts"), file], {
-    env: {
-      PATH: process.env.PATH ?? "",
+  const child = ownedCheckoutBun("tests/orchestrate/run.ts", {
+    scratchArgs: [file],
+    scratch: {
       HOME: home,
+      TMPDIR: base,
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"),
       XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"),
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
     },
-    stdout: "pipe",
-    stderr: "pipe",
+    external: {},
+    values: { OPENCODE_DISABLE_MODELS_FETCH: "1" },
   })
   const timer = setTimeout(() => child.kill(), 120_000)
   const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
   await child.exited
   clearTimeout(timer)
   const result = join(base, "result.json")
-  if (child.exitCode !== 0 || !existsSync(result))
+  if (child.exitCode !== 0 || !scratchExistsSync(result))
     throw new Error(`the ${name} run failed (exit ${child.exitCode}):\n${stdout}\n${stderr}`)
-  return JSON.parse(readFileSync(result, "utf8")) as Result
+  return JSON.parse(readScratchFileSync(result, "utf8")) as Result
 }
 
-const RUN_MS = 150_000
 
 describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
   test(
@@ -118,7 +128,7 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       expect(implementor.length).toBeGreaterThan(0)
       for (const request of implementor) expect(request.system).not.toContain("Never block on the shell")
     },
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -134,6 +144,6 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
           said: expect.not.stringMatching(/refused by the\s+machine|the machine's rule|"status":"error"/),
         },
       }),
-    RUN_MS,
+    hangGuard("fork-turn"),
   )
 })

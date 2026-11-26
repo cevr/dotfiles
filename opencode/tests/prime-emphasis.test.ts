@@ -8,18 +8,17 @@
 // the section (cmd/prime/prime-rules.sim.test.ts) and the frame
 // (cmd/prime/prime-emphasis.sim.test.tsx). It needs OPENCODE_DEV, the fork.
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "./read-path.ts"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Schema } from "effect"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-emphasis.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
 
-/** OpenCode's start, the streamed reply and a worker's turn: well past its usual 10 seconds. */
-const SCENARIO_MS = 180_000
 
 /** The scenario's record of each model request (scenarios/prime-emphasis.ts, SCENARIO_DUMP). */
 const Requests = Schema.fromJsonString(
@@ -40,7 +39,7 @@ const scenario = async (dir: string) => {
   const errors = await new Response(run.stderr).text()
   const code = await run.exited
   const dump = join(dir, "requests.json")
-  expect({ code, ran: existsSync(dump) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
+  expect({ code, ran: scratchExistsSync(dump) }, `${output}${errors}`.slice(-4000)).toEqual({ code: 0, ran: true })
   return {
     requests: Schema.decodeUnknownSync(Requests)(readFileSync(dump, "utf8")),
     frame: readFileSync(join(dir, "emphasis.txt"), "utf8"),
@@ -75,6 +74,6 @@ describe.skipIf(!fork)("Prime teaches root sessions the chips and draws them (OP
       expect(frame).not.toContain("[[")
       expect(stream.raw).toEqual([])
     }),
-    SCENARIO_MS,
+    hangGuard("fork-session"),
   )
 })

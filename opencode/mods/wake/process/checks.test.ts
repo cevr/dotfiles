@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/wake/process/checks.ts: Bun.spawn(["/bin/sh", "-c", command], { cwd, env: environmentOf(env), stdin: "ignore", stdout:
 // The checks as real child processes: what a command prints and exits with,
 // no shell startup file read, the output kept to its tail, and the whole
 // process group killed past the time and on interruption.
@@ -5,9 +7,11 @@ import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Effect, Fiber, type Scope } from "effect"
+import { Clock, Effect, Fiber, type Scope } from "effect"
+import { TestClock } from "effect/testing"
 import { environmentOf, run } from "./checks.ts"
-import { bounded, notYet, type Policy, ready, type TestBounds, testLimitMs, waitFor } from "./readiness.ts"
+import { bounded, notYet, type Policy, ready, type TestBounds, waitFor } from "./readiness.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** A scratch directory of the test's own, removed when its scope closes. */
 const scratch = Effect.acquireRelease(
@@ -47,7 +51,7 @@ const BOUNDS: TestBounds = { body: "30 seconds", release: "1 second" }
 
 /** The one Bun test of this file that runs an Effect: in a scratch directory of its own, bounded below its Bun limit, so its scope closes first. */
 const scratchTest = <A, E>(name: string, body: (dir: string) => Effect.Effect<A, E, Scope.Scope>) =>
-  test(name, () => Effect.runPromise(bounded(name, Effect.flatMap(scratch, body), BOUNDS)), testLimitMs(BOUNDS))
+  test(name, () => Effect.runPromise(bounded(name, Effect.flatMap(scratch, body), BOUNDS)), hangGuard("wake-short"))
 
 describe("a check", () => {
   scratchTest("gives the command's exit code, stdout and stderr, run in its directory", (dir) =>
@@ -81,12 +85,17 @@ describe("a check", () => {
   scratchTest("past its time is stopped, with its group, and reads as timed out", (dir) =>
     Effect.gen(function* () {
       const pidFile = path.join(dir, "timeout.pid")
-      const started = Date.now()
-      const check = yield* run(`sleep 30 & echo $! > ${pidFile}; echo waiting; wait`, dir, 300)
+      const clock = yield* TestClock.make()
+      const checkRun = yield* Effect.forkChild(run(`sleep 30 & echo waiting; echo $! > ${pidFile}; wait`, dir, 300).pipe(
+        Effect.provideService(Clock.Clock, clock),
+      ))
+      const pid = yield* waitFor("the timed-out check's pid file", pidIn(pidFile), SOON)
+      yield* clock.adjust(299)
+      expect(checkRun.pollUnsafe()).toBeUndefined()
+      yield* clock.adjust(1)
+      const check = yield* Fiber.join(checkRun)
       expect(check.timedOut).toBe(true)
       expect(check.stdout).toBe("waiting\n")
-      expect(Date.now() - started).toBeLessThan(5000)
-      const pid = yield* waitFor("the timed-out check's pid file", pidIn(pidFile), SOON)
       yield* waitFor(`the timed-out check's background sleep ${pid} gone`, gone(pid), SOON)
       expect(alive(pid)).toBe(false)
     }),
@@ -105,10 +114,14 @@ describe("a check", () => {
 
   scratchTest("a background child left behind does not hold the check open", (dir) =>
     Effect.gen(function* () {
-      const started = Date.now()
-      const check = yield* run("sleep 30 & echo done", dir, 10_000)
+      const pidFile = path.join(dir, "left-behind.pid")
+      // The descendant inherits stdout and would keep it open past the check's
+      // own deadline. A successful result must therefore follow group teardown.
+      const check = yield* run(`sleep 30 & echo $! > ${pidFile}; echo done`, dir, 10_000)
       expect(check).toEqual({ exitCode: 0, stdout: "done\n", stderr: "", timedOut: false })
-      expect(Date.now() - started).toBeLessThan(5000)
+      const pid = yield* waitFor("the left-behind pid file", pidIn(pidFile), SOON)
+      yield* waitFor(`the abandoned check child ${pid} gone`, gone(pid), SOON)
+      expect(alive(pid)).toBe(false)
     }),
   )
 

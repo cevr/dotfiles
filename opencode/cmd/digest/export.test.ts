@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/log.ts: Effect.tryPromise({ try: () => open(path, "a+", FILE_MODE), catch: unwritable }),
 // `digest export` over a synthetic log in a scratch folder: it writes the page's data.js by rename, as r3's page reads
 // it (`window.DIGEST3` with its projects), skips a bad line, and refuses arguments without `--out`.
 import { describe, expect, test } from "bun:test"

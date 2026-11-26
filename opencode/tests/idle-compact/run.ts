@@ -32,9 +32,12 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 import { BACKGROUND_TASK, EARLY_MS, LATE_MS, MARGIN_SECONDS, PRECOMPUTE_TASK, serve, TASK, TTL_SECONDS, WAKE_MS, type Seen } from "./sim.ts"
+import { stamp, watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly base: string
@@ -68,9 +71,10 @@ export interface Result {
   readonly log: ReadonlyArray<Line>
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 
@@ -92,7 +96,7 @@ const content = {
     },
   },
   // A 1000-token prompt is over a 50-token threshold.
-  plugins: [{ package: spec.plugin, options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
+  plugins: [{ package: matchingInput("cmd/idle-compact", spec.plugin), options: { ttlSeconds: TTL_SECONDS, shortMarginSeconds: MARGIN_SECONDS, thresholdTokens: 50 } }],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -109,16 +113,16 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 const log: Array<Line> = []
 const started: Array<Started> = []
 /** The host's hook context, as much as the clock uses. */
 interface Hooks {
   readonly session: { readonly hook: (name: "model.request", callback: (event: { readonly kind: Started["kind"] }) => void) => Promise<unknown> }
 }
-const opencode = await OpenCode.create({
+const opencode = await OpenCode.create(testHostOptions({
   // The host activates its SDK plugins ahead of the config's (its boot order), so this hook runs before the plugin's.
-  plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: Date.now() })) }],
+  plugins: [{ id: "request-clock", setup: (context: Hooks) => context.session.hook("model.request", (event) => void started.push({ kind: event.kind, at: stamp() })) }],
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
   models: { fetch: false },
@@ -137,7 +141,7 @@ const opencode = await OpenCode.create({
     },
   },
   config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+}))
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)))
 const compacted = (messages: unknown) =>
@@ -152,7 +156,7 @@ try {
   if (spec.others !== undefined) {
     await opencode.location.get({ location: { directory: work } })
     for (let index = 0; index < spec.others; index += 1) {
-      const directory = join(spec.base, `other-${index}`)
+      const directory = join(base, `other-${index}`)
       mkdirSync(directory, { recursive: true })
       await opencode.location.get({ location: { directory } })
     }
@@ -161,8 +165,8 @@ try {
   }
   await opencode.sessions.prompt({ sessionID: session.id, text: spec.background ? BACKGROUND_TASK : spec.precompute ? PRECOMPUTE_TASK : TASK })
   await opencode.experimental.session.wait({ sessionID: session.id })
-  const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? Date.now()
-  await sleep(turn + EARLY_MS - Date.now())
+  const turn = sim.seen.findLast((item) => item.kind === "turn")?.at ?? stamp()
+  await sleep(turn + EARLY_MS - stamp())
   const early = await opencode.sessions.context({ sessionID: session.id })
   let late = early
   // The background run waits on past the compaction for the shell's notice to wake the session.
@@ -171,14 +175,15 @@ try {
     return compaction !== undefined && sim.seen.some((item) => item.kind === "turn" && item.at > compaction.at)
   }
   const done = () => (spec.background ? compacted(late) && woke() : compacted(late))
-  while (Date.now() < turn + (spec.background ? WAKE_MS : LATE_MS) && !done()) {
+  const deadline = watchdog(Math.max(0, turn + (spec.background ? WAKE_MS : LATE_MS) - stamp()))
+  while (!deadline.expired() && !done()) {
     await sleep(500)
     late = await opencode.sessions.context({ sessionID: session.id })
   }
   if (spec.background) await opencode.experimental.session.wait({ sessionID: session.id })
   late = await opencode.sessions.context({ sessionID: session.id })
   const result: Result = { early, late, seen: sim.seen, started, log }
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)

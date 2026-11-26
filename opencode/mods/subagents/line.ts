@@ -52,6 +52,7 @@ export const SYMBOLS: Readonly<Record<State, string>> = {
   blocked: "◆",
   latched: "◇",
   idle: "◇",
+  unknown: "◇",
   cancelled: "◇",
   done: "◆",
   failed: "◆",
@@ -65,13 +66,19 @@ export type StateTone = "success" | "warning" | "error" | "info" | "muted"
  * colour; failed the error colour; latched the info colour; idle and done
  * muted. Each glyph and colour pair names one state.
  */
-export function stateTone(state: State): StateTone {
-  if (state === "working") return "success"
-  if (state === "latched") return "info"
-  if (state === "failed") return "error"
-  if (state === "waiting" || state === "blocked" || state === "cancelled") return "warning"
-  return "muted"
-}
+const TONE_BY_STATE = {
+  working: "success",
+  waiting: "warning",
+  blocked: "warning",
+  latched: "info",
+  done: "muted",
+  failed: "error",
+  cancelled: "warning",
+  idle: "muted",
+  unknown: "muted",
+} satisfies Readonly<Record<State, StateTone>>
+
+export const stateTone = (state: State): StateTone => TONE_BY_STATE[state]
 
 /** The diamond a row leads with: its state's, or for a working row `frame` when given. */
 export function glyph(state: State, frame?: string): string {

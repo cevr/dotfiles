@@ -4,10 +4,11 @@ import { describe, expect } from "bun:test"
 import { Effect, type Layer, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { ReplyStyles } from "../reply-style.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** `fresh` gives a new, empty store for each case. */
 export const replyStylesLaws = (name: string, fresh: () => Layer.Layer<ReplyStyles>) => {
-  const check = (title: string, body: Effect.Effect<void, never, ReplyStyles>) => effectTest(title, body.pipe(Effect.provide(fresh())), 5_000)
+  const check = (title: string, body: Effect.Effect<void, never, ReplyStyles>) => effectTest(title, body.pipe(Effect.provide(fresh())), hangGuard("unit-law"))
   describe(`${name} keeps the ReplyStyles laws`, () => {
     check(
       "a session keeps nothing until asked; keep keeps the first text and answers it ever after",

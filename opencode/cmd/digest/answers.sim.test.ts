@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // One question, answered from the tray and from the digest page, on the simulated host at the runner's seeds: the
 // questions plugin loaded for two directories (two copies over one storage, as OpenCode serves a plugin once per
 // directory), and the digest plugin, its page's handlers captured as the listener would get them (server.ts `make`).
@@ -24,10 +26,10 @@ import { make as makeDigest } from "./server.ts"
 import { scratch } from "../../tests/scratch.ts"
 import * as Plugins from "../../sim/plugins.ts"
 import { plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/digest/answers.sim.test.ts")
+const { seeded } = simulationRunner("cmd/digest/answers.sim.test.ts")
 
 const ASKING = "/scratch/asking"
 const SERVING = "/scratch/serving"

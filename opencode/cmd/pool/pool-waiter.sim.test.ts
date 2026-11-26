@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/store/store.ts: names: readdirSync, read: (path) => readFileSync(path, "utf8"),
 // A model of the store's waiters on the simulated world, at 20 seeds and the past failing ones: one login of a store,
 // several resolves of it in this process (each a turn: resolve, send, and on a 401 tell the store), and another
 // process holding the same store that trades the login, fails its write some times, lands it, and holds the lock
@@ -22,13 +24,13 @@ import {
 } from "@dotfiles/opencode-pool/store/store"
 import * as Provider from "../../sim/provider.ts"
 import { below, generator, line } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
 /** Seeds found failing, replayed on every run. */
 const PAST: ReadonlyArray<number> = []
 
-const { seeded } = Seed.runner("cmd/pool/pool-waiter.sim.test.ts", { past: PAST })
+const { seeded } = simulationRunner("cmd/pool/pool-waiter.sim.test.ts", { past: PAST })
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

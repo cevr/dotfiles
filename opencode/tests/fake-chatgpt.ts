@@ -1,3 +1,4 @@
+import { stamp } from "./hang-guard.ts"
 /**
  * A fake ChatGPT backend on a loopback port: the three endpoints the pool's
  * ChatGPT source reaches (`mods/pool/chatgpt/usage.ts`, after codex-rs
@@ -46,8 +47,11 @@ export interface FakeChatGPT {
   readonly stop: () => Promise<void>
 }
 
+/** Epoch of synthetic provider facts, not a test-runner deadline or stopwatch. */
+export const quotaEpoch = () => stamp()
+
 /** An account whose 5-hour window is spent, its week `weekly` percent used, with one credit expiring in `creditIn`. */
-export const spentAccount = (access: string, creditID: string, now = Date.now(), weekly = 40, creditIn = 20 * DAY): FakeChatGPTAccount => ({
+export const spentAccount = (access: string, creditID: string, now = quotaEpoch(), weekly = 40, creditIn = 20 * DAY): FakeChatGPTAccount => ({
   access,
   fiveHour: 100,
   weekly,
@@ -112,7 +116,7 @@ export const startFakeChatGPT = (options: { readonly beforeConsumeResponse?: () 
         if (code === "reset" && credit !== undefined) {
           redeemed.add(requestID)
           credit.status = "redeemed"
-          const now = Date.now()
+          const now = stamp()
           account.fiveHour = 0
           account.weekly = 0
           account.fiveHourResetAt = now + 5 * HOUR

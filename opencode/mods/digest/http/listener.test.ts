@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/filestore/devices.ts: Effect.tryPromise({ try: () => stat(path), catch: codeOf }).pipe(
 // The page's listener over a real socket:
 // - It binds loopback only, serves the page's built files with their content types and nothing outside them, and
 //   answers the view as JSON.
@@ -12,6 +14,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { networkInterfaces } from "node:os"
 import { join } from "node:path"
 import { Duration, Effect, Match, Option, Ref, Schedule, Scope } from "effect"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { scratch } from "../../../tests/scratch.ts"
 import { AnswerOutcome, type PageAnswer } from "../answers.ts"
 import { hostOf, noTailnet, StatusRead, type Tailnet } from "../bind.ts"
@@ -1336,23 +1339,37 @@ describe("loopback is main's, unchanged (round 1, M2)", () => {
     const ports = [80, 443, 8240, 1, 65_535, ...Array.from({ length: 3 }, () => 1024 + (random() % 60_000))]
     const hostsAt = (port: number) => ["localhost", "127.0.0.1", "[::1]", "LOCALHOST", "localhost.", "127.0.0.2", "evil.example", "100.101.102.103"].flatMap((each) => [each, `${each}:${port}`, `${each}:80`, `${each}:${port + 1}`]).concat(["", "null", ABSENT])
     const headersOf = (host: string, port: number) =>
-      [ABSENT, "", " ", "null", `http://${host}`, `http://${host}, http://${host}`, `http://${host}/`, `http://localhost:${port}`].flatMap((origin) => ([[true, true], [false, true], [true, false]] as const).flatMap(([pageHeader, json]) => [false, true].map((paired) => ({ origin, pageHeader, json, paired, source: "local" as const }))))
-    const cases = ports.flatMap((port) =>
-      hostsAt(port).flatMap((host) =>
-        ["GET", "HEAD", "POST", "PUT", "OPTIONS", "TRACE", "FOO", "CONNECT"].flatMap((method) =>
-          ["/", "/?p=x", "/assets/index-abc.js", "/view.json", "/health", "/paired.json", "/api/mark", "/api/answer", "/api/pair", "/x"].flatMap((target) => headersOf(host, port).map((extra) => ({ port, asking: askingOf(method, `http://${host}${target}`, host, extra) }))),
-        ),
-      ),
-    )
-    const wrong = cases.flatMap(({ port, asking }) => {
-      const got = verdict(screen(loopbackSite(port), MEMBER_POLICY, asking).decision)
-      const expected = mainLoopback(asking, port)
-      return [`${port} ${asking.method} ${asking.url} Host=${asking.host} Origin=${asking.origin} header=${asking.pageHeader} json=${asking.json} paired=${asking.paired}: ${got} (main: ${expected})`].filter(() => got !== expected)
-    })
+      [ABSENT, "", " ", "null", `http://${host}`, `http://${host}, http://${host}`, `http://${host}/`, `http://localhost:${port}`].flatMap((origin) => {
+        const originOpt = sent(origin)
+        return ([[true, true], [false, true], [true, false]] as const).flatMap(([pageHeader, json]) => [false, true].map((paired) => ({ origin: originOpt, pageHeader, json, paired, source: "local" as const })))
+      })
+    const methods = ["GET", "HEAD", "POST", "PUT", "OPTIONS", "TRACE", "FOO", "CONNECT"]
+    const targets = ["/", "/?p=x", "/assets/index-abc.js", "/view.json", "/health", "/paired.json", "/api/mark", "/api/answer", "/api/pair", "/x"]
+    const wrong: Array<string> = []
+    let count = 0
+    for (const port of ports) {
+      const site = loopbackSite(port)
+      for (const host of hostsAt(port)) {
+        const hostOpt = sent(host)
+        const headers = headersOf(host, port)
+        for (const method of methods)
+          for (const target of targets) {
+            const url = `http://${host}${target}`
+            for (const extra of headers) {
+              count += 1
+              const asking: Asking = { method, url, pageHeader: extra.pageHeader, json: extra.json, paired: extra.paired, source: extra.source, host: hostOpt, origin: extra.origin }
+              const got = verdict(screen(site, MEMBER_POLICY, asking).decision)
+              const expected = mainLoopback(asking, port)
+              if (got !== expected)
+                wrong.push(`${port} ${asking.method} ${asking.url} Host=${asking.host} Origin=${asking.origin} header=${asking.pageHeader} json=${asking.json} paired=${asking.paired}: ${got} (main: ${expected})`)
+            }
+          }
+      }
+    }
     expect(wrong.slice(0, 5)).toEqual([])
-    expect(cases.length > 100_000).toBe(true)
+    expect(count > 100_000).toBe(true)
     expect(MAIN_PAIR_FIRST).toBe(PAIR_FIRST)
-  })
+  }, hangGuard("local-fixture"))
 
   test("the round's probe: on digest.port 80, Host localhost:80 and 127.0.0.1:80 read health, a bare localhost is refused, as on main", async () => {
     using held = scratch("digest-http-")

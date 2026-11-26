@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/mail/filestore/pairs.ts: export const layer = (file: string) => layerReading(file, () => readFileSync(file, "utf8"))
 // The plugin seam: the composition root on a stand-in host whose tool editor
 // the test reads, its sessions read through the OpenCode adapter over a world
 // in memory. It checks what OpenCode sees: two direct tools, the listing, a
@@ -13,6 +15,7 @@ import { EMPTY } from "@dotfiles/opencode-mail/pairing"
 import { PairStore, Peers, PeerUnreachable } from "@dotfiles/opencode-mail/service"
 import { type Host as SessionsHost, layer as sessionsLayer, type SessionView, type Synthetic } from "@dotfiles/opencode-mail/opencode/sessions"
 import MailPlugin, { make } from "./server.ts"
+import { stamp } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof MailPlugin)["effect"]>[0]
 
@@ -27,7 +30,7 @@ interface Added {
   ) => Effect.Effect<{ readonly content: ReadonlyArray<Tool.Content>; readonly metadata?: Record<string, unknown> }, Tool.Error>
 }
 
-const NOW = Date.now()
+const NOW = stamp()
 
 /** No paired hosts: the peers' path is the model's test's and tests/mail-peer.test.ts's. */
 const NO_PEERS = Layer.succeed(

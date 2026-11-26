@@ -1,37 +1,12 @@
-// When the pool spends a reset on its own: the standing allowance's one rule.
-// The owner approved every reset in hand ahead of time, so nothing here asks;
-// it only decides whether a claim pays now, and says why not when it does not.
-//
-// Demand is a forecast of what runs now (2026-11-15: a start is almost never
-// held any more): the pool's burn per hour, measured over its recent
-// readings (it carries the agents running across the fleet), a start held
-// adding its share, run forward to each window's natural reset.
-//
-// Capacity is taken in this order:
-// 1. A reset about to expire unused, soonest expiry first. One that expires
-//    within EXPIRING_MS is just used, whatever the demand, on anything it
-//    gives back: on a spent window at once, else at its last call
-//    (LAST_CALL_MS before it expires, longer than a 5-hour period) on the
-//    window it gives back most of; never while that window resets by itself
-//    within NATURAL_MS (it goes once that reset has passed). One that expires
-//    later but before the window it gives back resets by itself is used once
-//    that window is spent and the work would use it.
-// 2. A fresh account: while the forecast keeps room on the pool's accounts
-//    to the first natural reset, the work goes there and no reset is spent.
-// 3. Only when the pool is forecast to run out before that reset: a reset on
-//    the most-used account near its limit (NEAR_USED, or its own run-out
-//    within NEAR_MS), so the claim gives back the most, that frees the
-//    account (no other spent window still holds it), when the work would use
-//    at least WORTH_SHARE of what it gives back before the window resets by
-//    itself. With no agent running and no start held there is no forecast:
-//    the burn the readings show is past use.
-//
-// Steps 1 (past its last day) and 3 are never soon anyway: no claim for a
-// 5-hour window that resets by itself within NATURAL_MS, nor for a week-long
-// one within NOT_WORTH_MS. The 5-hour window is optional: readings may not
-// carry one, and the forecast stands on the week-long windows alone.
+// Automatic redemption follows measured exhaustion, never projected demand.
+// Expiring credits get first choice (last day; depleted now or six-hour last
+// call). Otherwise active/held work refills an exhausted account if the reset
+// frees it. Anthropic keeps the weekly deadline; Codex restarts it and waits
+// out an unspent week or an imminent natural reset. All claims wait
+// at least 30 minutes from the judged natural reset. Forecasts below remain
+// advisory for reporting and explicit push planning.
 import { Array as Arr, Data, Match, Option, Order } from "effect"
-import { iso } from "./usage-text.ts"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -63,7 +38,7 @@ export interface ClaimOption {
   /** The window it is judged on, as the owner reads it, and whether it is week-long (else the 5-hour one). */
   readonly window: string
   readonly long: boolean
-  /** The name of that window as read (`7d`, `7d:Fable`, `5h`): the pool's forecast on it decides. */
+  /** The name of that window as read (`7d`, `7d:Fable`, `5h`): its measured exhaustion decides. */
   readonly forecast: string
   /** That window's use now, and the share of it the claim gives back (0 to 1). */
   readonly from: number
@@ -78,6 +53,8 @@ export interface ClaimOption {
   /** The account's week: its use, and when it resets by itself. */
   readonly weekUsed: number
   readonly weekResetAt: Option.Option<number>
+  /** The refill preserves the shared weekly deadline; unknown providers are conservative. */
+  readonly preservesWeekly?: boolean
 }
 
 /** One window of an account, as the forecast reads it. */
@@ -119,7 +96,7 @@ export type ClaimStep = "expiring" | "fresh" | "reset"
 export const STEP_TEXT: Readonly<Record<ClaimStep, string>> = {
   expiring: "about to expire unused",
   fresh: "an account keeps room to its reset",
-  reset: "the pool runs out before its reset",
+  reset: "the account reached its limit",
 }
 
 export type ClaimVerdict = Data.TaggedEnum<{
@@ -157,13 +134,15 @@ const expiresWithin = (option: ClaimOption, now: number, ms: number) =>
   Option.match(option.expiresAt, { onNone: () => false, onSome: (at) => at - now <= ms })
 
 /** Whether the window resets by itself soon anyway: within NATURAL_MS for a reset in its last day, else by the window's length. */
-export const soon = (option: ClaimOption, now: number): boolean =>
-  option.resetAt - now <=
-  Match.value({ long: option.long, last: expiresWithin(option, now, EXPIRING_MS) }).pipe(
+export const soon = (option: ClaimOption, now: number): boolean => {
+  const deadline = Option.getOrElse(Option.filter(option.weekResetAt, () => option.preservesWeekly === false), () => option.resetAt)
+  return deadline - now <= Match.value({ long: option.long || option.preservesWeekly === false, last: expiresWithin(option, now, EXPIRING_MS), known: Option.isSome(Option.fromUndefinedOr(option.preservesWeekly)) }).pipe(
     Match.when({ last: true }, () => NATURAL_MS),
+    Match.when({ known: true }, () => NATURAL_MS),
     Match.when({ long: true }, () => NOT_WORTH_MS),
     Match.orElse(() => NATURAL_MS),
   )
+}
 
 /**
  * How much the work on the fleet runs at against the burn the readings
@@ -272,34 +251,28 @@ export const AVERAGED_TEXT = ", burn the window's average (none measured yet, as
 export const workText = (situation: ClaimSituation, option: ClaimOption): string =>
   `${situation.running} ${plural(situation.running, "agent")} running, ${situation.held} ${plural(situation.held, "start")} held, ~${pct(projected(situation, option))} of the ${option.window} window would be used before its reset in ${span(option.resetAt - situation.now)}`
 
-const expiryText = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => "never", onSome: iso })
+const expiryText = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => "never", onSome: formatNotificationTime })
 
-/** Whether it expires before the window it gives back resets by itself. */
-const expiresFirst = (option: ClaimOption) => Option.match(option.expiresAt, { onNone: () => false, onSome: (at) => at < option.resetAt })
-
-/** Why an option goes in step 1 now; none when it waits or is not about to expire. */
-const expiringWhy = (situation: ClaimSituation, option: ClaimOption): Option.Option<string> => {
-  const { now } = situation
-  return Match.value({
-    last: expiresWithin(option, now, EXPIRING_MS),
-    ready: option.from >= 1 || expiresWithin(option, now, LAST_CALL_MS),
-    gives: option.restored > 0,
-    spends: expiresFirst(option) && option.from >= 1 && working(situation) && pays(situation, option),
-  }).pipe(
-    Match.when({ last: true, ready: true, gives: true }, () => Option.some(`it expires ${expiryText(option)}, lost unused otherwise`)),
-    Match.when({ spends: true }, () => Option.some(`it expires ${expiryText(option)} before the ${option.window} window resets, and ${workText(situation, option)}`)),
-    Match.orElse(() => Option.none()),
+/** Use-or-lose is the only exception to ordinary exhaustion; its horizon is explicit. */
+const expiringWhy = (situation: ClaimSituation, option: ClaimOption): Option.Option<string> =>
+  Option.filter(Option.some(`it expires ${expiryText(option)}, lost unused otherwise`), () =>
+    expiresWithin(option, situation.now, EXPIRING_MS) &&
+    (exhausted(option) || expiresWithin(option, situation.now, LAST_CALL_MS)) && option.restored > 0,
   )
+
+/** Measured exhaustion, allowing the existing 99% shared-week safety stop. */
+const exhausted = (option: ClaimOption) => {
+  // Restarting the week on a spent 5h window would discard unspent weekly quota.
+  if (option.preservesWeekly === false) return option.weekUsed >= 0.99
+  return option.from >= Match.value(option.forecast).pipe(Match.when("7d", () => 0.99), Match.orElse(() => 1))
 }
 
-/** Why step 3 passes over an option. */
-const passedOver = (situation: ClaimSituation, option: ClaimOption, forecast: Forecast): string =>
-  Match.value({ soon: soon(option, situation.now), frees: option.frees, out: runsOut(situation, forecast), near: near(situation, option), pays: pays(situation, option) }).pipe(
+/** Why an ordinary reset waits. Forecasts remain advisory and authorize no claim. */
+const passedOver = (situation: ClaimSituation, option: ClaimOption): string =>
+  Match.value({ soon: soon(option, situation.now), frees: option.frees, spent: exhausted(option) }).pipe(
     Match.when({ soon: true }, () => `${option.label}: its ${option.window} window resets by itself in ${span(option.resetAt - situation.now)}`),
     Match.when({ frees: false }, () => `${option.label}: it would not free the account, another spent window still holds it`),
-    Match.when({ out: false }, () => `${option.label}: ${forecastText(situation, option, forecast)}; the pool keeps room until its first reset`),
-    Match.when({ near: false }, () => `${option.label}: ${option.window} at ${pct(option.from)} used, not near its limit`),
-    Match.when({ pays: false }, () => `${option.label}: ${workText(situation, option)}, under ${pct(WORTH_SHARE)} of the ${pct(option.restored)} it gives back`),
+    Match.when({ spent: false }, () => `${option.label}: ${option.window} at ${pct(option.from)} used; wait for measured exhaustion`),
     Match.orElse(() => `${option.label}: another reset went first`),
   )
 
@@ -313,30 +286,19 @@ const freshestWeek = Order.combine(
   expiryOrder,
 )
 
-/** Step 3: when the pool runs out before its reset, a reset on the most-used account near its limit. */
-const forRunOut = (situation: ClaimSituation, options: ReadonlyArray<ClaimOption>): ClaimVerdict => {
-  const forecasts = new Map(Arr.dedupe(options.map((option) => option.forecast)).map((name) => [name, forecastOf(situation, name)] as const))
-  const forecast = (option: ClaimOption) => forecasts.get(option.forecast) ?? forecastOf(situation, option.forecast)
+/** Refill an exhausted account with work to do; expiry has already had first choice. */
+const forExhaustion = (situation: ClaimSituation, options: ReadonlyArray<ClaimOption>): ClaimVerdict => {
   const good = Arr.sort(
-    options.filter((option) => !soon(option, situation.now) && option.frees && runsOut(situation, forecast(option)) && near(situation, option) && pays(situation, option)),
-    Order.combine(fullestFirst, freshestWeek),
+    options.filter((option) => !soon(option, situation.now) && option.frees && exhausted(option) && option.restored > 0),
+    Order.combine(expiryOrder, Order.combine(fullestFirst, freshestWeek)),
   )
   return Option.match(Arr.head(good), {
-    onSome: (option) => claim("reset", option, forecastText(situation, option, forecast(option))),
-    onNone: () =>
-      noClaim(
-        Option.some(
-          Option.match(Arr.head(options), {
-            onNone: (): ClaimStep => "reset",
-            onSome: (option): ClaimStep =>
-              Match.value(runsOut(situation, forecast(option))).pipe(
-                Match.when(true, (): ClaimStep => "reset"),
-                Match.orElse((): ClaimStep => "fresh"),
-              ),
-          }),
-        ),
-        Arr.match(options, { onEmpty: () => ["no reset in hand to claim"], onNonEmpty: (all) => all.map((option) => passedOver(situation, option, forecast(option))) }),
-      ),
+    onSome: (option) => claim("reset", option,
+      `${option.window} ${pct(option.from)} used, ${situation.running} ${plural(situation.running, "agent")} running, ${situation.held} ${plural(situation.held, "start")} held; refill the measured limit`),
+    onNone: () => noClaim(
+      Option.some(Match.value(options.some(exhausted)).pipe(Match.when(true, (): ClaimStep => "reset"), Match.orElse((): ClaimStep => "fresh"))),
+      Arr.match(options, { onEmpty: () => ["no reset in hand to claim"], onNonEmpty: (all) => all.map((option) => passedOver(situation, option)) }),
+    ),
   })
 }
 
@@ -353,7 +315,7 @@ export const decideClaim = (situation: ClaimSituation, options: ReadonlyArray<Cl
         Match.when({ work: false }, () => noClaim(Option.none(), ["no agent is running and no start is held"])),
         Match.when({ settling: true }, () => noClaim(Option.none(), ["a claim has not shown in a reading yet"])),
         Match.when({ pushed: true }, () => noClaim(Option.none(), ["a push covers the held work: its approved resets decide"])),
-        Match.orElse(() => forRunOut(situation, options)),
+        Match.orElse(() => forExhaustion(situation, options)),
       ),
   })
 }

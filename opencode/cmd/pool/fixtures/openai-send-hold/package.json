@@ -1,0 +1,1 @@
+{"name":"fixture-openai-send-hold","private":true,"type":"module","exports":{"./server":"./server.ts"}}

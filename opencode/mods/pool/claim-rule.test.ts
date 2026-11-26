@@ -1,34 +1,11 @@
-// The standing allowance's rule (claim-rule.ts `decideClaim`) against a model
-// of the pool over generated weeks with steady burn and no holds: agents run
-// on the pool (their number changes now and then, sometimes to none), their
-// work spreads over the accounts not spent, some accounts read a 5-hour
-// window and some do not, and resets in hand expire at random. Every 10
-// minutes the rule is asked with what the readings show (an open window's
-// burn now, a spent one's average over its period); a claim empties the
-// window it is judged on and starts a new period there. Each property below
-// is held over every decision, judged on the world's own numbers:
-// - no question: a verdict is a claim or a reason for none;
-// - never a claim inside NATURAL_MS of the window's own reset, nor a
-//   week-long window's under NOT_WORTH_MS before it, but a reset's last day
-//   may go on any window not about to reset within NATURAL_MS;
-// - never two claims in one window period of an account (the pool offers
-//   none on a period claimed, as resets.ts `candidatesOf` does);
-// - never a claim not about to expire while the pool keeps room to its first
-//   natural reset (the freshest account takes the work first), and then only
-//   on an account near its limit;
-// - before the pool runs out: whenever no account has room on a window with
-//   agents running and a reset is in hand that frees its account, is not
-//   soon, and the work would spend half of what it gives back before its
-//   window resets by itself, a claim is made;
-// - a reset expiring within EXPIRING_MS whose window is spent goes first, soonest first;
-// - no reset expires unused when a claim was allowed at its last call: at
-//   every step of its last LAST_CALL_MS its window was about to reset by
-//   itself, it gave nothing back, or another reset was claimed.
+// Public seam: decideClaim against an independent numeric pool simulation.
+// Generated weeks exercise exhaustion, expiry ordering, natural boundaries,
+// actual refill/remaining-credit state, and no double spending. Forecasts do
+// not authorize or veto an ordinary claim; provider transport is outside this seam.
 import { describe, expect, test } from "bun:test"
 import { Array as Arr, Match, Option } from "effect"
 import {
   type AccountLoad,
-  AVERAGED_TEXT,
   type ClaimOption,
   type ClaimSituation,
   ClaimVerdict,
@@ -36,11 +13,32 @@ import {
   EXPIRING_MS,
   LAST_CALL_MS,
   NATURAL_MS,
-  NEAR_MS,
-  NEAR_USED,
   NOT_WORTH_MS,
-  WORTH_SHARE,
 } from "./claim-rule.ts"
+
+// This domain's import fence keeps the simulator helper out.
+type WitnessTable<Key extends string> = Readonly<Record<Key, { readonly expected: ReadonlyArray<string>; readonly run: (cause: boolean) => ReadonlyArray<string> }>>
+const assertWitnessCases = <const Key extends string>(
+  required: ReadonlyArray<Key>,
+  table: WitnessTable<NoInfer<Key>>,
+) => {
+  expect(Object.keys(table).toSorted(), "witness table keys").toEqual(required.toSorted())
+  const completed = required.map((key) => {
+    const { expected, run } = table[key]
+    const observed = run(true)
+    const withoutCause = run(false)
+    const label = `W: ${key}`
+    expect(observed, label).toEqual(expected)
+    expect(() => expect(withoutCause, label).toEqual(expected), `${label}: removing the cause must fail the same observation`).toThrow()
+    return key
+  })
+  expect(completed, "witness cases completed").toEqual([...required])
+}
+
+// Mirrors of the coverage registry, checked by scripts/sim-coverage.test.ts.
+const POOL_LAW = [[0, 20, "forecast", "expiry"], [0, 100, "room", "exhaustion"]] as const
+const assertPoolWitnessCases = (law: typeof POOL_LAW, table: WitnessTable<string>) =>
+  assertWitnessCases(law.flatMap(([first, last, ...kinds]) => Arr.range(first, last).flatMap((index) => kinds.map((kind) => `${kind} ${index}`))), table)
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -96,6 +94,8 @@ interface Decision {
   readonly situation: ClaimSituation
   readonly options: ReadonlyArray<ClaimOption>
   readonly verdict: ReturnType<typeof decideClaim>
+  readonly after: ReadonlyArray<{ readonly id: string; readonly windows: ReadonlyArray<Window> }>
+  readonly remaining: ReadonlyArray<ClaimOption>
 }
 
 const windowOf = (account: Pick<Account, "windows">, name: string) => Arr.findFirst(account.windows, (window) => window.name === name)
@@ -182,12 +182,13 @@ const simulate = (seed: number, rule: typeof decideClaim = decideClaim) => {
     // The number of agents changes now and then: none, a few, or many.
     if (next() < 0.02) work.running = Math.floor(next() ** 2 * 16)
     burnStep(accounts, work.running, now)
-    const options = accounts.flatMap((account) =>
+    const available = () => accounts.flatMap((account) =>
       account.resets
         .filter((reset) => Option.isNone(reset.claimedAt) && Option.match(reset.expiresAt, { onNone: () => true, onSome: (at) => at > now }))
         .flatMap((reset) => Option.toArray(optionOf(account, reset, now)))
         .filter((option) => !periods.includes(`${account.id}:${option.window}:${option.resetAt}`)),
     )
+    const options = available()
     const situation: ClaimSituation = {
       now,
       held: 0,
@@ -198,7 +199,8 @@ const simulate = (seed: number, rule: typeof decideClaim = decideClaim) => {
       pushed: false,
     }
     const verdict = rule(situation, options)
-    decisions.push({ now, running: work.running, accounts: accounts.map((account) => ({ id: account.id, windows: account.windows.map((window) => ({ ...window })) })), situation, options, verdict })
+    const snapshot = () => accounts.map((account) => ({ id: account.id, windows: account.windows.map((window) => ({ ...window })) }))
+    const before = snapshot()
     if (verdict._tag === "Claim") {
       const account = Arr.findFirst(accounts, (item) => item.id === verdict.option.credentialID).pipe(Option.getOrThrow)
       const reset = Arr.findFirst(account.resets, (item) => item.id === verdict.option.creditID).pipe(Option.getOrThrow)
@@ -207,6 +209,7 @@ const simulate = (seed: number, rule: typeof decideClaim = decideClaim) => {
       reset.claimedAt = Option.some(now)
       Object.assign(window, { used: 0, resetAt: now + LENGTH[window.name] })
     }
+    decisions.push({ now, running: work.running, accounts: before, situation, options, verdict, after: snapshot(), remaining: available() })
   }
   return { accounts, decisions, periods }
 }
@@ -226,15 +229,12 @@ const truth = (decision: Decision, name: string) => {
   return { room, burn, natural, runsOut: decision.running > 0 && room < (burn * (natural - decision.now)) / HOUR }
 }
 
-/** Whether the work would spend half of what the option gives back before its window resets by itself, at the world's burn. */
-const paysTruly = (decision: Decision, option: ClaimOption) =>
-  (decision.running * perAgent(option.window) * (option.resetAt - decision.now)) / HOUR >= WORTH_SHARE * option.restored
-
+/** Independent policy boundaries: a shared week stops at 99%, all others at 100%. */
+const measuredLimit = (option: ClaimOption) => option.from >= 1 || (option.forecast === "7d" && option.from >= 0.99)
 const notSoon = (option: ClaimOption, now: number) =>
-  option.resetAt - now >
-  Match.value(option.long).pipe(
-    Match.when(true, () => NOT_WORTH_MS),
-    Match.orElse(() => NATURAL_MS),
+  Match.value(option.long && option.preservesWeekly !== true && option.preservesWeekly !== false).pipe(
+    Match.when(true, () => option.resetAt - now > NOT_WORTH_MS),
+    Match.orElse(() => option.resetAt - now > NATURAL_MS),
   )
 
 /** What every claim made holds to. */
@@ -245,23 +245,27 @@ const eachClaimHolds = (decisions: ReadonlyArray<Decision>) => {
     expect(verdict.reason, why).not.toContain("?")
     expect(option.resetAt - decision.now, why).toBeGreaterThan(NATURAL_MS)
     if (!lastDay(option, decision.now)) expect(notSoon(option, decision.now), why).toBe(true)
-    if (step === "expiring") continue
-    // Never while the pool keeps room to its first natural reset; then on an account near its limit, that it frees.
-    expect(truth(decision, option.window).runsOut, `${why}: the pool keeps room`).toBe(true)
-    expect(option.from >= NEAR_USED || ((1 - option.from) / option.burn) * HOUR <= NEAR_MS, `${why}: not near its limit`).toBe(true)
+    expect(option.restored, why).toBeGreaterThan(0)
+    if (step === "expiring") {
+      expect(lastDay(option, decision.now), `${why}: ordinary credit used by expiry forecast`).toBe(true)
+      expect(measuredLimit(option) || Option.getOrThrow(option.expiresAt) - decision.now <= LAST_CALL_MS, why).toBe(true)
+      continue
+    }
+    expect(decision.situation.running > 0 || decision.situation.held > 0, why).toBe(true)
+    expect(measuredLimit(option), `${why}: below the measured limit`).toBe(true)
     expect(option.frees, why).toBe(true)
-    // And the work would spend half of what it gives back before its window resets by itself.
-    expect(paysTruly(decision, option), `${why}: the work would not spend it`).toBe(true)
   }
 }
 
-/** The useful resets in hand while a window has no room left on any account and agents run on the pool. */
+/** Ordinary credits available on an exhausted window with work and a useful refill. */
 const outWith = (decision: Decision) =>
-  decision.options.filter(
-    (option) => truth(decision, option.window).room === 0 && decision.running > 0 && option.frees && notSoon(option, decision.now) && paysTruly(decision, option),
-  )
+  decision.options.filter((option) => measuredLimit(option) && decision.running > 0 && option.restored > 0 && option.frees && notSoon(option, decision.now))
 
-/** Whenever the pool has no room on a window with agents running and a useful reset in hand, a claim is made. */
+/** Actual room and credits after the action, rather than a pre-action spent reading. */
+const strandedAfter = (decision: Decision) =>
+  decision.after.every(spent) && decision.running > 0 && decision.remaining.some((option) => measuredLimit(option) && option.restored > 0 && option.frees && notSoon(option, decision.now))
+
+/** An eligible measured limit is refilled whenever there is work, regardless of other accounts' room. */
 const claimedBeforeOut = (decisions: ReadonlyArray<Decision>) => {
   for (const decision of decisions) {
     const usable = outWith(decision)
@@ -269,10 +273,11 @@ const claimedBeforeOut = (decisions: ReadonlyArray<Decision>) => {
   }
 }
 
-/** A reset in its last day, its window spent and not about to reset by itself, goes first: soonest first. */
+/** Last-day credits at a measured limit, or in their last call, go first: soonest first. */
 const expiringGoFirst = (decisions: ReadonlyArray<Decision>) => {
   for (const decision of decisions) {
-    const ready = decision.options.filter((option) => lastDay(option, decision.now) && option.from >= 1 && option.resetAt - decision.now > NATURAL_MS)
+    const ready = decision.options.filter((option) => lastDay(option, decision.now) && option.restored > 0 &&
+      (measuredLimit(option) || Option.getOrThrow(option.expiresAt) - decision.now <= LAST_CALL_MS) && option.resetAt - decision.now > NATURAL_MS)
     if (ready.length === 0) continue
     const { verdict } = decision
     expect(verdict._tag, at(decision.now)).toBe("Claim")
@@ -334,25 +339,33 @@ describe("the rule on one pool, by example", () => {
   const situation = (accounts: ReadonlyArray<AccountLoad>, running = 6): ClaimSituation => ({ now: NOW, held: 0, running, hosts: 2, accounts, settling: false, pushed: false })
   const verdictOf = (accounts: ReadonlyArray<AccountLoad>, options: ReadonlyArray<ClaimOption>, running?: number) => decideClaim(situation(accounts, running), options)
 
-  test("the pool runs out before its first reset: the most-used account near its limit is claimed, the reason the forecast in one clause", () => {
-    const full = load("a", 0.92, 3 * DAY, 0.02)
+  test("forecast exhaustion cannot redeem a credit at 92%, however fast the burn", () => {
+    const full = load("a", 0.92, 3 * DAY, 1_000_000)
     const half = load("b", 0.5, 4 * DAY, 0.02)
     const verdict = verdictOf([full, half], [option(full, "ra"), option(half, "rb")])
+    expect(verdict._tag).toBe("NoClaim")
+    if (verdict._tag === "NoClaim") expect(verdict.reasons[0]).toContain("wait for measured exhaustion")
+  })
+
+  test("a measured limit is refilled even while another account has ample room", () => {
+    const full = load("a", 1, 3 * DAY, 0.02)
+    const fresh = load("b", 0, 4 * DAY, 0)
+    const verdict = verdictOf([full, fresh], [option(full, "ra")])
     expect(verdict._tag).toBe("Claim")
     expect(verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
-    if (verdict._tag === "Claim") expect(verdict.reason).toBe("6 agents running on 2 hosts, 7d 92% used, forecast 100% in 15 h, reset in 3.0 days")
   })
 
-  test("a burn that is the window's average, as after a restart, is said in the reason", () => {
-    const full = load("a", 0.92, 3 * DAY, 0.02)
-    const half = load("b", 0.5, 4 * DAY, 0.02)
-    const averaged = { ...half, windows: half.windows.map((window) => ({ ...window, averaged: true })) }
-    const verdict = verdictOf([full, averaged], [option(full, "ra")])
-    expect(verdict._tag).toBe("Claim")
-    if (verdict._tag === "Claim") expect(verdict.reason).toBe(`6 agents running on 2 hosts, 7d 92% used, forecast 100% in 15 h, reset in 3.0 days${AVERAGED_TEXT}`)
+  test("zero, tiny, and averaged burn never veto a measured refill", () => {
+    for (const burn of [0, 0.0001]) for (const averaged of [false, true]) {
+      const full = load("a", 1, 3 * DAY, burn)
+      const reading = { ...full, windows: full.windows.map((window) => ({ ...window, averaged })) }
+      const verdict = verdictOf([reading], [option(reading, "ra")])
+      expect(verdict._tag).toBe("Claim")
+      expect(verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
+    }
   })
 
-  test("the same pool burning slowly keeps room to its first reset: nothing claimed, the freshest account takes the work", () => {
+  test("a window below its measured limit keeps its ordinary credit", () => {
     const full = load("a", 0.92, 3 * DAY, 0.0005)
     const half = load("b", 0.5, 4 * DAY, 0.0005)
     const verdict = verdictOf([full, half], [option(full, "ra")])
@@ -360,7 +373,7 @@ describe("the rule on one pool, by example", () => {
     expect(verdict).toMatchObject({ step: Option.some("fresh") })
   })
 
-  test("no agent running: no forecast, nothing claimed", () => {
+  test("no running agent or held start leaves an ordinary credit unused", () => {
     const spent = load("a", 1, 3 * DAY, 0.02)
     const verdict = verdictOf([spent], [option(spent, "ra")], 0)
     expect(verdict._tag).toBe("NoClaim")
@@ -381,11 +394,81 @@ describe("the rule on one pool, by example", () => {
     expect(verdict).toMatchObject({ reasons: ["a: it would not free the account, another spent window still holds it"] })
   })
 
-  test("a claim the work would not spend half of before the window resets is not made", () => {
-    const spent = load("a", 1, 3 * DAY, 0.0001)
-    const verdict = verdictOf([spent], [option(spent, "ra")])
-    expect(verdict._tag).toBe("NoClaim")
-    if (verdict._tag === "NoClaim") expect(verdict.reasons[0]).toContain("under 50% of the 100% it gives back")
+  test("shared weekly exhaustion starts at 99%; model and short windows wait for 100%", () => {
+    for (const [forecast, window, long, from, expected] of [
+      ["7d", "7d", true, 0.989, "NoClaim"],
+      ["7d", "7d", true, 0.99, "Claim"],
+      ["7d:Fable", "7d:Fable", true, 0.99, "NoClaim"],
+      ["7d:Fable", "7d:Fable", true, 1, "Claim"],
+      ["5h", "5h", false, 0.999, "NoClaim"],
+      ["5h", "5h", false, 1, "Claim"],
+    ] as const) {
+      const full = load("a", from, 3 * DAY, 0)
+      expect(verdictOf([full], [option(full, "ra", { forecast, window, long })])._tag, `${forecast} at ${from}`).toBe(expected)
+    }
+  })
+
+  test("a held start needs only a positive refill at the measured limit", () => {
+    const full = load("a", 1, 3 * DAY, 0)
+    const held = { ...situation([full], 0), held: 1 }
+    const verdict = decideClaim(held, [option(full, "ra", { restored: 0.001 })])
+    expect(verdict._tag).toBe("Claim")
+    expect(verdict).toMatchObject({ step: "reset" })
+    expect(decideClaim(held, [option(full, "ra", { restored: 0 })])._tag).toBe("NoClaim")
+  })
+
+  test("known cadence weekly refills wait 30 minutes; unknown cadence waits 24 hours", () => {
+    for (const [cadence, wait, expected] of [
+      [{ preservesWeekly: true }, 30 * MINUTE, "NoClaim"],
+      [{ preservesWeekly: true }, 31 * MINUTE, "Claim"],
+      [{ preservesWeekly: true }, 20 * HOUR, "Claim"],
+      [{ preservesWeekly: false }, 30 * MINUTE, "NoClaim"],
+      [{ preservesWeekly: false }, 31 * MINUTE, "Claim"],
+      [{ preservesWeekly: false }, 20 * HOUR, "Claim"],
+      [{ preservesWeekly: false }, 24 * HOUR, "Claim"],
+      [{}, 20 * HOUR, "NoClaim"],
+      [{}, 24 * HOUR, "NoClaim"],
+      [{}, 24 * HOUR + MINUTE, "Claim"],
+    ] as const) {
+      const full = load("a", 1, wait, 0)
+      expect(verdictOf([full], [option(full, "ra", cadence)])._tag, `reset in ${wait / MINUTE} min`).toBe(expected)
+    }
+  })
+
+  test("expiry more than 24 hours away follows ordinary refill rules even if its burn forecast pays", () => {
+    const held = load("a", 1, 3 * DAY, 0.02, true)
+    expect(verdictOf([held], [option(held, "ra", { expiresAt: Option.some(NOW + 2 * DAY) })])._tag).toBe("NoClaim")
+  })
+
+  test("last-day expiry uses the shared weekly 99% hold and the other windows' 100% limit", () => {
+    for (const [forecast, used, expected] of [
+      ["7d", 0.989, "NoClaim"],
+      ["7d", 0.99, "Claim"],
+      ["7d:Fable", 0.99, "NoClaim"],
+      ["7d:Fable", 1, "Claim"],
+      ["5h", 0.999, "NoClaim"],
+      ["5h", 1, "Claim"],
+    ] as const) {
+      const full = load("a", used, 3 * DAY, 0)
+      const verdict = verdictOf([full], [option(full, "ra", { forecast, expiresAt: Option.some(NOW + 24 * HOUR) })], 0)
+      expect(verdict._tag, `${forecast} at ${used}`).toBe(expected)
+      if (verdict._tag === "Claim") expect(verdict.step).toBe("expiring")
+    }
+  })
+
+  test("expiry uses a spent window in its last 24 hours and any positive restoration only in its last 6 hours", () => {
+    for (const [used, expiresIn, wait, expected] of [
+      [1, 24 * HOUR + MINUTE, 3 * DAY, "NoClaim"],
+      [1, 24 * HOUR, 3 * DAY, "Claim"],
+      [0.001, 6 * HOUR + MINUTE, 3 * DAY, "NoClaim"],
+      [0.001, 6 * HOUR, 3 * DAY, "Claim"],
+      [0, 6 * HOUR, 3 * DAY, "NoClaim"],
+      [1, HOUR, 30 * MINUTE, "NoClaim"],
+      [1, HOUR, 31 * MINUTE, "Claim"],
+    ] as const) {
+      const full = load("a", used, wait, 0)
+      expect(verdictOf([full], [option(full, "ra", { expiresAt: Option.some(NOW + expiresIn) })], 0)._tag, `${used} used, expiry in ${expiresIn / HOUR}h`).toBe(expected)
+    }
   })
 
   test("two resets in their last day on spent windows: the soonest to expire goes first", () => {
@@ -395,32 +478,96 @@ describe("the rule on one pool, by example", () => {
     expect(verdict._tag).toBe("Claim")
     expect(verdict).toMatchObject({ step: "expiring", option: { creditID: "soon" } })
   })
+
+  const pool = (used: number, wait: number, expiry: number, index: number, running = 6, rule = decideClaim): Decision => {
+    const only = load("a", used, wait + index * MINUTE, 0.02)
+    const options = [option(only, "ra", { expiresAt: Option.some(NOW + expiry) })]
+    const live = situation([only], running)
+    const accounts = [{ id: only.credentialID, windows: [{ name: "7d" as const, used, resetAt: NOW + wait + index * MINUTE, burn: 0.02 }] }]
+    return { now: NOW, running: live.running, accounts, situation: live, options, verdict: rule(live, options), after: accounts, remaining: options }
+  }
+  const taken = ({ verdict }: Decision) => {
+    if (verdict._tag === "Claim") return [verdict.step, verdict.option.creditID]
+    return []
+  }
+  const unclaimed = (decision: Decision) => outWith(decision).filter(() => decision.verdict._tag === "NoClaim").map((each) => each.creditID)
+  const checkedRoom = (room: Decision) => {
+    expect([room.options.some((each) => notSoon(each, NOW)), truth(room, "7d").runsOut]).toEqual([true, false])
+    expect(room.verdict._tag).toBe("NoClaim")
+  }
+  const [[claimFirst, claimLast, ...claimKinds], [waitFirst, waitLast, ...waitKinds]] = POOL_LAW
+  type PoolCase = (typeof claimKinds | typeof waitKinds)[number]
+  type Input = Parameters<typeof pool>
+  const room = (index: number): Input => [0.25, 2 * DAY, 30 * DAY, index, 3]
+  const spent = (index: number): Input => [1, 3 * DAY, 30 * DAY, index]
+  const fixtures = {
+    forecast: (index, cause) => {
+      if (cause) return [0.99, 3 * DAY, 30 * DAY, index]
+      return room(index)
+    },
+    expiry: (index, cause) => {
+      if (cause) return [1, 3 * DAY, 12 * HOUR, index]
+      return spent(index)
+    },
+    room: (index, cause) => {
+      if (cause) return room(index)
+      return spent(index)
+    },
+    exhaustion: (index, cause) => {
+      if (cause) return [1, 3 * DAY, 30 * DAY, index, 6, never]
+      return spent(index)
+    },
+  } satisfies Record<PoolCase, (index: number, cause: boolean) => Input>
+  const cases = [
+    ...Arr.range(claimFirst, claimLast).flatMap((index) => claimKinds.map((kind) => ({ index, kind }))),
+    ...Arr.range(waitFirst, waitLast).flatMap((index) => waitKinds.map((kind) => ({ index, kind }))),
+  ]
+  const poolFixtures = Object.fromEntries(cases.map(({ index, kind }) => [`${kind} ${index}`, {
+    expected: { forecast: ["reset", "ra"], expiry: ["expiring", "ra"], room: ["NoClaim"], exhaustion: ["ra"] }[kind],
+    run: (cause: boolean) => {
+      const input: Input = fixtures[kind](index, cause)
+      const decision = pool(...input)
+      if ((kind === "room" && cause) || (kind === "forecast" && !cause)) checkedRoom(decision)
+      if (!cause && kind !== "forecast") expect(taken(decision)).toEqual(["reset", "ra"])
+      if (kind === "forecast" && cause) eachClaimHolds([decision])
+      if (kind === "expiry" && cause) expiringGoFirst([decision])
+      if (kind === "exhaustion") {
+        if (!cause) claimedBeforeOut([decision])
+        return unclaimed(decision)
+      }
+      if (kind === "room") return [decision.verdict._tag]
+      return taken(decision)
+    },
+  }]))
+  test("W: all forecast, expiry, room, and exhaustion decisions", () => assertPoolWitnessCases(POOL_LAW, { ...poolFixtures }))
 })
 
 describe("the standing allowance's rule over generated weeks", () => {
-  test("the worlds claim and hold back: resets spent on the forecast and on expiry, and resets left while the pool keeps room (the properties below are not vacuous)", () => {
-    const runs = SEEDS.map((seed) => simulate(seed))
-    const all = runs.flatMap((run) => claims(run.decisions))
-    expect(all.filter(({ verdict }) => verdict.step === "reset").length).toBeGreaterThan(20)
-    expect(all.filter(({ verdict }) => verdict.step === "expiring").length).toBeGreaterThan(20)
-    // Agents running with a reset in hand that is not soon, while the pool keeps room to its first reset: held back.
-    const kept = runs.flatMap((run) => run.decisions).filter(
-      (decision) => decision.running > 0 && decision.verdict._tag === "NoClaim" && decision.options.some((option) => notSoon(option, decision.now) && !truth(decision, option.window).runsOut),
-    )
-    expect(kept.length).toBeGreaterThan(100)
-    // With no reset ever spent, the same worlds run out of room with a useful reset in hand: the rule has those to answer, and does before them.
-    const out = (decisions: ReadonlyArray<Decision>) => decisions.filter((decision) => outWith(decision).length > 0).length
-    expect(SEEDS.map((seed) => out(simulate(seed, never).decisions)).reduce((total, count) => total + count, 0)).toBeGreaterThan(100)
-    expect(runs.map((run) => out(run.decisions)).reduce((total, count) => total + count, 0)).toBe(0)
+  const regressions = [18926016, 18926168, 18926350, 18927240, 18927416, 18927526, 31415527]
+
+  const weekHolds = (seed: number) => {
+    const { accounts, decisions, periods } = simulate(seed)
+    expect(new Set(periods).size, "a window period claimed twice").toBe(periods.length)
+    const usedCredits = claims(decisions).map(({ verdict }) => verdict.option.creditID)
+    expect(new Set(usedCredits).size, "a credit claimed twice").toBe(usedCredits.length)
+    for (const { decision, verdict } of claims(decisions)) {
+      const account = decision.after.find((each) => each.id === verdict.option.credentialID)!
+      expect(Option.getOrThrow(windowOf(account, verdict.option.window)).used, "the chosen window was refilled").toBe(0)
+      expect(decision.remaining.some((each) => each.creditID === verdict.option.creditID), "the credit was consumed").toBe(false)
+    }
+    eachClaimHolds(decisions)
+    claimedBeforeOut(decisions)
+    expiringGoFirst(decisions)
+    noneLost(accounts, decisions)
+  }
+
+  test("after each decision the pool has room or no usable ordinary credit remaining", () => {
+    for (const seed of [...SEEDS, ...regressions]) {
+      const stranded = simulate(seed).decisions.filter(strandedAfter)
+      expect(stranded.map((decision) => at(decision.now)), `seed ${seed}`).toEqual([])
+    }
   })
 
-  for (const seed of SEEDS)
-    test(`seed ${seed}: every property holds`, () => {
-      const { accounts, decisions, periods } = simulate(seed)
-      expect(new Set(periods).size, "a window period claimed twice").toBe(periods.length)
-      eachClaimHolds(decisions)
-      claimedBeforeOut(decisions)
-      expiringGoFirst(decisions)
-      noneLost(accounts, decisions)
-    })
+  for (const seed of new Set([...SEEDS, ...regressions]))
+    test(`seed ${seed}: every property holds`, () => weekHolds(seed))
 })

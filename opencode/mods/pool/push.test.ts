@@ -3,7 +3,7 @@
 // resets (resets.ts `pushDue`), by value, one at a time, in its scope only;
 // the plan and the use-or-lose forecast are measured from the readings; and
 // an account's line counts every reset in hand that would expire before it
-// can be spent one per week (resets.ts `spareThisWeek`).
+// are reported individually with their expiry and cadence.
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import {
@@ -32,7 +32,6 @@ import {
   type ResetsState,
   Review,
   SettleClaim,
-  spareThisWeek,
 } from "./resets.ts"
 import type { AccountStatus } from "./status.ts"
 
@@ -261,24 +260,36 @@ describe("the plan and the forecast", () => {
     const credits = [grant("g1", T0 + 10 * DAY, WEEKLY), grant("g2", T0 + 10 * DAY, WEEKLY), grant("g3", T0 + 10 * DAY, WEEKLY)]
     const low = forecastOf(pool([account("a", [window("7d", 0.1, T0 + 5 * DAY)], credits)]), T0)
     expect(low.wasted).toHaveLength(3)
-    expect(forecastText(low)).toContain("3 of its 3 resets (weekly reset; each gives back ≈99% of a week) expire unused by 2026-11-21 12:00Z")
+    expect(forecastText(low)).toContain("3 of its 3 resets (weekly reset; each gives back ≈99% of a week) expire unused by Nov 21, 2026, 7:00:00 AM EST")
     // 90% used one day into the week: 3.75%/h, ~9 weeks' use by the expiry against ~2.1 weeks of room.
     const high = forecastOf(pool([account("a", [window("7d", 0.9, T0 + 6 * DAY)], credits)]), T0)
     expect(high.wasted).toEqual([])
     expect(forecastText(high)).toBeUndefined()
   })
-})
+  test("absent windows in plan and forecast: no week claims no resets, no NaN/undefined/unread for absent windows, and empty pools stay unread", () => {
+    const weekless: AccountStatus = {
+      ...account("w", [window("5h", 0.4, T0 + 2 * HOUR)], [grant("g-w", T0 + 2 * DAY, FULL)]),
+      reading: { at: T0, windows: [window("5h", 0.4, T0 + 2 * HOUR)], absent: [{ name: "7d", at: T0 }], resets: { available: 1, credits: [grant("g-w", T0 + 2 * DAY, FULL)] } },
+    }
+    const ultra: AccountStatus = {
+      ...account("u", [window("7d", 0.5, T0 + 3.5 * DAY)], [grant("g-u", T0 + 10 * DAY, WEEKLY)]),
+      reading: { at: T0, windows: [window("7d", 0.5, T0 + 3.5 * DAY)], absent: [{ name: "5h", at: T0 }], resets: { available: 1, credits: [grant("g-u", T0 + 10 * DAY, WEEKLY)] } },
+    }
+    const weeklessPlan = planOf({ views: [pool([weekless])], grant: { max: 2 }, now: T0, need: { units: 2, cost: 0.2 } })
+    expect(weeklessPlan.resets).toEqual([])
+    const weeklessText = planText(weeklessPlan)
+    expect(weeklessText).toContain("absent (its usage reports none)")
+    expect(weeklessText).toContain("report no weekly window")
+    expect(weeklessText).not.toMatch(/NaN|undefined|unread/)
+    expect(forecastOf(pool([weekless]), T0).wasted).toEqual([])
 
-describe("an account's line with several resets", () => {
-  const week = T0 + 3 * DAY
-  const at = (credits: ReadonlyArray<ResetCredit>) => account("a", [window("7d", 0.5, week)], credits)
-  test("spaced out, one per week: the best one raises the line, as before", () => {
-    expect(spareThisWeek("claude", at([grant("g1", T0 + 30 * DAY, WEEKLY), grant("g2", T0 + 60 * DAY, WEEKLY)]), week, T0)).toBeCloseTo(0.99)
-  })
-  test("two expiring before the next week begins: both raise this week's line, or one is lost", () => {
-    expect(spareThisWeek("claude", at([grant("g1", T0 + 2 * DAY, WEEKLY), grant("g2", T0 + 2 * DAY, FULL)]), week, T0)).toBeCloseTo(1.98)
-    // One this week, one next week (it begins in 3 days), the third expiring before the week after begins (in 10): two this week.
-    const three = [grant("g1", T0 + 9 * DAY, WEEKLY), grant("g2", T0 + 9 * DAY, WEEKLY), grant("g3", T0 + 9 * DAY, WEEKLY)]
-    expect(spareThisWeek("claude", at(three), week, T0)).toBeCloseTo(1.98)
+    const ultraPlan = planOf({ views: [pool([ultra])], grant: { max: 2 }, now: T0 })
+    const ultraText = planText(ultraPlan)
+    expect(ultraText).toContain("5-hour window absent (its usage reports none)")
+    expect(ultraText).not.toMatch(/NaN|undefined|unread/)
+
+    const emptyText = planText(planOf({ views: [pool([])], grant: { max: 1 }, now: T0, need: { units: 1, cost: 0.1 } }))
+    expect(emptyText).not.toContain("absent")
+    expect(emptyText).toContain("unread")
   })
 })

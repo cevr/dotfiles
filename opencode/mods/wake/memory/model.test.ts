@@ -326,7 +326,7 @@ describe("a repeating monitor", () => {
         expect(texts(w).map((text) => text.split("\n")[0])).toEqual([
           `⏰ Monitor ${placed.entry.id} changed (fire 1): \`q\`.`,
           `⏰ Monitor ${placed.entry.id} changed (fire 2): \`q\`.`,
-          `⏰ Monitor ${placed.entry.id} ended: its deadline 1970-01-01T00:00:25.000Z passed after 2 fires; \`q\`.`,
+          `⏰ Monitor ${placed.entry.id} ended: its deadline Dec 31, 1969, 7:00:25 PM EST passed after 2 fires; \`q\`.`,
         ])
         expect(w.store.entries.size).toBe(0)
         expect(w.jobs.jobs.size).toBe(0)
@@ -476,7 +476,7 @@ describe("across a reload or a stop", () => {
         yield* settle
         expect(texts(w)).toHaveLength(1)
         expect(texts(w)[0]).toContain(`⏰ Wake ${placed.entry.id} fired`)
-        expect(texts(w)[0]).toContain("It fired 2h late: no OpenCode server was running at 1970-01-01T00:01:00.000Z, so it went when one started.")
+        expect(texts(w)[0]).toContain("It fired 2h late: no OpenCode server was running at Dec 31, 1969, 7:01:00 PM EST, so it went when one started.")
         expect(texts(w)[0]).toContain("Note: Check the deploy.")
       }),
     ))
@@ -612,6 +612,39 @@ describe("a latch", () => {
   }
   const childOf = (w: World, sessionID: string) => w.sessions.children.get(sessionID)
 
+  test("a continuation whose child cannot be marked leaves no latch to reopen", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a")
+        const { model, stop } = yield* server(w)
+        const refused = yield* model.latch({ ...ask, child: "ses_gone" }).pipe(Effect.flip)
+        expect(refused.reason).toContain("the existing subagent could not be marked")
+        expect((yield* model.pending(["ses_a"])).entries).toEqual([])
+        expect(w.jobs.jobs.size).toBe(0)
+        yield* stop
+        const restarted = yield* server(w)
+        yield* until(ask.opensAt)
+        expect((yield* restarted.model.pending(["ses_a"])).entries).toEqual([])
+        expect(w.opener.asked).toEqual([])
+      }),
+    ))
+
+  test("a continuation latch keeps its existing child and prevents a second latch for that child", () =>
+    run(
+      Effect.gen(function* () {
+        const w = world("ses_a", "ses_existing")
+        w.opener.answer = () => ({ outcome: "opened" })
+        const { model } = yield* server(w)
+        const continuation = { ...ask, child: "ses_existing" }
+        const latched = yield* model.latch(continuation)
+        expect(latched.child).toBe("ses_existing")
+        expect(w.sessions.children.size).toBe(0)
+        expect(Exit.isFailure(yield* Effect.exit(model.latch(continuation)))).toBe(true)
+        yield* until(ask.recheckAt)
+        expect(w.opener.asked.map((call) => call.child)).toEqual(["ses_existing"])
+      }),
+    ))
+
   test("latched: it is kept as the parent's, its child made unprompted with its mark, and its time guarded", () =>
     run(
       Effect.gen(function* () {
@@ -626,7 +659,7 @@ describe("a latch", () => {
           title: "Add the export",
           agent: "implementor",
           model: "anthropic/claude-opus#high",
-          mark: { hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0 },
+          mark: { hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, recheckAt: 2 * MINUTE, at: 0 },
         })
         expect(w.sessions.started.get(latched.child)).toBeUndefined()
         expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(10 * MINUTE))
@@ -654,7 +687,7 @@ describe("a latch", () => {
         expect(w.opener.asked).toHaveLength(1)
         const held = w.store.entries.get(latched.id)
         expect(held?.kind === "latch" ? [held.reason, held.opensAt, held.recheckAt] : undefined).toEqual(["anthropic is at 95% of its 5h window", 20 * MINUTE, 4 * MINUTE])
-        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, at: 0 })
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: "anthropic is at 95% of its 5h window", opensAt: 20 * MINUTE, recheckAt: 4 * MINUTE, at: 0 })
         expect(w.jobs.jobs.get(titleOf(latched.id))?.schedule).toEqual(oneShot(20 * MINUTE))
         yield* until(4 * MINUTE - SECOND)
         expect(w.opener.asked).toHaveLength(1)
@@ -691,7 +724,7 @@ describe("a latch", () => {
         expect(yield* model.cancel("ses_a", latched.id)).toEqual([latched.id])
         expect(w.store.entries.has(latched.id)).toBe(false)
         expect(w.jobs.jobs.has(titleOf(latched.id))).toBe(false)
-        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, at: 0, cancelledAt: 30 * SECOND })
+        expect(childOf(w, latched.child)?.mark).toEqual({ hold: "pace", reason: ask.reason, opensAt: 10 * MINUTE, recheckAt: 2 * MINUTE, at: 0, cancelledAt: 30 * SECOND })
         yield* until(20 * MINUTE)
         expect(w.opener.asked).toEqual([])
       }),
@@ -763,7 +796,7 @@ describe("a latch", () => {
 })
 
 describe("a job", () => {
-  test("drips its progress at most once a minute without a turn, and its end, seen by the poll, steers one letter with the exit, log tail and note", () =>
+  test("drips its progress at most once a minute without a turn, and its end, its runner's call lost, is found by the recovery sweep within RECOVER_MS (a minute) and steers one letter with the exit, log tail and note", () =>
     run(
       Effect.gen(function* () {
         const w = world("ses_a")
@@ -850,6 +883,8 @@ describe("a job", () => {
           { id: first.id, state: "running", note: "Build it.", command: "make build", cwd: DIR, startedAt: SECOND, logTail: "compiling\nlinking\n" },
         ])
         MemoryRunner.ended(w.runner, first.id, 2, 20 * SECOND)
+        // The runner's call once its exit is written: the end goes at once.
+        expect(yield* model.due(first.id)).toEqual({ outcome: "fired" })
         yield* until(30 * SECOND)
         // The end letter took the entry; the board still shows how it ended.
         expect(w.store.entries.has(first.id)).toBe(false)

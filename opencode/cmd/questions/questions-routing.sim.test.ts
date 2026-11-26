@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A subagent asks its orchestrator, not the owner: a model-based test on the
 // simulated host at 20 seeds. One directory holds a root R, its subagent C and
 // C's subagent G; the seed chooses up to 40 commands: a session asks (R with
@@ -27,10 +29,10 @@ import { Array as Arr, Effect, Option, Schema } from "effect"
 import { QUESTIONS } from "@dotfiles/opencode-questions/question"
 import * as Plugins from "../../sim/plugins.ts"
 import { below, generator, plain } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/questions/questions-routing.sim.test.ts")
+const { seeded } = simulationRunner("cmd/questions/questions-routing.sim.test.ts")
 
 /** The principles, as both nudges name them (asking.ts `PRINCIPLES_NAMED`). */
 const PRINCIPLES_NAMED = "the principles (the principles tool: list, search, get)"

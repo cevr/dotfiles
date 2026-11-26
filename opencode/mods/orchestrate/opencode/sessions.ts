@@ -3,8 +3,8 @@
 // A latched child's state is the wakes' mark in its metadata (mods/wake
 // latch.ts), which only the wakes write. A session's last words are its
 // newest assistant message's text, from the host's model context.
-import { Effect, Layer, Option, Schema } from "effect"
-import { Mark } from "@dotfiles/opencode-wake/latch"
+import { Effect, Layer, Option } from "effect"
+import { MARK_KEY, readMark } from "@dotfiles/opencode-wake/latch"
 import { Sessions } from "../service.ts"
 
 /** What the guard reads of a session. */
@@ -13,6 +13,7 @@ export interface Session {
   readonly agent?: string
   /** It has run a turn, or runs one: the host's `time.busy` or `outcome` is set. */
   readonly started?: boolean
+  readonly busySince?: number
   /** Its last turn was stopped: the host's `outcome` is `interrupted`. */
   readonly stopped?: boolean
   /** The wakes' latch mark, as the session's metadata carries it. */
@@ -44,7 +45,6 @@ export type Messages = (sessionID: string) => Effect.Effect<ReadonlyArray<unknow
 export type InDirectory = (directory: string) => Effect.Effect<ReadonlyArray<string>, unknown>
 
 const orNone = Effect.catchCause(() => Effect.succeed(undefined))
-const markOf = Schema.decodeUnknownOption(Mark)
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
 
@@ -65,16 +65,20 @@ export const layer = (get: Get, messages: Messages, inDirectory: InDirectory = (
     agentOf: Effect.fn("Sessions.agentOf")(function* (sessionID: string) {
       return (yield* get(sessionID)).agent || undefined
     }, orNone),
-    startedOf: Effect.fn("Sessions.startedOf")(function* (sessionID: string) {
-      return (yield* get(sessionID)).started === true
+    startedOf: Effect.fn("Sessions.startedOf")(function* (sessionID: string, since?: number) {
+      const session = yield* get(sessionID)
+      return Option.match(Option.fromUndefinedOr(since), {
+        onNone: () => session.started === true,
+        onSome: (since) => Option.exists(Option.fromUndefinedOr(session.busySince), (busy) => busy > since),
+      })
     }, Effect.catchCause(() => Effect.succeed(false))),
     stoppedOf: Effect.fn("Sessions.stoppedOf")(function* (sessionID: string) {
       return (yield* get(sessionID)).stopped === true
     }, Effect.catchCause(() => Effect.succeed(false))),
     latchOf: Effect.fn("Sessions.latchOf")(function* (sessionID: string) {
-      const mark = markOf((yield* get(sessionID)).latch)
-      if (mark._tag === "None" || mark.value.cancelledAt !== undefined || mark.value.failed !== undefined) return undefined
-      return mark.value.opensAt
+      const result = readMark({ [MARK_KEY]: (yield* get(sessionID)).latch })
+      if (result._tag === "Unreadable" || result.mark.cancelledAt !== undefined || result.mark.failed !== undefined) return undefined
+      return result.mark.opensAt
     }, orNone),
     directoryOf: Effect.fn("Sessions.directoryOf")(function* (sessionID: string) {
       return (yield* get(sessionID)).directory || undefined

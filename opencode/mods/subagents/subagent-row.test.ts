@@ -177,29 +177,31 @@ describe("a row's state", () => {
     expect(one({ questions: ["Which file?"] })).toMatchObject({ state: "blocked", update: "question: Which file?" })
   })
 
-  test("a background one ends as its stop notice says, at the notice's time", () => {
+  test("a background notice can explain a row but does not give it an end", () => {
     const parent = (state: string, text = "") => ({ messages: [step([launch("a", {})]), notice("a", state, 500, text)] })
-    expect(one({ messages: [step([]), step([])] }, parent("completed"))).toMatchObject({ state: "done", update: "2 steps", ended: 500 })
+    const reported = one({ messages: [step([]), step([])] }, parent("completed"))
+    expect(reported).toMatchObject({ state: "idle", update: "", heard: 500 })
+    expect(reported).not.toHaveProperty("ended")
     expect(
       one({}, parent("error", '<background-result kind="subagent" sessionID="a" state="error" description="x">\nRate limited. Try later.\n</background-result>')),
-    ).toMatchObject({ state: "failed", update: "Rate limited.", ended: 500 })
+    ).toMatchObject({ state: "idle", update: "Rate limited.", heard: 500 })
     // A stored session keeps the fork's notices from before upstream e51247f626.
     expect(one({}, parent("error", '<subagent state="error">\nRate limited. Try later.\n</subagent>'))).toMatchObject({
-      state: "failed",
+      state: "idle",
       update: "Rate limited.",
-      ended: 500,
+      heard: 500,
     })
-    expect(one({}, parent("cancelled"))).toMatchObject({ state: "cancelled", update: "" })
+    expect(one({}, parent("cancelled"))).toMatchObject({ state: "idle", update: "" })
   })
 
-  test("a foreground one ends as its call did", () => {
+  test("a foreground reply can explain a row but cannot settle a child", () => {
     const foreground = (over: Partial<Call>) => ({ messages: [step([call("subagent", { description: "x" }, { metadata: { sessionID: "a" }, ...over })])] })
-    expect(one({}, foreground({}))).toMatchObject({ state: "done", ended: 5 })
+    expect(one({}, foreground({}))).toMatchObject({ state: "idle" })
     expect(one({}, foreground({ status: "error", error: "Subagent failed (sessionID: a): boom" }))).toMatchObject({
-      state: "failed",
+      state: "idle",
       update: "boom",
     })
-    expect(one({}, foreground({ status: "error", error: "Subagent cancelled (sessionID: a)" }))).toMatchObject({ state: "cancelled" })
+    expect(one({}, foreground({ status: "error", error: "Subagent cancelled (sessionID: a)" }))).toMatchObject({ state: "idle" })
   })
 
   test("with neither, the session's outcome; with nothing at all, idle", () => {
@@ -259,7 +261,7 @@ describe("a latched subagent", () => {
     })
   })
 
-  test("once it opens it is a subagent like any other: running works, and a finished one ends as its notice says", () => {
+  test("once a latch opens its session says when it ends, independently of notice delivery", () => {
     expect(latched(pace, { running: true, time: { created: AT, busy: AT + 10 } })).toMatchObject({ state: "working", since: AT + 10 })
     // Once it stopped with nothing of its own running, the parent's call with no stop notice yet keeps nothing live.
     expect(latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered])] })).toMatchObject({
@@ -268,7 +270,7 @@ describe("a latched subagent", () => {
     })
     expect(
       latched(pace, { time: { created: AT, busy: AT + 10, idle: AT + 20 }, outcome: "succeeded" }, { messages: [step([answered]), notice("a", "completed", AT + 21)] }),
-    ).toMatchObject({ state: "done", ended: AT + 21 })
+    ).toMatchObject({ state: "done", ended: AT + 20 })
   })
 })
 
@@ -309,6 +311,13 @@ describe("which rows show", () => {
     expect(visible(all, 99_999, { current: "old" }).map((value) => value.id)).toEqual(["run", "wait", "ask", "old"])
   })
 
+  test("an owner's Unknown answer leaves the strip without a linger or live clock", () => {
+    const view = { revision: 2, at: 100, sinceReload: false, waitingOn: "" as const, diagnostic: false }
+    const uncertain = session("child", { parentID: "root", lifecycle: { ...view, kind: "unknown" } })
+    expect(rows(family(uncertain), "root", 101)).toEqual([])
+    expect(rows(family(uncertain), "root", 101, { current: "child" })).toMatchObject([{ state: "unknown", update: "Current execution not known" }])
+  })
+
   test("rows reads the family and keeps the ones worth showing", () => {
     const world = family(
       session("root", { messages: [notice("b", "completed", 10)] }),
@@ -317,7 +326,7 @@ describe("which rows show", () => {
     )
     expect(rows(world, "root", 20).map((value) => [value.id, value.state, value.elapsed])).toEqual([
       ["a", "working", 19],
-      ["b", "done", undefined],
+      ["b", "idle", undefined],
     ])
     expect(rows(world, "root", 10 + LINGER_MS).map((value) => value.id)).toEqual(["a"])
   })
@@ -394,6 +403,23 @@ describe("a subagent waiting on its own background work", () => {
       state: "done",
       ended: 40,
     })
-    expect(one({ outcome: "succeeded" }, { messages: [step([launch("a", {})]), notice("a", "completed", 50)] })).toMatchObject({ state: "done", ended: 50 })
+    const noTime = one({ outcome: "succeeded" }, { messages: [step([launch("a", {})]), notice("a", "completed", 50)] })
+    expect(noTime).toMatchObject({ state: "done" })
+    expect(noTime).not.toHaveProperty("ended")
+  })
+
+  test("an error notice while a shell is live, a lagging snapshot, and a fresh success are different", () => {
+    const root = { messages: [notice("a", "error", 500, "Fixture step error")] }
+    const failure = { outcome: "failed", time: { created: 1, busy: 100, idle: 300 }, messages: [step([{ ...backgrounded("fixture", "sh_1"), completed: 120 }])] }
+    expect(one({ ...failure, ...runs("sh_1") }, root)).toMatchObject({ state: "waiting", update: "Step ended in error; work continues: fixture" })
+    const pending = one({ ...failure, wakePending: true }, root)
+    expect(visible([pending], 301)).toMatchObject([{ state: "waiting", update: "Step ended in error; work continues: awaiting host wake" }])
+    const unresolved = one({ ...failure, execution: { kind: "undetermined", at: 305 } }, root)
+    expect(visible([unresolved], 1_000_000)).toMatchObject([{
+      state: "waiting", since: 305, update: "Undetermined: a step failed; its background command ended; the host does not say whether a result is still to be delivered",
+    }])
+    expect(visible([one(failure, root)], 301)).toMatchObject([{ state: "failed", ended: 300 }])
+    expect(one({ ...failure, running: true }, root)).toMatchObject({ state: "working" })
+    expect(one({ outcome: "succeeded", time: { created: 1, busy: 501, idle: 530 } }, root)).toMatchObject({ state: "done", ended: 530 })
   })
 })

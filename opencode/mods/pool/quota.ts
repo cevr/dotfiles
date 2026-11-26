@@ -1,7 +1,17 @@
 // A provider's quota as its auth plugin reads it: each window's use and
 // reset, and why the provider refuses an account, if it does. The pool reads
 // it over the quota protocol (opencode/quota.ts) and checks it here field by field.
-import { Schema } from "effect"
+import { Array as Arr, Option, Schema } from "effect"
+
+/** Bound for the provider's usage read, including the body and optional reset credits. */
+export const USAGE_TIMEOUT_MS = 10_000
+/** The part of that read a first send waits for. Its result can still arrive in the background. */
+export const FIRST_USAGE_WAIT_MS = 3_000
+export const FIRST_USAGE_RETRY_MS = 60_000
+
+/** A login last failed to return a usage reading; `nextTryAt` bounds when the next read is tried. */
+export const UsageReadFailure = Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })
+export type UsageReadFailure = typeof UsageReadFailure.Type
 
 export const QuotaStatus = Schema.Literals(["allowed", "allowed_warning", "rejected"])
 export type QuotaStatus = typeof QuotaStatus.Type
@@ -31,9 +41,9 @@ export const QuotaWindow = Schema.Struct({
   weeklyUsed: Schema.optionalKey(Schema.Number),
   /**
    * When this window (its use, reset and shares) was read, when not with the
-   * reading that holds it: a window carried over from an older reading
-   * (`carryOver`) keeps the older's time, so a fresh reading never makes it
-   * look fresh (resets.ts `freshView`).
+   * reading that holds it: set only by `carryOver` when carrying a window from
+   * an older reading so a fresh reading never makes it look fresh (resets.ts
+   * `freshView`). Fresh header or usage readers must leave `at` unset.
    */
   at: Schema.optionalKey(Schema.Number),
 })
@@ -144,8 +154,39 @@ export type ClaimOutcome = typeof ClaimOutcome.Type
 export const ClaimAnswer = Schema.Struct({ outcome: ClaimOutcome, message: Schema.optionalKey(Schema.String) })
 export type ClaimAnswer = typeof ClaimAnswer.Type
 
+/** Two successful snapshots distinguish an unreported scope from a single incomplete usage response. */
+export const SCOPE_REPORT_SAMPLES = 2
+const UsageEvidence = Schema.Struct({ at: Schema.Finite, samples: Schema.Literals([1, SCOPE_REPORT_SAMPLES]) })
+
+/**
+ * The account-wide windows the pool holds and paces by, in every provider's
+ * reading: the 5-hour and the weekly one. Any other account-wide window a
+ * provider reports is shown, never binding (`windowReading`).
+ */
+export const TRACKED_WINDOWS = ["5h", "7d"] as const
+export type TrackedWindow = (typeof TRACKED_WINDOWS)[number]
+
+/**
+ * A tracked window the provider's successful usage answer says this account
+ * does not have (Anthropic's `five_hour: null`, a ChatGPT answer whose two
+ * window slots hold no window of that length), and when it said so. Only a
+ * usage endpoint's whole answer establishes one; a response's headers never do.
+ */
+export const AbsentWindow = Schema.Struct({ name: Schema.String, at: Schema.Finite })
+export type AbsentWindow = typeof AbsentWindow.Type
+
 export const QuotaReading = Schema.Struct({
   at: Schema.Number,
+  /** The latest successful usage endpoint sample and the number of distinct confirmed samples (capped at two). */
+  usage: Schema.optionalKey(UsageEvidence),
+  /** The tracked windows the usage endpoint said the account has none of (`AbsentWindow`), each with its own time. */
+  absent: Schema.optionalKey(Schema.Array(AbsentWindow)),
+  /**
+   * The usage answer's fields that hold a window in a shape the reader does not
+   * know (`five_hour`, `rate_limit.primary_window`), by the provider's name:
+   * what the status names so a person sees the shape changed. Their windows read UNKNOWN.
+   */
+  unrecognised: Schema.optionalKey(Schema.Array(Schema.String)),
   status: Schema.optionalKey(QuotaStatus),
   windows: Schema.Array(QuotaWindow),
   refusal: Schema.optionalKey(QuotaRefusal),
@@ -163,6 +204,50 @@ export const scopeOf = (name: string): string | undefined => {
 /** Whether a window counts against the whole account: every model's requests, and so every placement. */
 export const accountWide = (window: QuotaWindow): boolean => scopeOf(window.name) === undefined
 
+/** Whether a window is one the pool holds and paces by (`TRACKED_WINDOWS`). */
+export const tracked = (name: string): name is TrackedWindow => TRACKED_WINDOWS.some((each) => each === name)
+
+/** REPORTED: the provider read this window's use (and, when it runs, its reset). */
+export const Reported = Schema.TaggedStruct("Reported", { window: QuotaWindow })
+/** ABSENT: the provider's successful answer said the account has no such window, at `at`. It imposes nothing. */
+export const Absent = Schema.TaggedStruct("Absent", { at: Schema.Finite })
+/**
+ * UNKNOWN: not read yet, the read failed, the field was missing, or its shape
+ * did not read (`unrecognised` names that field). Never ABSENT, never room.
+ */
+export const Unknown = Schema.TaggedStruct("Unknown", { unrecognised: Schema.Array(Schema.String) })
+/** One window of an account's reading, in exactly one of three states. */
+export const WindowReading = Schema.Union([Reported, Absent, Unknown])
+export type WindowReading = typeof WindowReading.Type
+
+/**
+ * The state of the window `name` in `reading`: REPORTED when the reading holds
+ * it, ABSENT when the usage endpoint said there is none, else UNKNOWN. A
+ * reading that holds a window and calls it absent cannot be built (`asReading`
+ * drops the contradiction), and the reported one wins here.
+ */
+export const windowReading = (reading: QuotaReading, name: string): WindowReading =>
+  Option.match(Option.fromUndefinedOr(reading.windows.find((window) => window.name === name)), {
+    onSome: (window) => Reported.make({ window }),
+    onNone: () =>
+      Option.match(Option.fromUndefinedOr(absencesIn(reading).find((absent) => absent.name === name)), {
+        onSome: (absent) => Absent.make({ at: absent.at }),
+        onNone: () => Unknown.make({ unrecognised: unreadIn(reading) }),
+      }),
+  })
+
+/** An account's window `name`: UNKNOWN while the account has no reading yet. */
+export const accountWindow = (account: { readonly reading?: QuotaReading }, name: string): WindowReading =>
+  Option.match(Option.fromUndefinedOr(account.reading), {
+    onNone: () => Unknown.make({ unrecognised: [] }),
+    onSome: (reading) => windowReading(reading, name),
+  })
+
+/** The absences a reading holds, none when it says nothing of them. */
+const absencesIn = (reading: Pick<QuotaReading, "absent">): ReadonlyArray<AbsentWindow> => Option.getOrElse(Option.fromUndefinedOr(reading.absent), () => [])
+/** The usage fields a reading could not read, none when it says nothing of them. */
+const unreadIn = (reading: Pick<QuotaReading, "unrecognised">): ReadonlyArray<string> => Option.getOrElse(Option.fromUndefinedOr(reading.unrecognised), () => [])
+
 /**
  * Whether a window scoped to `scope` (a model's display name, `Fable`) limits
  * the model `modelID` (`claude-fable-5-2`): its id names the scope's words.
@@ -176,21 +261,65 @@ export const limitsModel = (scope: string, modelID: string): boolean => {
     .every((word) => id.includes(word))
 }
 
+/** The provider's declared model limits, before we have read any account. Other scopes are learned from usage. */
+export const DEFINED_MODEL_WINDOWS = ["7d:Fable"] as const
+
+const usageEvidence = (previous: Option.Option<typeof UsageEvidence.Type>, incoming: Option.Option<typeof UsageEvidence.Type>) =>
+  Option.match(previous, {
+    onNone: () => incoming,
+    onSome: (held) => incoming.pipe(
+      Option.filter((next) => next.at > held.at),
+      Option.map((next) => UsageEvidence.make({ at: next.at, samples: SCOPE_REPORT_SAMPLES })),
+      Option.orElse(() => previous),
+    ),
+  })
+
+/** A list field of a reading, empty when the reading has none. */
+
+/** Whether a held window is still carried while the new reading cannot say: one model's own (its existence outlives a reading), or a tracked one until its own reset passes. */
+const carried = (window: QuotaWindow, next: QuotaReading): boolean =>
+  !accountWide(window) || Option.exists(Option.fromUndefinedOr(window.resetAt), (resetAt) => resetAt > next.at)
+
 /**
- * A reading taken over `held`: the windows scoped to one model and the
- * resets that only a usage endpoint reads are kept from `held` while the new
- * reading has none of its own (a response's headers carry neither), and a
- * kept window only until it resets.
+ * A reading taken over `held`, window by window. A window `next` REPORTS or
+ * calls ABSENT takes that state at this read: a limit that comes back binds
+ * at once, one removed drops its hold and pace at once. A window `next` cannot
+ * speak to (UNKNOWN: a response's headers carry no model's window and no
+ * absence, a usage answer may miss a field) keeps its last state with the time
+ * it was read: a model's own window for good (an old time or a passed reset
+ * makes it unusable as evidence, not an optional limit), an account-wide
+ * window until its own reset passes (one the pool does not pace by stays
+ * shown, never binding), an absence with its own time (`evidenceGap`
+ * asks for it fresh). The resets that only a usage endpoint reads are kept
+ * the same way while `next` has none of its own.
  */
-export const carryOver = (held: QuotaReading | undefined, next: QuotaReading, now: number): QuotaReading => {
+export const carryOver = (held: QuotaReading | undefined, next: QuotaReading): QuotaReading => {
   if (held === undefined) return next
   const named = new Set(next.windows.map((window) => window.name))
+  const said = new Set([...named, ...absencesIn(next).map((absent) => absent.name)])
   // Carried windows and resets keep the time they were read: a claim no one asked for needs each fresh (resets.ts `freshView`).
   const kept = held.windows
-    .filter((window) => !accountWide(window) && !named.has(window.name) && window.resetAt !== undefined && window.resetAt > now)
-    .map((window) => ({ at: window.at ?? held.at, ...window }))
-  const resets = next.resets === undefined && held.resets !== undefined ? { resets: { at: held.resets.at ?? held.at, ...held.resets } } : {}
-  return kept.length === 0 && Object.keys(resets).length === 0 ? next : { ...next, windows: [...next.windows, ...kept], ...resets }
+    .filter((window) => !said.has(window.name) && carried(window, next))
+    .map((window) => ({ ...window, at: Option.getOrElse(Option.fromUndefinedOr(window.at), () => held.at) }))
+  const absent = [...absencesIn(next), ...absencesIn(held).filter((entry) => !said.has(entry.name))]
+  const resets = Option.fromUndefinedOr(held.resets).pipe(
+    Option.filter(() => Option.isNone(Option.fromUndefinedOr(next.resets))),
+    Option.map((resets) => ({ ...resets, at: Option.getOrElse(Option.fromUndefinedOr(resets.at), () => held.at) })),
+  )
+  const usage = usageEvidence(Option.fromUndefinedOr(held.usage), Option.fromUndefinedOr(next.usage))
+  // A whole usage answer says what it could not read (`unrecognised`, maybe empty); a response's headers say nothing of it.
+  const unrecognised = Option.orElse(Option.fromUndefinedOr(next.unrecognised), () => Option.fromUndefinedOr(held.unrecognised))
+  const same = absent.length === absencesIn(next).length && Option.isSome(unrecognised) === Option.isSome(Option.fromUndefinedOr(next.unrecognised))
+  if (kept.length === 0 && Option.isNone(resets) && Option.isNone(usage) && same) return next
+  const { absent: _absent, unrecognised: _unrecognised, ...rest } = next
+  return {
+    ...rest,
+    windows: [...next.windows, ...kept],
+    ...Arr.match(absent, { onEmpty: () => ({}), onNonEmpty: (absent) => ({ absent }) }),
+    ...Option.match(unrecognised, { onNone: () => ({}), onSome: (unrecognised) => ({ unrecognised }) }),
+    ...Option.match(resets, { onNone: () => ({}), onSome: (resets) => ({ resets }) }),
+    ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
+  }
 }
 
 const isRefusalKind = Schema.is(RefusalKind)
@@ -198,6 +327,26 @@ const isStatus = Schema.is(QuotaStatus)
 const isKind = Schema.is(ResetKind)
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value)
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null
+
+const asUsage = Schema.decodeUnknownOption(UsageEvidence)
+const asFinite = Schema.decodeUnknownOption(Schema.Finite)
+const asAbsent = Schema.decodeUnknownOption(Schema.Array(AbsentWindow))
+const asNames = Schema.decodeUnknownOption(Schema.Array(Schema.String))
+
+/**
+ * The absences an RPC reading claims, each of a tracked window, none after the
+ * reading's own time and none of a window it reports (a contradiction reads
+ * UNKNOWN). A reading from a host at 04287dc0 says `fiveHourAbsentAt`: the same
+ * absence of the 5-hour window. Anything else is no absence: UNKNOWN, never ABSENT.
+ */
+const absencesOf = (absent: Option.Option<ReadonlyArray<AbsentWindow>>, legacyAt: Option.Option<number>, at: number, windows: ReadonlyArray<QuotaWindow>): ReadonlyArray<AbsentWindow> => {
+  const legacy = Option.map(legacyAt, (absentAt) => [AbsentWindow.make({ name: "5h", at: absentAt })])
+  const claimed = Option.getOrElse(Option.orElse(absent, () => legacy), () => [])
+  return Arr.dedupeWith(
+    claimed.filter((absent) => tracked(absent.name) && absent.at <= at && !windows.some((window) => window.name === absent.name)),
+    (left, right) => left.name === right.name,
+  )
+}
 
 /** Resets from another plugin, checked field by field; a malformed credit is left out. */
 const asResets = (value: unknown): QuotaResets | undefined => {
@@ -252,8 +401,14 @@ export function asReading(value: unknown): QuotaReading | undefined {
   const refusal = value.refusal
   const status = value.status
   const resets = asResets(value.resets)
+  const usage = asUsage(value.usage)
+  const absent = absencesOf(asAbsent(value.absent), asFinite(value.fiveHourAbsentAt), value.at, windows)
+  const unrecognised = asNames(value.unrecognised)
   return {
     at: value.at,
+    ...Arr.match(absent, { onEmpty: () => ({}), onNonEmpty: (absent) => ({ absent }) }),
+    ...Option.match(unrecognised, { onNone: () => ({}), onSome: (unrecognised) => ({ unrecognised }) }),
+    ...Option.match(usage, { onNone: () => ({}), onSome: (usage) => ({ usage }) }),
     ...(isStatus(status) ? { status } : {}),
     windows,
     ...(isRecord(refusal) && isRefusalKind(refusal.kind)

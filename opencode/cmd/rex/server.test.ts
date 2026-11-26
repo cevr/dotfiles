@@ -6,6 +6,7 @@ import { expect } from "bun:test"
 import { Effect } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import Rex, { make } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 type Host = Parameters<(typeof Rex)["effect"]>[0]
 
@@ -27,5 +28,5 @@ effectTest(
       ["REX_BIN_DIR", "/opt/rex"],
     ])
   }),
-  5_000,
+  hangGuard("local-fixture"),
 )

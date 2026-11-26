@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The orchestrator agent on the simulated host (sim/world.ts): the real orchestrate plugin (sim/plugins.ts) defines
 // it from build, makes it the default a new session opens with, and puts its section after build's prompt in its own
 // requests only. The config's `default_agent` (the world's `defaultAgent`, applied after every plugin as the fork's
@@ -7,10 +9,10 @@ import { Effect, Option } from "effect"
 import { WINDOW } from "@dotfiles/opencode-orchestrate/compaction"
 import { definitions, ORCHESTRATOR, orchestrator, ROLES } from "@dotfiles/opencode-orchestrate/role"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrator.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrator.sim.test.ts")
 
 const WORK = "/scratch/project"
 /** A Wednesday afternoon: no Sabbath rest holds a request. */

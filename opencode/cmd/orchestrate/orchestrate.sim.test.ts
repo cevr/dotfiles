@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The orchestrate plugin on the simulated host (sim/world.ts), each test at 20
 // seeds: tests/orchestrate.test.ts's OpenCode runs under the same names, moved
 // off real OpenCode (each booted the fork and waited on its events). The
@@ -14,19 +16,20 @@ import { KEEP } from "@dotfiles/opencode-orchestrate/compaction"
 import { paceOfReply, parseAdmission } from "@dotfiles/opencode-orchestrate/pace"
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
 import { Plugin } from "@opencode/plugin/effect"
-import { Array as Arr, DateTime, Effect, Option, Schema } from "effect"
+import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
+import { SIM_OPUS } from "./models.fixture.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/orchestrate.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/orchestrate.sim.test.ts")
 
 const WORK = "/scratch/work"
 /** Friday 30 October 2026, 19:00 in Knowlton (EDT): after sunset, in the Sabbath. */
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 const ROOT_TASK = "orchestrate"
 const UNTYPED_TASK = "task-untyped"
@@ -133,7 +136,7 @@ const boot = (seed: number, spec: Spec) =>
     const seen: Array<Seen> = []
     const calls: Array<CallLine> = []
     const asked: Array<readonly [string, string]> = []
-    const world = World.make({ seed, start: now, script: model(seen, spec.tokens), models: [SIM_MODEL], model: { providerID: "sim", id: "sim-model" } })
+    const world = World.make({ seed, start: now, script: model(seen, spec.tokens), models: [SIM_MODEL, SIM_OPUS], model: { providerID: "sim", id: "sim-model" } })
     const answers = { admit: Option.some(CODEX_LINES.admit), hold: Option.some(CODEX_LINES.hold), unpaced: Option.none<(typeof CODEX_LINES)["admit" | "hold"]>() }
     const codex = (model: string, role: string) => {
       asked.push([model, role])
@@ -170,7 +173,7 @@ seeded("pace: with no wakes to keep a latch, an over-limit pool refuses new agen
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("pace holds this agent")
     // The fake pool says it opens a minute on; the latch itself is the wakes'.
-    expect(messages).toContain(`It opens about ${DateTime.formatIso(DateTime.makeUnsafe(Date.parse(WEDNESDAY) + 60_000))}`)
+    expect(messages).toContain("It opens about Nov 4, 2026, 10:01:00 AM EST [2026-11-04T15:01:00Z]")
     expect(messages).toContain("no latch could be kept for it")
     const open = yield* boot(seed, { now: WEDNESDAY, pace: "open", codex: "unpaced" })
     const openRoot = yield* open.root(ROOT_TASK)
@@ -182,18 +185,18 @@ seeded("codex pace: a subagent on a Codex-paced provider asks the Codex admissio
   Effect.gen(function* () {
     const held = yield* boot(seed, { now: WEDNESDAY, codex: "hold", pace: "open" })
     const heldRoot = yield* held.root(ROOT_TASK)
-    expect(held.children(heldRoot)).toEqual([])
+    expect(held.children(heldRoot).map((child) => child.agent)).toEqual(["verifier"])
     const messages = textOf(held.world, heldRoot)
     expect(messages).toContain("the Codex account's pace holds this agent. scripted Codex week is over.")
     // It opens when the admission said the week opens.
-    expect(messages).toContain("It opens about 2026-11-04T16:20:00.000Z")
+    expect(messages).toContain("It opens about Nov 4, 2026, 11:20:00 AM EST [2026-11-04T16:20:00Z]")
     // The admission is asked with the model and the role, as the script's `--model sim-model --role <role>`.
     expect(held.asked).toContainEqual(["sim-model", "worker"])
-    expect(held.asked).toContainEqual(["sim-model", "verifier"])
-    // Admitted, they run, and the pool is not asked: its fake would hold them.
+    expect(held.asked).toEqual([["sim-model", "worker"]])
+    // The worker is admitted by Codex; the verifier is still subject to the Claude pace.
     const open = yield* boot(seed, { now: WEDNESDAY, codex: "admit", pace: "held" })
     const openRoot = yield* open.root(ROOT_TASK)
-    expect(open.children(openRoot).map((child) => child.agent).toSorted()).toEqual(["verifier", "worker"])
+    expect(open.children(openRoot).map((child) => child.agent)).toEqual(["worker"])
   }),
 )
 
@@ -205,7 +208,7 @@ seeded("guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as
     const byAgent = Object.fromEntries(children.map((child) => [child.agent, child]))
     // The child sessions, as the host's session API reports them.
     expect(children.map((child) => child.agent).toSorted()).toEqual(["verifier", "worker"])
-    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "medium" })
+    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "claude-opus-sim", providerID: "anthropic", variant: "medium" })
     const variant = Option.flatMap(Option.fromUndefinedOr(byAgent.worker), (worker) => Option.flatMap(worker.model, (model) => Option.fromUndefinedOr(model.variant)))
     expect(variant).toEqual(Option.none())
     // Each child ran on its role's prompt.
@@ -221,7 +224,7 @@ seeded("guard: an untyped subagent runs as the worker, `orchestrate-reviewer` as
     const calls = ofKind(run.calls, "call")
     expect(calls.map((line) => ({ asked: Option.fromUndefinedOr(line.asked), agent: line.agent, reason: line.reason, model: Option.fromUndefinedOr(line.model) }))).toEqual([
       { asked: Option.none(), agent: "worker", reason: "untyped", model: Option.none() },
-      { asked: Option.some("orchestrate-reviewer"), agent: "verifier", reason: "renamed", model: Option.some("sim/sim-model#medium") },
+      { asked: Option.some("orchestrate-reviewer"), agent: "verifier", reason: "renamed", model: Option.some("anthropic/claude-opus-sim#medium") },
     ])
     const done = ofKind(run.calls, "done")
     expect(done.map((line) => ({ child: line.child, status: line.status }))).toEqual([
@@ -239,11 +242,11 @@ seeded("worker ceiling: under a root at max, the untyped worker runs at its mode
     const byAgent = Object.fromEntries(run.children(rootID).map((child) => [child.agent, child]))
     // The host names a model asked with no variant at its `default`.
     expect(byAgent.worker?.model._tag === "Some" && byAgent.worker.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "default" })
-    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "sim-model", providerID: "sim", variant: "medium" })
+    expect(byAgent.verifier?.model._tag === "Some" && byAgent.verifier.model.value).toEqual({ id: "claude-opus-sim", providerID: "anthropic", variant: "medium" })
     const calls = ofKind(run.calls, "call")
     expect(calls.map((line) => ({ agent: line.agent, model: line.model, lowered: Option.fromUndefinedOr(line.lowered) }))).toEqual([
       { agent: "worker", model: "sim/sim-model", lowered: Option.some("max") },
-      { agent: "verifier", model: "sim/sim-model#medium", lowered: Option.none() },
+      { agent: "verifier", model: "anthropic/claude-opus-sim#medium", lowered: Option.none() },
     ])
     expect(textOf(run.world, rootID)).toContain(
       "orchestrate: this worker runs on sim/sim-model at the model's default effort, not max: a worker runs at max only when its description ends `(mechanical)`.",
@@ -303,6 +306,6 @@ seeded("Sabbath: on Friday evening the subagent calls are refused with when work
     // The model was told, in the tool result.
     const results = run.seen.filter((request) => request.task === ROOT_TASK && request.kind === "primary").map((request) => request.last)
     expect(results.slice(1).every((text) => text.includes("No agent starts now."))).toBe(true)
-    expect(results.slice(1).every((text) => /It is the Sabbath; agent work resumes at Sat 18:\d\d/.test(text))).toBe(true)
+    expect(results.slice(1).every((text) => /It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT/.test(text))).toBe(true)
   }),
 )

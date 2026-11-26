@@ -6,11 +6,13 @@
 // name runs on the simulated host with a killed job too
 // (cmd/wake/job.sim.test.ts, by tests/parity/wake.json); a real kill is
 // mods/wake/process/runner.test.ts's.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Request {
   readonly session?: "root" | "title"
@@ -44,7 +46,7 @@ describe.skipIf(!fork)("jobs", () => {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
     const timeout = join(out, "job-timeout.txt")
     if (code !== 0) throw new Error(`job scenario exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
-    const read = (name: string) => readFileSync(join(out, `job-${name}`), "utf8")
+    const read = (name: string) => readScratchFileSync(join(out, `job-${name}`), "utf8")
 
     const root = (JSON.parse(read("requests.json")) as ReadonlyArray<Request>).filter((request) => request.session === "root").map((request) => unescaped(request.request))
     // The receipt: the id, the log, and that the end letter will come.
@@ -62,5 +64,5 @@ describe.skipIf(!fork)("jobs", () => {
     const sessions: ReadonlyArray<Session> = JSON.parse(read("transcripts.json"))
     const letters = sessions.flatMap((session) => session.messages.filter((message) => message.type === "synthetic" && message.metadata?.kind === "job" && message.metadata.progress !== true))
     expect(letters.map((message) => message.metadata?.exitCode)).toEqual([4])
-  }), 240_000)
+  }), hangGuard("generated-schedule"))
 })

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/pool/opencode/limits.test.ts: const before = rowsOf(readFileSync(path, "utf8")).state.rows
 // The limit tally's store survives a restart: the requests in the plugin's
 // storage, the rows and the tally in the file, which the CLI reads as written.
 import { describe, expect, test } from "bun:test"
@@ -48,6 +50,27 @@ const rowsOf = Schema.decodeUnknownSync(
 )
 
 describe("the limit store", () => {
+  test("completed-agent forecasts use actual token classes, dedupe messages and survive restart", () => runTest(Effect.scoped(Effect.gen(function* () {
+    const entries = new Map<string, Schema.Json>()
+    const dir = yield* Effect.acquireRelease(Effect.sync(() => scratch("limits-launch-")), (dir) => Effect.sync(() => dir[Symbol.dispose]()))
+    const path = join(dir.path, "limits.json")
+    const groups = [
+      { sessionID: "large", messageIDs: ["large", "large"] },
+      { sessionID: "cached", messageIDs: ["cached"] },
+      { sessionID: "missing", messageIDs: ["not-recorded"] },
+    ]
+    const costs = yield* start(entries, path, (limits) => Effect.gen(function* () {
+      yield* limits.use("calibration", opus(HOUR))
+      yield* limits.observe(ANTHROPIC, "a", { at: 2 * HOUR, windows: [{ name: "7d", utilization: 0.02, resetAt: 7 * DAY }] })
+      yield* limits.use("large", { ...opus(3 * HOUR), tokens: { input: 2e6, output: 0, cacheRead: 0, cacheWrite: 0 } })
+      yield* limits.use("cached", { ...opus(3 * HOUR), tokens: { input: 0, output: 0, cacheRead: 1e6, cacheWrite: 0 } })
+      yield* limits.flush
+      return yield* limits.workCosts(ANTHROPIC, groups)
+    }), 4 * HOUR)
+    expect(costs).toEqual({ large: 0.04, cached: 0.001 })
+    expect(yield* start(entries, path, (limits) => limits.workCosts(ANTHROPIC, groups), 4 * HOUR)).toEqual(costs)
+  }))))
+
   test("a restart reads back the requests and the rows: the tally is the same, and the file holds it", async () => {
     const entries = new Map<string, Schema.Json>()
     using dir = scratch("limits-")

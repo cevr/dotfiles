@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/cache/filestore/request-log.ts: try: () => readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOE
 // The plugin seam: the cache mod's server plugin on a stand-in host whose
 // request hook and events the test drives, the ledger in memory, on the test
 // clock. Each primary or compaction request a session sends becomes one ledger
@@ -12,6 +14,7 @@ import { MAX_PINGS, type PingLine } from "@dotfiles/opencode-cache/keepalive"
 import * as MemoryPings from "@dotfiles/opencode-cache/memory/ping-log"
 import * as MemoryPinger from "@dotfiles/opencode-cache/memory/pinger"
 import * as Memory from "@dotfiles/opencode-cache/memory/request-log"
+import type * as PoolAdmission from "@dotfiles/opencode-cache/pool/admission"
 import type { SessionSteps } from "@dotfiles/opencode-cache/request-log"
 import { PingFailed } from "@dotfiles/opencode-cache/service"
 import Cache, { CACHE_TTL_HEADER, CREDENTIAL_HEADER, make } from "./server.ts"
@@ -67,7 +70,18 @@ const network = (): MemoryPinger.MemoryNetwork => {
   return net
 }
 
-const start = (ledger: Memory.MemoryLedger, net: MemoryPinger.MemoryNetwork = network(), pings: Array<PingLine> = []) =>
+/** No plugin answers the pool's RPC, as the host says it. */
+/** What the keepalive asks the pool. */
+type PaceAsk = PoolAdmission.Ask
+const NO_POOL: PaceAsk = () => Effect.fail({ type: "rpc.unavailable", message: "no plugin registered dotfiles-opencode.pool" })
+
+const start = (
+  ledger: Memory.MemoryLedger,
+  net: MemoryPinger.MemoryNetwork = network(),
+  pings: Array<PingLine> = [],
+  pace: PaceAsk = NO_POOL,
+  asked: Array<Parameters<PaceAsk>[0]> = [],
+) =>
   Effect.gen(function* () {
     const hooks: Record<string, Array<Hook>> = {}
     const events = yield* PubSub.unbounded<HostEvent>()
@@ -89,20 +103,21 @@ const start = (ledger: Memory.MemoryLedger, net: MemoryPinger.MemoryNetwork = ne
         subscribe: ({ types }: { readonly types: ReadonlyArray<string> }) =>
           Stream.fromPubSub(events).pipe(Stream.filter((event) => types.includes(event.type))),
       },
-      rpc: {
+      // A client of another plugin's RPC: only the pool's `pace`, as `pace` answers; by default no pool is loaded.
+      rpc: Object.assign(() => ({ pace: ((input) => (asked.push(input), pace(input))) satisfies PaceAsk }), {
         register: (_definition: unknown, registered: Handlers) =>
           Effect.sync(() => {
             handlers = registered
             return { dispose: Effect.void }
           }),
-      },
+      }),
     } as unknown as Host
     yield* make(() => Layer.mergeAll(Memory.layer(ledger), MemoryPings.layer(pings), MemoryPinger.layer(net))).effect(host)
     yield* settle
 
     /**
      * A request goes out on the session, as OpenCode sends it: `model.request`, where the pool names its login and
-     * lifetime in headers, then `http.request`, which the auth plugin reaches first and strips them from, unless
+     * lifetime in headers, then `http.response`; auth has stripped the headers unless
      * `kept` (this plugin's hook first, or no auth plugin).
      */
     const send = Effect.fn("CacheServerTest.send")(function* (
@@ -124,7 +139,8 @@ const start = (ledger: Memory.MemoryLedger, net: MemoryPinger.MemoryNetwork = ne
       for (const callback of hooks["model.request"] ?? []) yield* callback({ ...scope, headers: { ...pool } })
       const headers = new Headers({ "content-type": "application/json", ...(options.kept === true ? pool : {}), ...options.headers })
       const request = new Request("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(json) })
-      for (const callback of hooks["http.request"] ?? []) yield* callback({ ...scope, request })
+      for (const callback of Option.getOrElse(Option.fromUndefinedOr(hooks["http.response"]), () => []))
+        yield* callback({ ...scope, request, response: new Response("") })
     })
     const emit = (type: string, data: Record<string, unknown>) => PubSub.publish(events, { type, data }).pipe(Effect.andThen(settle))
     const usage = (read: number, write: number) => ({ input: 100, cache: { read, write } })
@@ -403,6 +419,48 @@ describe("the keepalive", () => {
         // The answers never reach the session: no ledger line and no step beyond the request's own.
         expect(ledger.lines.map((line) => line.messageID)).toEqual(["msg_1"])
         expect((yield* plugin.steps({ sessionID: "ses_child" })).steps.map((step) => step.messageID)).toEqual(["msg_1"])
+      }),
+    ))
+
+  test("a ping on a pool login goes out only when the pool's pace, asked as a dispatch, admits its model on that login now; else the wait's pings end and the tool runs on", () =>
+    onTestClock(
+      Effect.gen(function* () {
+        const room = { ok: true, measured: true, reason: "within pace", admission: "ordinary", eligible: ["cred-a", "cred-b"] }
+        const cases: ReadonlyArray<readonly [string, PaceAsk, number]> = [
+          ["admitted on its login", () => Effect.succeed(room), MAX_PINGS],
+          ["held over the weekly line", () => Effect.succeed({ ok: false, measured: true, soft: true, reason: "over pace", admission: "held", eligible: [] }), 0],
+          ["its login not eligible for the model", () => Effect.succeed({ ...room, eligible: ["cred-b"] }), 0],
+          ["an older pool, admitting by ok", () => Effect.succeed({ ok: true, measured: true, reason: "within pace" }), MAX_PINGS],
+          ["unmeasured: a managed pool with no fresh reading admits nothing", () => Effect.succeed({ ok: true, measured: false, reason: "no readings" }), 0],
+          ["on a claim's room, which a ping reserves none of", () => Effect.succeed({ ...room, admission: "backed" }), 0],
+          ["the pool failing", () => Effect.fail({ type: "rpc.failed", message: "boom" }), 0],
+          ["an answer that is not a pace", () => Effect.succeed({ nope: true }), 0],
+          ["the pool never answering", () => Effect.never, 0],
+        ]
+        for (const [label, pace, expected] of cases) {
+          const net = network()
+          const asked: Array<Parameters<PaceAsk>[0]> = []
+          const plugin = yield* start(Memory.make(), net, [], pace, asked)
+          yield* plugin.send("ses_child", shortBody(3), { login: "cred-a", headers: SIGNED })
+          yield* plugin.ended("ses_child", "msg_1", 80_000, 10_000)
+          yield* plugin.emit(...called("ses_child", "call_1"))
+          for (const _ of Array.from({ length: MAX_PINGS + 1 })) yield* pass(PING)
+          yield* pass(10 * SECOND)
+          expect(net.received.length, label).toBe(expected)
+          expect(asked[0], label).toEqual({ providerID: "anthropic", model: "claude-x", dispatch: true })
+          // The tool call still ends as it would: the wait it kept warm is not held.
+          yield* plugin.emit(...returned("ses_child", "call_1"))
+        }
+        // A request no pool placed (no login) needs no answer and is pinged.
+        const net = network()
+        const asked: Array<Parameters<PaceAsk>[0]> = []
+        const plugin = yield* start(Memory.make(), net, [], () => Effect.succeed({ ok: false, measured: true, reason: "held" }), asked)
+        yield* plugin.send("ses_child", shortBody(3), { headers: SIGNED })
+        yield* plugin.ended("ses_child", "msg_1", 80_000, 10_000)
+        yield* plugin.emit(...called("ses_child", "call_1"))
+        yield* pass(PING)
+        expect(net.received).toHaveLength(1)
+        expect(asked).toEqual([])
       }),
     ))
 

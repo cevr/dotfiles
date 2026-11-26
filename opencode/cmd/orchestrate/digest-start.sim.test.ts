@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // A step's Start line in the digest, on the simulated host (sim/world.ts): the orchestrate plugin writes it only once
 // the host runs the subagent call, with the child's session. A call refused after the plugin's own `execute.before`
 // (by a later plugin's hook, as the fork's registry refuses a tool the kernel does not offer) starts no agent, so it
@@ -8,10 +10,10 @@ import { Effect, Option, Ref } from "effect"
 import { decodeLine } from "@dotfiles/opencode-digest/event"
 import * as MemoryDigest from "@dotfiles/opencode-digest/memory/log"
 import * as Plugins from "../../sim/plugins.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/digest-start.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/digest-start.sim.test.ts")
 
 const WORK = "/scratch/project"
 const STEP = { agent: "implementor", description: "implementor demo r1", prompt: "Build demo.", background: true }

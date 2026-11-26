@@ -5,11 +5,12 @@
 // drawn as the prompt draws, on one line; a click on it scrolls that prompt to
 // the top, where it shows itself. It needs OPENCODE_DEV, a fork with the
 // session.transcript.overlay slot.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-pin.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -34,7 +35,7 @@ const look = (saved: Saved, y: number) =>
 
 describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-pin-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-pin-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-pin.ts"], {
       cwd: root,
@@ -50,10 +51,10 @@ describe.skipIf(!fork)("the ask pinned over the transcript in the Prime look (OP
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     for (const name of names)
       frames.set(name, {
-        text: readFileSync(join(out, `${name}.txt`), "utf8").split("\n"),
-        lines: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")).lines,
+        text: readScratchFileSync(join(out, `${name}.txt`), "utf8").split("\n"),
+        lines: JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8")).lines,
       })
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("at the bottom nothing is pinned: the first row is the answer", kept.test(() => {
     expect(frame("pin-bottom").text[FIRST]).toMatch(/^ {2}- two item \d\d$/)

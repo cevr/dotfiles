@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess helper reads at tests/plugin-tree.test.ts: run(argv, cwd, env).pipe(Effect.tap((ran) => Effect.sync(() => expect({ argv, code: ran.code, e
 // accept: deep (16.3 s alone on a quiet host: 1-minute load 7–13 on 12 cores; it installs a tree and starts a service and a TUI from source with every plugin)
 // A build's plugin tree, loaded by real OpenCode: every plugin its overlay configures runs, from the tree alone.
 //
@@ -21,8 +23,8 @@ import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
 import { ENV, Platform, run } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 240_000
 const VERSION = "2.2.7-prime.f0f0f0f0.d0d0d0d0"
 /** A host outside the fleet: the overlay gives it no peers and no Tailscale listener. */
 const HOST = "plugin-tree-test"
@@ -67,7 +69,8 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         const checkout = (yield* ok(["git", "rev-parse", "--show-toplevel"], ".")).out.trim()
         const tree = `${root}/share/${treeOf(buildName(VERSION))}`
         yield* fs.makeDirectory(tree)
-        yield* ok(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root)
+        const archived = yield* run(["git", "-C", checkout, "archive", "--format=tar", `--output=${root}/opencode.tar`, "HEAD", "opencode"], root, base)
+        expect({ code: archived.code, err: archived.err.slice(-1500) }).toMatchObject({ code: 0 })
         yield* ok(["tar", "-xf", `${root}/opencode.tar`, "-C", tree], root)
         yield* ok([process.execPath, "install", "--frozen-lockfile"], `${tree}/opencode`)
         yield* ok([process.execPath, `${tree}/opencode/scripts/daily.ts`, "--tree", tree, "--at", tree, "--checkout", `${root}/live`, "--host", HOST], `${tree}/opencode`, { ...base, OPENCODE_DEV: fork })
@@ -101,7 +104,6 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
           XDG_CACHE_HOME: `${home}/.cache`,
           OPENCODE_DB: `${root}/opencode.db`,
           OPENCODE_DISABLE_MODELS_FETCH: "1",
-          OPENCODE_DISABLE_FILEWATCHER: "1",
           OPENCODE_CONFIG: `${tree}/config/opencode.json`,
           OPENCODE_CLI_CONFIG_CONTENT: cli,
           ...launch.env,
@@ -157,6 +159,6 @@ describe.skipIf(!forkRuns)("a build's plugin tree, loaded by real OpenCode", () 
         expect(section.length).toBe(tui.length)
         expect(section.filter((row) => !/^(┃\s+)?dotfiles-opencode\.\S+\s+local$/.test(row))).toEqual([])
       }),
-    TIMEOUT_MS,
+    hangGuard("generated-schedule"),
   )
 })

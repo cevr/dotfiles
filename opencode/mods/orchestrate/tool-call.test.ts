@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as Story from "@dotfiles/decider/story"
 import { explain, KNOWLTON, resumesAt, SabbathRest } from "./sabbath.ts"
+import { PaceHeld } from "./pace.ts"
 import {
   CodexNeverImplements,
   type Fallback,
@@ -30,7 +31,7 @@ import {
 const FRIDAY_EVENING = "2026-10-30T23:00:00Z"
 /** Wednesday 4 November 2026, 10:00 in Knowlton. */
 const WEDNESDAY = "2026-11-04T15:00:00Z"
-const SABBATH = /^It is the Sabbath; agent work resumes at Sat 18:\d\d \(30 min after sunset, Knowlton, QC\)\.$/
+const SABBATH = /^It is the Sabbath; agent work resumes at Oct 31, 2026, 6:\d{2}:\d{2} PM EDT \(30 min after sunset, Knowlton, QC\)\.$/
 
 const story = Story.make(ToolCall)
 const run = (...steps: Parameters<typeof story>) => Effect.runPromise(story(...steps))
@@ -290,9 +291,9 @@ describe("the pace", () => {
   test("the Codex account's hold, past its time, opens in a second", () =>
     run(
       Story.clock(now),
-      Story.when(start("verifier", { hold: { whose: "codex", reason: "weekly pace", retryAt: now - 5_000 } })),
+      Story.when(start("planner", { hold: { whose: "codex", reason: "weekly pace", retryAt: now - 5_000 } })),
       Story.then(
-        latched({ asked: "verifier", agent: "verifier", reason: "kept", hold: "pace", whose: "codex", why: "weekly pace", opensAt: now + 1_000, recheckAt: now + 1_000 }),
+        latched({ asked: "planner", agent: "planner", reason: "kept", hold: "pace", whose: "codex", why: "weekly pace", opensAt: now + 1_000, recheckAt: now + 1_000 }),
       ),
     ))
 
@@ -361,18 +362,18 @@ describe("Opus first, Codex second", () => {
   test("the pool holds Opus and Codex has room: it starts on Codex at once, saying why", () =>
     run(
       Story.clock(now),
-      Story.when(start("verifier", { model: OPUS, hold: poolHold, fallback: { model: SOL }, description: "verifier sso r1" })),
+      Story.when(start("planner", { model: OPUS, hold: poolHold, fallback: { model: SOL }, description: "planner sso r1" })),
       Story.then(
         started({
-          asked: "verifier",
-          agent: "verifier",
+          asked: "planner",
+          agent: "planner",
           reason: "kept",
           model: SOL,
-          description: "verifier sso r1",
+          description: "planner sso r1",
           fallback: `${OPUS} held: anthropic is at 95%`,
         }),
       ),
-      Story.state(Started.make({ agent: "verifier" })),
+      Story.state(Started.make({ agent: "planner" })),
     ))
 
   test("held on both, it latches on Opus when Opus opens first", () =>
@@ -424,11 +425,25 @@ describe("Opus first, Codex second", () => {
     )
   })
 
-  test("a follow-up never falls back: it continues its child where it runs", () =>
+  test("a follow-up the pace holds never falls back nor makes a new agent: it is refused with when it opens, its child kept", () =>
     run(
       Story.clock(now),
       Story.when(start("planner", { child: "child-1", hold: poolHold, fallback: { model: SOL } })),
-      Story.then(latched({ asked: "planner", agent: "planner", reason: "kept", child: "child-1", hold: "pace", whose: "pool", why: "anthropic is at 95%", opensAt: now + 900_000, recheckAt: now + PACE_POLL_MS })),
+      Story.rejected(new PaceHeld({ whose: "pool", reason: "anthropic is at 95%", retryAt: now + 900_000 })),
+    ))
+
+  test("a held follow-up whose pace names no time opens a minute from now", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("implementor", { child: "child-1", hold: { whose: "pool", reason: "over pace" } })),
+      Story.rejected(new PaceHeld({ whose: "pool", reason: "over pace", retryAt: now + 60_000 })),
+    ))
+
+  test("a held follow-up whose pace names a time already past opens a second from now", () =>
+    run(
+      Story.clock(now),
+      Story.when(start("implementor", { child: "child-1", hold: { whose: "pool", reason: "over pace", retryAt: now - 5_000 } })),
+      Story.rejected(new PaceHeld({ whose: "pool", reason: "over pace", retryAt: now + 1_000 })),
     ))
 
   test("a latch tries Opus first when it opens", () =>
@@ -438,7 +453,7 @@ describe("Opus first, Codex second", () => {
       Story.then(started({ agent: "planner", reason: "kept", model: OPUS, child: "child-1", background: true })),
     ))
 
-  // codex-no-implement: the aggregate itself keeps the Codex fallback from any agent but a planner or verifier,
+  // The aggregate keeps the Codex fallback from any agent but a planner,
   // whatever the handlers gathered (the workbox ran 66 implementors on Codex on 11-10 and 11-11).
   const codexHold = { whose: "codex" as const, reason: "5h pace", retryAt: now + 300_000 }
   const fallbacks: ReadonlyArray<Fallback> = [{ model: SOL }, { model: SOL, hold: codexHold }]
@@ -449,9 +464,9 @@ describe("Opus first, Codex second", () => {
   ]
 
   const moved = `${OPUS} held: ${poolHold.reason}`
-  /** Each held decision with the event it must make: only a planner or verifier moves to Codex, any other agent latches on Opus. */
+  /** Each held decision with the event it must make: only a planner moves to Codex. */
   const cases = [
-    ...["implementor", "orchestrate-implementor", "worker", "general", "explore", "build", ""].flatMap((agent) =>
+    ...["verifier", "implementor", "orchestrate-implementor", "worker", "general", "explore", "build", ""].flatMap((agent) =>
       fallbacks.flatMap((fallback) =>
         heldOn(agent, fallback).map(({ command, fields }) => ({
           command,
@@ -459,18 +474,16 @@ describe("Opus first, Codex second", () => {
         })),
       ),
     ),
-    ...["planner", "verifier"].flatMap((agent) => [
+    ...["planner"].flatMap((agent) => [
       ...heldOn(agent, { model: SOL }).map(({ command, fields }) => ({ command, event: started({ ...fields, model: SOL, fallback: moved }) })),
       ...heldOn(agent, { model: SOL, hold: codexHold }).map(({ command, fields }) => ({
         command,
         event: latched({ ...fields, model: SOL, fallback: moved, hold: "pace", whose: "codex", why: "5h pace", opensAt: now + 300_000, recheckAt: now + PACE_POLL_MS }),
       })),
     ]),
-    // Codex plans and verifies: a verifier on a Codex model starts there.
-    { command: start("verifier", { model: SOL, codex: SOL }), event: started({ asked: "verifier", agent: "verifier", reason: "kept", model: SOL }) },
   ]
 
-  test("Codex never implements: only a held planner or verifier takes its Codex fallback, started or opened; any other agent latches on Opus", () =>
+  test("only a held planner takes a supplied Codex fallback, on start or open; verification latches on Opus", () =>
     run(Story.clock(now), ...cases.map(({ command }) => Story.when(command)), Story.then(...cases.map(({ event }) => event))))
 
   test("Codex never implements: an implementor start on a Codex model is refused", () =>

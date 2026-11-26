@@ -2,7 +2,8 @@
 // answers that fail open (no pool, a timeout, a failure, an answer that is
 // not a pace), each saying why.
 import { expect, test } from "bun:test"
-import { Effect, Fiber } from "effect"
+import { Effect, Fiber, Option } from "effect"
+import { it } from "effect-bun-test"
 import { TestClock } from "effect/testing"
 import { poolPaceLaws } from "../laws.ts"
 import { PoolPace } from "../service.ts"
@@ -17,6 +18,28 @@ poolPaceLaws("OpenCode's PoolPace", (world) =>
 )
 
 const told = () => Effect.succeed({})
+
+it.effect("a negotiated launch is one call, fails closed on an outage, and only an absent pool fails open", () => Effect.gen(function* () {
+  const calls: Array<unknown> = []
+  const ask: OpenCodePoolPace.Ask = () => Effect.sync(() => { calls.push("quote"); return { ok: true, measured: true, reason: "room" } })
+  const tell: OpenCodePoolPace.Tell = () => Effect.sync(() => { calls.push("started"); return {} })
+  const reserve: OpenCodePoolPace.Reserve = (input) => Effect.sync(() => { calls.push(input); return { ok: true, measured: true, reason: "reserved" } })
+  const launch = PoolPace.use((pool) => pool.reserveLaunch("anthropic", "claude-opus-5-5#high", "parent", "one"))
+  const on = (query: OpenCodePoolPace.Ask, reservation: OpenCodePoolPace.Reserve) => {
+    const plugin = OpenCodePoolPace.layer(query, tell, Option.some(reservation))
+    return launch.pipe(Effect.provide(plugin))
+  }
+  const allowed = (reply: import("../pace.ts").PaceReply) => reply._tag === "Answered" && reply.pace.ok
+  expect(allowed(yield* on(ask, reserve))).toBe(true)
+  expect(calls).toEqual([{ providerID: "anthropic", model: "claude-opus-5-5", sessionID: "parent", launchID: "one" }])
+  const unavailable: OpenCodePoolPace.Reserve = () => Effect.fail({ type: "rpc.internal", message: "store down" })
+  expect(allowed(yield* on(ask, unavailable))).toBe(false)
+  expect(calls).toHaveLength(1)
+  const absent = () => Effect.fail({ type: "rpc.method_not_found", message: "old plugin" })
+  expect((yield* on(ask, absent))._tag).toBe("FailedOpen")
+  expect(calls.slice(1)).toEqual(["started"])
+  expect((yield* on(absent, absent))._tag).toBe("FailedOpen")
+}))
 
 /** The reply of a pool whose `pace` method is `ask`. */
 const replyOf = (ask: OpenCodePoolPace.Ask) =>

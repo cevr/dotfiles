@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at testbeds/gamut/gamut.ts: readdirSync(pluginsDir, { withFileTypes: true })
 // accept: deep (53.5 s alone on a quiet host: 1-minute load 5.6–12.3 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // gamut's pure parts (arguments, presets, config, environment, the run's
 // database, the wait), the scripted model, and one end-to-end run of the
@@ -5,10 +7,14 @@
 // needs OPENCODE_DEV, the fork, like tests/prime.test.ts.
 import { Database } from "bun:sqlite"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { Option } from "effect"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { scratchExistsSync, scratchInput } from "./read-path.ts"
 import { dirname, join } from "node:path"
-import { ORCHESTRATOR } from "../mods/orchestrate/role.ts"
+import { ORCHESTRATOR, orchestrator } from "../mods/orchestrate/role.ts"
+import { testHostEnv } from "../scripts/test-host.ts"
 import { poolPlugin } from "../testbeds/anthropic-auth.ts"
+import { ready as composerReady } from "../testbeds/gamut/startup/tui.ts"
 import {
   type Catalog,
   checkKeyNames,
@@ -48,6 +54,7 @@ import {
 } from "../testbeds/gamut/gamut.ts"
 import { replyEvents, SIM_COMMAND, SIM_TITLE, simReply } from "../testbeds/gamut/sim-model.ts"
 import { type ChildEnv, scratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const root = join(import.meta.dir, "..")
 
@@ -252,7 +259,7 @@ describe("the run's config", () => {
           type: "oauth",
           access: "fake-access",
           refresh: "fake-refresh",
-          expires: Date.now() + 3_600_000,
+          expires: stamp() + 3_600_000,
           ...(owner === undefined ? {} : { metadata: { owner } }),
         })
       writeFileSync(join(dir, ".slots/anthropic/linked"), signIn(undefined), { mode: 0o600 })
@@ -320,6 +327,8 @@ describe("the run's environment", () => {
     expect(env.OPENCODE_FLAGS).toBe("-full_codemode")
     // OpenCode's free hosted models stay hidden, live preset or sim.
     expect(env.OPENCODE_DISABLE_FREE_MODELS).toBe("1")
+    // Its startup does not wait on the host's file-event daemon: no watch on any plugin module.
+    expect(env).toMatchObject(testHostEnv())
     expect(runEnv(caller, paths, launch, false).OPENCODE_DISABLE_MODELS_FETCH).toBeUndefined()
   })
 
@@ -499,6 +508,19 @@ describe("the scripted model", () => {
 
 // ── One run of the commands against a real OpenCode ──
 
+test("the first prompt waits for the runtime default and does not accept a config-only agent", () => {
+  const build = { id: "build", mode: "primary" }
+  const configured = { id: ORCHESTRATOR, mode: "primary" }
+  const registered = { ...configured, description: orchestrator.description }
+  const isReady = (agents: ReadonlyArray<{ readonly id: string; readonly mode: string; readonly description?: string }>, hasModel: boolean) =>
+    composerReady(Option.some(agents), hasModel, ORCHESTRATOR, orchestrator.description)
+  expect(composerReady(Option.none(), true, ORCHESTRATOR, orchestrator.description)).toBe(false)
+  expect(isReady([build, registered], true)).toBe(false)
+  expect(isReady([configured, build], true)).toBe(false)
+  expect(isReady([registered, build], false)).toBe(false)
+  expect(isReady([registered, build], true)).toBe(true)
+})
+
 /**
  * The environment of the e2e run's gamut commands: its own state file, and this test process as the run's owner, so a
  * runner killed mid-run (afterAll never run) leaves no host or model (testbeds/gamut/owner.ts).
@@ -513,7 +535,7 @@ const runSync = (argv: ReadonlyArray<string>, env: ChildEnv, where: { readonly c
 }
 
 /** A JSON file's value. */
-const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"))
+const readJson = (file: string) => JSON.parse(readFileSync(scratchInput(file), "utf8"))
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/gamut.test.ts: the end-to-end run skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -532,9 +554,9 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
 
   afterAll(() => {
     // A failed step still leaves nothing behind.
-    if (existsSync(state)) gamut("down")
-    rmSync(join(state, ".."), { recursive: true, force: true })
-  })
+    if (scratchExistsSync(state)) gamut("down")
+    rmSync(scratchInput(join(state, "..")), { recursive: true, force: true })
+  }, hangGuard("unit-law"))
 
   // The guard for the run that reached OpenCode's free hosted model (9ed8d7bc's deep run: the TUI sent the prompt on
   // opencode/big-pickle, the first model it lists, before it had the config's sim/sim-model). A sim run's OpenCode
@@ -550,7 +572,7 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
     const launch = forkLaunch(String(fork), "bun")
     const listed = runSync([...launch.base, "models", "--standalone"], runEnv(e2eEnv(state), paths, launch, true), { cwd: paths.work, timeout: 60_000 })
     expect({ code: listed.code, models: listed.out.trim().split("\n") }).toEqual({ code: 0, models: ["sim/sim-model"] })
-  }, 90_000)
+  }, hangGuard("process-tree"))
 
   test(
     "up, wait, read, send, status and down drive OpenCode with the Prime look",
@@ -597,8 +619,8 @@ describe.skipIf(!fork)("gamut on the sim preset", () => {
       const down = gamut("down")
       expect(down.code).toBe(0)
       expect(gamut("status").err).toContain("no gamut run is up")
-      expect(existsSync(work)).toBe(false)
+      expect(scratchExistsSync(work)).toBe(false)
     },
-    240_000,
+    hangGuard("generated-schedule"),
   )
 })

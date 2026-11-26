@@ -17,8 +17,10 @@ import {
   type FakeAnthropic,
   type FakeRequestInfo,
 } from "./fake-anthropic.ts"
-import { owned } from "./owned.ts"
+import { ownedForkFixture } from "./owned.ts"
+import { importForkCredentials } from "./scratch-child.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard, stamp } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 const ready = Boolean(fork)
@@ -35,7 +37,7 @@ const decodeEvent = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ message: Schema.String }) })),
 )
 /** The pool's own refusal: every account held, and when the first opens. */
-const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; the first opens at (\S+Z)$/
+const POOL_REFUSAL = /^dotfiles-opencode\.pool: all pool accounts are held; it may go again at ([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2} [AP]M (?:EST|EDT))$/
 const RUN_TIMEOUT_MS = 120_000
 
 /** Agent turns on the first login meet a plan limit; titles, and everything on the second login, go through. */
@@ -87,7 +89,6 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       }),
     )
     const env: Record<string, string> = {
-      PATH: process.env.PATH ?? "",
       HOME: join(base, "home"),
       XDG_CONFIG_HOME: join(base, "home/.config"),
       XDG_DATA_HOME: join(base, "home/.local/share"),
@@ -110,18 +111,14 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         methodID: "claude-max",
         refresh: account.refresh,
         access: account.access,
-        expires: Date.now() + 8 * HOUR,
+        expires: stamp() + 8 * HOUR,
       },
     }))
-    const imported = Bun.spawnSync([...launch.base, "auth", "import", "--standalone"], {
-      cwd: join(base, "work"),
-      env,
-      stdin: new TextEncoder().encode(JSON.stringify(logins)),
-    })
+    const imported = importForkCredentials(fork!, join(base, "work"), env, new TextEncoder().encode(JSON.stringify(logins)))
     expect(imported.exitCode).toBe(0)
-    const run = owned(
-      [...launch.base, "run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"],
-      { cwd: join(base, "work"), env, stdout: "pipe", stderr: "pipe" },
+    const run = ownedForkFixture(
+      [fork!, join(base, "work"), ["run", "--standalone", "--dangerously-skip-permissions", "--format", "json", "say hello"], env],
+      { stdout: "pipe", stderr: "pipe" },
     )
     const timer = setTimeout(() => run.kill(), RUN_TIMEOUT_MS)
     const [stdout, stderr] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited])
@@ -139,7 +136,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
       expect(run.stdout).not.toContain("Hello from the second login.")
       expect(turns.map((request) => [request.account, request.status])).toEqual([["first", 429]])
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -154,12 +151,14 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
 
       expect(run.exitCode).toBe(0)
       expect(run.stdout).toContain("Hello from the second login.")
-      // The agent turn went out on the first login, was refused, and went again at once on the second.
+      // The same agent turn went out on the first login, was refused once, and
+      // went again on the second while the first login was still on hold.
       expect(turns.map((request) => [request.account, request.status])).toEqual([
         ["first", 429],
         ["second", 200],
       ])
-      expect(turns[1]!.at - turns[0]!.at).toBeLessThan(2_000)
+      expect(turns[1]!.sessionHeader).toBe(turns[0]!.sessionHeader)
+      expect(turns[1]!.at).toBeLessThan(resetAt)
       // Nothing went out unsigned, nothing on a stranger's token.
       expect(messages.every((request) => request.account !== undefined)).toBe(true)
       // The credential choice never reached Anthropic.
@@ -176,7 +175,7 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         expect(run.stdout + run.stderr).not.toContain(account.refresh)
       }
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 
   test(
@@ -208,10 +207,11 @@ describe.skipIf(!ready)("the pool fails a refused run over to the next login (re
         .filter((event) => event.type === "error")
         .map((event) => event.error.message)
       expect(ends, run.stdout.slice(-2_000)).toHaveLength(1)
-      const opens = Option.flatMap(Option.fromNullishOr(POOL_REFUSAL.exec(ends.join(""))?.[1]), DateTime.make)
+      const opens = Option.fromUndefinedOr(POOL_REFUSAL.exec(ends.join(""))?.[1]).pipe(Option.map((text) => Date.parse(text)), Option.filter(Number.isFinite))
       expect(Option.isSome(opens), ends.join("")).toBe(true)
-      expect(Math.abs(Option.getOrElse(Option.map(opens, DateTime.toEpochMillis), () => 0) - (now + HOUR))).toBeLessThan(5_000)
+      const encodedReset = Math.floor((now + HOUR) / 1000) * 1000
+      expect(opens).toEqual(Option.some(encodedReset))
     }),
-    RUN_TIMEOUT_MS + 30_000,
+    hangGuard("fork-turn"),
   )
 })

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason native TUI plugin loader reads at sim-tui/app.ts: createAppFixture({
 // The queued switch's two ways in and its tray line, on the simulated TUI
 // (sim-tui/), each test at its first SEEDS seeds: the fork's real TUI in this
 // process with Prime and the model-next plugin loaded by path, in front of the

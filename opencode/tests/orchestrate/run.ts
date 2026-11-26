@@ -21,9 +21,12 @@
  *
  * @module
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
+import { externalInput, matchingInput, readScratchFileSync as readFileSync, scratchExistsSync as existsSync, scratchInput } from "../read-path.ts"
 import { HAND_BACK, PROBE, ROOT_TASK, serve, UNITS_TASK } from "./sim.ts"
+import { watchdog } from "../hang-guard.ts"
 
 export interface Spec {
   readonly scenario: "subagents" | "compaction" | "units" | "lane"
@@ -72,7 +75,7 @@ export interface Lane {
 }
 
 const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
+const work = join(scratchInput(spec.base), "work")
 const config = join(spec.base, "config")
 const logFile = join(spec.base, "agents.jsonl")
 mkdirSync(work, { recursive: true })
@@ -130,14 +133,17 @@ if (spec.codex !== undefined) {
   )
 }
 const codexOption = spec.codex === undefined ? {} : { codex: { providers: ["sim"], script: codexScript } }
+const fake = {
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
+}
 const content = {
   model: "sim/sim-model",
   agents: { ...spec.agents },
   providers: {
     sim: {
       name: "Sim",
-      package: "@opencode/ai/providers/openai-compatible",
-      settings: { baseURL: `http://127.0.0.1:${sim.server.port}/v1`, apiKey: "sim-key" },
+      ...fake,
       models: {
         "sim-model": {
           name: "Sim",
@@ -148,14 +154,28 @@ const content = {
         },
       },
     },
+    anthropic: {
+      name: "Scripted Opus",
+      ...fake,
+      models: {
+        "claude-opus-sim": {
+          name: "Scripted Opus",
+          family: "claude-opus",
+          releaseDate: "2099-01-01",
+          capabilities: { tools: true, input: ["text"], output: ["text"] },
+          limit: { context: 1_000_000, output: 16_000 },
+          variants: [{ id: "medium" }],
+        },
+      },
+    },
   },
   plugins: [
     {
-      package: spec.plugin,
+      package: matchingInput("cmd/orchestrate", spec.plugin),
       options: {
         log: logFile,
         now: spec.now,
-        unitLog: join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts"),
+        unitLog: matchingInput("../skills/orchestrate/scripts/log.ts", join(spec.plugin, "../../../skills/orchestrate/scripts/log.ts")),
         ...codexOption,
       },
     },
@@ -189,15 +209,15 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
 /** One OpenCode. */
 const open = () =>
-  OpenCode.create({
+  OpenCode.create(testHostOptions({
     events: { persist: true },
     // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
     models: { fetch: false },
     config: { directory: config, project: false, content: JSON.stringify(content) },
-  })
+  }))
 const opencode = await open()
 
 const location = { directory: work }
@@ -209,7 +229,7 @@ const messages = (sessionID: string) => opencode.sessions.context({ sessionID })
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Polls `ready` every 100 ms for `ms` at most; whether it held. */
 const until = async (ready: () => Promise<boolean> | boolean, ms: number) => {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (await ready()) return true
+  for (const end = watchdog(ms); !end.expired(); await sleep(100)) if (await ready()) return true
   return false
 }
 const readLog = (): Result["log"] => {

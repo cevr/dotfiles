@@ -11,12 +11,14 @@ import { Effect, Exit, Layer, Option, Random, Ref, Schema } from "effect"
 import * as MemoryCourier from "@dotfiles/opencode-questions/memory/courier"
 import * as MemoryStore from "@dotfiles/opencode-questions/memory/store"
 import * as Model from "@dotfiles/opencode-questions/model"
-import { AnswerQuestions, decideAnswers, heldOf, ownersOf, type Row, Sheet } from "@dotfiles/opencode-questions/question"
+import { AnswerQuestions, decideAnswers, heldOf, ownersOf, QuestionAnswered, type Row, Sheet } from "@dotfiles/opencode-questions/question"
 import type { Letter } from "@dotfiles/opencode-questions/reply"
 import { Changes, Courier, QuestionStore } from "@dotfiles/opencode-questions/service"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner, simulationTest } from "../../sim/seed.ts"
+import { HELD_CASES } from "../../sim/witness-cases.ts"
+import { assertEffectWitnessCases } from "../../sim/witnesses.ts"
 
-const { seeded } = Seed.runner("cmd/questions/questions-held.sim.test.ts")
+const { seeded } = simulationRunner("cmd/questions/questions-held.sim.test.ts")
 
 const AT = Date.parse("2026-11-19T10:00:00Z")
 const SESSIONS = ["ses_parent", "ses_other"]
@@ -56,7 +58,7 @@ const notHeld = (exit: Exit.Exit<unknown, { readonly _tag: string }>) =>
 
 seeded("a question put to a session is answered only by that session or by the owner, at every generated sheet and call", ({ seed, expect }) =>
   Effect.gen(function* () {
-    const outcomes = yield* Effect.forEach(Array.from({ length: CASES }), () =>
+    yield* Effect.forEach(Array.from({ length: CASES }), () =>
       Effect.gen(function* () {
         const { sheet, ids, by } = yield* caseOf
         const refused = notHeld(yield* Effect.exit(decideAnswers(sheet, commandOf(ids, by), 0)))
@@ -64,13 +66,24 @@ seeded("a question put to a session is answered only by that session or by the o
         const held = (session: string) => sheet.rows.filter((row) => row.to === session && !("answered" in row)).map((row) => row.id)
         const want = Option.match(by, { onNone: () => false, onSome: (session) => ids.some((id) => !held(session).includes(id)) })
         expect({ ids, by, refused }).toEqual({ ids, by, refused: want })
-        return refused
       }),
+      { discard: true },
     ).pipe(Random.withSeed(`questions-held:${seed}`))
-    // Neither side is vacuous across the seed's cases.
-    expect(new Set(outcomes)).toEqual(new Set([true, false]))
   }),
 )
+
+const heldDecision = (matches: boolean) => {
+  const sheet = { next: 2, rows: [{ id: "q1", sessionID: "ses_child", to: "ses_parent", question: "Held question?", assume: "yes", askedAt: AT }] }
+  const caller = Option.getOrElse(Option.liftPredicate("ses_parent", () => matches), () => "ses_other")
+  return Effect.exit(decideAnswers(sheet, commandOf(["q1"], Option.some(caller)), 0))
+}
+simulationTest("W: the holder answers; a different session receives NotHeld", assertEffectWitnessCases(HELD_CASES, {
+  "matching caller": {
+    expected: [QuestionAnswered.make({ id: "q1", answer: "maybe", delivery: "msg_new", at: 0 })],
+    run: (cause) => Effect.map(heldDecision(cause), (exit) => Exit.match(exit, { onFailure: () => [], onSuccess: (events) => events })),
+  },
+  "mismatching caller": { expected: true, run: (cause) => Effect.map(heldDecision(!cause), notHeld) },
+}))
 
 seeded("a sheet stored before `to` existed decodes, every question on it is the owner's, and only the owner answers it", ({ expect }) =>
   Effect.gen(function* () {

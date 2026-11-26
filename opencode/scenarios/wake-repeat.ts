@@ -18,8 +18,9 @@
 import { Effect, Schedule, Stream } from "effect"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 import { BUILTIN_AUTOMATION_OFF } from "../scripts/daily.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = resolve(process.env.SCENARIO_OUT ?? "out")
@@ -49,7 +50,7 @@ export default OpenCodeDriver.use(
       yield* llm.serve((request) => {
         const s = JSON.stringify(request)
         const title = s.includes("You name conversations")
-        requests.push({ session: title ? "title" : "root", at: Date.now(), request: s })
+        requests.push({ session: title ? "title" : "root", at: stamp(), request: s })
         return title ? say("Repeat fixture") : reply(s)
       })
 

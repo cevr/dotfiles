@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/digest/http/listener.ts: Effect.tryPromise(() => readFile(join(dist, folder, safe))).pipe(
 // One page over every host, the write half (unit 5, round 2): the page a host serves writes to the host that owns
 // an item directly, and that host decides it by its own policy. Through real listeners on loopback ports (the
 // tailnet's source injected at the listener's peer-address seam), with two and three hosts, sending Origin headers
@@ -28,6 +30,7 @@ import { closed } from "@dotfiles/opencode-digest/members"
 import { isPeerWrite, type Listener as ListenerKind, type Preflight, preflightOf, ROUTE_KINDS, type RouteKind, SOURCES } from "@dotfiles/opencode-digest/policy"
 import { type Sighting, UNSEEN } from "@dotfiles/opencode-digest/peers"
 import { handlersOf, livePeers, probeKeeping, STARTING, writeConfigOf } from "./server.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** The platform the cases run on: Bun's file system and path, and a fetch HTTP client. */
 const Platform = Layer.mergeAll(BunServices.layer, FetchHttpClient.layer)
@@ -402,7 +405,7 @@ describe("the page writes to the host that owns an item, under that host's own p
         (seed) => Effect.map(property(seed, 2, "keyed", 150), (reached) => expect(Math.min(reached.accepted, reached.refusedByPolicy), `seed ${seed}`).toBeGreaterThan(3)),
         { discard: true },
       ),
-    120_000,
+    hangGuard("installer"),
   )
 
   it.scopedLive.layer(Platform)(
@@ -413,10 +416,10 @@ describe("the page writes to the host that owns an item, under that host's own p
         (seed) => Effect.map(property(seed, 3, "keyed", 200), (reached) => expect(Math.min(reached.accepted, reached.refusedByPolicy), `seed ${seed}`).toBeGreaterThan(3)),
         { discard: true },
       ),
-    120_000,
+    hangGuard("installer"),
   )
 
-  it.scopedLive.layer(Platform)("a host whose device store keys nothing allows no peer origin at all", () => Effect.map(property(21, 3, "unkeyed", 120), (reached) => expect(reached.accepted).toBe(0)), 120_000)
+  it.scopedLive.layer(Platform)("a host whose device store keys nothing allows no peer origin at all", () => Effect.map(property(21, 3, "unkeyed", 120), (reached) => expect(reached.accepted).toBe(0)), hangGuard("installer"))
 
   it.scopedLive.layer(Platform)(
     "where digest-address-only's rules and the peers' meet: each case served or refused as both together say",
@@ -480,7 +483,7 @@ describe("the page writes to the host that owns an item, under that host's own p
         // The two address-origin writes alone were stored.
         expect((yield* one(b).writes) - before).toBe(2)
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.scopedLive.layer(Platform)(
@@ -509,7 +512,7 @@ describe("the page writes to the host that owns an item, under that host's own p
         const view = yield* decodePages((yield* exchange("GET", `${workbox}/view.json`, {})).body)
         expect(view.pages).toEqual([`http://${one(V4.get("workbox"))}:${PORT}`, `http://[${one(V6.get("workbox"))}]:${PORT}`])
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 
   it.scopedLive.layer(Platform)(
@@ -534,7 +537,7 @@ describe("the page writes to the host that owns an item, under that host's own p
         caller.address = PHONE
         expect(yield* one(b).writes).toBe(2)
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })
 
@@ -680,6 +683,6 @@ describe("the page's CSP names its peers' pages exactly, and nothing else", () =
         }
         expect(Math.min(plains, others)).toBeGreaterThan(50)
       }),
-    60_000,
+    hangGuard("process-fixture"),
   )
 })

@@ -4,11 +4,12 @@
 // from a kernel cell, and a background subagent that asks too. The tray and
 // the host's question form that /answer opens are read off the frame; the
 // answers off the next model requests and the transcripts.
+import { readScratchFileSync, scratchExistsSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const RECEIPT = [
   "Asked in the background; nobody has answered yet:",
@@ -72,9 +73,9 @@ describe.skipIf(!fork)("background questions", () => {
         stderr: "pipe",
       })
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
-      const read = (name: string) => readFileSync(join(out, `questions-${via}-${name}`), "utf8")
+      const read = (name: string) => readScratchFileSync(join(out, `questions-${via}-${name}`), "utf8")
       const timeout = join(out, `questions-${via}-timeout.txt`)
-      if (code !== 0) throw new Error(`questions scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${existsSync(timeout) ? readFileSync(timeout, "utf8") : ""}`)
+      if (code !== 0) throw new Error(`questions scenario (${via}) exited ${code}:\n${(stdout + stderr).slice(-5000)}\n${scratchExistsSync(timeout) ? readScratchFileSync(timeout, "utf8") : ""}`)
       expect(stdout).toMatch(/screenshot: .*questions-.*-form\.png/)
 
       // The root's tray counts its own three, from two asks, and its subagent's one, oldest first.
@@ -166,5 +167,5 @@ describe.skipIf(!fork)("background questions", () => {
       )
       if (via === "kernel") expect(tools).not.toContain("ask_user_async")
       else expect(tools.filter((name) => name === "ask_user_async")).toHaveLength(3)
-    }), 150_000)
+    }), hangGuard("fork-turn"))
 })

@@ -47,7 +47,7 @@
  *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `home`: the directory `~` and `$HOME` name; default the user's home.
- * - `heavy`: the heavy commands' patterns; default `DEFAULT_HEAVY`. `[]` turns the policy off.
+ * - `heavy`: additional heavy patterns; the installed guard always classifies `DEFAULT_HEAVY`.
  * - `nice`: the niceness added to a heavy command, 0 to 19; default 10.
  * - `memoryMax`: the scope's `MemoryMax` on Linux; default `12G`.
  * - `cpuWeight`: the scope's `CPUWeight` on Linux, 1 to 10000; default 20.
@@ -55,12 +55,14 @@
  */
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { which } from "bun"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as FilesystemLaunchers from "@dotfiles/opencode-guard/filesystem/launchers"
 import * as FilesystemRepoRoots from "@dotfiles/opencode-guard/filesystem/repo-roots"
 import { DEFAULT_HEAVY } from "@dotfiles/opencode-guard/heavy"
-import { DEFAULT_LIMITS } from "@dotfiles/opencode-guard/launcher"
+import { DEFAULT_LIMITS, launcherName } from "@dotfiles/opencode-guard/launcher"
 import * as Model from "@dotfiles/opencode-guard/model"
 import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
 import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
@@ -70,6 +72,7 @@ import * as ProcessCheckouts from "@dotfiles/opencode-guard/process/checkouts"
 import * as WorkReservations from "@dotfiles/opencode-guard/process/reservations"
 import type { Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
 import { type KeychainPrompt, keychainMessage } from "@dotfiles/opencode-guard/chrome"
+import { type CannotTell, type CommandForm, renderForm, renderUnknown } from "@dotfiles/opencode-guard/message"
 import * as FilesystemScriptFiles from "@dotfiles/opencode-guard/filesystem/script-files"
 import { type Idle, idleMessage } from "@dotfiles/opencode-guard/sleep"
 import { type Destructive, message } from "@dotfiles/opencode-guard/verdict"
@@ -108,11 +111,13 @@ const decodeInput = Schema.decodeUnknownOption(ShellInput)
 const decodeInputText = Schema.decodeUnknownOption(Schema.fromJsonString(ShellInput))
 
 /** What the model reads of a refusal, each rule in its own words. */
-const wordsOf = (refusal: Destructive | FullCopy | KeychainPrompt | Idle): string => {
-  if (refusal._tag === "Idle") return idleMessage(refusal.reason)
-  if (refusal._tag === "FullCopy") return worktreeMessage(refusal.reason)
-  if (refusal._tag === "KeychainPrompt") return keychainMessage(refusal.reason)
-  return message(refusal.reason)
+const wordsOf = (outcome: Destructive | FullCopy | KeychainPrompt | Idle | CommandForm | CannotTell): string => {
+  if (outcome._tag === "CommandForm") return renderForm(outcome)
+  if (outcome._tag === "CannotTell") return renderUnknown(outcome)
+  if (outcome._tag === "Idle") return idleMessage(outcome.reason)
+  if (outcome._tag === "FullCopy") return worktreeMessage(outcome.reason)
+  if (outcome._tag === "KeychainPrompt") return keychainMessage(outcome.reason)
+  return message(outcome.reason)
 }
 
 /** The outside systems the model runs on. */
@@ -143,7 +148,10 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externa
   )
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
-export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>) =>
+export const make = (
+  externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>,
+  admission?: (options: Options) => ReadonlyArray<string>,
+) =>
   Plugin.define({
     id: "dotfiles-opencode.guard",
     effect: Effect.fn("Guard.plugin")(function* (ctx) {
@@ -154,7 +162,7 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       )
       const limits = { nice: options.nice, memoryMax: options.memoryMax, cpuWeight: options.cpuWeight }
       const services = yield* Layer.build(
-        Layer.mergeAll(Model.layer({ home: options.home, server: process.pid }), Model.policyLayer({ heavy: options.heavy, limits })).pipe(
+        Layer.mergeAll(Model.layer({ home: options.home, server: process.pid }), Model.policyLayer({ heavy: options.heavy, limits, admission: admission?.(options) })).pipe(
           Layer.provide(externals(ctx, options)),
         ),
       )
@@ -167,6 +175,12 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
           Effect.map((shell) => {
             invocation.shell = shell
           }),
+          // This pre-permission host hook cannot reject with a typed error.
+          // Preserve the shell dialect in its name, but never fall back to a
+          // payload executable if installing its admission wrapper failed.
+          Effect.catchTag("LauncherUnavailable", () => Effect.sync(() => {
+            invocation.shell = `/dev/null/${launcherName(invocation.shell)}`
+          })),
         ),
       )
 
@@ -190,4 +204,4 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
     }),
   })
 
-export default make(live)
+export default make(live, (options) => [which("bun") ?? join(options.home, ".bun/bin/bun"), fileURLToPath(new URL("host-admit.ts", import.meta.url))])

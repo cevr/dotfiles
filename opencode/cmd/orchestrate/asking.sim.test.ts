@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The orchestrate plugin's question tools on the simulated host, at the
 // file's seeds: by default it adds `ask_orchestrator` and `answer_subagent`,
 // and its agents' swap leaves a root (a primary agent) `ask_user_async` and a
@@ -10,10 +12,10 @@ import { ASK_ORCHESTRATOR, ASK_OWNER, HAS_ORCHESTRATOR, letterNudge, NO_ORCHESTR
 import { documents, type Look } from "@dotfiles/opencode-orchestrate/documents"
 import * as Plugins from "../../sim/plugins.ts"
 import type { JsonObject } from "../../sim/runtime.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/orchestrate/asking.sim.test.ts")
+const { seeded } = simulationRunner("cmd/orchestrate/asking.sim.test.ts")
 
 const DIRECTORY = "/scratch/asking"
 const PIN = "2026-11-18T15:00:00Z"

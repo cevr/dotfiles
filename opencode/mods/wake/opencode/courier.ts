@@ -27,10 +27,10 @@
 //   the metadata whole, so a mark is merged into what the session has; the TUI
 //   reads the change from `session.metadata.updated`.
 import { Model, type Plugin } from "@opencode/plugin/effect"
-import { Clock, Effect, Layer, Random } from "effect"
+import { Array as Arr, Cause, Clock, Effect, Layer, Match, Option, Random } from "effect"
 import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
-import { type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
+import { type CallAnswer, type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
 
 /** A synthetic message, as the host's `session.synthetic` takes it. */
 export interface Synthetic {
@@ -168,15 +168,71 @@ export const layer = (host: Host, mintMessage: Effect.Effect<string> = minted("m
           const { [MARK_KEY]: _, ...rest } = session.metadata ?? {}
           return host.update({ sessionID, metadata: mark === undefined ? rest : { ...rest, [MARK_KEY]: { ...mark } } })
         }),
-        Effect.ignore,
+        Effect.mapError(refusal(sessionID)),
+        Effect.asVoid,
       ),
   })
+
+type StoredContext = Effect.Success<ReturnType<Plugin.Context["session"]["context"]>>
+
+/**
+ * How the host's call `call` went, read from its session's context (`session.context`: the messages from the newest
+ * compaction on): its part `completed` is committed, `error` failed, any other state running. No such part is
+ * `missing` only if the window covers the call, otherwise `unknown`; no such session `gone`; a context that
+ * could not be read is `unreadable`, regardless of the process's liveness.
+ */
+export const callAnswer =
+  (context: (sessionID: string) => Effect.Effect<StoredContext, unknown>) =>
+  (sessionID: string, call: string, message?: string): Effect.Effect<CallAnswer> =>
+    readCalls(context(sessionID)).pipe(Effect.map((answer) => answer(call, message)))
+
+/** Read stored parts once, not the provider request (which can rewrite or omit them). In a compaction hook this runs before the window changes. */
+const readCalls = (context: Effect.Effect<StoredContext, unknown>) => {
+  type Answer = (call: string, message?: string) => CallAnswer
+  return context.pipe(
+    Effect.map((messages): Answer => {
+      const calls = messages.flatMap((entry) =>
+        Match.value(entry).pipe(
+          Match.when({ type: "assistant" }, ({ content, id }) => content.filter((part) => part.type === "tool").map((part) => ({ message: id, part }))),
+          Match.orElse(() => []),
+        ),
+      )
+      const boundary = Arr.findLast(messages, (entry) => entry.type === "compaction" && entry.status === "completed")
+      return (call, message) =>
+        Option.match(Arr.findLast(calls, ({ part, message: carrier }) => part.id === call && !Option.exists(Option.fromUndefinedOr(message), (id) => id !== carrier)), {
+          onSome: ({ part }) => answerOf(part.state.status),
+          onNone: () =>
+            Match.value(Option.match(boundary, { onNone: () => true, onSome: ({ id }) => Option.exists(Option.fromUndefinedOr(message), (carrier) => carrier > id) })).pipe(
+              Match.when(true, (): CallAnswer => "missing"),
+              Match.orElse((): CallAnswer => "unknown"),
+            ),
+        })
+    }),
+    Effect.catchCause((cause) =>
+      Match.value(Option.exists(Cause.findErrorOption(cause), notFound)).pipe(
+        Match.when(true, () => Effect.succeed<Answer>(() => "gone")),
+        Match.orElse(() => Effect.succeed<Answer>(() => "unreadable")),
+      ),
+    ),
+  )
+}
+
+/** What a call part's state says of its answer; any state not named is still running. */
+const answerOf = (status: string): CallAnswer =>
+  Match.value(status).pipe(
+    Match.when("completed", (): CallAnswer => "committed"),
+    Match.when("error", (): CallAnswer => "failed"),
+    Match.orElse((): CallAnswer => "running"),
+  )
 
 type Ids = Parameters<Plugin.Context["session"]["synthetic"]>[0]
 type Create = NonNullable<Parameters<Plugin.Context["session"]["create"]>[0]>
 type Directory = NonNullable<Create["location"]>["directory"]
 type Agent = NonNullable<Create["agent"]>
 type Metadata = NonNullable<Create["metadata"]>
+
+/** A session id as the host types it. */
+const sessionOf = (id: string) => id as Ids["sessionID"]
 
 /** The host's sessions through the plugin context. */
 export const fromContext = (ctx: Plugin.Context) =>
@@ -195,6 +251,19 @@ export const fromContext = (ctx: Plugin.Context) =>
         }),
       )),
     prompt: (input) => ctx.session.prompt({ sessionID: input.sessionID as Ids["sessionID"], id: input.id as Ids["id"], text: input.text }),
-    get: (sessionID) => ctx.session.get({ sessionID: sessionID as Ids["sessionID"] }),
-    update: (input) => ctx.session.update({ sessionID: input.sessionID as Ids["sessionID"], metadata: input.metadata as Metadata }),
+    get: (sessionID) => ctx.session.get({ sessionID: sessionOf(sessionID) }),
+    update: (input) => ctx.session.update({ sessionID: sessionOf(input.sessionID), metadata: input.metadata as Metadata }),
   })
+
+/** How a host call went, through the plugin context's `session.context`. */
+export const answeredOf = (ctx: Plugin.Context) => callAnswer((sessionID) => ctx.session.context({ sessionID: sessionOf(sessionID) }))
+
+/** The authoritative view before a compaction changes which stored parts `context` returns. */
+export const beforeCompaction = (ctx: Plugin.Context, sessionID: Ids["sessionID"]) => readCalls(ctx.session.context({ sessionID }))
+
+/** A move changes location, not the session id or the history it refers to. */
+export const ownerHere = (ctx: Plugin.Context) => (sessionID: string) =>
+  ctx.session.get({ sessionID: sessionOf(sessionID) }).pipe(
+    Effect.map((session) => session.location.directory === ctx.location.directory),
+    Effect.orElseSucceed(() => false),
+  )

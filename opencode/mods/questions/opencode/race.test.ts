@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at mods/questions/opencode/race.test.ts: Effect.sync(() => Bun.spawn(["bun", PROGRAM, ...args], { stdout: "pipe", stderr: "pipe", detach
 // Two servers answer the same questions at once (the tray in one, the digest page in another), over the fork's real
 // key-value table in one sqlite file: each question is answered once, by one of them; its session gets one letter;
 // the digest one Answered line, naming who won; the loser is told the question is no longer open.
@@ -12,6 +14,7 @@ import { join } from "node:path"
 import { Array as Arr, Config, Effect, Option, Predicate, Schema } from "effect"
 import { scratch } from "../../../tests/scratch.ts"
 import { Fact, sessionOf } from "./race.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** The race program, from opencode/ (where the tests run). */
 const PROGRAM = "mods/questions/opencode/race.ts"
@@ -71,5 +74,5 @@ describe("two servers answering at once over the fork's real key-value table", (
     })
     expect(wrong.slice(0, 5)).toEqual([])
     expect([letters.length, answeredLines.length, outcomes.length]).toEqual([COUNT, COUNT, 2 * COUNT])
-  }, 120_000)
+  }, hangGuard("installer"))
 })

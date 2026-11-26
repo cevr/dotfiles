@@ -4,8 +4,10 @@
 // draws its description as one notice row. Also the tools' receipts and the
 // listing the agent reads after a handoff, and the letter a latch that could
 // not open leaves its parent.
-import type { Schema } from "effect"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
+import { Match, Option, type Schema } from "effect"
 import { type JobSpec, type Launched, LOG_TAIL, type Run } from "./job.ts"
+import { dispositionOfExit, type JobEvent } from "./job-event.ts"
 import type { Latch } from "./latch.ts"
 import { type Alarm, type Check, dueOf, type Entry, type Fired, type Fresh, type Job, type Monitor, type Notice, type Repeat } from "./wake.ts"
 
@@ -22,8 +24,6 @@ export const LATE_MS = 60_000
 export const OUTPUT_TAIL = 2000
 /** How much of the note the transcript's row keeps. */
 export const LINE_NOTE = 60
-
-export const isoOf = (millis: number): string => new Date(millis).toISOString()
 
 /** A span as a person reads it: `45s`, `14m`, `2h 5m`, `3d 4h`. */
 export const durationOf = (ms: number): string => {
@@ -58,7 +58,7 @@ const lateLine = (what: string, tick: number, firedAt: number): ReadonlyArray<st
   const late = lateBy(tick, firedAt)
   return late === undefined
     ? []
-    : [`It ${what} ${durationOf(late)} late: no OpenCode server was running at ${isoOf(tick)}, so it went when one started.`]
+    : [`It ${what} ${durationOf(late)} late: no OpenCode server was running at ${formatNotificationTime(tick)}, so it went when one started.`]
 }
 
 const noticeLine = (entry: Fired): ReadonlyArray<string> =>
@@ -84,12 +84,12 @@ const rowOf = (head: string, tick: number, firedAt: number, note: string): strin
 /** The message an alarm's fire for `tick` carries; `next` is a repeat's next due time. */
 export const alarmLetter = (alarm: Alarm, tick: number, firedAt: number, next?: number): Letter => ({
   text: [
-    `⏰ Wake ${alarm.id} fired: the alarm you set at ${isoOf(alarm.setAt)}, due ${isoOf(tick)}.`,
+    `⏰ Wake ${alarm.id} fired: the alarm you set at ${formatNotificationTime(alarm.setAt)}, due ${formatNotificationTime(tick)}.`,
     ...lateLine("fired", tick, firedAt),
     ...noticeLine(alarm),
     ...(next === undefined || alarm.everySeconds === undefined
       ? []
-      : [`It repeats every ${durationOf(alarm.everySeconds * 1000)}; the next is due ${isoOf(next)}. Cancel it with wake_cancel({ id: "${alarm.id}" }) once its work is done.`]),
+      : [`It repeats every ${durationOf(alarm.everySeconds * 1000)}; the next is due ${formatNotificationTime(next)}. Cancel it with wake_cancel({ id: "${alarm.id}" }) once its work is done.`]),
     `Note: ${alarm.note}`,
   ].join("\n"),
   description: rowOf(alarm.mode === "notify" ? `notice ${alarm.id}` : `wake ${alarm.id}`, tick, firedAt, alarm.note),
@@ -106,12 +106,12 @@ export const monitorLetter = (monitor: Monitor, outcome: Outcome, checks: number
   const head =
     outcome === "matched"
       ? `⏰ Monitor ${monitor.id} matched: \`${monitor.command}\` ${done} after ${checks} ${checks === 1 ? "check" : "checks"}.`
-      : `⏰ Monitor ${monitor.id} timed out: \`${monitor.command}\` never ${done} in ${checks} ${checks === 1 ? "check" : "checks"}; its deadline was ${isoOf(monitor.deadline)}.`
+      : `⏰ Monitor ${monitor.id} timed out: \`${monitor.command}\` never ${done} in ${checks} ${checks === 1 ? "check" : "checks"}; its deadline was ${formatNotificationTime(monitor.deadline)}.`
   const output = last === undefined ? "" : tailOf([last.stdout, last.stderr].filter((part) => part.trim() !== "").join("\n"))
   return {
     text: [
       head,
-      `You set it at ${isoOf(monitor.setAt)} to check every ${durationOf(monitor.intervalSeconds * 1000)} in ${monitor.cwd}.`,
+      `You set it at ${formatNotificationTime(monitor.setAt)} to check every ${durationOf(monitor.intervalSeconds * 1000)} in ${monitor.cwd}.`,
       ...(outcome === "timed-out" ? lateLine("gave up", monitor.deadline, firedAt) : []),
       ...noticeLine(monitor),
       `Note: ${monitor.note}`,
@@ -136,13 +136,13 @@ const repeatLetter = (monitor: Monitor, repeat: Repeat, outcome: Outcome, checks
   const head =
     outcome === "matched"
       ? `⏰ Monitor ${monitor.id} ${saw} (fire ${fires}): \`${excerpt(monitor.command, LINE_COMMAND)}\`.`
-      : `⏰ Monitor ${monitor.id} ended: its deadline ${isoOf(monitor.deadline)} passed after ${fires} ${fires === 1 ? "fire" : "fires"}; \`${excerpt(monitor.command, LINE_COMMAND)}\`.`
+      : `⏰ Monitor ${monitor.id} ended: its deadline ${formatNotificationTime(monitor.deadline)} passed after ${fires} ${fires === 1 ? "fire" : "fires"}; \`${excerpt(monitor.command, LINE_COMMAND)}\`.`
   const output = last === undefined ? "" : tailOf([last.stdout, last.stderr].filter((part) => part.trim() !== "").join("\n"))
   return {
     text: [
       head,
       ...(outcome === "matched"
-        ? [`It keeps checking every ${durationOf(monitor.intervalSeconds * 1000)} until ${isoOf(monitor.deadline)}; wake_cancel({ id: "${monitor.id}" }) stops it.`]
+        ? [`It keeps checking every ${durationOf(monitor.intervalSeconds * 1000)} until ${formatNotificationTime(monitor.deadline)}; wake_cancel({ id: "${monitor.id}" }) stops it.`]
         : lateLine("ended", monitor.deadline, firedAt)),
       ...noticeLine(monitor),
       `Note: ${monitor.note}`,
@@ -168,7 +168,12 @@ export interface JobView {
   readonly logTail: string
   /** Progress lines not yet delivered (a letter), or the last ones (a check). */
   readonly progress: string
+  /** Its end as a typed event, once it is over (none while it runs; absent from a view made elsewhere). */
+  readonly event?: Option.Option<JobEvent>
 }
+
+/** The end's line: its kind, its run and its log's handle, as typed readers and the owner's `check` take them. */
+const endLine = (event: JobEvent): string => `End: ${event.disposition} (generation ${event.generation}); log ${event.log}.`
 
 const commandOf = (spec: JobSpec) => `\`${spec.command}\``
 
@@ -185,6 +190,7 @@ export const runPhrase = (run: Run, now: number): string => {
       const took = durationOf(run.exit.endedAt - run.exit.startedAt)
       if (run.exit.timedOut) return `was stopped at its timeout after ${took}`
       if (run.exit.killed) return `was killed after ${took}`
+      if (run.exit.disposition === "spawn-failed") return `could not start its command (exit ${run.exit.exitCode ?? "none"})`
       if (run.exit.exitCode === null) return `was ended by ${run.exit.signal ?? "a signal"} after ${took}`
       return `exited ${run.exit.exitCode} after ${took}`
     }
@@ -193,18 +199,21 @@ export const runPhrase = (run: Run, now: number): string => {
 
 /** The short form for a transcript row. */
 const runWord = (run: Run): string =>
-  run.state === "ended"
-    ? run.exit.timedOut
-      ? "timed out"
-      : run.exit.killed
-        ? "killed"
-        : run.exit.exitCode === null
-          ? `ended by ${run.exit.signal ?? "a signal"}`
-          : `exited ${run.exit.exitCode}`
-    : run.state
+  Match.value(run).pipe(
+    Match.discriminator("state")("ended", (ended) =>
+      Match.value(dispositionOfExit(ended.exit)).pipe(
+        Match.when("timed-out", () => "timed out"),
+        Match.when("cancelled", () => "killed"),
+        Match.when("spawn-failed", () => "did not start"),
+        Match.when("signalled", () => `ended by ${ended.exit.signal ?? "a signal"}`),
+        Match.orElse(() => `exited ${ended.exit.exitCode}`),
+      ),
+    ),
+    Match.orElse((other) => other.state),
+  )
 
 const whereLine = (view: JobView): string => {
-  const ran = view.run.state === "ended" ? ` from ${isoOf(view.run.exit.startedAt)} to ${isoOf(view.run.exit.endedAt)}` : ""
+  const ran = view.run.state === "ended" ? ` from ${formatNotificationTime(view.run.exit.startedAt)} to ${formatNotificationTime(view.run.exit.endedAt)}` : ""
   return `It ran in ${view.spec.cwd}${ran}${view.spec.heavy ? ", niced (heavy)" : ""}. Log: ${view.log}${view.unit === undefined ? "" : ` (systemd unit ${view.unit})`}.`
 }
 
@@ -225,6 +234,7 @@ export const jobLetter = (job: Job, view: JobView, firedAt: number): Letter => {
     text: [
       `⏰ Job ${job.id} ${runPhrase(view.run, firedAt)}: ${commandOf(view.spec)}.`,
       whereLine(view),
+      ...Option.toArray(Option.map(view.event ?? Option.none(), endLine)),
       ...(late === undefined ? [] : [`It ended ${durationOf(late)} before this letter: no OpenCode server was running then, so it went when one started.`]),
       `Note: ${job.note}`,
       ...bodyOf(view),
@@ -233,6 +243,7 @@ export const jobLetter = (job: Job, view: JobView, firedAt: number): Letter => {
     metadata: metadataOf(job, tick, firedAt, {
       state: view.run.state,
       ...(view.run.state === "ended" ? { exitCode: view.run.exit.exitCode, timedOut: view.run.exit.timedOut, killed: view.run.exit.killed } : {}),
+      ...Option.match(view.event ?? Option.none(), { onNone: () => ({}), onSome: (event) => ({ event: { ...event } }) }),
     }),
   }
 }
@@ -245,28 +256,43 @@ export const dripLetter = (job: Job, lines: string, firedAt: number): Letter => 
 })
 
 /** What starting a job answers: its id and log first, then how it runs and what comes back. */
+const startedJob = (launched: Launched) => {
+  if (launched.admission === "queued") return "queued for host admission"
+  return "started"
+}
+
 export const jobReceipt = (job: Job, launched: Launched): string =>
   [
-    `Job ${job.id} started. Log: ${launched.log}`,
+    `Job ${job.id} ${startedJob(launched)}. Log: ${launched.log}`,
     `It runs ${commandOf(job)} in ${job.cwd} ${launched.how === "systemd" ? `as the systemd user unit ${launched.unit ?? ""}` : "in its own process group"}${
       job.heavy ? ", niced" : ""
     }, outside the OpenCode server, so it outlives a restart; it is stopped if still running after ${durationOf(job.timeoutSeconds * 1000)}.`,
     ...(launched.warning === undefined ? [] : [launched.warning]),
     `Lines it appends to $JOB_DRIP (${launched.drip}) reach you as progress at most once a minute, without starting a turn.`,
-    `When it ends, a letter with its exit code, duration, log tail and your note starts a turn here. End your turn now unless there is other work, or wait with job({ action: "wait", id: "${job.id}" }) when nothing else is left; a subagent waits, since its turn's end hands back to its parent.`,
+    `When it ends, a letter with its exit code, duration, log tail and your note starts a turn here, once. End your turn now unless there is other work; do not poll it. job({ action: "park", id: "${job.id}" }) answers at once: its end if it is over (then no letter follows), else that it runs. A subagent waits with job({ action: "wait", id: "${job.id}" }), since its turn's end hands back to its parent.`,
   ].join("\n")
 
-/** What `check`, `wait` and `kill` answer. */
+/** What `check`, `wait`, `park` and `kill` answer. */
 export const jobReport = (view: JobView, now: number, said: ReadonlyArray<string> = []): string =>
-  [`Job ${view.spec.id} ${runPhrase(view.run, now)}: ${commandOf(view.spec)}.`, whereLine(view), ...said, `Note: ${view.spec.note}`, ...bodyOf(view)].join("\n")
+  [
+    `Job ${view.spec.id} ${runPhrase(view.run, now)}: ${commandOf(view.spec)}.`,
+    whereLine(view),
+    ...Option.toArray(Option.map(view.event ?? Option.none(), endLine)),
+    ...said,
+    `Note: ${view.spec.note}`,
+    ...bodyOf(view),
+  ].join("\n")
 
 /** What `list` answers: this session's jobs still kept, and how each stands. */
-export const jobListing = (jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run }>, now: number): string =>
+export const jobListing = (jobs: ReadonlyArray<{ readonly job: Job; readonly run: Run; readonly held: Option.Option<string> }>, now: number): string =>
   jobs.length === 0
     ? "No jobs are running or waiting to report in this session."
     : [
         `Jobs (${jobs.length}):`,
-        ...jobs.map(({ job, run }) => `- ${job.id}: ${runPhrase(run, now)} · ${commandOf(job)} in ${job.cwd} · note: ${excerpt(job.note, LINE_NOTE)}`),
+        ...jobs.map(
+          ({ job, run, held }) =>
+            `- ${job.id}: ${runPhrase(run, now)} · ${commandOf(job)} in ${job.cwd} · note: ${excerpt(job.note, LINE_NOTE)}${Option.match(held, { onNone: () => "", onSome: (call) => ` · its end held, unconfirmed, by call ${call}` })}`,
+        ),
       ].join("\n")
 
 /** The first prompt of the session a `newSession` alarm starts: what it was asked to do, and where that came from. */
@@ -274,7 +300,7 @@ export const freshPrompt = (alarm: Alarm, fresh: Fresh, tick: number, firedAt: n
   [
     fresh.prompt,
     "",
-    `(Started by wake ${alarm.id}, set at ${isoOf(alarm.setAt)} in session ${alarm.sessionID}, due ${isoOf(tick)}.${
+    `(Started by wake ${alarm.id}, set at ${formatNotificationTime(alarm.setAt)} in session ${alarm.sessionID}, due ${formatNotificationTime(tick)}.${
       lateBy(tick, firedAt) === undefined ? "" : ` It went ${durationOf(firedAt - tick)} late: no OpenCode server was running at its time.`
     } Its note: ${alarm.note})`,
   ].join("\n")
@@ -283,7 +309,7 @@ export const freshPrompt = (alarm: Alarm, fresh: Fresh, tick: number, firedAt: n
 export const latchFailedLetter = (latch: Latch, message: string, now: number): Letter => ({
   text: [
     `⏰ Latch ${latch.id} could not start its subagent: ${message}`,
-    `The ${latch.subagent.agent} subagent "${latch.subagent.description}" (sessionID: ${latch.child}) latched at ${isoOf(latch.setAt)}, held by ${holdOf(latch)}; it did not start.`,
+    `The ${latch.subagent.agent} subagent "${latch.subagent.description}" (sessionID: ${latch.child}) latched at ${formatNotificationTime(latch.setAt)}, held by ${holdOf(latch)}; it did not start.`,
     "Call subagent again if the work is still wanted.",
   ].join("\n"),
   description: `latch ${latch.id} failed · ${excerpt(latch.subagent.description, LINE_NOTE)}`,
@@ -294,7 +320,7 @@ const holdOf = (latch: Latch) => (latch.hold === "sabbath" ? "the Sabbath" : "th
 
 // ── Receipts ──
 
-const inOf = (at: number, now: number) => `${isoOf(at)} (in ${durationOf(at - now)})`
+const inOf = (at: number, now: number) => `${formatNotificationTime(at)} (in ${durationOf(at - now)})`
 
 /** Said when the OS backstop could not be set: the entry still fires, but only while a server runs. */
 export const unguarded = (reason: string) => `No OS backstop was set (${reason}): it fires only while an OpenCode server runs.`
@@ -352,7 +378,7 @@ const listingOf = (entry: Entry, now: number): string => {
       ...(entry.recheckAt < entry.opensAt ? [`asked again ${inOf(entry.recheckAt, now)}`] : []),
     ].join(" · ")
   if (entry.kind === "job")
-    return `- ${entry.id}: job · \`${entry.command}\` in ${entry.cwd} · started ${isoOf(entry.setAt)} · note: ${entry.note} · job({ action: "check", id: "${entry.id}" }) reads it`
+    return `- ${entry.id}: job · \`${entry.command}\` in ${entry.cwd} · started ${formatNotificationTime(entry.setAt)} · note: ${entry.note} · job({ action: "check", id: "${entry.id}" }) reads it`
   if (entry.kind === "alarm")
     return [
       `- ${entry.id}: alarm · ${entry.mode} · due ${inOf(entry.dueAt, now)}`,
@@ -372,7 +398,7 @@ const listingOf = (entry: Entry, now: number): string => {
 /** What `wake_list` answers: now, every pending entry, and the notices the session has not read. */
 export const listing = (entries: ReadonlyArray<Entry>, notices: ReadonlyArray<Notice>, now: number): string =>
   [
-    `Now: ${isoOf(now)}.`,
+    `Now: ${formatNotificationTime(now)}.`,
     entries.length === 0 ? "No alarms, monitors or latches pending." : `Pending (${entries.length}):`,
     ...entries.toSorted((left, right) => dueOf(left) - dueOf(right)).map((entry) => listingOf(entry, now)),
     ...(notices.length === 0 ? [] : [`Unread notices (${notices.length}), delivered to your next turn:`, ...notices.map((notice) => `- ${notice.wakeID}: ${notice.description}`)]),

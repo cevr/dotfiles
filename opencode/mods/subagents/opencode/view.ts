@@ -5,7 +5,8 @@
 // tools its cell called), and the stop notices its background subagents and
 // shell commands sent it. Read inside a Solid computation, every read here is
 // reactive.
-import type { Call, Family, Latch, Message, Part, Session, Shell } from "../family.ts"
+import type { Call, Family, Message, OwnedRow, Part, Session, Shell } from "../family.ts"
+import { envelopes } from "../envelope.ts"
 
 /** A session as `context.data.session.get` returns it, narrowed to what a row reads. */
 export type SessionInfo = {
@@ -34,11 +35,13 @@ export type ShellInfo = {
  * host's location reference, which the shell registry is kept per.
  */
 export interface Reads<Location = unknown> {
+  readonly listen?: (handler: (event: { readonly details: object }) => void) => () => void
   readonly session: {
     get(sessionID: string): SessionInfo | undefined
     root(sessionID: string): string
     family(sessionID: string): ReadonlyArray<string>
     status(sessionID: string): "idle" | "running"
+    readonly pending?: { list(sessionID: string): ReadonlyArray<PendingInput> }
     readonly message: { list(sessionID: string): ReadonlyArray<unknown> }
     readonly permission: {
       list(sessionID: string): ReadonlyArray<{ readonly action: string; readonly resources: ReadonlyArray<string> }> | undefined
@@ -49,6 +52,15 @@ export interface Reads<Location = unknown> {
   readonly shell: { list(location?: Location): ReadonlyArray<ShellInfo> }
 }
 
+type PendingInput = { readonly type: string; readonly payload: object }
+
+const shellWakePending = (reads: Pick<Reads, "session">, id: string) =>
+  reads.session.pending?.list(id).some(({ type, payload }) => {
+    if (type !== "synthetic") return false
+    const metadata = record(record(payload).metadata)
+    return metadata.source === "shell" && Boolean(string(metadata.shellID))
+  }) === true
+
 type Fields = Readonly<Record<string, unknown>>
 
 const record = (value: unknown): Fields =>
@@ -56,6 +68,25 @@ const record = (value: unknown): Fields =>
 const string = (value: unknown) => (typeof value === "string" ? value : undefined)
 const number = (value: unknown) => (typeof value === "number" ? value : undefined)
 const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : [])
+const present = <A>(value: A): value is NonNullable<A> => value != null
+interface LatchTiming { recheckAt?: number; cancelledAt?: number; failed?: string }
+
+/** The native row's view of Wake's persisted latch, including legacy marks without a recheck time. */
+function latchOf(fields: Fields): Session["latch"] {
+  const hold = string(fields.hold)
+  const reason = string(fields.reason)
+  const opensAt = number(fields.opensAt)
+  const at = number(fields.at)
+  if (!present(hold) || !present(reason) || !present(opensAt) || !present(at)) return
+  const timing: LatchTiming = {}
+  const recheckAt = number(fields.recheckAt)
+  if (present(recheckAt)) timing.recheckAt = recheckAt
+  const cancelledAt = number(fields.cancelledAt)
+  if (present(cancelledAt)) timing.cancelledAt = cancelledAt
+  const failed = string(fields.failed)
+  if (present(failed)) timing.failed = failed
+  return { hold, reason, opensAt, at, ...timing }
+}
 
 const STATUSES = ["streaming", "running", "completed", "error"] as const
 
@@ -130,25 +161,20 @@ export function message(value: unknown): Message | undefined {
   const metadata = record(fields.metadata)
   const state = string(metadata.state)
   const at = number(record(fields.time).created) ?? 0
-  if (state === undefined) return undefined
+  const text = string(fields.text) || ""
   const shellID = string(metadata.shellID)
-  if (metadata.source === "shell" && shellID !== undefined) return { type: "shell", shellID, state, at }
+  if (metadata.source === "shell" && shellID !== undefined && state !== undefined) return { type: "shell", shellID, state, at }
   const childID = string(metadata.childID)
-  if (metadata.source !== "subagent" || childID === undefined) return undefined
-  return { type: "notice", childID, state, at, text: string(fields.text) ?? "" }
+  if (metadata.source === "subagent" && childID !== undefined && state !== undefined) return { type: "notice", childID, state, at, text }
+  if (!metadata.source) return legacyNotice(text, at)
 }
 
-/** A latched child's mark (the wakes' `latch` metadata, mods/wake latch.ts); undefined when it carries none. */
-function latchOf(value: unknown): Latch | undefined {
-  const fields = record(value)
-  const hold = string(fields.hold)
-  const reason = string(fields.reason)
-  const opensAt = number(fields.opensAt)
-  const at = number(fields.at)
-  if (hold === undefined || reason === undefined || opensAt === undefined || at === undefined) return undefined
-  const cancelledAt = number(fields.cancelledAt)
-  const failed = string(fields.failed)
-  return { hold, reason, opensAt, at, ...(cancelledAt === undefined ? {} : { cancelledAt }), ...(failed === undefined ? {} : { failed }) }
+const legacyNotice = (text: string, at: number): Message | undefined => {
+  // Only synthetic messages reach this legacy display fallback. Neither shape creates an outcome.
+  const old = envelopes(text).find((item) => item.start === 0 && item.kind === "subagent")
+  const oldChild = old?.attributes.sessionID
+  const oldState = old?.attributes.state
+  if (oldChild && oldState) return { type: "notice", childID: oldChild, state: oldState, at, text }
 }
 
 /** One field of an object, read alone: a store proxy then tracks that field only. */
@@ -196,6 +222,31 @@ export const transcript = (items: ReadonlyArray<unknown>, convert: Convert): Tra
   return { messages: items.flatMap((item) => convert(item) ?? []), ...(model ? { model } : {}) }
 }
 
+/** Presentation inputs only; this function cannot read client lifecycle state. */
+export function ownedSessionOf(id: string, told: Transcript, info: ReturnType<Reads["session"]["get"]>, owner: OwnedRow): Session {
+  const model = told.model ?? info?.model?.id
+  const { child: _child, ...phase } = owner
+  return {
+    id,
+    ...identityOf(model, info),
+    time: { created: info?.time?.created || 0 },
+    running: false, shells: [], permissions: [], questions: [],
+    messages: told.messages,
+    ...phase,
+  }
+}
+
+const identityOf = (model?: string, info?: SessionInfo) => {
+  const title = info && info.title
+  const agent = info && info.agent
+  return {
+    ...(info?.parentID ? { parentID: info.parentID } : {}),
+    ...(present(title) ? { title } : {}),
+    ...(present(agent) ? { agent } : {}),
+    ...(model ? { model } : {}),
+  }
+}
+
 /**
  * Session `id` from the host's reads, its messages and step model given as
  * `read` (`transcript`): a TUI keeps the transcript in a memo of its own, so
@@ -210,22 +261,19 @@ export function sessionOf(
   const info = reads.session.get(id)
   const time = info?.time
   const model = stepped ?? info?.model?.id
-  const latch = latchOf(info?.metadata?.latch)
-  return {
+  const latch = latchOf(record(record(info && info.metadata).latch))
+  const session: Session = {
     id,
-    ...(info?.parentID ? { parentID: info.parentID } : {}),
-    ...(info?.title === undefined ? {} : { title: info.title }),
-    ...(info?.agent === undefined ? {} : { agent: info.agent }),
-    ...(model ? { model } : {}),
-    ...(info?.outcome === undefined ? {} : { outcome: info.outcome }),
+    ...identityOf(model, info),
+    ...(info?.outcome ? { outcome: info.outcome } : {}),
     time: {
-      created: time?.created ?? 0,
+      created: time?.created || 0,
       ...(time?.busy === undefined ? {} : { busy: time.busy }),
       ...(time?.idle === undefined ? {} : { idle: time.idle }),
       ...(time?.updated === undefined ? {} : { updated: time.updated }),
     },
-    ...(latch === undefined ? {} : { latch }),
     running: reads.session.status(id) === "running",
+    wakePending: shellWakePending(reads, id),
     shells,
     permissions: (reads.session.permission.list(id) ?? []).map((request) =>
       [request.action, request.resources[0]].filter(Boolean).join(" "),
@@ -233,6 +281,8 @@ export function sessionOf(
     questions: (reads.session.form.list(id) ?? []).map((form) => form.title),
     messages,
   }
+  if (present(latch)) return { ...session, latch }
+  return session
 }
 
 /** The sessions of `root`'s family, the root first when the host's family list leaves it out. */
@@ -251,13 +301,17 @@ export const read = <Location>(
   sessionID: string,
   location?: Location,
   convert: Convert = message,
+  ownerRows?: ReadonlyMap<string, OwnedRow>,
 ): Family => {
   const root = reads.session.root(sessionID)
   const shells = shellsBySession(reads.shell.list(location))
   return {
     root,
-    sessions: familyOf(reads, root).map((id) =>
-      sessionOf(reads, id, shells.get(id) ?? [], transcript(reads.session.message.list(id), convert)),
-    ),
+    sessions: familyOf(reads, root).map((id) => {
+      const told = transcript(reads.session.message.list(id), convert)
+      const owner = ownerRows && ownerRows.get(id)
+      if (owner) return ownedSessionOf(id, told, reads.session.get(id), owner)
+      return sessionOf(reads, id, shells.get(id) ?? [], told)
+    }),
   }
 }

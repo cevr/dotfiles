@@ -5,11 +5,12 @@
 // line to the parent with the shell still running; once the shell's notice
 // wakes it, the answer it writes then reaches the parent as a second report
 // (OpenCode reports a subagent each time it goes idle). It needs OPENCODE_DEV.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-wake.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -29,7 +30,7 @@ function rows(frame: ReadonlyArray<string>): ReadonlyArray<string> {
 
 describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-wake-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-wake-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-wake.ts"], {
       cwd: root,
@@ -43,8 +44,8 @@ describe.skipIf(!fork)("a worker waiting on its own background shell (OPENCODE_D
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code} (its frames and logs: ${out}):\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = readFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
-  }, 300_000))
+    for (const name of names) frames[name] = readScratchFileSync(join(out, `wake-${name}.txt`), "utf8").split("\n")
+  }), hangGuard("acceptance"))
 
   test("a worker that ended its turn to wait on its shell reads waiting, by its still symbol and what it said after starting the shell, and counts", kept.test(() => {
     expect(frames["bg-waiting"].join("\n")).toContain("Worker started.")

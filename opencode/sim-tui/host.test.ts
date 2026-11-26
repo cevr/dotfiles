@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason subprocess reads at sim-tui/host.test.ts: ChildProcess.make(process.execPath, ["test", "--timeout", String(RUN_MS), FIXTURE], {
 // The simulated TUI never reads the host it runs on. A fake host (a scratch
 // HOME and XDG_STATE_HOME, given to a child `bun test` through its env) holds
 // the upstream reading `bun run daily` writes, 38 commits behind with the merge
@@ -9,6 +11,7 @@ import { expect } from "bun:test"
 import { Effect, FileSystem, Path, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { platformTest } from "./effect-test.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 const FIXTURE = "./sim-tui/fixtures/host.fixture.tsx"
 const RUN_MS = 120_000
@@ -48,5 +51,5 @@ platformTest(
     expect(frame.filter((line) => line.includes("upstream +"))).toEqual([])
     expect(said).toMatch(/^ 3 pass\n 0 fail$/m)
   }),
-  RUN_MS,
+  hangGuard("installer"),
 )

@@ -15,7 +15,8 @@
 import { Effect, Schedule, Stream } from "effect"
 import { execFileSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { stamp } from "../tests/hang-guard.ts"
 
 const root = process.cwd()
 const out = process.env.SCENARIO_OUT ?? "out"
@@ -152,17 +153,17 @@ export default OpenCodeDriver.use(
       const measure = Effect.gen(function* () {
         const pids = tuiPid()
         const before = pids.map(cpuSeconds)
-        const start = Date.now()
+        const start = stamp()
         yield* Effect.sleep(WINDOW_MS)
         const after = pids.map(cpuSeconds)
-        const seconds = (Date.now() - start) / 1000
+        const seconds = (stamp() - start) / 1000
         return pids.map((pid, i) => ({ pid, share: Number(((after[i]! - before[i]!) / seconds).toFixed(3)) }))
       })
 
-      const t0 = Date.now()
+      const t0 = stamp()
       yield* ui.submit(BUILD)
       yield* until("built", (frame) => frame.includes(BUILT), 3_000)
-      const buildSeconds = (Date.now() - t0) / 1000
+      const buildSeconds = (stamp() - t0) / 1000
       yield* Effect.sleep("2 seconds")
       const idle = yield* measure
       yield* ui.submit(WORK)

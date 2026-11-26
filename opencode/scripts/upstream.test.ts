@@ -1,11 +1,13 @@
 // The upstream merge's acceptance check: it waits for a calm host, reruns only the files that
 // failed, once, and calls the merge red only for a file red twice (scripts/upstream.ts).
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { gitClone, gitInit } from "../tests/git-repo.ts"
-import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReading } from "./upstream.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync } from "../tests/read-path.ts"
+import { cloneScratchGit, initScratchGit, scratchBunJUnitSync, spawnScratchGitSync } from "../tests/scratch-child.ts"
+import { acceptance, awaitCalm, CALM_WAIT_MS, failedFiles, type Host, type TestRun, upstreamReadingFrom } from "./upstream.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** A host whose load follows `loads`, one reading per check, on a clock that sleeping advances. */
 const fakeHost = (loads: ReadonlyArray<number>) => {
@@ -99,37 +101,36 @@ describe("the failed files", () => {
       writeFileSync(join(dir, "top.test.ts"), `import { expect, test } from "bun:test"\ntest("fails", () => expect(1).toBe(2))\n`)
       writeFileSync(join(dir, "green.test.ts"), `import { expect, test } from "bun:test"\ntest("passes", () => expect(1).toBe(1))\n`)
       const report = join(dir, "junit.xml")
-      const child = Bun.spawnSync([process.execPath, "test", "--reporter=junit", `--reporter-outfile=${report}`, "./red.test.ts", "./top.test.ts", "./green.test.ts"], {
-        cwd: dir,
-        stdout: "pipe",
-        stderr: "pipe",
-      })
+      const child = scratchBunJUnitSync(dir, ["./red.test.ts", "./top.test.ts", "./green.test.ts"], report)
       expect(child.exitCode).toBe(1)
       expect(failedFiles(readFileSync(report, "utf8"))).toEqual(["./red.test.ts", "./top.test.ts"])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("short-fixture"))
 })
 
 describe("the upstream reading", () => {
-  const git = (dir: string, ...args: ReadonlyArray<string>) => {
-    const ran = Bun.spawnSync(["git", "-C", dir, ...args], {
-      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`)
-    return ran.stdout.toString().trim()
+  const run = (dir: string, ...args: ReadonlyArray<string>) => {
+    const child = spawnScratchGitSync(dir, args, { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" })
+    return { ok: child.exitCode === 0, out: child.stdout.toString().trim(), err: child.stderr.toString().trim() }
   }
+  const git = (dir: string, ...args: ReadonlyArray<string>) => {
+    const ran = run(dir, ...args)
+    if (!ran.ok) throw new Error(`git ${args.join(" ")}: ${ran.err}`)
+    return ran.out
+  }
+  const upstreamReading = (fork: string, report: string, fetch: boolean, now: Date) =>
+    upstreamReadingFrom(fork, report, fetch, now, { git: run, must: git, exists: scratchExistsSync })
   /** An upstream with `ahead` commits past the fork's HEAD, the fork fetched from it as `upstream` before those commits when `stale`. */
   const repos = (ahead: number, stale = false) => {
     const root = mkdtempSync(join(tmpdir(), "upstream-reading-"))
     const upstream = join(root, "upstream")
     const fork = join(root, "fork")
-    gitInit(upstream, ["--quiet", "-b", "dev"])
+    mkdirSync(upstream)
+    initScratchGit(upstream, ["--quiet", "-b", "dev"])
     git(upstream, "commit", "--quiet", "--allow-empty", "-m", "base")
-    gitClone(upstream, fork, ["--quiet", "-o", "upstream"])
+    cloneScratchGit(root, upstream, fork, "upstream")
     for (let i = 0; i < ahead; i++) git(upstream, "commit", "--quiet", "--allow-empty", "-m", `upstream ${i}`)
     if (!stale) git(fork, "fetch", "--quiet", "upstream", "dev")
     return { root, fork, report: join(root, "upstream-conflict.md") }
@@ -145,7 +146,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("the merge is blocked while its report is there", () => {
     const { root, fork, report } = repos(2)
@@ -155,7 +156,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("a host that fetched nothing fetches upstream first, so its count is current", () => {
     const { root, fork, report } = repos(4, true)
@@ -165,7 +166,7 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 
   test("a fork with no upstream/dev has no reading", () => {
     const { root, fork, report } = repos(1)
@@ -175,5 +176,5 @@ describe("the upstream reading", () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, hangGuard("local-fixture"))
 })

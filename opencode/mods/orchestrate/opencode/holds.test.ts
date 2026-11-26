@@ -8,6 +8,7 @@ import { type Holds, NO_HOLDS } from "../idle.ts"
 import { rootHoldsLaws } from "../laws.ts"
 import { RootHolds } from "../service.ts"
 import * as OpenCodeHolds from "./holds.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 /** The three RPCs answering `world`, as each plugin shapes its answer. */
 const asks = (world: Readonly<Record<string, Holds>>): OpenCodeHolds.Asks => ({
@@ -84,7 +85,7 @@ effectTest(
     })
     expect(yield* heldOf({ pending: failing, open: failing, queue: failing, jobs: failing })).toEqual({ queue: [], wakes: [], jobs: [] })
   }),
-  5_000,
+  hangGuard("in-memory"),
 )
 
 test("a plugin that is missing holds nothing, and the others still answer", async () => {

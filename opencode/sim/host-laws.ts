@@ -16,11 +16,13 @@
 import { Integration, type Plugin, Tool } from "@opencode/plugin/effect"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
+import { Permission } from "@opencode/schema/permission"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
-import { Array as Arr, Cause, Data, DateTime, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
+import { Skill } from "@opencode/schema/skill"
+import { Array as Arr, Cause, Data, DateTime, Deferred, Effect, Exit, Option, Ref, Schema, type Scope, Stream } from "effect"
 import { envelopesOf } from "../mods/subagents/envelope.ts"
 import { isAutomationTool } from "../mods/wake/automations.ts"
 import type { OPERATIONS } from "./context.ts"
@@ -84,6 +86,7 @@ export const ClientAsk = Schema.Union([
   Schema.Struct({ action: Schema.Literal("archive"), sessionID: Schema.String }),
   Schema.Struct({ action: Schema.Literal("form"), sessionID: Schema.String, key: Schema.String, value: Schema.String }),
   Schema.Struct({ action: Schema.Literal("cancel"), sessionID: Schema.String, inboxID: Schema.String }),
+  Schema.Struct({ action: Schema.Literal("revert"), sessionID: Schema.String, messageID: Schema.String }),
 ])
 export type ClientAsk = typeof ClientAsk.Type
 const encodeAsk = Schema.encodeSync(Schema.fromJsonString(ClientAsk))
@@ -96,6 +99,9 @@ const waitFor = <E>(holds: Effect.Effect<boolean, E>, message: string) =>
       yield* Effect.sleep("100 millis")
     }
   })
+
+const STOP_WITNESS_DEADLINE = "10 seconds"
+const readStopReply = Schema.decodeUnknownEffect(Schema.Struct({ interrupted: Schema.Boolean }))
 
 export interface Law {
   readonly name: string
@@ -220,7 +226,163 @@ const LAW_FAULT_RPC = {
   events: {},
 }
 
+/** The terminal event's identity must name the same call the host gave the tool, and that part must already be readable. */
+const terminalTool = (status: "completed" | "error"): Law["check"] => (ctx, probe) =>
+  Effect.gen(function* () {
+    const session = yield* fresh(ctx)
+    const calls = yield* Ref.make<ReadonlyArray<string>>([])
+    const ends = yield* Ref.make<ReadonlyArray<string>>([])
+    const tool = `law_terminal_${status}`
+    yield* ctx.tool.transform((editor) =>
+      editor.add({
+        name: tool,
+        description: "Answers or fails for the terminal event law.",
+        options: { codemode: false },
+        input: Schema.Struct({}),
+        execute: (_input, call) =>
+          Ref.update(calls, (all) => [...all, `${call.sessionID}/${call.messageID}/${call.id}`]).pipe(
+            Effect.andThen(() => {
+              if (status === "error") return Effect.fail(new Tool.Error({ message: "law: tool failed" }))
+              return Effect.succeed({ content: "law: tool answered" })
+            }),
+          ),
+      }),
+    )
+    yield* Effect.forkScoped(
+      ctx.event.subscribe({ types: ["session.tool.success", "session.tool.failed"] }).pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            const { sessionID, assistantMessageID, id } = event.data
+            if (sessionID !== session.id) return
+            const messages = yield* ctx.session.context({ sessionID })
+            const assistant = messages.find((message) => message.type === "assistant" && message.id === assistantMessageID)
+            const part = assistant?.type === "assistant" && assistant.content.find((item) => item.type === "tool" && item.id === id)
+            let seen = "missing"
+            if (part && part.type === "tool") seen = part.state.status
+            yield* Ref.update(ends, (all) => [...all, `${event.type} ${sessionID}/${assistantMessageID}/${id} ${seen}`])
+          }),
+        ),
+      ),
+      { startImmediately: true },
+    )
+    yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: callFor(tool, {}) }))
+    const ran = yield* Ref.get(calls)
+    yield* ensure(ran.length === 1, `the tool executed ${ran.length} times`)
+    const kind = { completed: "session.tool.success", error: "session.tool.failed" }[status]
+    const seen = (yield* Ref.get(ends)).join(", ")
+    yield* ensure(seen === `${kind} ${ran[0]} ${status}`, `the terminal event and its tool part were ${seen || "(none)"}`)
+  })
+
+const fixtureSkill = Skill.ID.make("sim-law-catalog-entry")
+const fixtureAgent = Agent.ID.make("sim-law-permission")
+const readPermissionDenial = Schema.decodeUnknownEffect(Schema.TaggedStruct("Permission.BlockedError", {
+  rules: Permission.Ruleset,
+  permission: Schema.String,
+  resources: Schema.Array(Schema.String),
+}))
+const readSkillAnswer = Schema.decodeUnknownEffect(Schema.Struct({
+  location: Schema.Struct({ directory: AbsolutePath }),
+  data: Schema.Array(Skill.Info),
+}))
+
 export const LAWS: ReadonlyArray<Law> = [
+  {
+    name: LAW.stop,
+    operations: ["session.stop", "session.create", "session.hook", "session.prompt", "session.context", "event.subscribe"],
+    check: (ctx, probe) => Effect.gen(function* () {
+      const { id: sessionID } = yield* fresh(ctx)
+      const idle = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+      const entered = yield* Deferred.make<void>()
+      const interrupted = yield* Deferred.make<string>()
+      const cancelled = yield* Deferred.make<void>()
+      const queued = SessionMessage.ID.make("msg_law_stop_queued")
+      yield* Effect.scoped(Effect.gen(function* () {
+        yield* ctx.session.hook("model.request", (input) => {
+          if (input.sessionID !== sessionID || input.kind !== "primary") return Effect.void
+          return Deferred.succeed(entered, void 0).pipe(Effect.andThen(Effect.never))
+        })
+        yield* Effect.forkScoped(ctx.event.subscribe({
+          types: ["session.execution.interrupted", "session.inbox.cancelled"],
+        }).pipe(Stream.runForEach((event) => {
+          if (event.data.sessionID !== sessionID) return Effect.void
+          if (event.type === "session.execution.interrupted") return Deferred.succeed(interrupted, event.data.reason).pipe(Effect.asVoid)
+          if (event.data.inboxID === queued) return Deferred.succeed(cancelled, void 0).pipe(Effect.asVoid)
+          return Effect.void
+        })), { startImmediately: true })
+        yield* ctx.session.prompt({ sessionID, text: "law: stop running" })
+        yield* Deferred.await(entered).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* ctx.session.prompt({ sessionID, id: queued, text: "law: stop queued" })
+        const active = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+        const reason = yield* Deferred.await(interrupted).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        yield* Deferred.await(cancelled).pipe(Effect.timeout(STOP_WITNESS_DEADLINE))
+        const again = yield* readStopReply(yield* ctx.session.stop({ sessionID }), { onExcessProperty: "error" })
+        yield* ensure(!idle.interrupted && active.interrupted && !again.interrupted && reason === "user", "stop did not interrupt exactly the live turn as user")
+      }))
+      const primaries = Effect.map(probe.requests, (requests) => requests.filter((request) => request.sessionID === sessionID && request.kind === "primary").length)
+      const before = yield* primaries
+      yield* probe.turn(sessionID, ctx.session.prompt({ sessionID, text: "law: stop fresh" }))
+      yield* ensure((yield* primaries) === before + 1, "a new request did not run after stop")
+      const texts = yield* contextText(ctx, sessionID)
+      yield* ensure(count(texts, "law: stop queued") === 0, "the cancelled queued prompt was delivered")
+    }),
+  },
+  {
+    name: LAW.permission,
+    operations: ["permission.assert"],
+    check: (ctx) => Effect.gen(function* () {
+      const action = "law-action"
+      yield* ctx.agent.transform((editor) => editor.update(fixtureAgent, (entry) => {
+        entry.permissions = [
+          { action, resource: "proof", effect: "allow" },
+          { action, resource: "denied", effect: "deny" },
+        ]
+      }))
+      const { id: sessionID } = yield* ctx.session.create({ title: "Assert permission", agent: fixtureAgent })
+      const input = {
+        sessionID, agent: fixtureAgent, action, save: ["*"], metadata: { route: "fixture" },
+        source: { type: "tool" as const, messageID: "msg_law", id: "law-call" },
+      }
+      const allowed = yield* ctx.permission.assert({ ...input, resources: ["proof"] })
+      yield* ensure(Schema.is(Schema.Void)(allowed), "allow did not return void")
+      const denied = yield* Effect.flip(ctx.permission.assert({ ...input, resources: ["denied"] }))
+      const detail = yield* readPermissionDenial(denied.error)
+      yield* ensure(
+        denied._tag === "Tool.Error" && denied.message === `Permission denied: ${action}` &&
+        detail.permission === action && detail.resources.join(",") === "denied" &&
+        detail.rules.map(({ effect, resource }) => `${effect}:${resource}`).join(",") === "allow:proof,deny:denied",
+        "deny did not return the requested resource and its action's rules",
+      )
+    }),
+  },
+  {
+    name: LAW.skills,
+    operations: ["skill.list", "skill.transform", "skill.reload"],
+    check: (ctx) => Effect.gen(function* () {
+      const listed = ctx.skill.list().pipe(Effect.flatMap(readSkillAnswer))
+      const find = (data: ReadonlyArray<Skill.Info>) => Arr.findFirst(data, ({ id }) => id === fixtureSkill)
+      const current = listed.pipe(Effect.map(({ data }) => Option.map(find(data), ({ content }) => content)))
+      const before = yield* listed
+      yield* ensure(before.location.directory === ctx.location.directory && Option.isNone(find(before.data)), "list did not begin at the caller's location without the fixture")
+      let content = "first"
+      let edits = 0
+      const registration = yield* ctx.skill.transform((editor) => {
+        edits += 1
+        editor.list()
+        editor.add(Skill.Info.make({
+          id: fixtureSkill, name: Skill.Name.make("sim-law-catalog-entry"), description: "Fixture skill",
+          path: AbsolutePath.make(`${ctx.location.directory}/sim-law-catalog-entry/SKILL.md`), content,
+        }))
+      })
+      yield* ensure(Option.contains(yield* current, "first") && edits === 1, "the registered transform did not apply once")
+      content = "second"
+      yield* ensure(Option.contains(yield* current, "first") && edits === 1, "the catalog read executed an already-cached transform")
+      const reloaded = yield* ctx.skill.reload()
+      yield* ensure(Schema.is(Schema.Void)(reloaded), "reload did not return void")
+      yield* ensure(Option.contains(yield* current, "second") && edits === 2, "the read after reload did not apply the transform again")
+      yield* registration.dispose
+      yield* ensure(Option.isNone(yield* current), "disposing the transform left the skill registered")
+    }),
+  },
   {
     name: LAW.storage,
     operations: ["storage.get", "storage.set", "storage.setIf", "storage.remove", "storage.scan"],
@@ -527,6 +689,59 @@ export const LAWS: ReadonlyArray<Law> = [
       }),
   },
   {
+    name: LAW.toolSuccess,
+    operations: ["tool.transform", "session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts Tool.Success; packages/core/src/session/runner/publish-llm-event.ts toolExecution.
+    check: terminalTool("completed"),
+  },
+  {
+    name: LAW.toolFailed,
+    operations: ["tool.transform", "session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts Tool.Failed; packages/core/src/session/runner/publish-llm-event.ts failTool.
+    check: terminalTool("error"),
+  },
+  {
+    name: LAW.revertCommitted,
+    operations: ["session.create", "session.prompt", "session.context", "event.subscribe"],
+    // Fork: packages/schema/src/session-event.ts RevertEvent.Committed; packages/core/src/session/{revert,projector}.ts.
+    check: (ctx, probe) =>
+      Effect.gen(function* () {
+        const session = yield* fresh(ctx)
+        const seen = yield* Ref.make<ReadonlyArray<string>>([])
+        yield* Effect.forkScoped(
+          ctx.event.subscribe({ types: ["session.revert.committed"] }).pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (event.data.sessionID !== session.id) return
+                const visible = yield* ctx.session.context({ sessionID: event.data.sessionID })
+                yield* Ref.update(seen, (all) => [...all, `${event.data.sessionID}/${event.data.to}: ${visible.map((message) => message.id).join(",")}`])
+              }),
+            ),
+          ),
+          { startImmediately: true },
+        )
+        const kept = SessionMessage.ID.make("msg_lawbeforecut")
+        const cut = SessionMessage.ID.make("msg_lawaftercut")
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, id: kept, text: "law: before the cut" }))
+        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, id: cut, text: "law: after the cut" }))
+        const before = yield* ctx.session.context({ sessionID: session.id })
+        // The fork projects each terminal execution as an idle record (session/message-updater.ts `idle`).
+        // Count turns without those records, but require them to be gone too when reading the committed context.
+        const turns = before.filter((message) => message.type !== "idle")
+        const boundary = yield* Effect.fromOption(Arr.findFirst(turns, (message) => message.type === "assistant"))
+        yield* ensure(
+          turns.length === 4 &&
+            turns[0]?.type === "user" && turns[0].id === kept && turns[1]?.id === boundary.id &&
+            turns[2]?.type === "user" && turns[2].id === cut && turns[3]?.type === "assistant",
+          `expected two complete turns before the revert; context was ${before.map((message) => `${message.type}:${message.id}`).join(",")}`,
+        )
+        yield* probe.client({ action: "revert", sessionID: session.id, messageID: boundary.id })
+        yield* waitFor(Ref.get(seen).pipe(Effect.map((lines) => lines.length > 0)), "no session.revert.committed event")
+        const lines = (yield* Ref.get(seen)).join(", ")
+        yield* ensure(lines === `${session.id}/${boundary.id}: ${kept}`, `the revert event and its visible context were ${lines}`)
+      }),
+  },
+  {
     name: LAW.removed,
     operations: ["session.remove", "event.subscribe", "session.get"],
     check: (ctx) =>
@@ -642,23 +857,38 @@ export const LAWS: ReadonlyArray<Law> = [
   {
     name: LAW.socket,
     operations: ["session.create", "session.prompt", "session.hook"],
-    // The pool reads a ChatGPT login's quota from the frames of a socket turn.
+    // The pool can refuse a known hold during routing, and must check again
+    // once the host has the concrete frame, including on a reused socket.
     check: (ctx, probe) =>
       Effect.gen(function* () {
         const frames = yield* Ref.make<ReadonlyArray<string>>([])
         const model = { providerID: Provider.ID.make(LAW_SOCKET.providerID), id: Model.ID.make(LAW_SOCKET.id) }
         const session = yield* ctx.session.create({ title: "law socket", model })
-        yield* ctx.session.hook("experimental.ws.receive", (event) =>
-          Ref.update(frames, (all) => [
-            ...all,
-            ...Arr.filter([`${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`], () => event.sessionID === session.id),
-          ]),
+        const see = (sessionID: string, fact: string) => Effect.when(
+          Ref.update(frames, (all) => [...all, fact]),
+          Effect.succeed(sessionID === session.id),
+        ).pipe(Effect.asVoid)
+        yield* ctx.session.hook("experimental.model.resolve", (event) =>
+          see(event.sessionID, `resolve ${event.kind} ${event.model.providerID}/${event.model.id}`),
         )
-        yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text: "law: socket" }))
-        const seen = yield* Ref.get(frames)
-        const on = `primary ${LAW_SOCKET.providerID}/${LAW_SOCKET.id}`
-        yield* ensure(seen.at(0) === `${on} response.created` && seen.at(-1) === `${on} response.completed`, `the frames were ${seen.join(",")}`)
-        yield* ensure(seen.includes(`${on} response.output_text.delta`), `no text frame among ${seen.join(",")}`)
+        yield* ctx.session.hook("model.request", (event) =>
+          see(event.sessionID, `request ${event.kind} ${event.model.providerID}/${event.model.id}`),
+        )
+        yield* ctx.session.hook("experimental.ws.send", (event) =>
+          see(event.sessionID, `send ${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`),
+        )
+        yield* ctx.session.hook("experimental.ws.receive", (event) =>
+          see(event.sessionID, `receive ${event.kind} ${event.model.providerID}/${event.model.id} ${frameType(event.frame)}`),
+        )
+        for (const text of ["law: socket warm", "law: socket next"]) {
+          yield* Ref.set(frames, [])
+          yield* probe.turn(session.id, ctx.session.prompt({ sessionID: session.id, text }))
+          const seen = (yield* Ref.get(frames)).filter((fact) => fact.includes(" primary "))
+          const on = `primary ${LAW_SOCKET.providerID}/${LAW_SOCKET.id}`
+          const before = [`resolve ${on}`, `request ${on}`, `send ${on} response.create`, `receive ${on} response.created`]
+          yield* ensure(seen.slice(0, 4).join(",") === before.join(",") && seen.at(-1) === `receive ${on} response.completed`, `the socket hooks were ${seen.join(",")}`)
+          yield* ensure(seen.includes(`receive ${on} response.output_text.delta`), `no text frame among ${seen.join(",")}`)
+        }
       }),
   },
   {

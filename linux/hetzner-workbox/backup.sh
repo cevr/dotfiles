@@ -5,6 +5,7 @@
 #   backup.sh install          keys, env file, systemd timer (provision.sh backup)
 #   backup.sh run              one backup now (the timer runs this nightly)
 #   backup.sh list             what the Storage Box holds
+#   backup.sh subvolumes       the subvolumes a run backs up, one per line
 #   backup.sh restore NAME DIR receives NAME's chain from this month (or
 #                              HB_BACKUP_MONTH=YYYY-MM) into DIR, a directory on
 #                              a btrfs; README.md, Restore, has the rest
@@ -15,6 +16,7 @@
 set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "$0")/common.sh"
+[[ ${1:-} == subvolumes ]] || hb_require_host
 
 etc=${HB_ETC:-/etc}
 conf_dir=$etc/btrbk
@@ -23,7 +25,12 @@ ssh_key=$conf_dir/ssh/id_ed25519
 env_file=$etc/hetzner-workbox/backup.env
 mnt=${HB_BACKUP_MOUNT:-/mnt/storagebox}
 snap_dir=${HB_SNAPSHOT_DIR:-/var/lib/btrbk/snapshots}
-HB_BACKUP_SUBVOLS=${HB_BACKUP_SUBVOLS:-"$HB_HOME $HB_WORKSPACES"}
+# What is backed up: the home and the durable run areas (@runs), with every subvolume nested in them
+# but the caches (storage.conf's cache lines: tools rebuild them). /workspaces is not: the owner's
+# ruling (2026-11, "skip workspaces"): its lanes and bases are rebuilt from git, and pushed work lives
+# on GitHub. Run records are not workspaces, so they live in @runs, outside it.
+HB_BACKUP_SUBVOLS=${HB_BACKUP_SUBVOLS:-"$HB_HOME $HB_RUNS"}
+HB_STORAGE_CONF=${HB_STORAGE_CONF:-$hb_dir/storage.conf}
 host_name=${HB_BACKUP_NAME:-$HB_HOSTNAME}
 
 need_root
@@ -36,6 +43,7 @@ do_install() {
     need btrbk sshfs openssl zstd
     install -d -m 700 "$conf_dir" "$conf_dir/ssh"
     install -d -m 755 "$etc/hetzner-workbox" "$snap_dir" "$mnt"
+    printf 'WORKBOX_EXPECT_MACHINE_ID=%s\n' "$WORKBOX_EXPECT_MACHINE_ID" > "$etc/hetzner-workbox/host-identity.env"
     if [[ ! -s $key ]]; then
         # 256-bit key in hex, as btrbk's openssl_keyfile wants it.
         (umask 077; openssl rand -hex 32 > "$key")
@@ -74,9 +82,25 @@ storage_mount() {
 }
 storage_umount() { if ((mounted_here)); then fusermount -u "$mnt" || true; fi; }
 
+# The caches as paths here (storage.conf's cache lines; ~ is the home).
+cache_paths() {
+    local kind path rest
+    while read -r kind path rest; do
+        [[ $kind == cache ]] || continue
+        case $path in
+        "~" | "~"/*) echo "$HB_HOME${path#"~"}" ;;
+        /workspaces | /workspaces/*) echo "$HB_WORKSPACES${path#/workspaces}" ;;
+        /runs | /runs/*) echo "$HB_RUNS${path#/runs}" ;;
+        *) echo "$HB_TARGET$path" ;;
+        esac
+    done < <(sed -e 's/#.*//' "$HB_STORAGE_CONF" 2>/dev/null)
+}
+is_cache() { local c; for c in $caches; do [[ $1 == "$c" || $1 == "$c"/* ]] && return 0; done; return 1; }
+
 # Every subvolume to back up: the roots and every subvolume nested under them.
 subvols() {
-    local root
+    local root caches
+    caches=$(cache_paths)
     for root in $HB_BACKUP_SUBVOLS; do
         is_btrfs "$root" || die "$root is not a btrfs mount"
         echo "$root"
@@ -87,6 +111,7 @@ subvols() {
             while read -r rel; do
                 # Read-only subvolumes are snapshots already (btrbk skips them too).
                 [[ $(btrfs property get -ts "$root/$rel" ro 2>/dev/null) == ro=true ]] && continue
+                is_cache "$root/$rel" && continue
                 echo "$root/$rel"
             done
     done
@@ -174,5 +199,6 @@ install) do_install ;;
 run) do_run ;;
 list) do_list ;;
 restore) do_restore "${2:-}" "${3:-}" ;;
-*) die "usage: backup.sh install | run | list | restore NAME DIR" ;;
+subvolumes) subvols ;;
+*) die "usage: backup.sh install | run | list | subvolumes | restore NAME DIR" ;;
 esac

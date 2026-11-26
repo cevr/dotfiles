@@ -12,6 +12,7 @@ import { Array as Arr, Effect, FileSystem, Option, Path, Stream } from "effect"
 import { expect, it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { type Command, COMMANDS, type Probe } from "../../mods/update/trees.ts"
+import { hangGuard } from "../hang-guard.ts"
 
 /** Whether `file` is `root` or under it. */
 export const within = (root: string, file: string) => file === root || file.startsWith(`${root}/`)
@@ -47,7 +48,7 @@ export const moduleLinks = (dir: string, inModules: boolean, depth: number): Eff
   })
 
 /** One probe's run, from `root`, in its own scratch `place` and process group, ended when it outlives 30 s. */
-const runProbe = (root: string, command: Command, probe: Probe, place: string) =>
+const runProbe = (root: string, command: Command, probe: Probe, place: string, input?: (path: string) => string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -55,7 +56,7 @@ const runProbe = (root: string, command: Command, probe: Probe, place: string) =
     yield* Effect.forEach(["home", "config", "state", "data", "cache", "digest", "run"], (dir) => fs.makeDirectory(path.join(place, dir), { recursive: true }), { discard: true })
     const bun = process.execPath
     const child = yield* spawner.spawn(
-      ChildProcess.make(bun, [path.join(root, command.path), ...probe.args.map((arg) => arg.replaceAll("$SCRATCH", place))], {
+      ChildProcess.make(bun, [input?.(command.path) ?? path.join(root, command.path), ...probe.args.map((arg) => arg.replaceAll("$SCRATCH", place))], {
         cwd: path.join(place, "run"),
         extendEnv: false,
         env: {
@@ -84,7 +85,7 @@ const runProbe = (root: string, command: Command, probe: Probe, place: string) =
  * The checks on the opencode/ `rootOf` answers (it fails when there is none to check): the composition-root
  * layers on one effect, then each command's probes, one test per command.
  */
-export const commandChecks = <E>(rootOf: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>) => {
+export const commandChecks = <E>(rootOf: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>, input?: (path: string) => string) => {
   it.live.layer(BunServices.layer)("the install holds what a command's composition root provides: BunServices' layer and Digest.layerWebCrypto, on one effect", () =>
     Effect.gen(function* () {
       const root = yield* rootOf
@@ -111,12 +112,12 @@ export const commandChecks = <E>(rootOf: Effect.Effect<string, E, FileSystem.Fil
           const fs = yield* FileSystem.FileSystem
           for (const probe of command.probes) {
             const place = yield* fs.makeTempDirectoryScoped({ prefix: "cli-tree-" }).pipe(Effect.flatMap((dir) => fs.realPath(dir)))
-            const ran = yield* runProbe(root, command, probe, place)
+            const ran = yield* runProbe(root, command, probe, place, input)
             const label = `${command.path} ${probe.args.join(" ")}`
             expect([label, ran.code, ran.said.includes(probe.says.replaceAll("$SCRATCH", place))]).toEqual([label, probe.exit, true])
             expect([label, /Cannot find (module|package)|SyntaxError: Export named/.test(ran.said)]).toEqual([label, false])
           }
         }).pipe(Effect.scoped),
-      120_000,
+      hangGuard("installer"),
     )
 }

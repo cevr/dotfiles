@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/guard/filesystem/repo-roots.ts: return yield* Effect.tryPromise({ try: () => stat(join(path, ".git")), catch: (cause) => cause
 // The work plugin on the simulated host (sim/world.ts), at 20 seeds: `cmd/work/server.ts`'s `make` on the
 // world's context over its memory doubles (sim/plugins.ts `work`), driven by the verify model
 // (sim/verify-model.ts `worldScript`). The agent makes a workspace with `work`, lists it with the alias
@@ -10,11 +12,11 @@ import * as MemoryLanding from "@dotfiles/opencode-work/memory/landing"
 import * as MemoryRifts from "@dotfiles/opencode-work/memory/rifts"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Read from "../../sim/readings.ts"
-import * as Seed from "../../sim/seed.ts"
+import { simulationRunner } from "../../sim/seed.ts"
 import { worldScript } from "../../sim/verify-world.ts"
 import * as World from "../../sim/world.ts"
 
-const { seeded } = Seed.runner("cmd/work/work.sim.test.ts")
+const { seeded } = simulationRunner("cmd/work/work.sim.test.ts")
 
 const SOURCE = "/code/app"
 

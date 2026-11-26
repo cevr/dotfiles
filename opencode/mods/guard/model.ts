@@ -21,14 +21,16 @@
 // pattern while it cannot list the processes, refuses the call with why. The
 // sleep rule fails open: a session the host cannot place as a subagent or a
 // root runs its sleep, since a sleep loses nothing.
-import { Context, Effect, Layer, Match, Option } from "effect"
-import { type BareLaunch, bareLaunches, KeychainPrompt, keychainReason, runtimeRuns, scriptLaunch } from "./chrome.ts"
-import { isHeavy } from "./heavy.ts"
+import { Context, Effect, Layer, Option, Predicate } from "effect"
+import { keychainBlock, keychainLaunch, KeychainPrompt, type TreeRoot } from "./chrome.ts"
+import { parseShell } from "./command-line.ts"
+import { DEFAULT_HEAVY, heavyCommand } from "./heavy.ts"
 import { killsByPattern, killVerdict } from "./kill.ts"
-import { launcherName, launcherScript, type Limits } from "./launcher.ts"
+import { admissionLauncher, launcherName, launcherScript, type Limits } from "./launcher.ts"
+import { type CannotTell, CommandForm } from "./message.ts"
 import { resolve } from "./path.ts"
 import { expandWord } from "./shell-line.ts"
-import { type Checkout, type CheckoutUnknown, Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
+import { type Checkout, type CheckoutUnknown, Checkouts, type LauncherUnavailable, Launchers, Processes, type RepoRootUnknown, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents, type WarmSource } from "./service.ts"
 import { Idle, idleReason, sleepsTooLong } from "./sleep.ts"
 import { Destructive, repoCandidates, verdict } from "./verdict.ts"
 import { workGcReason, workGcs } from "./work-gc.ts"
@@ -53,8 +55,8 @@ export interface ShellCall {
 export class Guard extends Context.Service<
   Guard,
   {
-    /** Succeeds when the call may run; fails `Destructive`, `FullCopy`, `KeychainPrompt` or `Idle` with the words the model reads when it may not. */
-    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle>
+    /** A blocked call is a refusal, an accepted alternate form, or a check that could not finish. */
+    readonly judge: (call: ShellCall) => Effect.Effect<void, Destructive | FullCopy | KeychainPrompt | Idle | CommandForm | CannotTell>
   }
 >()("dotfiles-opencode/guard/Guard") {}
 
@@ -76,7 +78,7 @@ export const layer = (config: Config) =>
         return checkouts.warmSources
       }
 
-      const judge = Effect.fn("Guard.judge")(function* (call: ShellCall) {
+      const check = Effect.fn("Guard.check")(function* (call: ShellCall) {
         const refuse = (reason: string) => Effect.fail(new Destructive({ command: call.command, reason }))
         const directory = yield* sessions
           .directoryOf(call.sessionID)
@@ -140,13 +142,8 @@ export const layer = (config: Config) =>
         const kill = killVerdict(call.command, running, config.server)
         if (kill._tag === "Deny") return yield* refuse(kill.reason)
         // A Chrome the line starts is read from the line; a script's text only for a line that runs one.
-        const keychain = (launch: BareLaunch) => new KeychainPrompt({ command: call.command, reason: keychainReason(launch) })
-        for (const launch of bareLaunches(call.command, place)) return yield* keychain(launch)
-        for (const run of runtimeRuns(call.command, place)) {
-          const text = yield* Match.valueTags(run.ran, { Inline: ({ code }) => Effect.succeed(Option.some(code)), ScriptFile: ({ path }) => scripts.text(path) })
-          const launch = Option.flatMap(text, (code) => scriptLaunch(run, code))
-          if (Option.isSome(launch)) return yield* keychain(launch.value)
-        }
+        const launch = yield* keychainLaunch(call.command, place, scripts.text, checkoutRoot(roots.isRoot))
+        if (Option.isSome(launch)) return yield* keychainBlock(call.command, launch.value)
 
         const sleep = call.background === true ? undefined : sleepsTooLong(call.command)
         if (sleep === undefined) return
@@ -154,27 +151,56 @@ export const layer = (config: Config) =>
         if (inSubagent) return yield* new Idle({ command: call.command, seconds: sleep.seconds, reason: idleReason(sleep) })
       })
 
+      const judge = (call: ShellCall) => check(call).pipe(
+        Effect.catchTag("KeychainPrompt", (blocked) => Effect.gen(function* () {
+          const candidate = blocked.candidate
+          if (!candidate) return yield* blocked
+          yield* check({ ...call, command: candidate.form }).pipe(
+            Effect.catchTag("KeychainPrompt", (retry) => {
+              if (!retry.candidate) return Effect.fail(retry)
+              return Effect.fail(keychainUnresolved(blocked))
+            }),
+          )
+          return yield* new CommandForm(candidate)
+        })),
+      )
+
       return Guard.of({ judge })
     }),
   )
+
+const keychainUnresolved = ({ command, reason }: KeychainPrompt): KeychainPrompt =>
+  new KeychainPrompt({ command, reason: `${reason}. The shim does not reach every affected launcher` })
 
 /** What runs heavy commands, and under which limits; from the plugin's options. */
 export interface PolicyConfig {
   /** The patterns of heavy commands (heavy.ts). */
   readonly heavy: ReadonlyArray<string>
   readonly limits: Limits
+  readonly admission?: ReadonlyArray<string>
 }
+
+/** Nearest real checkout, including a nested worktree, without running Git or checking anything out. */
+const checkoutRoot = (isRoot: (directory: string) => Effect.Effect<boolean, RepoRootUnknown>): TreeRoot =>
+  Effect.fn("Guard.checkoutRoot")(function* (directory) {
+    let at = directory
+    while (true) {
+      const known = yield* isRoot(at).pipe(Effect.option)
+      if (Option.isNone(known)) return Option.none()
+      if (known.value) return Option.some(at)
+      if (at === "/") return Option.none()
+      at = resolve(at, "..")
+    }
+  })
 
 export class ShellPolicy extends Context.Service<
   ShellPolicy,
   {
     /**
      * The shell to spawn `command` with in place of `shell`: a launcher under
-     * the limits for a heavy command, `shell` itself for any other. It never
-     * fails: when no launcher can be written, the command runs as it would
-     * have, and the failure is logged.
+     * the limits for a heavy command, `shell` itself for any other.
      */
-    readonly shellFor: (shell: string, command: string) => Effect.Effect<string>
+    readonly shellFor: (shell: string, command: string) => Effect.Effect<string, LauncherUnavailable>
   }
 >()("dotfiles-opencode/guard/ShellPolicy") {}
 
@@ -186,7 +212,11 @@ export const policyLayer = (config: PolicyConfig) =>
       const scopes = yield* Scopes
 
       const shellFor = Effect.fn("ShellPolicy.shellFor")(function* (shell: string, command: string) {
-        if (!shell.startsWith("/") || !isHeavy(command, config.heavy)) return shell
+        const helper = config.admission
+        const parsed = parseShell(command)
+        if (Predicate.isNotUndefined(helper) && heavyCommand(parsed, [...DEFAULT_HEAVY, ...config.heavy]))
+          return yield* launchers.install(launcherName(shell), admissionLauncher(shell, helper, parsed))
+        if (!shell.startsWith("/") || !heavyCommand(parsed, config.heavy)) return shell
         const scope = yield* scopes.available
         const ionice = yield* scopes.ionice
         return yield* launchers.install(launcherName(shell), launcherScript({ shell, limits: config.limits, scope, ionice })).pipe(

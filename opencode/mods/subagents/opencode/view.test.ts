@@ -1,6 +1,6 @@
 // Reading the family from the TUI's data, as `context.data` answers.
 import { describe, expect, test } from "bun:test"
-import { read, type Reads, type SessionInfo, type ShellInfo } from "./view.ts"
+import { message, read, type Reads, type SessionInfo, type ShellInfo } from "./view.ts"
 
 interface Fixture {
   readonly info: SessionInfo
@@ -57,6 +57,16 @@ describe("read", () => {
   })
   const family = read(world, "a")
 
+  test("a legacy synthetic notice remains display data, and an assistant quoting it is just words", () => {
+    const text = '<subagent sessionID="a" state="error">\nFixture error\n</subagent>'
+    expect(message({ type: "synthetic", text, time: { created: 10 } })).toEqual({
+      type: "notice", childID: "a", state: "error", at: 10, text,
+    })
+    expect(message({ type: "assistant", content: [{ type: "text", text }] })).toEqual({
+      type: "assistant", parts: [{ type: "words", text }],
+    })
+  })
+
   test("reads from the root of the session, whichever session of the family the route shows", () => {
     expect(family.root).toBe("root")
     expect(family.sessions.map((session) => session.id)).toEqual(["root", "a"])
@@ -106,15 +116,17 @@ describe("read", () => {
 })
 
 describe("a latched child", () => {
-  test("carries the wakes' latch mark from its metadata; a session with none, or a malformed one, carries none", () => {
-    const mark = { hold: "pace", reason: "held", opensAt: 20, at: 10, cancelledAt: 15 }
+  test("keeps Wake's host metadata when there is no Kernel, and does not fill in an owner's answer from it", () => {
+    const mark = { hold: "pace", reason: "held", opensAt: 20, recheckAt: 12, at: 10, cancelledAt: 15 }
     const world = reads({
       root: { info: { id: "root", time: { created: 0 } } },
       a: { info: { id: "a", parentID: "root", time: { created: 1 }, metadata: { latch: mark } } },
-      b: { info: { id: "b", parentID: "root", time: { created: 2 }, metadata: { latch: { hold: "pace" } } } },
-      c: { info: { id: "c", parentID: "root", time: { created: 3 } } },
+      b: { info: { id: "b", parentID: "root", time: { created: 2 }, metadata: { latch: mark } } },
+      c: { info: { id: "c", parentID: "root", time: { created: 3 }, metadata: { latch: { hold: "pace" } } } },
     })
-    const [, a, b, c] = read(world, "root").sessions
+    const [, a, b, c] = read(world, "root", "local", message, new Map([
+      ["b", { child: "b", execution: { kind: "none" } }],
+    ])).sessions
     expect(a?.latch).toEqual(mark)
     expect(b).not.toHaveProperty("latch")
     expect(c).not.toHaveProperty("latch")

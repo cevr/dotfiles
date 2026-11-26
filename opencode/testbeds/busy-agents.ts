@@ -4,6 +4,7 @@
 // hours does. The fork's client is found at run time, so it is typed here.
 import { Data, Effect, Option, Schedule } from "effect"
 import { answersTool, type FakeAnswer, type FakeRequestInfo, offeredTool, type ReceivedRequest } from "../tests/fake-anthropic.ts"
+import { hangGuard } from "../tests/hang-guard.ts"
 
 /** What the fake did not come to see within the wait. */
 class NotSeen extends Data.TaggedError("NotSeen")<{ readonly message: string }> {}
@@ -26,35 +27,40 @@ interface ClientModule {
   readonly OpenCode: {
     readonly make: (options: { baseUrl: string; headers: { readonly authorization: string } }) => {
       readonly session: {
-        readonly create: (input: { title: string; location: { directory: string } }) => Promise<{ readonly id: string }>
+        readonly create: (input: { id?: string; parentID?: string; agent?: string; title: string; location: { directory: string } }) => Promise<{ readonly id: string }>
         readonly prompt: (input: { sessionID: string; text: string }) => Promise<object>
       }
     }
   }
 }
 
-const clientOf = (fork: string): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`)
+const clientOf = (fork: string): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`))
 
-/** How long the fake has to see what is waited for: a minute, looked at every 250 ms. */
-const WAIT = { schedule: Schedule.spaced("250 millis"), times: 240 }
-
-/** Waits until `count` of the fake's requests holds `at least`; fails with `label` past a minute. */
-const awaitCount = (count: () => number, least: number, label: () => string) =>
-  Effect.sync(count).pipe(
-    Effect.filterOrFail(
-      (seen) => seen >= least,
-      () => new NotSeen({ message: `${label()}: ${count()} of ${least}` }),
-    ),
-    Effect.retry(WAIT),
-    Effect.asVoid,
-  )
+/** Wait on the reported count, not on elapsed time. The named cap only diagnoses a hung fixture. */
+const awaitCount = (count: Effect.Effect<number>, least: number, label: () => string) =>
+  Effect.gen(function* () {
+    let seen = 0
+    yield* count.pipe(
+      Effect.tap((value) => Effect.sync(() => { seen = value })),
+      Effect.filterOrFail((value) => value >= least, () => new NotSeen({ message: "the fixture is not ready" })),
+      Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
+      Effect.timeoutOrElse({
+        duration: hangGuard("process-fixture"),
+        orElse: () => Effect.fail(new NotSeen({ message: `${label()}: ${seen} of ${least}` })),
+      }),
+    )
+  })
 
 export interface Work {
   readonly fork: string
   readonly url: string
   readonly authorization: string
   readonly directory: string
+  /** All work belongs to one owner, so notices reach it regardless of which child asked for pace last. */
+  readonly owner: string
   readonly received: ReadonlyArray<ReceivedRequest>
+  /** How many of these Claude sessions the pool reports running. */
+  readonly running: Effect.Effect<number>
   /** How many agents to put to work. */
   readonly count: number
   /** First, how many usage reads the pool makes again (of quotas just set). */
@@ -65,23 +71,25 @@ export interface Work {
 
 /**
  * Puts `count` agents to work, each in a session of its own, once the pool
- * read the usage `reads` times again; resolves once the fake has seen each
- * agent's turn.
+ * read the usage `reads` times again; resolves when the pool reports the
+ * turns running.
  */
 export const putToWork = (work: Work): Promise<void> => {
-  const seen = (path: string) => work.received.filter((request) => request.path === path && (path !== "/v1/messages" || request.tools > 0)).length
-  const reads = seen("/api/oauth/usage")
-  const turns = seen("/v1/messages")
+  const seen = () => work.received.filter((request) => request.path === "/api/oauth/usage").length
+  const reads = seen()
   return Effect.runPromise(
     Effect.gen(function* () {
-      yield* awaitCount(() => seen("/api/oauth/usage"), reads + work.reads, () => `the pool's usage reads (${work.log()})`)
+      yield* awaitCount(Effect.sync(seen), reads + work.reads, () => `the pool's usage reads (${work.log()})`)
       const module = yield* Effect.promise(() => clientOf(work.fork))
       const client = module.OpenCode.make({ baseUrl: work.url, headers: { authorization: work.authorization } })
+      const location = { directory: work.directory }
+      const owner = yield* Effect.promise(() => client.session.create({ id: work.owner, title: "Reset notice owner", location }))
       for (let agent = 0; agent < work.count; agent++) {
-        const session = yield* Effect.promise(() => client.session.create({ title: `agent ${agent}`, location: { directory: work.directory } }))
+        const session = yield* Effect.promise(() => client.session.create({ parentID: owner.id, agent: "build", title: `agent ${agent}`, location }))
         yield* Effect.promise(() => client.session.prompt({ sessionID: session.id, text: "work" }))
       }
-      yield* awaitCount(() => seen("/v1/messages"), turns + work.count, () => `the agents' turns (${work.log()})`)
+      yield* awaitCount(work.running, work.count, () => `the pool reporting Claude sessions running; fake turns: ${work.received.filter((request) => request.path === "/v1/messages").map((request) => `${request.model}:${request.tools}:${request.status}`).join(", ")} (${work.log()})`)
     }),
   )
 }
+import { externalInput } from "../tests/read-path.ts"

@@ -6,15 +6,26 @@ This directory defines the persistent workflow layer for the Bite workbox
 
 ## Apply
 
-Run this command on the workbox:
+Use this command in the approved deployment, as the workbox user.
+
+### Host identity
+
+These commands assume a machine you trust: the check behind this document constrains the commands as written here, not your shell's startup files, the programs those command names resolve to, this checkout, or the local and remote configuration of the tools they use (ssh, git, systemd, rsync).
+
+Replace the literal `<machine-id-from-deployment-record>` with the intended
+workbox ID from the operator's deployment record opened at order time and
+confirmed via the provider console.
+Reading the ID from whichever machine you are logged into defeats the check.
 
 ```sh
-~/Developer/personal/dotfiles/workbox/bootstrap.sh
+# Pin source: workbox deployment record; see [Host identity](#host-identity).
+WORKBOX_EXPECT_MACHINE_ID='<machine-id-from-deployment-record>' ~/Developer/personal/dotfiles/workbox/bootstrap.sh
 ```
 
 Run this command to verify the installed state:
 
 ```sh
+# No pin needed: read-only health check.
 workbox-check
 ```
 
@@ -32,14 +43,95 @@ Sideshow, agent settings, S3 backups, security updates, the Tailscale SSH
 service, and swap protection. It configures `systemd-resolved` with public
 fallback servers. It protects Tailscale, the DNS resolver, and the Tailscale SSH
 service from workload memory pressure. It caps user sessions, which hold the
-terminals and every agent, at 52 GB of memory and 1 GB of swap. It caps
+terminals and every agent, under a 73% aggregate workload budget without swap. It caps
 `/dev/shm` at 8 GB because no process owns its files and the kernel cannot
 reclaim them. It raises the inotify limits to 4194304 watches and 1024
 instances (`systemd/sysctl.d/90-inotify.conf`, which the Hetzner box's
 `provision.sh sysctl` installs too): the Bite lab's standby keepers watch each
 file, about 286,000 each. `--check` warns when a live value is below the
-file's. It starts the herdr-core core and the OpenCode service at boot. It
+file's. It starts the herdr-core core at boot. The legacy box still uses the
+OpenCode user service; the new box uses the protected system unit after the
+client integration is active. It
 uses `/workspaces/.cache/turbo` as a local Turbo cache.
+
+## Pinned tools and the reserve: system-tools.sh
+
+`system-tools.sh` (root) installs what both provisioning paths need from one
+place: `bootstrap.sh` runs it here, and the Hetzner box's `provision.sh` runs
+it as its `tools` and `reserve` phases. The versions, checksums and key
+fingerprint are in `pins.conf` and nowhere else (`test/system-tools.test.ts`
+fails when one is typed into another file). Steps, each idempotent:
+
+| Step | What |
+| --- | --- |
+| `btrfs` | btrfs-progs with simple quotas (6.7 or newer): where the distribution's is older (Ubuntu 24.04 has 6.6.3), the pinned package, checked by sha256 before it is installed |
+| `shells` | fish, ksh and mksh from the distribution |
+| `qemu` | `qemu-user-static`, and the binfmt_misc entry for the other architecture (`qemu-aarch64` on amd64, for Ergo's arm64 receipts) registered now from the package's `binfmt.d` file with the F flag; `systemd-binfmt` registers the rest at boot |
+| `go` | Go from go.dev for the pinned architecture only (another is refused): the tarball's sha256 is checked before it is unpacked; the tree goes to `/usr/local/go-<version>`, `/usr/local/go` is a link to it swapped by one rename, and `/usr/local/bin/go` and `gofmt` link to it. A hand-installed `/usr/local/go` directory is replaced once (two renames apart) |
+| `pwsh` | PowerShell from `packages.microsoft.com/ubuntu/<release>/prod`; the downloaded key is refused unless its fingerprint is the pin (`/usr/share/keyrings/microsoft-prod.gpg`, `microsoft-prod.list`, the same paths as Microsoft's own setup package). amd64 only: Microsoft publishes no arm64 package there |
+| `reserve` | the separate protected server slice and system unit (`systemd/reserve/`), then `systemctl daemon-reload`; client integration activates this service |
+| `slices` | the run families from `slices.conf`: `/etc/systemd/user/<family>.slice` for each user line, a drop-in for each system line, and cpu, io and memory delegated to the user manager (`systemd/slices/`); then `daemon-reload`, no restart. A CPU cap written as a share of the threads (`CPUQuota=62.5%threads`) becomes a percentage of this host's `nproc` (16 threads: 1000%). A running user manager takes the io delegation at its next start (a boot), not at a reload. A run joins a family with `systemd-run --user --scope --slice=<family>.slice -- <command>` (linux/hetzner-workbox/README.md, Layout) |
+| `tmp` | `/tmp`'s rules (`systemd/tmp/tmpfiles.d/tmp.conf`: emptied at boot, aged at 7 days, `/tmp/opencode` at 14, the families' `/tmp/ergo`, `/tmp/bite-work`, `/tmp/personal` at 7 on lines of their own, `/tmp/vperf2` never aged on the exe box) and the daily clean through `workbox-tmp-clean`, which preserves run trees with holders |
+| `diskfree` | `workbox-disk-free.timer`: every minute, `/run/workbox/disk-free` gets the btrfs's free space from `btrfs filesystem usage` (not df), for the work tool and the host arbiter to read; it enforces nothing |
+
+Read-only `system-tools.sh --check` (run by `bootstrap.sh --check`) needs no
+pin and fails, naming the
+step, unless each is in place.
+
+**Guarantee: containment is for accidents, not work done through `sudo` or
+deliberate use of root.** `bite.slice` holds the way in (the Tailscale SSH service,
+tailscaled, systemd-resolved) beside `user.slice`, which holds every agent. It
+runs at `CPUWeight=1000` against `user.slice`'s default
+100, so under agent load the way in gets the CPU the moment it asks
+(2026-11-22: sshd and tailscaled starved for 15 minutes); its memory floor is
+unchanged (`MemoryMin` 256M, `MemoryLow` 512M, each service its own). The
+protected `workbox-opencode@<user>.service` has a 9% maximum and a 2%/7%
+memory floor in `workboxprotected.slice`, outside the 73% workload cap.
+SSH sessions, the user manager and unclassified user units all inherit the
+workload cap; cron, at and default Docker containers bill their jobs child.
+Systemd restarts the protected unit after an OOM unless it is explicitly stopped.
+The run families track I/O with `IOAccounting`, but do not set I/O
+weights (linux/hetzner-workbox/README.md, Run families, says why). `--check`
+warns when a user's own `~/.config/systemd/user/<family>.slice` shadows an
+installed one.
+
+### The guard's slices (host admission)
+
+The OpenCode guard runs every heavy command through `host-admit`
+(`opencode/mods/guard/host-resources-v1.md`). It admits by measurement only on a
+host whose cgroup tree attests its workload controller: `agentwork.slice` and
+`opencodecontrol.slice` (`slices.conf`, active from boot through
+`opencode.service`'s `Wants=`) and `bite.slice` at `CPUWeight=1000`. A host
+that does not attest is `unattested`, not refused: `host-admit host status
+--json` names the missing file, and heavy commands run three at a time in FIFO
+order under the guard's nice + user scope launcher. The 6.12 kernel here weighs
+no IO (no `io.cost` or BFQ), so admission rests on CPU and memory
+(`capabilities.io: "unavailable"`). Laying the slices down needs root, so the
+owner does it, in this order; nothing here restarts a service:
+
+1. `sudo sh ~/.local/share/opencode-prime/current.plugins/workbox/system-tools.sh slices`
+   (writes `/etc/systemd/user/agentwork.slice` and `opencodecontrol.slice`, then
+   `systemctl daemon-reload`).
+2. `sudo install -m 0644 <workbox>/systemd/system/bite.slice /etc/systemd/system/ && sudo systemctl daemon-reload`
+   (the live `bite.slice` still reads `cpu.weight` 100).
+3. `systemctl --user daemon-reload && systemctl --user start agentwork.slice opencodecontrol.slice`
+   (starts two empty slices; restarts nothing).
+4. `host-admit host status --json` then names `controller` `enforced`, or the
+   next missing file.
+
+`cpuset` and `io` are not delegated to the live user manager (`user@1000.service`
+lists `cpu memory pids`); the guard needs neither. The installed delegation
+drop-in (`systemd/slices/system/user@.service.d/40-workbox-delegate.conf`)
+takes effect only when `user@1000.service` next starts, which stops every user
+service including OpenCode: a boot, the owner's call. The service places itself
+in `app.slice` (`opencode/mods/update/placement.ts`), so `opencodecontrol.slice`'s
+floors cover it only once it places itself there.
+
+Use `workbox-run bite-work -- bun test` (or another family or `default`) for
+bounded tests. Each call opens a new user scope with its own hard cap
+(`--memory-max SIZE`, default 12 GiB), no swap and whole-run OOM handling.
+See the [host contract](../linux/hetzner-workbox/README.md#layout-scratch-caches-run-families-free-space)
+for limits and exit codes. The default OpenCode shell adapter is separate.
 
 ## Terminals: herdr-core
 
@@ -68,6 +160,10 @@ Mac with `--on workbox` and addresses such as `workbox/t7` once
 `herdr-config.toml` is the Mac's herdr config (`install.sh` links it).
 
 ## Timers
+
+`workbox-pressure.timer` samples host CPU, memory and I/O pressure and logs
+the largest five user processes by RSS every minute. Read the samples with
+`journalctl --user -u workbox-pressure.service`.
 
 | Timer | Runs |
 | --- | --- |
@@ -129,6 +225,10 @@ noncurrent snapshot objects after 14 days.
   when `work --json list` (or `work --json bases`) fails, is missing, or
   answers anything but a list of records each with a name, id, path, state
   and since, remove refuses, quotes what came back, and deletes nothing.
+- `workrift subvolume [--back | --drop-old [--lose N:DIGEST]] [--apply]` switches the warm source
+  between a plain folder and a btrfs subvolume (see "A base that is a
+  subvolume" below). Without `--apply` it changes nothing: it prints its
+  preflight and every step with absolute paths.
 - `workrift prune [--dry-run]` lists the workspaces idle for two days; once
   work's gc is cleared (`work_gc_safe` in the script) it removes them with
   `work gc -idle -archive`, which keeps each one's work in its base.
@@ -179,7 +279,8 @@ file too, with `loop` (mount reuses `/workspaces`' loop device), never by
 `UUID=`: systemd-udevd is masked there, so a `/dev/disk/by-uuid` link never
 appears and a `UUID=` line fails the boot after 90 s (2026-11-19).
 `workbox-rift-storage --apply` (bootstrap) rewrites such lines, and
-`workbox-rift-storage --fstab` does only that; `--check` fails while one is left.
+`workbox-rift-storage --fstab` does only that. Both require the deployment
+pin; read-only `--check` needs no pin and fails while one is left.
 `workbox-btrfs-reclaim.service` turns on btrfs dynamic reclaim
 (`allocation/data/dynamic_reclaim`) at each boot for the file system mounted at
 `/workspaces`, found by its device, so nearly empty data chunks go back to
@@ -206,6 +307,211 @@ and for what (`clone <name>` or `delete <name>`); a holder that dies frees its
 turn. The fetch, install and warm of a create, and a remove's checks, run
 beside each other as before. A base that is a Btrfs subvolume (its workspaces
 are snapshots) takes no turn.
+
+### A base that is a subvolume
+
+When a base is the root of a btrfs subvolume, `work new` makes each workspace
+as one writable snapshot and `work rm` deletes it with one
+`btrfs subvolume delete` (Ergo's btrfs cloner). When the base is a plain
+folder, work copies it file by file. `workrift init` and
+`workbox-rift-storage --apply` make new bases as subvolumes on btrfs.
+`workrift check` warns about a base on btrfs that is a plain folder.
+A create deletes from its new workspace, and names, any Git lock or
+temporary pack that the copy carried from the base, where a Git process
+outside the line held it at that instant. It never touches the base.
+
+`workrift subvolume --apply` converts a live base and leaves every workspace
+as it is: work removes each record by the cloner that made it. The command
+runs these steps:
+
+1. It refuses to start in any of these cases:
+   - a removal of the base runs;
+   - an older workrift (one that takes no place in the base's line) runs;
+   - a process outside the line works in the base;
+   - a Git lock file is present;
+   - quotas are on;
+   - the mount lacks `user_subvol_rm_allowed`;
+   - free space or metadata slack is below the gates
+     (`WORKRIFT_SUBVOLUME_MIN_*`).
+
+   A removal of another base also refuses it, because the copy shares the
+   file system's metadata with that removal. `--beside-other-removals` lets
+   the command run beside such removals, and its output says how many it saw.
+
+   It finds processes in the base by their open files, working folders,
+   roots and executables under /proc, each thread's open files, working
+   folder and root (a thread that unshared its file table or its file system
+   info has its own), and each
+   memory map (a file mapped and its fd closed): one `find` under `LC_ALL=C`,
+   with `grep` over the maps batched through it. Each process the walk meets
+   falls into one of three kinds, read from the errno text of each message
+   find or grep gives for an entry of it:
+   - ended during the walk: its /proc folder is gone, the one meaning of
+     ended. It holds nothing, and the preflight line counts it. An fd link
+     gone while the process lives (its own or a thread's) is a file it
+     closed, an executable link that does not read means it has no memory
+     (a kernel thread, or one ending), and a thread gone with its task folder
+     ended, so those are nothing either;
+   - unread (an entry refused: `Permission denied`, or `Operation not
+     permitted`, which a /proc mounted `hidepid=1` answers for every entry
+     of another user's process). This is another user's process
+     (root's, on the workbox), or this user's own when it holds privileges
+     this user lacks (the workbox's user systemd: its fd folder lists, its
+     links do not read), or one whose stat does not read while its folder
+     is there. Each stat is read whole: a command name may hold newlines and
+     `) `;
+   - read: judged by its links and maps.
+
+   A /proc mounted with `hidepid=invisible` (or 2, 4, `ptraceable`) does not
+   list other users' processes at all: the whole walk is then unread, so it
+   refuses, or runs beside them with `--beside-unreadable` (and the drop
+   rule for that flag applies). A /proc mounted `hidepid=1` lists them but
+   refuses each one's entries, so each is unread one by one and the rules
+   below apply (with sudo it reads every entry of each again, since this
+   user cannot even test which they have).
+
+   Any other message, or no /proc, is a failed walk: the command refuses and
+   says find's line. `workrift processes <folder>` runs the same walk read
+   only and prints the count of each kind (the probe before a rehearsal).
+
+   An unread process may or may not be in the base. The command names such
+   processes by count and uid and never takes them for none:
+   - where `sudo -n` works, it reads exactly those processes again, read
+     only, all of them in one call (`sudo -n find /proc/<pid>/fd
+     /proc/<pid>/cwd … -lname <base>`, with their roots, executables, maps
+     and threads). A process whose start time changed since the walk (its
+     pid reused) is a new process that lives: it is judged as itself, and
+     named as such when it is in the base. The step log says the command line,
+     and says it again only when the set changes. It refuses if one is in
+     the base;
+   - otherwise it refuses, unless `--beside-unreadable` is given: then it runs
+     beside them, and the step log says how many and whose. Where sudoers
+     allows `sudo -n true` but refuses that `find`, the refusal says so, and
+     `--beside-unreadable` is the only way on without a change to sudoers.
+
+   While the switch waits for processes to leave the old tree, it looks
+   after 1 s, then 2 s, then every 4 s.
+
+   A walk's time grows with the count of thread fd links, since every
+   thread's open files are read, even where threads share one table. On
+   bite-workbox, with 1,846 threads holding 459,108 thread fd links, one walk
+   took 5.3-11 s. The switch walks once under its hold after the exchange,
+   then again only while a process stays in the old tree. The lock's purpose,
+   which a waiting create shows, says so. No deadline cuts a walk short:
+   - The wait's 60 s is checked only after a walk has named processes, and
+     then the switch refuses.
+   - The hold's 1200 s limit on the copy and its checks refuses when it
+     passes.
+   - A walk that ends finding nothing really found nothing.
+
+   Kernel threads and zombies hold no files and never count. Any other
+   failure of the walk is a refusal of its own. The same three answers hold
+   after the exchange (an unknown process leaves the switch unfinished) and
+   for `--drop-old`.
+2. It takes the base's exclusive lock and its clone turn in line. Creates
+   wait behind it and none fails. It waits at most
+   `WORKRIFT_SUBVOLUME_TURN_WAIT` seconds (default 1800) and otherwise exits
+   1 with nothing changed.
+3. It reflink-copies the base into `<parent>/.subvolume-move/<name>.new`
+   and refreshes the index of the copy. It then checks the copy against the
+   base:
+   - HEAD, refs, status (untracked files too), lock files and Git's own
+     files (config, info, hooks) are equal;
+   - the object store's listing is the same at the copy's start, at its end
+     and in the copy;
+   - every ref tip and its tree are present;
+   - no Git lock or temporary pack is in the copy.
+
+   Git processes outside workrift's line (a plain `git fetch` and the auto gc
+   it starts) can change the base while the copy walks it. If any check fails,
+   the command copies `.git` again, at most twice, and otherwise rolls back.
+   The `cp` runs as a child whose pid the state file records: when only the
+   command's shell is killed, the `cp` runs on, and the next `--apply` waits
+   for it to end (at most `WORKRIFT_SUBVOLUME_WAIT` seconds, else it names
+   the pid and changes nothing) before it deletes that copy.
+4. It swaps the copy and the base in one `renameat2(RENAME_EXCHANGE)` and
+   parks the old tree at `<name>.old`, recorded by its identity.
+5. It waits for processes to leave the old tree, carries in the refs the old
+   tree gained (each with its objects, by a fetch from the old tree), runs
+   `work refresh`, and makes and removes a smoke snapshot workspace.
+
+The exchange is the commit point. A failure before it rolls back: the base
+never moved, and the command deletes only its copy, which was never the
+base. From the exchange on, the new tree has been the live base, and anything
+may have been written into it, so nothing rolls it back. A failure after the
+exchange exits 1 with "not rolled back": the new tree stays the base, the
+tree it was stays at `<name>.old` under its record, and a process that stays
+in the old tree past the wait leaves the switch unfinished (the next `--apply`
+carries what it wrote once it left), as does a carry that could not read a
+tree's refs or move one of them (a Git that failed: it says what it could not
+do, and a read that fails never counts as a tree with no refs). Every stop
+says three things: what failed (the command, its status and the step), the
+state both trees are in (`workrift subvolume: state: …`: the base, the copy,
+the kept tree and the recorded phase), and the exact command that goes on
+(`workrift subvolume: next: …`: the rerun, `--back` or `--drop-old`). Every
+read the switch decides on returns its status: a command that failed is never
+read as an empty answer (no process, no lock, no refs), and one that cannot be
+told is a refusal. If the command is cut (kill -9 too), the
+next `--apply` deletes the copy of a switch cut before its exchange and starts
+again, or finishes one cut after it, working from its state file in the
+base's `.workrift/subvolume/`. Every output says what it deleted, from what it
+did.
+
+After each switch, and before `--drop-old` deletes it, the output lists what
+the base lacks of the tree kept at `<name>.old`: refs (with their objects),
+HEAD, Git's own files, reflog entries, and the index and worktree as
+`git status` sees them. Files Git ignores are not compared. The
+checked-out branch is never moved by the carry. When a ref changed on both
+sides, the command keeps the other value under `refs/subvolume-move/` and
+says so; a ref written into one tree after the carry is carried into the
+other on the next switch only where that tree has none, and never deleted.
+The carry reads each tree's refs strictly. Git skips a ref it cannot resolve
+and still exits 0: a broken ref with a warning, a symbolic ref to nothing with
+no message. So any message from Git fails the read, and so does a ref name in
+the tree's own store (the files under `.git/refs` and `packed-refs`) that the
+listing lacks. The carry then names that ref and moves nothing.
+
+A run without `--apply` writes nothing, not even the state folder.
+
+The tree the base was stays at `<name>.old` until
+`workrift subvolume --drop-old --apply`, which deletes only the tree that the
+last switch recorded there (a subvolume's id or a folder's inode). Nothing
+goes to a trash. Nothing is deleted that an earlier run did not list, by
+content. When the kept tree holds anything the base lacks, the drop takes two
+runs. The dry run, `workrift subvolume --drop-old`, lists those items and
+prints the command that deletes the tree, `--drop-old --apply --lose
+N:DIGEST`. N is their count, and DIGEST is the start of the sha256 of the
+listed lines. Each line names content: a ref with its commit, a Git file with
+its checksum, each reflog entry, and each worktree or index line with the
+object id of the file it holds. So a ref moved to another commit, a ref
+swapped for another, or a file edited again gives another token, even with
+as many items. The command refuses when the token is not that of the list by
+then. Every refusal of a drop prints the list, and its next command is that
+dry run. When the base holds all of the kept tree, `--drop-old --apply`
+deletes it in one run. When part of the list does not read, no run of
+workrift deletes the tree: the dry run prints the command that deletes it by
+hand.
+
+The deleting run takes the base's move ticket, renames `<name>.old` to
+`<name>.dropping`, walks the processes in it again, lists again what the
+base lacks of it and compares the token. Any difference renames it back,
+prints the lines that were added and removed, and deletes nothing. Only the
+tree set aside is deleted, never the path `<name>.old`. One window is left:
+a process that enters `<name>.dropping` by that path between the walk and
+the delete. Nothing of workrift's uses that path.
+
+With `--beside-unreadable`, a process the walk could not look into may
+already be inside the tree, and may write after the listing. So no run
+deletes a tree beside such processes while it holds anything the base lacks:
+the dry run lists it and prints no command that deletes, and the run refuses.
+It names the processes and the two ways on: stop them, or run it where
+`sudo -n` reads them (read only). A tree that holds nothing the base lacks
+is still deleted beside them. The output then says that what they write into
+it after the listing is not listed, and the delete takes it. A drop that was cut short
+lists the tree again where it stands, at `.old` or `.dropping`, and its
+rerun needs the token of the present list. `--back` switches to the kept
+tree in the same way. With no kept tree, `--back` copies into a new folder.
+
 `init`, `create`, `refresh` and `deps` run themselves at nice 10, and in the
 idle I/O class (`ionice -c3`) where `ionice` is, so their clones, fetches,
 checkouts and installs yield to the OpenCode service.

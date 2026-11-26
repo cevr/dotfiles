@@ -3,6 +3,7 @@
 // a Rex pane or a shell, while the ones the test sets for its child stay.
 import { Effect, Stream } from "effect"
 import { describe, expect, it } from "effect-bun-test"
+import { hangGuard } from "../tests/hang-guard.ts"
 import { owned } from "../tests/owned.ts"
 import { parentEnv } from "../tests/scratch.ts"
 import { isPaneVariable, outsidePanes } from "./pane-env.ts"
@@ -46,5 +47,6 @@ describe("a multiplexer pane's variables", () => {
       expect(names(text).filter(isPaneVariable)).toEqual(["HERDR_FAKE_SOCKET"])
       expect(names(text)).toContain("KEPT")
     }),
+    hangGuard("short-fixture"),
   )
 })

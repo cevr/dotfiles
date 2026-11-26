@@ -17,7 +17,7 @@
 // `ledger.timeout.txt` if it never held a line for each request.
 import { Effect, Schedule, Stream } from "effect"
 import { readFileSync, writeFileSync } from "node:fs"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
 
 const out = process.env.SCENARIO_OUT ?? "out"
 type Frame = { lines: ReadonlyArray<{ spans: ReadonlyArray<{ text: string }> }> }

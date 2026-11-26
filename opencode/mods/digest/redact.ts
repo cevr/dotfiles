@@ -17,7 +17,7 @@ import { Option } from "effect"
 export const REDACTED = "[redacted]"
 
 /** The shapes with a known form, each matched as a whole. */
-const KNOWN: ReadonlyArray<RegExp> = [
+export const KNOWN: ReadonlyArray<RegExp> = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
   /\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{8,}/g,
   /\bsk-[A-Za-z0-9_-]{16,}/g,
@@ -31,8 +31,11 @@ const KNOWN: ReadonlyArray<RegExp> = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
 ]
 
-/** A long run that may be a key of no known form. */
-const RUN = /[A-Za-z0-9_+=-]{32,}/g
+/** The character alphabet and shortest width of keys of no known form. */
+const TOKEN_CHARACTERS = /[A-Za-z0-9_+=-]/
+export const TOKEN_RUN = new RegExp(`${TOKEN_CHARACTERS.source}+`, "g")
+export const RUN_MIN = 32
+const RUN = new RegExp(`${TOKEN_CHARACTERS.source}{${RUN_MIN},}`, "g")
 
 /** The run's Shannon entropy, in bits a character. */
 const entropy = (run: string): number => {
@@ -44,8 +47,8 @@ const entropy = (run: string): number => {
   }, 0)
 }
 
-/** A run reads as random: letters and digits mixed, and dense enough that no hex or word reaches it. */
-const isRandom = (run: string): boolean => /[A-Za-z]/.test(run) && /[0-9]/.test(run) && entropy(run) >= 4.2
+/** A run reads as random: letters and digits mixed, and dense enough that no hex or word reaches it. The commitment record (`orchestrate/printable.ts`) tests windows of a longer run with it. */
+export const isRandom = (run: string): boolean => /[A-Za-z]/.test(run) && /[0-9]/.test(run) && entropy(run) >= 4.2
 
 /** `text` with each secret shape replaced by REDACTED; the same text when it holds none. */
 export const redact = (text: string): string => {

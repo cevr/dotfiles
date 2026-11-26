@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // `rex-show browse`: the arguments it takes, the caller (one showcase, the
 // tab spooled, no browser started), and the viewer over a stand-in tab: the
 // tab opened at the pane's size, each new frame drawn in place and a frame
@@ -19,6 +21,7 @@ import { Browse, Page, type Spooled } from "@dotfiles/opencode-rex/spool"
 import { ConfigProvider, Context, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema } from "effect"
 import { effectTest } from "../../sim-tui/effect-test.ts"
 import { parse, Refused, Request, run, type Screen, viewer } from "./show.ts"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 const PAGE = "http://127.0.0.1:8765/page.html"
 
@@ -36,7 +39,7 @@ describe("the arguments of rex-show browse", () => {
         expect({ bad, code: refusalOf(yield* Effect.exit(parse(bad))) }).toEqual({ bad, code: Option.some(2) })
       }
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -65,7 +68,7 @@ describe("the caller of rex-show browse", () => {
         ),
       ),
     ),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })
 
@@ -166,7 +169,7 @@ effectTest(
     expect(yield* Fiber.join(running)).toBe("")
     expect(yield* Ref.get(side.open)).toBe(false)
   }).pipe(Effect.provide(browsing)),
-  15_000,
+  hangGuard("short-fixture"),
 )
 
 effectTest(
@@ -185,7 +188,7 @@ effectTest(
     expect(yield* Ref.get(side.open)).toBe(false)
     yield* Fiber.interrupt(running)
   }).pipe(Effect.provide(browsing)),
-  15_000,
+  hangGuard("short-fixture"),
 )
 
 effectTest(
@@ -208,5 +211,5 @@ effectTest(
       ).pipe(Layer.provideMerge(queues)),
     ),
   ),
-  15_000,
+  hangGuard("short-fixture"),
 )

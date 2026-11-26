@@ -9,10 +9,13 @@
  *
  * @module
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
+import { testHostOptions } from "../../scripts/test-host.ts"
 import { join } from "node:path"
+import { Schema } from "effect"
 import { makeRepo } from "./repo.ts"
-import { serve, type Seen } from "./sim.ts"
+import { POLICY_TASK, serve, type Seen } from "./sim.ts"
+import { externalInput, matchingInput, readScratchFileSync, scratchInput } from "../read-path.ts"
 
 export interface Spec {
   readonly base: string
@@ -34,12 +37,34 @@ export interface Result {
   readonly head: string
 }
 
-const spec = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as Spec
-const work = join(spec.base, "work")
-const config = join(spec.base, "config")
+const spec = JSON.parse(readScratchFileSync(process.argv[2]!, "utf8")) as Spec
+const base = scratchInput(spec.base)
+const guard = matchingInput("cmd/guard", spec.guard)
+const work = join(base, "work")
+const config = join(base, "config")
 mkdirSync(work, { recursive: true })
 mkdirSync(config, { recursive: true })
 const head = makeRepo(work)
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+
+// Use the same test-only sampler port as the host-admit CLI acceptance.
+// The embedded server, Guard hook, real launcher and child stay unchanged.
+const guardForPolicy = () => {
+  const fixture = join(base, "guard-with-supply")
+  const fixtureEntry = matchingInput("tests/fixtures/host-admit-test-entry.ts")
+  mkdirSync(fixture)
+  writeFileSync(join(base, "home", "host-admit-supply.json"), json({ outside: 0 }))
+  writeFileSync(join(fixture, "package.json"), json({ type: "module", exports: { "./server": "./server.ts" } }))
+  writeFileSync(join(fixture, "server.ts"), [
+    `import { live, make } from ${json(matchingInput("cmd/guard/server.ts", join(guard, "server.ts")))}`,
+    `export default make(live, () => ${json([process.execPath, fixtureEntry])})`,
+  ].join("\n"))
+  return fixture
+}
+const guardForTask = () => {
+  if (spec.task === POLICY_TASK) return guardForPolicy()
+  return guard
+}
 
 // The spec file's path is in this process's command line and no other's: the policy task kills by it.
 const sim = serve(process.argv[2]!)
@@ -59,7 +84,10 @@ const content = {
       },
     },
   },
-  plugins: [{ package: spec.kernel, options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } }, spec.guard],
+  plugins: [
+    { package: matchingInput("cmd/kernel", spec.kernel), options: { codeOnly: spec.codeOnly, timeoutMs: 20_000 } },
+    guardForTask(),
+  ],
 }
 
 /** As much of the fork's SDK as the run uses; the fork is found at run time, so it is typed here. */
@@ -75,13 +103,13 @@ interface Embedded {
 interface Sdk {
   readonly OpenCode: { readonly create: (options: Record<string, unknown>) => Promise<Embedded> }
 }
-const { OpenCode } = (await import(join(spec.fork, "packages/sdk/src/index.ts"))) as Sdk
-const opencode = await OpenCode.create({
+const { OpenCode } = (await import(externalInput(join(spec.fork, "packages/sdk/src/index.ts")))) as Sdk
+const opencode = await OpenCode.create(testHostOptions({
   events: { persist: true },
   // The bundled model catalog only, as tests/compaction-prefix/run.ts says why.
   models: { fetch: false },
   config: { directory: config, project: false, content: JSON.stringify(content) },
-})
+}))
 
 try {
   const session = await opencode.sessions.create({ location: { directory: work } })
@@ -93,7 +121,7 @@ try {
   const children: Record<string, unknown> = {}
   for (const id of ids) children[id] = await opencode.sessions.context({ sessionID: id }).catch(() => undefined)
   const result: Result = { messages, children, seen: sim.seen, head }
-  writeFileSync(join(spec.base, "result.json"), JSON.stringify(result, null, 2))
+  writeFileSync(join(base, "result.json"), JSON.stringify(result, null, 2))
 } finally {
   await opencode.close()
   sim.server.stop(true)

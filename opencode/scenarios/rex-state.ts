@@ -16,7 +16,9 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Console, Effect, Option, Schedule, Stream } from "effect"
-import { Llm, OpenCodeDriver } from "opencode-drive"
+import { testHostEnv } from "../scripts/test-host.ts"
+import { Llm, OpenCodeDriver } from "./test-driver.ts"
+import { elapsedForReport } from "../tests/hang-guard.ts"
 
 const ASK = "Run the slow check."
 const COMMAND = "sleep 2 && echo checked"
@@ -87,7 +89,7 @@ export default OpenCodeDriver.use(
             onExit: () => {
               exited = true
             },
-            env: { ...env, ...environment, TERM: "xterm-256color", TERM_PROGRAM: "rex", REX_SESSION: "session:rex-state-test", REX_BLOCK: "block:rex-state-test" },
+            env: { ...env, ...environment, TERM: "xterm-256color", TERM_PROGRAM: "rex", REX_SESSION: "session:rex-state-test", REX_BLOCK: "block:rex-state-test", ...testHostEnv() },
             terminal: {
               cols: 100,
               rows: 30,
@@ -121,10 +123,10 @@ export default OpenCodeDriver.use(
         const working = reports.findIndex((report) => report.state === "working")
         return reports.slice(working).some((report) => report.state === "idle" && report.title === "rex check")
       }, "Rex never heard the session idle after the turn", 30)
-      const stopped = Date.now()
+      const elapsed = elapsedForReport()
       yield* Effect.sync(() => tui.kill("SIGTERM"))
       yield* until(() => exited, "the TUI did not exit within 15 s of its SIGTERM", 15)
-      yield* Console.log(`the TUI exited ${Date.now() - stopped} ms after SIGTERM`)
+      yield* Console.log(`the TUI exited ${elapsed()} after SIGTERM`)
       // Bytes still in the pty when it exited.
       yield* until(() => heard().at(-1)?.state === "clear", "Rex never heard the record cleared after the TUI's SIGTERM", 2)
     }).pipe(

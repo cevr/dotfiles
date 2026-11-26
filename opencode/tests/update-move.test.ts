@@ -23,11 +23,13 @@ import { Base64 } from "effect/encoding"
 import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { hostCall, serve } from "../testbeds/gamut/pty-host.ts"
-import { ENV, listen, Platform, run } from "./reconnect/host.ts"
+import { ENV, listen, Platform, runForkService } from "./reconnect/host.ts"
 import { forkRuns, keptScratch } from "./scratch.ts"
+import { externalInput, scratchInput } from "./read-path.ts"
+import { forkTuiFixture } from "./scratch-child.ts"
 import { freePort, ready, type Service } from "./service.ts"
+import { hangGuard } from "./hang-guard.ts"
 
-const TIMEOUT_MS = 240_000
 /** The TUI's build and the installed one: one fork commit, two dotfiles commits. */
 const OWN = "2.2.7-prime.f0f0f0f0.d1d1d1d1"
 const INSTALLED = "2.2.7-prime.f0f0f0f0.d2d2d2d2"
@@ -133,16 +135,15 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
-        const { fork, path } = yield* ENV
+        const { fork } = yield* ENV
         // A short folder name: the terminal host's socket lives in it, and a socket path has at most 104 bytes on macOS.
         const root = kept.dir("m")
         const home = `${root}/home`
         const state = `${home}/.local/state`
         for (const dir of ["work", "home", "home/.config", "home/.config/opencode", "home/.local", "home/.local/state", "home/.local/state/opencode"]) yield* fs.makeDirectory(`${root}/${dir}`)
-        const work = yield* fs.realPath(`${root}/work`)
+        const work = yield* fs.realPath(scratchInput(`${root}/work`))
         const launch = forkLaunch(fork, process.execPath)
         const env = {
-          PATH: path,
           HOME: home,
           TERM: "xterm-256color",
           HERDR_ENV: "1",
@@ -152,14 +153,13 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
           XDG_CACHE_HOME: `${home}/.cache`,
           OPENCODE_DB: `${root}/opencode.db`,
           OPENCODE_DISABLE_MODELS_FETCH: "1",
-          OPENCODE_DISABLE_FILEWATCHER: "1",
           ...launch.env,
           // Every process the environment starts is build B; the transpiler cache off, so no file compiled under one define serves the other.
           BUN_OPTIONS: `${launch.env.BUN_OPTIONS} --define=OPENCODE_VERSION:"${INSTALLED}"`,
           BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         }
         const serviceFile = `${state}/opencode/service-local.json`
-        const opencode = (...args: ReadonlyArray<string>) => run([...launch.base, ...args], work, env)
+        const opencode = (...args: ReadonlyArray<string>) => runForkService(fork, work, args, env, INSTALLED)
 
         const sim = yield* simModel
         yield* fs.writeFileString(
@@ -193,7 +193,7 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         expect(info.version).toBe(INSTALLED)
         yield* fs.writeFileString(`${state}/opencode/installed.json`, toJson({ version: INSTALLED, command: info.command, previous: ["2.2.7-prime.f0f0f0f0", OWN] }))
 
-        const module = yield* Effect.promise((): Promise<ClientModule> => import(`${fork}/packages/client/src/promise/index.ts`))
+        const module = yield* Effect.promise((): Promise<ClientModule> => import(externalInput(`${fork}/packages/client/src/promise/index.ts`)))
         const client = module.OpenCode.make({ baseUrl: service.url, headers: authorization(service) })
         const session = yield* Effect.promise(() => client.session.create({ location: { directory: work }, title: "Move session" }))
         yield* Effect.promise(() => client.session.prompt({ sessionID: session.id, text: READY }))
@@ -201,10 +201,9 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         yield* until(asked(READY), Boolean, () => "the first prompt never reached the model", 30_000)
 
         // The TUI on A: its own define, on its command line, wins over the environment's B.
-        const socket = `${root}/tui.sock`
-        const [bun = "", entry = ""] = launch.base
+        const socket = scratchInput(`${root}/tui.sock`)
         yield* Effect.acquireRelease(
-          Effect.sync(() => serve({ socket, cwd: work, command: [bun, `--define=OPENCODE_VERSION:"${OWN}"`, entry, "-s", session.id], env: { ...env, OPENCODE_PASSWORD: service.password }, cols: 140, rows: 40 })),
+          Effect.sync(() => serve({ socket, ...forkTuiFixture(fork, work, { ...env, OPENCODE_PASSWORD: service.password }, { installed: INSTALLED, own: OWN, session: session.id }), cols: 140, rows: 40 })),
           (served) => Effect.promise(() => served.stop()),
         )
         yield* until(fs.exists(socket).pipe(Effect.orElseSucceed(() => false)), Boolean, () => "the terminal host", 10_000)
@@ -237,6 +236,6 @@ describe.skipIf(!forkRuns)("an open TUI moves onto a build that differs only in 
         expect(arrived).toContain(`from ${OWN})`)
         yield* until(screen, (text) => text.includes(READY) && text.includes(DRAFT), (last) => `the new process lost the session or the draft:\n${last}`, 30_000)
       }),
-    TIMEOUT_MS,
+    hangGuard("generated-schedule"),
   )
 })

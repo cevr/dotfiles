@@ -8,12 +8,14 @@
 // image; `kernel`: a kernel cell makes a paid one against the fake Images API.
 // Each job's end wakes the idle session. What happened is read off the
 // model's requests, the fakes' log, the transcripts and the saved files.
+import { readScratchFileSync } from "./read-path.ts"
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 interface Request {
   readonly session: "root" | "title"
@@ -49,8 +51,6 @@ const PNG_MAGIC = "89504e470d0a1a0a"
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
 const SKILL_FILE = join(ROOT, "mods", "image", "SKILL.md")
 const SKILL = readFileSync(SKILL_FILE, "utf8")
-/** How long one run gets: OpenCode's start and one job, well past its usual 16 seconds. */
-const SCENARIO_MS = 240_000
 
 const unescaped = (request: string) => request.replaceAll("\\n", "\n").replaceAll('\\"', '"')
 const toolsIn = (request: string): ReadonlyArray<Tool> => {
@@ -80,7 +80,7 @@ describe.skipIf(!fork)("the image tool", () => {
     const errors = await new Response(child.stderr).text()
     const code = await child.exited
     expect(code, `${output}${errors}`.slice(-5000)).toBe(0)
-    const read = (name: string) => readFileSync(join(out, `image-${mode}-${name}`), "utf8")
+    const read = (name: string) => readScratchFileSync(join(out, `image-${mode}-${name}`), "utf8")
     const requests: ReadonlyArray<Request> = JSON.parse(read("requests.json"))
     const rootRequests = requests.filter((request) => request.session === "root")
     const raw = rootRequests.map((request) => request.request)
@@ -117,7 +117,7 @@ describe.skipIf(!fork)("the image tool", () => {
       expect(exits).toEqual([0])
       expect(read("done.txt")).toContain("Woke on fox.")
     }),
-    SCENARIO_MS,
+    hangGuard("generated-schedule"),
   )
 
   test(
@@ -139,6 +139,6 @@ describe.skipIf(!fork)("the image tool", () => {
       expect(raw.some((text) => text.includes(FAKE_KEY))).toBe(false)
       expect(read("done.txt")).toContain("Woke on logo.")
     }),
-    SCENARIO_MS,
+    hangGuard("generated-schedule"),
   )
 })

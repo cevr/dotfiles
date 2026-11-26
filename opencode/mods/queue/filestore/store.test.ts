@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/queue/filestore/store.test.ts: expect(existsSync(join(dir, "..", "escape.json"))).toBe(false)
 import { describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

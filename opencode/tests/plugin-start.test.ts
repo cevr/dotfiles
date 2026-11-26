@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason nonliteral subprocess arguments at scripts/perf/plugin-start.ts: Bun.spawnSync(["git", "init", "-q", directory])
 // accept: one at a time (it measures each plugin's setup time and the service's CPU at start).
 // Our server plugins start without holding a location up: a scratch fork service with
 // daily's server plugins (scripts/perf/plugin-start.ts, from its own OTLP spans) opens
@@ -18,14 +20,16 @@
 // scratch HOME, as daily's stage or a handoff's prune would: only those two take it, never a
 // plugin's setup or a location's start, so a held lock delays no location.
 import { describe, expect, test } from "bun:test"
-import { spawnSync } from "bun"
 import { Deferred, Effect } from "effect"
 import { exclusively } from "../mods/work/process/flock.ts"
 import { buildsLock } from "../mods/update/settings.ts"
 import { forkLaunch } from "../testbeds/gamut/gamut.ts"
 import { type Measure, measure, rows } from "../scripts/perf/plugin-start.ts"
+import { externalInput } from "./read-path.ts"
+import { scratch } from "./scratch.ts"
 // The scratch service is stopped once this test process is gone, however it went (testbeds/reaper/start.ts).
 import "../testbeds/reaper/start.ts"
+import { hangGuard, measured } from "./hang-guard.ts"
 
 /** Holds the builds lock of `home` exclusively (a `flock`, as daily's stage takes it) until the answered release runs. */
 const holdBuildsLock = (home: string) =>
@@ -40,21 +44,22 @@ const holdBuildsLock = (home: string) =>
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/plugin-start.test.ts: skipped. Set OPENCODE_DEV to the fork.")
 
-const SETUP_MS = 150
-/** Measured 1.4-1.7 s of service CPU per location opened together, 0.2 s alone. */
-const LIVE_CPU_MS = 10_000
 
 /** The measured start: every location answered on bounded CPU, and every plugin's setup is quick alone. */
 const check = (result: Measure) => {
   const name = (location: (typeof result.locations)[number]) => location.directory.split("/").at(-1)
   // Every location answered (else `measure` throws), each on a bounded amount of the service's CPU.
-  expect(result.locations.filter((location) => !(location.cpu < LIVE_CPU_MS)).map((location) => `${name(location)}: ${location.cpu.toFixed(0)} ms of CPU, ${(location.live - location.asked).toFixed(0)} ms`)).toEqual([])
+  measured("service CPU per starting location with three opens", "< 10000 cpu-ms", ({ sample }) => {
+    for (const location of result.locations) sample(location.cpu, `${name(location)}: ${(location.live - location.asked).toFixed(0)} ms wall`)
+  })
   const table = rows(result)
   expect(table.map((row) => row.plugin)).toEqual(expect.arrayContaining(["memory", "work"]))
   // Every plugin started: a setup that died (the work plugin with no `work` on PATH, batch cx) still ends its span, on an error.
   expect(table.filter((row) => row.failed > 0).map((row) => `${row.plugin}: ${row.failed} of ${row.setup.length + row.alone.length} setups failed`)).toEqual([])
   expect(table.filter((row) => row.setup.length !== 3 || row.alone.length !== 2).map((row) => `${row.plugin}: set up in ${row.setup.length} + ${row.alone.length} locations`)).toEqual([])
-  expect(table.filter((row) => Math.min(...row.alone) >= SETUP_MS).map((row) => `${row.plugin}: ${row.alone.map((ms) => ms.toFixed(0)).join(", ")} ms alone (${row.setup.map((ms) => ms.toFixed(0)).join(", ")} ms together)`)).toEqual([])
+  measured("each server plugin's fastest isolated setup", "< 150 ms", ({ sample }) => {
+    for (const row of table) sample(Math.min(...row.alone), `${row.plugin}: ${row.alone.map((ms) => ms.toFixed(0)).join(", ")} ms alone (${row.setup.map((ms) => ms.toFixed(0)).join(", ")} ms together)`)
+  })
 }
 
 describe.skipIf(!fork)("our server plugins at a service's start", () => {
@@ -64,11 +69,12 @@ describe.skipIf(!fork)("our server plugins at a service's start", () => {
       Effect.runPromise(
         Effect.gen(function* () {
           // The scratch root `measure` runs in (and removes); the lock is taken in its HOME before the service starts.
-          const root = spawnSync(["mktemp", "-d", "-t", "plugin-start"]).stdout.toString().trim()
+          using temp = scratch("plugin-start-")
+          const root = temp.path
           const release = yield* holdBuildsLock(`${root}/home`)
-          check(yield* Effect.promise(() => measure({ launch: forkLaunch(fork ?? "", process.execPath), locations: 3, alone: 2, root })).pipe(Effect.ensuring(release)))
+          check(yield* Effect.promise(() => measure({ launch: forkLaunch(externalInput(fork ?? ""), process.execPath), locations: 3, alone: 2, root })).pipe(Effect.ensuring(release)))
         }),
       ),
-    120_000,
+    hangGuard("installer"),
   )
 })

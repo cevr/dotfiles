@@ -11,7 +11,7 @@
 // Codex fallback whose pace admits it, starts at once on the fallback and says
 // why (`fallback`). Only when both are held does it latch, on whichever opens
 // first. The Sabbath holds both: it latches on the first model. Only a planner
-// or verifier ever takes the fallback (role.ts `onCodex`): any other held agent
+// ever takes the fallback (role.ts `roleModels`): any other held agent
 // latches on its own model, and a new implementor whose model is a Codex one is
 // refused (CodexNeverImplements). Codex never implements.
 //
@@ -21,8 +21,9 @@
 // decided on its own inputs; the state is what the history says happened.
 import { Effect, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
-import { PaceHold, Whose } from "./pace.ts"
-import { capEffort, IMPLEMENTOR, onCodex, Reason, route, unspecific } from "./role.ts"
+import { LaunchStatus } from "@dotfiles/opencode-kernel/launch-status"
+import { PaceHeld, PaceHold, Whose } from "./pace.ts"
+import { capEffort, IMPLEMENTOR, Reason, roleModels, route, unspecific, verificationModel } from "./role.ts"
 import { explain, Place, resumesAt, SabbathRest } from "./sabbath.ts"
 
 // ── The id ──
@@ -39,8 +40,8 @@ export const streamOf = (id: ToolCallId) => `${id.sessionID}/${id.callID}`
 
 // ── StartSubagent ──
 // Starting a subagent: a new one latches over the Sabbath or when the pace
-// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath or while its child is
-// still latched, and otherwise it runs as the agent the guard routes it to. A
+// has no room on its model nor on its fallback, a follow-up is refused over the Sabbath, while its child is
+// still latched, or while the pace holds its model (PaceHeld, with when it opens), and otherwise it runs as the agent the guard routes it to. A
 // worker at max runs at its model's default unless its work is mechanical.
 
 /**
@@ -82,7 +83,10 @@ export const StartSubagent = Schema.TaggedStruct("StartSubagent", {
   /** The full-agent escape: an untyped or general call runs as asked. */
   fullAgent: Schema.Boolean,
   place: Place,
-  /** The pace's answer when it holds a new agent; a follow-up is never paced. */
+  /**
+   * The pace's answer when it holds the agent on its model: a new one latches; a follow-up is refused (PaceHeld)
+   * with the time it opens, its child and prompt kept with the parent, no new agent made.
+   */
   hold: Schema.optionalKey(PaceHold),
   /** The Codex model to start on when the pace holds `model`; gathered only for a held new agent that named no model. */
   fallback: Schema.optionalKey(Fallback),
@@ -110,6 +114,8 @@ export const SubagentStarted = Schema.TaggedStruct("SubagentStarted", {
   lowered: Schema.optionalKey(Schema.String),
   /** The model the call named and does not run on: the role's own, or a Codex model an implementor named (Codex never implements). */
   dropped: Schema.optionalKey(Schema.String),
+  /** The start asked fast, and what came of it (`fastLine`): `fast, as asked`, or why it runs standard. */
+  fast: Schema.optionalKey(Schema.String),
 })
 export interface SubagentStarted extends Schema.Schema.Type<typeof SubagentStarted> {}
 
@@ -138,6 +144,8 @@ export const SubagentLatched = Schema.TaggedStruct("SubagentLatched", {
   lowered: Schema.optionalKey(Schema.String),
   /** The model the call named and does not run on. */
   dropped: Schema.optionalKey(Schema.String),
+  /** The start asked fast, and what came of it (`fastLine`). */
+  fast: Schema.optionalKey(Schema.String),
   hold: Hold,
   /** The pace's owner, for a pace hold. */
   whose: Schema.optionalKey(Whose),
@@ -162,8 +170,12 @@ export class CodexNeverImplements extends Schema.TaggedError<CodexNeverImplement
   model: Schema.String,
 }) {}
 
+export class VerificationRequiresOpus extends Schema.TaggedError<VerificationRequiresOpus>()("VerificationRequiresOpus", {
+  requested: Schema.optionalKey(Schema.String),
+}) {}
+
 export declare namespace StartSubagent {
-  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements
+  export type Rejections = SabbathRest | StillLatched | CodexNeverImplements | PaceHeld | VerificationRequiresOpus
 }
 
 /** A held agent asks again no sooner than this after now. */
@@ -201,8 +213,7 @@ const admit = (
   if (rests !== undefined)
     return SubagentLatched.make({ ...fields, hold: "sabbath", why: explain(rests.resumes, rests.place), opensAt: rests.resumes, recheckAt: rests.resumes })
   if (hold === undefined) return SubagentStarted.make(fields)
-  // Codex plans and verifies, never implements: any other agent waits for its own model, whatever fallback was gathered.
-  if (fallback === undefined || !onCodex(fields.agent)) return pacedOf(fields, hold, now)
+  if (fallback === undefined || roleModels(fields.agent).kind !== "planning") return pacedOf(fields, hold, now)
   const moved = { ...fields, model: fallback.model, fallback: `${fields.model ?? "its model"} held: ${hold.reason}` }
   if (fallback.hold === undefined) return SubagentStarted.make(moved)
   return opensOf(fallback.hold, now) < opensOf(hold, now) ? pacedOf(moved, fallback.hold, now) : pacedOf(fields, hold, now)
@@ -223,10 +234,19 @@ export const continues = (command: Pick<StartSubagent, "asked" | "child">) =>
  */
 export const routeOf = (
   command: Pick<StartSubagent, "asked" | "child" | "childAgent" | "fullAgent" | "description">,
-): { readonly agent: string; readonly reason: Reason } =>
-  continues(command) && command.childAgent
-    ? { agent: command.childAgent, reason: "continued" }
-    : route(command.asked, command.fullAgent, command.child === undefined ? command.description : undefined)
+) => {
+  if (command.childAgent && roleModels(command.childAgent).kind === "verification") return { agent: "verifier", reason: "continued" as const }
+  if (command.childAgent && continues(command)) return { agent: command.childAgent, reason: "continued" as const }
+  const description = Option.getOrUndefined(Option.filter(Option.fromUndefinedOr(command.description), () => !command.child))
+  return route(command.asked, command.fullAgent, description)
+}
+
+/** Supplied model evidence must obey the role policy, even if a caller skipped model selection. */
+const forbiddenModel = (agent: string, model: string | undefined) =>
+  Option.filter(Option.fromUndefinedOr(model), (ref) => roleModels(agent).kind === "verification" && !verificationModel(ref))
+
+const heldFollowUpOf = (agent: string, command: StartSubagent) =>
+  Option.filter(Option.fromUndefinedOr(command.hold), () => Boolean(command.child) && roleModels(agent).kind !== "verification")
 
 const decideStart = (
   command: StartSubagent,
@@ -237,7 +257,13 @@ const decideStart = (
   if (resumes !== undefined && command.child !== undefined) return Effect.fail(new SabbathRest({ resumesAt: resumes, place: command.place }))
   if (command.child !== undefined && command.childLatched !== undefined)
     return Effect.fail(new StillLatched({ child: command.child, opensAt: command.childLatched }))
+  // A follow-up the pace holds on its model sends nothing: refused with when it opens, the child kept as it is.
   const { agent, reason: routed } = routeOf(command)
+  const forbidden = forbiddenModel(agent, command.model)
+  if (Option.isSome(forbidden)) return Effect.fail(new VerificationRequiresOpus({ requested: forbidden.value }))
+  const heldFollowUp = heldFollowUpOf(agent, command)
+  if (Option.isSome(heldFollowUp))
+    return Effect.fail(new PaceHeld({ whose: heldFollowUp.value.whose, reason: heldFollowUp.value.reason, retryAt: opensOf(heldFollowUp.value, now) }))
   const reason: Reason = command.dropped !== undefined && command.child === undefined ? "model-dropped" : routed
   // The worker's ceiling: a worker at max, asked or inherited, runs at its model's default unless its work is mechanical.
   const capped = capEffort(agent, command.description, command.model ?? command.inherited)
@@ -294,11 +320,13 @@ export const OpenLatch = Schema.TaggedStruct("OpenLatch", {
 export interface OpenLatch extends Schema.Schema.Type<typeof OpenLatch> {}
 
 export declare namespace OpenLatch {
-  export type Rejections = never
+  export type Rejections = VerificationRequiresOpus
 }
 
-const decideOpen = (command: OpenLatch, now: number): Effect.Effect<ReadonlyArray<SubagentStarted | SubagentLatched>> => {
+const decideOpen = (command: OpenLatch, now: number): Effect.Effect<ReadonlyArray<SubagentStarted | SubagentLatched>, OpenLatch.Rejections> => {
   if (command.started) return Effect.succeed([])
+  const forbidden = forbiddenModel(command.agent, command.model)
+  if (Option.isSome(forbidden)) return Effect.fail(new VerificationRequiresOpus({ requested: forbidden.value }))
   const resumes = resumesAt(now, command.place)
   const fields = {
     call: command.call,
@@ -339,9 +367,9 @@ const decideUse = (command: UseTool, now: number): Effect.Effect<ReadonlyArray<n
 
 // ── FinishSubagent ──
 // A subagent call returned: its child session, and whether it finished, is
-// still running in the background, latched, or failed.
+// running in the background, latched, unconfirmed, or failed.
 
-export const Status = Schema.Literals(["completed", "running", "latched", "error"])
+export const Status = Schema.Union([LaunchStatus, Schema.Literal("error")])
 export type Status = typeof Status.Type
 
 export const FinishSubagent = Schema.TaggedStruct("FinishSubagent", {
@@ -382,7 +410,7 @@ export type Stage = typeof Stage.Type
 
 export type Command = StartSubagent | OpenLatch | UseTool | FinishSubagent
 export type Event = SubagentStarted | SubagentLatched | SubagentFinished
-export type Rejection = SabbathRest | StillLatched | CodexNeverImplements
+export type Rejection = StartSubagent.Rejections
 
 export const ToolCall: Decider<Stage, Command, Event, Rejection> = {
   initial: Idle.make({}),

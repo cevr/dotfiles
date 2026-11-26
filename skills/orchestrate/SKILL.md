@@ -77,7 +77,7 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 
 - A round is one request and its verdict; it fails on `changes`, a proven Blocker or Major. Its next round goes to the same implementor (from main's head once it landed); from round 3, a fresh one ([hosts](references/hosts.md)).
 - At the third failed round, the unit goes to decide: [rewrite](references/rewrite.md), re-plan (sharpen the spec, split it, narrow it to the owner's ask) or drop. `stuck` (no round can help) goes to re-plan.
-- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Rerun its step with a fresh agent (after a limit, once `budget.ts --resume-at` has passed); the same failure twice is `stuck`. A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
+- A dead worker gives no verdict: it ended on a limit or without its hand-back line. Follow [worker restarts](references/hosts.md#worker-restarts). A dead verifier never counts as `accepted`. An implementor that needs a third message inside one round is `stuck(size)`: split the unit.
 - A red merge check, acceptance run or CI on main becomes a fix unit, fixed forward, never reverted; until main's CI is green, only fix units land.
 - **Close a unit**: `merged <hash>` in its row, its and its findings' follow-ups in the plan; stop its agents and remove its workspace. End an abandoned one by `log.ts --current <unit dir> dropped r<N> superseded-by <hash>` (or a reason), or status lists it.
 
@@ -87,10 +87,10 @@ The plan is a docs file in the project (`plans/<run>-run.md`), linked as `<run d
 | --- | --- | --- | --- | --- | --- |
 | planner | `subagent`, `agent: "planner"` | `Agent`, `model: "fable"` | `spawn_agent`, the newest sol | medium | fresh per unit |
 | implementor | `subagent`, `agent: "implementor"` | `Agent` on Opus | never | Opus medium | kept for round 2; fresh from round 3 |
-| verifier | `subagent`, `agent: "verifier"` | `Agent` on Opus | `spawn_agent`, the newest sol | medium | fresh each time |
+| verifier | `subagent`, `agent: "verifier"` on Opus | `Agent` on Opus | never | medium | fresh each time |
 
 - Every role call runs in the background, names the role as its agent type, and has a `description` that starts like its hand-back line (`implementor auth r2`, `verifier batch-3 r1`); a reused agent (next round, lane) gets the new one; where the host keeps the old title, rename it. On OpenCode it names no `model`. Effort is the table's, always; an implementor that renders a look runs at max. Change effort, never the model. How each host starts, falls back and waits: [hosts](references/hosts.md).
-- The pool and model rules are `AGENTS.md`'s (Fable plans, Opus first, Codex plans or verifies and never implements, never Sonnet).
+- Models: Fable plans, Opus first for every other role, the newest of each, never a pinned version, never Sonnet. Verification and review run only on Claude Opus. When Claude is held, latch and wait; never start a verifier on Codex.
 
 ## Between messages
 

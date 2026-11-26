@@ -27,27 +27,27 @@ const tui = () => {
       }),
     },
   }
-  return { keys, sent, screen, host, location }
+  const deferred: Array<() => void> = []
+  const stop = report(host, "tui-1", () => 1_000, (look) => { deferred.push(look) })
+  /** Deliver the key, then the scheduled read, in that order. */
+  const press = (event: "keypress" | "paste" = "keypress") => {
+    keys.emit(event)
+    for (const look of deferred.splice(0)) look()
+  }
+  return { sent, screen, location, press, stop }
 }
 
-/** A key, once the reporter has looked after it. */
-const press = async (keys: EventEmitter, event: "keypress" | "paste" = "keypress") => {
-  keys.emit(event)
-  await Bun.sleep(5)
-}
-
-test("a draft to the root on screen is reported once, then its end; a subagent's screen reports to its root", async () => {
-  const { keys, sent, screen, host, location } = tui()
-  const stop = report(host, "tui-1", () => 1_000)
-  await press(keys)
+test("a draft to the root on screen is reported once, then its end; a subagent's screen reports to its root", () => {
+  const { sent, screen, location, press, stop } = tui()
+  press()
   expect(sent).toEqual([])
   screen.route = { type: "session", sessionID: "child" }
   screen.text = "h"
-  await press(keys)
+  press()
   screen.text = "hi"
-  await press(keys, "paste")
+  press("paste")
   screen.text = ""
-  await press(keys)
+  press()
   expect(sent).toEqual([
     { id: IDLE.id, input: { sessionID: "root", drafting: true, client: "tui-1" }, location },
     { id: IDLE.id, input: { sessionID: "root", drafting: false, client: "tui-1" }, location },
@@ -55,14 +55,13 @@ test("a draft to the root on screen is reported once, then its end; a subagent's
   stop()
 })
 
-test("moving to another root with a draft moves the report; after the cleanup, keys report nothing", async () => {
-  const { keys, sent, screen, host } = tui()
-  const stop = report(host, "tui-1", () => 1_000)
+test("moving to another root with a draft moves the report; after the cleanup, keys report nothing", () => {
+  const { sent, screen, press, stop } = tui()
   screen.route = { type: "session", sessionID: "root" }
   screen.text = "draft"
-  await press(keys)
+  press()
   screen.route = { type: "session", sessionID: "other" }
-  await press(keys)
+  press()
   expect(sent.map((report) => report.input)).toEqual([
     { sessionID: "root", drafting: true, client: "tui-1" },
     { sessionID: "root", drafting: false, client: "tui-1" },
@@ -70,6 +69,6 @@ test("moving to another root with a draft moves the report; after the cleanup, k
   ])
   stop()
   screen.text = ""
-  await press(keys)
+  press()
   expect(sent).toHaveLength(3)
 })

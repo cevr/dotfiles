@@ -27,10 +27,11 @@
 // against its cores, which a push never raises.
 import { Effect, Match, Option, Schema } from "effect"
 import type { Decider } from "@dotfiles/decider/decider"
+import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { toolInput } from "@dotfiles/decider/tool-input"
-import { ResetKind } from "./quota.ts"
+import { accountWindow, ResetKind } from "./quota.ts"
 import { KIND_LABEL, type PoolView, type PushGrant, pushOptions, rankPush, spanOf, sparesOf } from "./resets.ts"
-import { byCount, iso, percent, perHour, used as usedOf } from "./usage-text.ts"
+import { byCount, percent, perHour, used as usedOf } from "./usage-text.ts"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -299,6 +300,8 @@ export interface PlannedPool {
   /** The weeks' use as read, summed (shares of one account's week), and how many accounts were read: the owner reads their average. */
   readonly weeklyUsed: number
   readonly weeklyRead: number
+  /** How many accounts' usage says they have no week: never read, never unread. */
+  readonly weeklyAbsent: number
   /** The soonest natural weekly reset. */
   readonly weekResetAt?: number
   /** The weekly burn now: the accounts' use this period over the time it ran, summed (share of one account's week per hour). */
@@ -307,6 +310,8 @@ export interface PlannedPool {
   readonly shortRoom: number
   readonly shortUsed: number
   readonly shortRead: number
+  /** How many accounts' usage says they have no 5-hour window. */
+  readonly shortAbsent: number
   readonly shortResetAt?: number
   readonly shortBurn: number
 }
@@ -342,7 +347,9 @@ const measure = (view: PoolView, name: string, length: number, now: number) => {
     burn += (window.utilization / elapsed) * HOUR
     resetAt = resetAt === undefined ? window.resetAt : Math.min(resetAt, window.resetAt)
   }
-  return { room, used, read, burn, ...(resetAt === undefined ? {} : { resetAt }) }
+  // An account whose usage says it has no such window is counted apart: it has nothing to measure, and is never "unread".
+  const absent = view.accounts.filter((account) => accountWindow(account, name)._tag === "Absent").length
+  return { room, used, read, absent, burn, ...(resetAt === undefined ? {} : { resetAt }) }
 }
 
 /**
@@ -371,11 +378,13 @@ export const planOf = (input: {
       weeklyRoom: week.room,
       weeklyUsed: week.used,
       weeklyRead: week.read,
+      weeklyAbsent: week.absent,
       ...(week.resetAt === undefined ? {} : { weekResetAt: week.resetAt }),
       weeklyBurn: week.burn,
       shortRoom: short.room,
       shortUsed: short.used,
       shortRead: short.read,
+      shortAbsent: short.absent,
       ...(short.resetAt === undefined ? {} : { shortResetAt: short.resetAt }),
       shortBurn: short.burn,
     })
@@ -480,7 +489,7 @@ export const forecastText = (forecast: Forecast): string | undefined => {
   const kinds = [...new Set(wasted.map((item) => KIND_LABEL[item.kind]))].join(", ")
   return (
     `Pool ${forecast.pool}: at this rate (it uses ${perHour(forecast.burn, "a week")}), ${wasted.length} of its ${forecast.inHand} resets (${kinds}; each gives back ≈${percent(each)} of a week) ` +
-    `expire unused by ${iso(last)}${first === last ? "" : `, the first ${iso(first)}`}.`
+    `expire unused by ${formatNotificationTime(last)}${first === last ? "" : `, the first ${formatNotificationTime(first)}`}.`
   )
 }
 
@@ -498,18 +507,31 @@ const ifSome = <A>(value: Option.Option<A>, text: (value: A) => string) => Optio
 /** One pool's line of the plan: its weeks' and 5-hour windows' use, when the first resets by itself, and the use per hour. */
 const poolLine = (pool: PlannedPool): string => {
   const count = pool.accounts
-  const resetting = (at: Option.Option<number>, how: string) => ifSome(at, (at) => `, ${byCount(count, "", "the first ")}resetting${how} ${iso(at)}`)
+  const resetting = (at: Option.Option<number>, how: string) => ifSome(at, (at) => `, ${byCount(count, "", "the first ")}resetting${how} ${formatNotificationTime(at)}`)
   const full = ifSome(
     Option.liftPredicate(pool.weeklyBurn, (burn) => burn > 0),
     (burn) => `, reaching ${usedOf(1)} in ~${spanOf((pool.weeklyRoom / burn) * HOUR)} at this rate`,
   )
-  return (
-    `Pool ${pool.id}: ${count} ${byCount(count, "account, its week", "accounts, their weeks")} ${average(pool.weeklyUsed, pool.weeklyRead, "at ")}` +
-    `${resetting(Option.fromUndefinedOr(pool.weekResetAt), " by itself")}; ${byCount(count, "it uses", "together they use")} ${perHour(pool.weeklyBurn, "a week")}${full}. ` +
-    `5-hour ${byCount(count, "window", "windows")} ${average(pool.shortUsed, pool.shortRead, "at ")}${resetting(Option.fromUndefinedOr(pool.shortResetAt), "")}; ` +
-    `${byCount(count, "it uses", "they use")} ${perHour(pool.shortBurn, "a 5-hour window", 1)}.`
+  // A window every account's usage says it has none of is named absent, with no use to speak of; some without one are counted.
+  const none = byCount(count, "absent (its usage reports none)", "absent (their usage reports none)")
+  const week = Match.value(count > 0 && pool.weeklyAbsent === count).pipe(
+    Match.when(true, () => `${none}; `),
+    Match.orElse(() =>
+      `${average(pool.weeklyUsed, pool.weeklyRead, "at ")}${without(pool.weeklyAbsent)}${resetting(Option.fromUndefinedOr(pool.weekResetAt), " by itself")}; ` +
+      `${byCount(count, "it uses", "together they use")} ${perHour(pool.weeklyBurn, "a week")}${full}. `),
   )
+  const short = Match.value(count > 0 && pool.shortAbsent === count).pipe(
+    Match.when(true, () => `${none}.`),
+    Match.orElse(() =>
+      `${average(pool.shortUsed, pool.shortRead, "at ")}${without(pool.shortAbsent)}${resetting(Option.fromUndefinedOr(pool.shortResetAt), "")}; ` +
+      `${byCount(count, "it uses", "they use")} ${perHour(pool.shortBurn, "a 5-hour window", 1)}.`),
+  )
+  return `Pool ${pool.id}: ${count} ${byCount(count, "account, its week", "accounts, their weeks")} ${week}5-hour ${byCount(count, "window", "windows")} ${short}`
 }
+
+/** How many of a pool's accounts have no such window, when some do: ` (1 account has none)`. */
+const without = (absent: number) =>
+  Match.value(absent).pipe(Match.when(0, () => ""), Match.orElse(() => ` (${absent} ${byCount(absent, "account has", "accounts have")} none)`))
 
 /** The queued work's line: the weeks' use it would leave, per account on average, so it reads out of 100% too; with the approved resets' use given back. */
 const needLine = (plan: Plan, need: { readonly units: number; readonly cost: number }): string => {
@@ -523,7 +545,10 @@ const needLine = (plan: Plan, need: { readonly units: number; readonly cost: num
     () => " (past the limit)",
   )
   return Match.value(read).pipe(
-    Match.when(0, () => `${units}; the pool's weeks are unread.`),
+    Match.when(0, () => Match.value(plan.pools.some((pool) => pool.accounts > 0) && plan.pools.every((pool) => pool.weeklyAbsent === pool.accounts)).pipe(
+      Match.when(true, () => `${units}; the pool's accounts report no weekly window, so no week limits it.`),
+      Match.orElse(() => `${units}; the pool's weeks are unread.`),
+    )),
     Match.orElse(
       () =>
         `${units}: it would take the pool's weeks from ${average(weeks, read, "")} to ${usedOf(after)}${past}, ` +
@@ -547,8 +572,8 @@ export const planText = (plan: Plan): string => {
       ? "not reached at the current burn before its window resets by itself (a push spends faster)"
       : reset.at === undefined
         ? "claimed when a start is held for lack of quota (no burn measured)"
-        : `likely claimed ~${iso(reset.at)} at the current burn`
-    const expires = reset.expiresAt === undefined ? "" : `, expires ${iso(reset.expiresAt)}${reset.expiresFirst ? " (before its week resets: spent first)" : ""}`
+        : `likely claimed ~${formatNotificationTime(reset.at)} at the current burn`
+    const expires = reset.expiresAt === undefined ? "" : `, expires ${formatNotificationTime(reset.expiresAt)}${reset.expiresFirst ? " (before its week resets: spent first)" : ""}`
     lines.push(`${index + 1}. ${KIND_LABEL[reset.kind]} on ${reset.label} (${reset.pool}): ${adds}${expires}; ${when}.`)
   })
   if (plan.need !== undefined) lines.push(needLine(plan, plan.need))
@@ -563,7 +588,7 @@ export const planText = (plan: Plan): string => {
 /** A push as the owner reads it: goal, scope, end and the resets approved and spent. */
 export const pushText = (push: Push, used: number, now: number): string => {
   const scope = [`host ${push.scope.host}`, ...(push.scope.sessionID === undefined ? [] : [`session ${push.scope.sessionID}`]), ...(push.scope.run === undefined ? [] : [`run ${push.scope.run}`])].join(", ")
-  const end = push.untilDone ? `until the work is done (at most ${iso(push.endsAt)})` : `until ${iso(push.endsAt)}`
+  const end = push.untilDone ? `until the work is done (at most ${formatNotificationTime(push.endsAt)})` : `until ${formatNotificationTime(push.endsAt)}`
   const kinds = push.allowance.kinds === undefined ? "" : ` (${push.allowance.kinds.map((kind) => KIND_LABEL[kind]).join(", ")})`
   const accounts = push.allowance.accounts === undefined ? "" : ` on ${push.allowance.accounts.join(", ")}`
   const resets = `${push.allowance.asNeeded ? "as needed, up to" : "up to"} ${push.allowance.max} reset${push.allowance.max === 1 ? "" : "s"}${kinds}${accounts}, ${used} spent`

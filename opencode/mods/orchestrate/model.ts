@@ -5,10 +5,9 @@
 //
 // Opus first, Codex second: a new agent the pace holds on its model, that
 // named no model of its own, is offered the newest Codex model for its role
-// (role.ts `codexFallback`), when the host offers one, with the Codex pace's
-// hold on it. The aggregate starts it there when Codex has room. Only a
-// planner or verifier is ever offered it (role.ts `onCodex`): Codex never
-// implements. A new implementor whose model is a Codex one (named, or its
+// when the host offers one, with the Codex pace's hold on it. Only the
+// planning policy offers it. A verifier runs only on Opus and latches
+// when held. A new implementor whose model is a Codex one (named, or its
 // parent's) runs on the newest Opus instead (`offCodex`), and a latch an older
 // build kept for one opens on Opus; with no Opus offered it never starts.
 //
@@ -32,7 +31,7 @@
 // read or write (the Sabbath's, a pace's) is on that fixed clock, so the
 // times a latch hands the wakes are moved onto the system's by how far the
 // fixed clock is behind it at that moment. Without one, they move by nothing.
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Schema, Semaphore } from "effect"
+import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Schema, Semaphore } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as CallLine from "./call-line.ts"
 import type { FirstRecord } from "./call-line.ts"
@@ -49,7 +48,7 @@ import {
   unitsOf,
 } from "./idle.ts"
 import { formatRef, namesModel, PaceHeld, paceOfReply, parseModel, type ModelRef, type PaceHold, type PaceReply } from "./pace.ts"
-import { codexFallback, effort, IMPLEMENTOR, isCodexModel, isRole, onCodex, OPUS, Reason, WORKER } from "./role.ts"
+import { effort, IMPLEMENTOR, isCodexModel, isRole, Reason, roleModels, verificationModel, WORKER } from "./role.ts"
 import { resumesAt, SabbathRest, type Place } from "./sabbath.ts"
 import {
   CallLog,
@@ -75,7 +74,6 @@ import { handBackOf, startOf, type Transition, unitDirsIn } from "./unit-log.ts"
 import { isStep } from "./described.ts"
 import {
   type CodexNeverImplements,
-  continues,
   type Fallback,
   FinishSubagent,
   type Hold,
@@ -85,6 +83,7 @@ import {
   type StillLatched,
   ToolCall,
   UseTool,
+  VerificationRequiresOpus,
   type Command,
   type Event,
   type Rejection,
@@ -143,10 +142,17 @@ const LatchModels = Schema.Struct({ primary: Schema.String, fallback: Schema.Str
 const LatchFirst = Schema.Struct({ model: Schema.String, fellBack: Schema.String })
 
 /** What `startSubagent` may refuse: the Sabbath or a still-latched child for a follow-up, a held start no latch could be kept for, and an implementor with no Opus to run on. */
-export type StartRefusal = SabbathRest | PaceHeld | StillLatched | CodexNeverImplements
+export type StartRefusal = SabbathRest | PaceHeld | StillLatched | CodexNeverImplements | VerificationRequiresOpus
+
+export const verificationRefusal = (rejection: VerificationRequiresOpus): string => {
+  const rule = "Verification runs on Claude Opus only, never Codex."
+  if (rejection.requested) return `${rule} Do not use ${rejection.requested}. Omit model or use model: "anthropic/<claude-opus-model-id>" (optionally #variant).`
+  return `${rule} No Opus model is offered; start it once Opus is available.`
+}
 
 /** A latch at its time, as the wakes hand it back: the parent's call as it was routed, and its child. */
 export interface LatchOpen {
+  readonly setAt: number
   readonly parent: string
   readonly from: string
   readonly messageID: string
@@ -209,6 +215,27 @@ export const layer = (config: Config) =>
       const sessions = yield* Sessions
       const models = yield* Models
       const pool = yield* PoolPace
+      const launchIds = new Map<string, string>()
+      const launchCallKey = (call: ToolCallId) => `${call.sessionID}/${call.callID}`
+      const negotiate = Effect.fn("Orchestrate.negotiateLaunch")(function* (
+        events: ReadonlyArray<Event>, call: ToolCallId, fresh: boolean, base: Option.Option<ModelRef>,
+      ) {
+        const begun = events.find((event) => event._tag === "SubagentStarted")
+        if (!fresh || begun === undefined || begun._tag !== "SubagentStarted") return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const ref = Option.orElse(Option.fromUndefinedOr(parseModel(begun.model)), () => base)
+        if (Option.isNone(ref)) return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const launchID = `${launchCallKey(call)}/${yield* Clock.currentTimeMillis}`
+        const reply = yield* pool.reserveLaunch(ref.value.providerID, ref.value.id, call.sessionID, launchID)
+        if (reply._tag === "Answered" && !reply.pace.ok) return Option.some({
+          model: formatRef(ref.value), reply,
+          hold: Option.some<PaceHold>({ whose: "pool", reason: reply.pace.reason, ...Option.match(Option.fromUndefinedOr(reply.pace.retryAt), { onNone: () => ({}), onSome: (retryAt) => ({ retryAt }) }) }),
+        })
+        if (reply._tag !== "Answered" || !reply.pace.measured) return Option.none<{ readonly model: string; readonly reply: PaceReply; readonly hold: Option.Option<PaceHold> }>()
+        const child = Option.fromUndefinedOr(begun.child)
+        if (Option.isSome(child)) yield* pool.bindLaunch(launchID, child.value)
+        else launchIds.set(launchCallKey(call), launchID)
+        return Option.some({ model: formatRef(ref.value), reply, hold: Option.none<PaceHold>() })
+      })
       const codex = yield* CodexAdmission
       const latches = yield* Latches
       const units = yield* UnitLogs
@@ -257,18 +284,77 @@ export const layer = (config: Config) =>
        * was refused. Every command is decided on its own inputs against the
        * aggregate's initial state (see tool-call.ts).
        */
-      const decide = (command: Command, now: number, tool: string, asked?: Asked, first?: FirstRecord) =>
+      const decide = (command: Command, now: number, tool: string, asked?: Asked, first?: FirstRecord, fast: Option.Option<boolean> = Option.none(), unasked: Option.Option<string> = Option.none()) =>
         ToolCall.decide(ToolCall.initial, command, now).pipe(
+          Effect.flatMap((events) => Effect.forEach(events, (event) => saidFast(command.call.sessionID, event, fast, unasked))),
           // A latch is logged once the wakes keep it, with its child; or as the call's refusal when they cannot.
           Effect.tap((events) =>
             Effect.forEach(events, (event) =>
-              event._tag === "SubagentLatched" && event.child === undefined ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time, asked, first))),
+              event._tag === "SubagentLatched" ? Effect.void : Effect.flatMap(at, (time) => log.append(lineOf(event, time, asked, first))),
             ),
           ),
           Effect.tapError((rejection) => deny(command.call, tool, whyOf(rejection))),
         )
 
       const deny = (call: ToolCallId, tool: string, why: string) => Effect.flatMap(at, (time) => log.append(CallLine.denied(call, tool, why, time)))
+
+      /**
+       * Whether a start asks fast (owner, 2026-11-24: per worker, "if the owner says … do this in fast mode"): its
+       * `fast` field, else a fast mode it names as its model, the same ask in another spelling, which then names that
+       * mode's standard model. The one place that decides it; none when the start says nothing of fast.
+       */
+      const fastAskOf = Effect.fnUntraced(function* (sessionID: string, field: Option.Option<boolean>, named: Option.Option<string>) {
+        const mode = yield* Option.match(named, {
+          onNone: () => Effect.succeed(Option.none<string>()),
+          onSome: (model) => models.standardOf(sessionID, model),
+        })
+        return { asks: Option.getOrUndefined(Option.orElse(mode, () => named)), fast: Option.orElse(field, () => Option.as(mode, true)) }
+      })
+
+      /**
+       * The model a start runs on, as THIS start asked: a start is fast only because it asked (owner, 2026-11-24). Every
+       * start, new, followed up or opened from a latch, goes through it, so no other path decides a mode. A new start's
+       * model, wherever it came from (named, the parent's, the default, an agent's config, a latch's), is first reduced
+       * to its standard model (the catalog's `modelID`); then, asked fast, it runs on that model's fast mode (none
+       * offered: standard). A follow-up keeps its child's model unless it asks: fast, or not fast.
+       */
+      const asAsked = Effect.fnUntraced(function* (sessionID: string, model: Option.Option<string>, fast: Option.Option<boolean>, fresh: boolean) {
+        if (Option.isNone(model) || (!fresh && Option.isNone(fast))) return model
+        const standard = Option.getOrElse(yield* models.standardOf(sessionID, model.value), () => model.value)
+        if (!Option.contains(fast, true)) return Option.some(standard)
+        return Option.some(Option.getOrElse(yield* models.fast(sessionID, standard), () => standard))
+      })
+
+      /** A held start's fallback as it asked (`asAsked`), its pace's hold unchanged. */
+      const fastFallback = (sessionID: string, fallback: Option.Option<Fallback>, fast: Option.Option<boolean>, fresh: boolean) =>
+        Option.match(fallback, {
+          onNone: () => Effect.succeed(fallback),
+          onSome: (each) =>
+            Effect.map(asAsked(sessionID, Option.some(each.model), fast, fresh), (moved) => Option.some<Fallback>({ ...each, model: Option.getOrElse(moved, () => each.model) })),
+        }).pipe(Effect.map(Option.getOrUndefined))
+
+      /**
+       * What a start that did not ask fast says of a fast mode it would have run on: a new one that dropped it (the
+       * parent's, the default's, a config's: none of them is this start's ask), a follow-up whose child runs on one.
+       */
+      const unaskedFast = Effect.fnUntraced(function* (sessionID: string, wouldRun: Option.Option<string>, fast: Option.Option<boolean>, fresh: boolean) {
+        if (Option.isSome(fast) || Option.isNone(wouldRun) || Option.isNone(yield* models.standardOf(sessionID, wouldRun.value))) return Option.none<string>()
+        if (fresh) return Option.some(CallLine.fastNotAsked(wouldRun.value))
+        return Option.some(CallLine.FAST_AS_STARTED)
+      })
+
+      /**
+       * A start or latch says on its line and in its answer what came of fast: asked, whether it runs on a fast mode
+       * (call-line.ts `fastLine`); not asked, `unasked` (`unaskedFast`), when there is something to say.
+       */
+      const saidFast = (sessionID: string, event: Event, fast: Option.Option<boolean>, unasked: Option.Option<string>): Effect.Effect<Event> =>
+        Effect.gen(function* () {
+          if (event._tag !== "SubagentStarted" && event._tag !== "SubagentLatched") return event
+          if (!Option.contains(fast, true)) return Option.match(unasked, { onNone: () => event, onSome: (said) => ({ ...event, fast: said }) })
+          const on = Option.fromUndefinedOr(event.model)
+          const onFast = yield* Option.match(on, { onNone: () => Effect.succeed(false), onSome: (model) => Effect.map(models.standardOf(sessionID, model), Option.isSome) })
+          return { ...event, fast: CallLine.fastLine(onFast, on) }
+        })
 
       /**
        * The model a new agent runs on (`model`, else the agent's), and the
@@ -287,6 +373,20 @@ export const layer = (config: Config) =>
         return { ref, hold, asked }
       })
 
+      /**
+       * A follow-up's pace, on the model its child runs on: the pool's only, as its requests' dispatch would answer
+       * (a Codex child keeps the Codex admission's own boundary, which counts starts). None when nothing paces it.
+       */
+      const followUpOf = Effect.fnUntraced(function* (sessionID: string, agent: string, model?: string) {
+        const ref = yield* Option.match(Option.fromUndefinedOr(parseModel(model)), {
+          onNone: () => models.base(sessionID, agent).pipe(Effect.map(Option.fromUndefinedOr)),
+          onSome: (named) => Effect.succeed(Option.some(named)),
+        })
+        const pooled = Option.filter(ref, (each) => !Option.exists(Option.fromUndefinedOr(config.codex), (codex) => codex.providers.includes(each.providerID)))
+        if (Option.isNone(pooled)) return Option.none<Effect.Success<ReturnType<typeof paceOf>>>()
+        return Option.some(yield* paceOf(sessionID, agent, formatRef(pooled.value)))
+      })
+
       /** The hold on a model, if any, with each pace's reply as asked: the pool's, the Codex admission's. */
       const holdOf = Effect.fnUntraced(function* (ref: ModelRef, agent: string, sessionID: string) {
         const whose = config.codex?.providers.includes(ref.providerID) ? "codex" : "pool"
@@ -297,8 +397,9 @@ export const layer = (config: Config) =>
         const pace = codexReply === undefined ? pooled : paceOfReply(codexReply)
         const replies = { ...(poolReply === undefined ? {} : { pool: poolReply }), ...(codexReply === undefined ? {} : { codex: codexReply }) }
         if (pace === undefined || pace.ok) return { hold: undefined, replies }
-        // An agent that never runs on Codex is not held by the spend-evenly target alone: only by a pool with no quota left.
-        if (!onCodex(agent) && pace.soft === true) return { hold: undefined, replies }
+        // Every role is held by a measured hold, the spend-evenly target's too: the pool's own request boundary would hold
+        // its requests anyway (pool `place`). One that never runs on Codex latches for its own model and opens when the
+        // pace does, by the weekly line, a natural reset or a reset the pool claimed.
         const hold: PaceHold = { whose, reason: pace.reason, ...(pace.retryAt === undefined ? {} : { retryAt: pace.retryAt }) }
         return { hold, replies }
       })
@@ -315,12 +416,12 @@ export const layer = (config: Config) =>
        * when no Codex provider is set, the first model is Codex's own, or the
        * host offers no such model.
        */
-      const fallbackOf = Effect.fnUntraced(function* (sessionID: string, ref: ModelRef, agent: string, description: string | undefined) {
+      const fallbackOf = Effect.fnUntraced(function* (sessionID: string, ref: ModelRef, agent: string) {
         const providers = config.codex?.providers
-        // Only a planner or verifier falls back to Codex; any other held start latches for its own model.
-        if (!onCodex(agent)) return undefined
+        const policy = roleModels(agent)
+        if (policy.kind !== "planning") return undefined
         if (providers === undefined || providers.includes(ref.providerID)) return undefined
-        const { family, variant } = codexFallback(agent)
+        const { family, variant } = policy.fallback
         const model = yield* models.newest(sessionID, providers, family, variant)
         const at = parseModel(model)
         if (model === undefined || at === undefined) return undefined
@@ -341,15 +442,36 @@ export const layer = (config: Config) =>
         named: Option.Option<string>,
       ): Effect.fn.Return<OffCodex> {
         const kept: OffCodex = { model: named, refused: Option.none() }
-        if (start.followUp || start.agent !== IMPLEMENTOR) return kept
+        const policy = roleModels(start.agent)
+        if (start.followUp || policy.kind !== "implementation") return kept
         const base = Option.map(Option.fromNullishOr(yield* models.base(sessionID, IMPLEMENTOR)), formatRef)
         const codex = Option.filter(Option.orElse(named, () => base), (model) => isCodexModel(model, codexProviders))
         if (Option.isNone(codex)) return kept
         const level = Option.getOrElse(Option.fromNullishOr(effort(IMPLEMENTOR)), () => "")
-        return Option.match(Option.fromNullishOr(yield* models.newest(sessionID, OPUS.providers, OPUS.family, level)), {
+        return Option.match(Option.fromNullishOr(yield* models.newest(sessionID, policy.offCodex.providers, policy.offCodex.family, level)), {
           onSome: (opus): OffCodex => ({ model: Option.some(opus), refused: Option.none() }),
           onNone: (): OffCodex => ({ model: codex, refused: codex }),
         })
+      })
+
+      /** All verifier routes pin an allowed model before asking the pace or handing a call to the host. */
+      const verifierModelOf = Effect.fnUntraced(function* (
+        parent: string,
+        policy: Extract<ReturnType<typeof roleModels>, { kind: "verification" }>,
+        previous: Option.Option<string>,
+        requested: Option.Option<string>,
+      ) {
+        const allowed = (model: string) => verificationModel(model, codexProviders)
+        if (Option.isSome(requested)) {
+          if (allowed(requested.value)) return requested.value
+          return yield* new VerificationRequiresOpus({ requested: requested.value })
+        }
+        if (Option.isSome(previous) && allowed(previous.value)) return previous.value
+        const { providers, family } = policy.primary
+        const level = Option.getOrElse(Option.fromUndefinedOr(effort("verifier")), () => "")
+        const newest = yield* models.newest(parent, providers, family, level)
+        if (newest && allowed(newest)) return newest
+        return yield* new VerificationRequiresOpus({})
       })
 
       /**
@@ -420,13 +542,21 @@ export const layer = (config: Config) =>
         // Over the Sabbath a follow-up is refused whatever it asks: nothing is gathered for it.
         if (resting && child !== undefined) return yield* decide(StartSubagent.make(base), now, SUBAGENT).pipe(Effect.as(Option.none()))
         // A follow-up naming no agent keeps its child's: the guard must not switch a verifier to the worker.
-        const childAgent = child !== undefined && continues(base) ? yield* sessions.agentOf(child) : undefined
+        let childAgent: string | undefined
+        if (child) childAgent = yield* sessions.agentOf(child)
         const childLatched = child === undefined ? undefined : yield* sessions.latchOf(child)
         const routed = routeOf({ ...base, ...(childAgent ? { childAgent } : {}) })
-        const asks = typeof fields.model === "string" && fields.model !== "" ? fields.model : undefined
+        const policy = roleModels(routed.agent)
+        // Fast asked by its field or by naming a fast mode: from here the start names that mode's standard model.
+        const fastAsk = yield* fastAskOf(
+          call.sessionID,
+          Option.liftPredicate(fields.fast, Predicate.isBoolean),
+          Option.fromUndefinedOr(typeof fields.model === "string" && fields.model !== "" ? fields.model : undefined),
+        )
+        const asks = fastAsk.asks
         // A new role start naming the role's own model (any variant or none) runs as if it named none: the
         // orchestrator meant the role, and only an unnamed start gets the role's effort, the fallback and the latch.
-        const bound = asks !== undefined && child === undefined && isRole(routed.agent) ? yield* models.base(call.sessionID, routed.agent) : undefined
+        const bound = policy.kind !== "verification" && asks !== undefined && child === undefined && isRole(routed.agent) ? yield* models.base(call.sessionID, routed.agent) : undefined
         // An implementor naming a Codex model runs on its role's model instead, a follow-up on the one it has: Codex never
         // implements, whether the Codex fallback is on or off (no-codex-impl r1 M1).
         const codexNamed = asks !== undefined && routed.agent === IMPLEMENTOR && isCodexModel(asks, codexProviders)
@@ -446,6 +576,13 @@ export const layer = (config: Config) =>
         })
         // A new role subagent runs at the role's effort, as a variant of the model it would run on; a planner on its first model, at it.
         let model = onFirst?.model ?? (dropped === undefined ? asks : undefined)
+        if (policy.kind === "verification") {
+          let prior = Option.none<string>()
+          if (child) prior = Option.map(yield* models.current(child), formatRef)
+          model = yield* verifierModelOf(call.sessionID, policy, prior, Option.fromUndefinedOr(asks)).pipe(
+            Effect.tapError((rejection) => deny(call, SUBAGENT, verificationRefusal(rejection))),
+          )
+        }
         // A new planner naming another model with no variant runs it at the planner's effort, when that model offers it.
         const bareNamed = Option.all({
           named: Option.filter(Option.fromNullishOr(model), (named) => !named.includes("#")),
@@ -477,30 +614,70 @@ export const layer = (config: Config) =>
               ? { ref: parseModel(model) ?? (yield* models.base(call.sessionID, routed.agent)), hold: undefined, asked: {} }
               : (onFirst?.paced ?? (yield* paceOf(call.sessionID, routed.agent, model)))
             : undefined
-        const hold = paced?.hold
+        // A follow-up asks its model's pace too: held, it is refused with when it opens (its requests would be held at
+        // the pool's dispatch anyway). It counts no new start, and takes no fallback: its child keeps its model.
+        // Only the pool's pace: a Codex follow-up keeps the Codex admission's own boundary.
+        const following = Option.filter(Option.fromUndefinedOr(child), () => !resting)
+        const followed = yield* Option.match(following, {
+          onNone: () => Effect.succeed(Option.none<Effect.Success<ReturnType<typeof paceOf>>>()),
+          onSome: () => followUpOf(call.sessionID, routed.agent, model),
+        })
+        const hold = Option.getOrUndefined(Option.orElse(Option.fromUndefinedOr(paced?.hold), () => Option.flatMap(followed, (each) => Option.fromUndefinedOr(each.hold))))
         // The model it would run on, named; with a fallback the command names it so the log says what was held.
         const primary = model ?? (paced?.ref === undefined ? undefined : `${paced.ref.providerID}/${paced.ref.id}`)
         // A model the call named is kept as asked: only a role's own model falls back.
         const named = asks !== undefined && dropped === undefined
         const offered =
-          hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent, base.description) : undefined
+          hold !== undefined && !named && paced?.ref !== undefined ? yield* fallbackOf(call.sessionID, paced.ref, routed.agent) : undefined
         const fallback = offered?.fallback
-        // What each pace asked said, for the line: a follow-up asked none.
-        const asked: Asked = { ...paced?.asked, ...offered?.asked }
-        const command = StartSubagent.make({
+        // What each pace asked said, for the line.
+        let asked: Asked = { ...paced?.asked, ...Option.match(followed, { onNone: () => ({}), onSome: (each) => each.asked }), ...offered?.asked }
+        // The model it runs on, as this start asked (`asAsked`): its pace and latch were decided on the model it
+        // resolved, as any start's. One that names no model takes the one it would run on: a new start's (a new
+        // worker's inherited one, so the host never falls back to a fast parent's), or a follow-up's child's.
+        const unnamed = Option.orElse(Option.fromUndefinedOr(inherited), () => Option.fromUndefinedOr(primary))
+        const wouldRun = yield* Option.match(Option.orElse(Option.fromUndefinedOr(model), () => Option.filter(unnamed, () => fresh)), {
+          onSome: (each) => Effect.succeed(Option.some(each)),
+          onNone: () =>
+            Option.match(Option.fromUndefinedOr(child), {
+              onNone: () => Effect.succeed(Option.none<string>()),
+              onSome: (each) => Effect.map(models.current(each), Option.map(formatRef)),
+            }),
+        })
+        const resolved = yield* asAsked(call.sessionID, wouldRun, fastAsk.fast, fresh)
+        // A start keeps the model it named or its route chose; it names one it did not only where this start's ask moved it.
+        const runs = Option.getOrUndefined(Option.orElse(Option.filter(resolved, (each) => Option.isSome(Option.fromUndefinedOr(model)) || Option.isSome(fastAsk.fast) || !Option.contains(wouldRun, each)), () => Option.fromUndefinedOr(model)))
+        const unasked = yield* unaskedFast(call.sessionID, wouldRun, fastAsk.fast, fresh)
+        const runsFirst = Option.getOrUndefined(yield* asAsked(call.sessionID, Option.fromUndefinedOr(primary), fastAsk.fast, fresh))
+        const runsFallback = yield* fastFallback(call.sessionID, Option.fromUndefinedOr(fallback), fastAsk.fast, fresh)
+        let command = StartSubagent.make({
           ...base,
           ...(childAgent ? { childAgent } : {}),
-          ...(fallback !== undefined && primary !== undefined ? { model: primary, fallback } : model === undefined ? {} : { model }),
+          ...(runsFallback !== undefined && runsFirst !== undefined ? { model: runsFirst, fallback: runsFallback } : runs === undefined ? {} : { model: runs }),
           ...(dropped === undefined ? {} : { dropped }),
           ...(inherited === undefined ? {} : { inherited }),
           ...(hold === undefined ? {} : { hold }),
           ...(childLatched === undefined ? {} : { childLatched }),
           ...Option.match(off.refused, { onNone: () => ({}), onSome: (codex) => ({ codex }) }),
         })
+        const agreement = yield* negotiate(yield* ToolCall.decide(ToolCall.initial, command, now), call, fresh, Option.fromUndefinedOr(paced?.ref))
+        if (Option.isSome(agreement)) {
+          asked = { ...asked, pace: agreement.value.reply }
+          if (Option.isSome(agreement.value.hold)) {
+            const { fallback: _fallback, ...selected } = command
+            command = StartSubagent.make({ ...selected, model: agreement.value.model, hold: agreement.value.hold.value })
+          }
+        }
         const first = onFirst?.first
-        const events = yield* decide(command, now, SUBAGENT, asked, first)
+        const events = yield* decide(command, now, SUBAGENT, asked, first, fastAsk.fast, unasked)
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
+          // The host checks ownership before prompting an existing child; check it here too before marking a latch.
+          if (child && (yield* sessions.parentOf(child)) !== call.sessionID) {
+            const rejection = refusalOf(latched, config.place)
+            yield* deny(call, SUBAGENT, whyOf(rejection))
+            return yield* rejection
+          }
           // The child is made on the model it latched on, and opened on whichever model admits it first.
           const on = latched.model ?? primary
           const ahead = yield* skew
@@ -510,6 +687,7 @@ export const layer = (config: Config) =>
               from,
               messageID,
               callID: call.callID,
+              ...Option.match(Option.fromUndefinedOr(child), { onNone: () => ({}), onSome: (child) => ({ child }) }),
               agent: latched.agent,
               description: latched.description ?? latched.agent,
               prompt: typeof fields.prompt === "string" ? fields.prompt : "",
@@ -520,8 +698,11 @@ export const layer = (config: Config) =>
               recheckAt: latched.recheckAt + ahead,
               context: {
                 reason: latched.reason,
+                ...Option.match(Option.fromUndefinedOr(child), { onNone: () => ({}), onSome: () => ({ continuation: true }) }),
                 ...(fallback === undefined || primary === undefined ? {} : { models: { primary, fallback: fallback.model } }),
                 ...(first === undefined ? {} : { first }),
+                // A latch keeps its fast ask: its open runs on the fast mode of the model it opens on.
+                ...Option.match(fastAsk.fast, { onNone: () => ({}), onSome: (fast) => ({ fast }) }),
               },
             })
             .pipe(
@@ -540,8 +721,6 @@ export const layer = (config: Config) =>
         }
         const started = events.find((event) => event._tag === "SubagentStarted")
         // A new agent counts on the pace of the provider it started on, here and on the owner's other hosts, until its spend shows.
-        const ran = started === undefined || paced === undefined ? undefined : (parseModel(started.model) ?? paced.ref)
-        if (ran !== undefined) yield* pool.started(ran.providerID)
         if (started !== undefined) yield* moveOnStart(started, fields.prompt)
         return Option.fromNullishOr(started)
       })
@@ -549,13 +728,17 @@ export const layer = (config: Config) =>
       const openLatch = Effect.fn("Orchestrate.openLatch")(function* (latch: LatchOpen): Effect.fn.Return<OpenAnswer> {
         const call = { sessionID: latch.parent, callID: latch.callID }
         // An open asked twice (the wakes lost the first answer) starts nothing twice.
-        const ran = yield* sessions.startedOf(latch.child)
+        const since = Option.getOrUndefined(Option.liftPredicate(latch.setAt, () => latch.context.continuation === true))
+        const ran = yield* sessions.startedOf(latch.child, since)
         const now = yield* sabbathNow
         const resting = resumesAt(now, config.place) !== undefined
         // Its first model before its fallback; a latch with no fallback is decided on the model it was made on.
-        // Only a planner or verifier keeps a Codex fallback: one an older build kept for another agent is dropped,
+        // Only a planner keeps a Codex fallback: one an older build kept for another agent is dropped,
         // and that latch is decided on the model it was made on (codex-no-implement).
-        const kept = Option.getOrUndefined(Option.filter(Schema.decodeUnknownOption(LatchModels)(latch.context.models), () => onCodex(latch.agent)))
+        const policy = roleModels(latch.agent)
+        let agent = latch.agent
+        if (policy.kind === "verification") agent = "verifier"
+        const kept = Option.getOrUndefined(Option.filter(Schema.decodeUnknownOption(LatchModels)(latch.context.models), () => policy.kind === "planning"))
         // A planner latched on its first model (over the Sabbath) takes the planner's chain at its open, as a new
         // start would: the first model, else its own at its effort, then Codex.
         const firstRef = parseModel(config.planner?.model)
@@ -570,37 +753,56 @@ export const layer = (config: Config) =>
         const off = yield* offCodex(latch.parent, { agent: latch.agent, followUp: ran }, Option.fromNullishOr(tried?.model ?? own ?? kept?.primary ?? latch.model))
         if (Option.isSome(off.refused))
           return { outcome: "failed", message: `orchestrate: Codex never implements, and no Opus is offered for this implementor (it latched on ${off.refused.value}). Start it again once an Opus model is offered.` }
-        const primary = Option.getOrUndefined(off.model)
+        let primary = Option.getOrUndefined(off.model)
+        if (policy.kind === "verification" && !ran) {
+          const chosen = yield* Effect.result(verifierModelOf(latch.parent, policy, off.model, Option.none()))
+          if (chosen._tag === "Failure") return { outcome: "failed", message: verificationRefusal(chosen.failure) }
+          primary = chosen.success
+        }
         const paced = resting || ran ? undefined : (tried?.paced ?? (yield* paceOf(latch.parent, latch.agent, primary)))
         // The chain's Codex fallback, offered as a new start's is; a latch made with one keeps its own.
         const offered =
-          tried !== undefined && paced?.hold !== undefined && paced.ref !== undefined ? yield* fallbackOf(latch.parent, paced.ref, latch.agent, latch.description) : undefined
+          tried !== undefined && paced?.hold !== undefined && paced.ref !== undefined ? yield* fallbackOf(latch.parent, paced.ref, latch.agent) : undefined
         const fallbackAt = parseModel(kept?.fallback)
         const fallbackPaced = paced?.hold !== undefined && fallbackAt !== undefined ? yield* holdOf(fallbackAt, latch.agent, latch.parent) : undefined
         const fallbackHold = fallbackPaced?.hold
-        const asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
+        let asked: Asked = { ...paced?.asked, ...(fallbackPaced === undefined ? {} : fallbackAsked(fallbackPaced.replies)), ...offered?.asked }
         const fallback: Fallback | undefined =
           offered?.fallback ??
           (kept === undefined || paced?.hold === undefined ? undefined : { model: kept.fallback, ...(fallbackHold === undefined ? {} : { hold: fallbackHold }) })
         const reason = Schema.decodeUnknownOption(Reason)(latch.context.reason)
         const first = tried?.first ?? Option.getOrUndefined(Schema.decodeUnknownOption(LatchFirst)(latch.context.first))
-        const events = yield* ToolCall.decide(
-          ToolCall.initial,
-          OpenLatch.make({
+        // A latch opens on the model that admits it as its start asked (`asAsked`): fast only when that start asked fast.
+        const fast = Option.liftPredicate(latch.context.fast, Predicate.isBoolean)
+        const fresh = latch.context.continuation !== true
+        const opensOn = Option.getOrUndefined(yield* asAsked(latch.parent, Option.fromUndefinedOr(primary), fast, fresh))
+        const opensFallback = yield* fastFallback(latch.parent, Option.fromUndefinedOr(fallback), fast, fresh)
+        const unasked = yield* unaskedFast(latch.parent, Option.fromUndefinedOr(primary), fast, fresh)
+        let command = OpenLatch.make({
             call,
             from: latch.from,
-            agent: latch.agent,
+            agent,
             reason: reason._tag === "Some" ? reason.value : "kept",
-            ...(primary === undefined ? {} : { model: primary }),
+            ...(opensOn === undefined ? {} : { model: opensOn }),
             description: latch.description,
             child: latch.child,
             place: config.place,
             ...(paced?.hold === undefined ? {} : { hold: paced.hold }),
-            ...(fallback === undefined ? {} : { fallback }),
+            ...(opensFallback === undefined ? {} : { fallback: opensFallback }),
             started: ran,
-          }),
-          now,
-        ).pipe(Effect.orDie) // An open is never refused: it latches again or starts.
+          })
+        const agreement = yield* negotiate(yield* ToolCall.decide(ToolCall.initial, command, now).pipe(Effect.orDie), call, fresh, Option.fromUndefinedOr(paced?.ref))
+        if (Option.isSome(agreement)) {
+          asked = { ...asked, pace: agreement.value.reply }
+          if (Option.isSome(agreement.value.hold)) {
+            const { fallback: _fallback, ...selected } = command
+            command = OpenLatch.make({ ...selected, model: agreement.value.model, hold: agreement.value.hold.value })
+          }
+        }
+        const events = yield* ToolCall.decide(ToolCall.initial, command, now).pipe(
+          Effect.orDie, // The model has already been checked; the open latches again or starts.
+          Effect.flatMap((decided) => Effect.forEach(decided, (event) => saidFast(latch.parent, event, fast, unasked))),
+        )
         const latched = events.find((event) => event._tag === "SubagentLatched")
         if (latched !== undefined) {
           yield* log.append(CallLine.latched(latched, yield* at, asked, first))
@@ -611,8 +813,6 @@ export const layer = (config: Config) =>
         if (started === undefined) return { outcome: "opened" }
         yield* log.append(CallLine.started(started, yield* at, asked, first))
         const on = started.model ?? latch.model
-        const opened = parseModel(on) ?? paced?.ref
-        if (opened !== undefined) yield* pool.started(opened.providerID)
         const failed = yield* latches
           .start({
             parent: latch.parent,
@@ -620,7 +820,7 @@ export const layer = (config: Config) =>
             messageID: latch.messageID,
             callID: latch.callID,
             child: latch.child,
-            agent: latch.agent,
+            agent,
             description: latch.description,
             prompt: latch.prompt,
             ...(on === undefined ? {} : { model: on }),
@@ -646,7 +846,7 @@ export const layer = (config: Config) =>
         const resting = resumesAt(now, config.place) !== undefined
         const inSubagent = resting ? Boolean(yield* sessions.parentOf(call.sessionID)) : false
         // Another tool is never paced.
-        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
+        yield* decide(UseTool.make({ call, tool, inSubagent, place: config.place }), now, tool).pipe(Effect.catchTags({ StillLatched: Effect.die, CodexNeverImplements: Effect.die, PaceHeld: Effect.die, VerificationRequiresOpus: Effect.die }))
       })
 
       const finish = Effect.fn("Orchestrate.finishSubagent")(function* (input: {
@@ -656,7 +856,11 @@ export const layer = (config: Config) =>
       }) {
         // A finish is only recorded, never refused.
         const now = yield* sabbathNow
-        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.catchTags({ SabbathRest: Effect.die, StillLatched: Effect.die, CodexNeverImplements: Effect.die }))
+        const key = launchCallKey(input.call)
+        const launchID = Option.fromUndefinedOr(launchIds.get(key))
+        if (Option.isSome(launchID) && input.child !== undefined) yield* pool.bindLaunch(launchID.value, input.child)
+        launchIds.delete(key)
+        yield* decide(FinishSubagent.make(input), now, SUBAGENT).pipe(Effect.orDie)
       })
 
       return { startSubagent, openLatch, useTool, finishSubagent: finish, handBack }
@@ -949,6 +1153,7 @@ const whyOf = (rejection: Rejection | PaceHeld): string =>
       SabbathRest: (rest) => rest.why,
       PaceHeld: (held) => held.reason,
       CodexNeverImplements: (codex) => `Codex never implements: the ${codex.agent} would run on ${codex.model} and no Opus is offered`,
+      VerificationRequiresOpus: verificationRefusal,
       StillLatched: (still) => `subagent ${still.child} is latched until ${new Date(still.opensAt).toISOString()}`,
     }),
   )

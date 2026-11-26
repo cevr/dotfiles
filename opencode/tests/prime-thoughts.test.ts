@@ -4,12 +4,13 @@
 // that step's tree, a thought-only step is a one-node tree, and a finished
 // worker's notice is a tool-call group beside an ordinary one.
 // It needs OPENCODE_DEV, the fork with the plugin hook points.
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
 import { timedRows, withoutTurnTime } from "./turn-time.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-thoughts.test.ts: skipped. Set OPENCODE_DEV to the prime-look fork to run it.")
@@ -68,7 +69,7 @@ function slice(saved: Saved, first: string, count: number) {
 
 describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-thoughts-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-thoughts-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-thoughts.ts"], {
       cwd: root,
@@ -83,10 +84,10 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
     const load = (name: string): Saved => {
-      const lines = readFileSync(join(out, `${name}.txt`), "utf8")
+      const lines = readScratchFileSync(join(out, `${name}.txt`), "utf8")
         .split("\n")
         .map((line) => line.trimEnd())
-      return { lines, rows: withoutTurnTime(lines), frame: JSON.parse(readFileSync(join(out, `${name}.json`), "utf8")) }
+      return { lines, rows: withoutTurnTime(lines), frame: JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8")) }
     }
     frames.streaming = load("thoughts-streaming")
     frames.details = load("thoughts")
@@ -95,7 +96,7 @@ describe.skipIf(!fork)("thoughts and worker notices as tool-call trees (OPENCODE
     frames.opened = load("thoughts-opened")
     frames.closed = load("thoughts-closed")
     frames.reopenedAll = load("thoughts-reopened-all")
-  }, 300_000))
+  }), hangGuard("acceptance"))
 
   test("a streaming thought is a one-node group headed Thinking, its glyph in the accent", kept.test(() => {
     // The glyph blinks ● / ○; the frame may catch either.

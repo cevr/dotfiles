@@ -57,6 +57,7 @@ import type { Files, Sessions, Snapshots, Workers } from "@dotfiles/opencode-ker
 import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
 import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
+import * as OpenCodeChildLifecycle from "@dotfiles/opencode-kernel/opencode/child-lifecycle"
 import * as OpenCodeSubagents from "@dotfiles/opencode-kernel/opencode/subagents"
 import * as OpenCodeToolbox from "@dotfiles/opencode-kernel/opencode/toolbox"
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
@@ -119,7 +120,10 @@ export const contentOf = (reply: Reply): ReadonlyArray<Tool.Content> => [
 ]
 
 /** The plugin on `externals`: OpenCode and Bun in production, memory and test Layers in the seam test. */
-export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Contracts>) =>
+export const make = (
+  externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Contracts>,
+  subscribe: OpenCodeChildLifecycle.Subscribe = OpenCodeChildLifecycle.eventsOf,
+) =>
   Plugin.define({
     id: "dotfiles-opencode.kernel",
     effect: Effect.fn("Kernel.plugin")(function* (ctx) {
@@ -134,10 +138,11 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       const kernel = Context.get(services, Model.Kernel)
       // Each session's runtime description, frozen at its first request (../../mods/kernel/frozen.ts).
       const catalogs = yield* Frozen.make((tools) => description(options, tools), description(options, []), ctx.storage)
+      const lifecycle = yield* OpenCodeChildLifecycle.make(ctx, subscribe)
 
       yield* ctx.tool.transform((editor) => {
         // The session's own subagents, listed, read and stopped: a cell's subagent handle calls it.
-        editor.add(OpenCodeSubagents.tool(ctx))
+        editor.add(OpenCodeSubagents.tool(ctx, lifecycle))
         editor.add({
           name: "kernel",
           description: description(options),

@@ -1,3 +1,5 @@
+// @reads all
+// @reads-reason computed read at mods/rex/process/simulators.ts: return yield* png(new Uint8Array(yield* Effect.tryPromise({ try: () => readFile(file), catch: (
 // The simctl adapter's own parts: the booted simulators read from
 // `simctl list devices booted -j`, the ssh call (batch mode, a plain host,
 // never an option), the Mac-side screenshot command, and the pane's words
@@ -7,6 +9,7 @@ import { Effect, Option } from "effect"
 import { effectTest } from "../../../sim-tui/effect-test.ts"
 import { Simulators } from "../service.ts"
 import * as ProcessSimulators from "./simulators.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 
 const LISTED = `{
   "devices" : {
@@ -29,7 +32,7 @@ describe("the simctl adapter", () => {
       )
       expect(ProcessSimulators.bootedIn("Permission denied")).toEqual(Option.none())
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -43,7 +46,7 @@ describe("the simctl adapter", () => {
       expect(command).toStartWith("f=$(mktemp -t rex-show-sim) && ")
       expect(command).toContain(`cat "$f"; rm -f "$f"; exit $s`)
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 
   effectTest(
@@ -55,6 +58,6 @@ describe("the simctl adapter", () => {
       const bad = yield* at("linux", "-oProxyCommand=true")
       expect((yield* Effect.flip(bad.booted)).message).toBe("REX_SHOW_SIM_HOST is not an ssh host: -oProxyCommand=true")
     }),
-    5_000,
+    hangGuard("local-fixture"),
   )
 })

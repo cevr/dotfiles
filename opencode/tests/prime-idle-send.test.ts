@@ -8,12 +8,13 @@
 // to the transcript without a frame that shows it in both.
 // Needs OPENCODE_DEV, a fork whose layout rule sees the row's message and
 // which publishes the `session.composer.queued` slot (`prime-look`).
+import { readScratchFileSync } from "./read-path.ts"
 import { beforeAll, describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { hintRow } from "./composer.ts"
 import { owned } from "./owned.ts"
 import { keptScratch } from "./scratch.ts"
+import { hangGuard } from "./hang-guard.ts"
 
 const fork = process.env.OPENCODE_DEV
 if (!fork) console.warn("tests/prime-idle-send.test.ts: skipped. Set OPENCODE_DEV to the fork to run it.")
@@ -48,7 +49,7 @@ const rows = (frame: string) => frame.split("\n").filter((line) => ROW.test(line
 
 describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in the Prime look (OPENCODE_DEV)", () => {
   const kept = keptScratch(Boolean(fork), "prime-idle-send-")
-  beforeAll(...kept.setup(async () => {
+  beforeAll(kept.test(async () => {
     const out = kept.dir("prime-idle-send-")
     const run = owned(["bunx", "opencode-drive", "run", "scenarios/prime-idle-send.ts"], {
       cwd: root,
@@ -62,8 +63,8 @@ describe.skipIf(!fork)("a prompt sent to an idle session is no queued prompt, in
       new Response(run.stderr).text(),
     ])
     if (code !== 0) throw new Error(`the scenario exited ${code}:\n${(stdout + stderr).slice(-4000)}`)
-    for (const name of names) frames[name] = JSON.parse(readFileSync(join(out, `${name}.json`), "utf8"))
-  }, 300_000))
+    for (const name of names) frames[name] = JSON.parse(readScratchFileSync(join(out, `${name}.json`), "utf8"))
+  }), hangGuard("acceptance"))
 
   test.each([
     ["first", FIRST],
