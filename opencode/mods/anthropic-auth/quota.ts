@@ -16,8 +16,8 @@ import { Array as Arr, Match, Option, Schema } from "effect"
 import { isRecord } from "./json.ts"
 import type { RateLimitCategory } from "./rate-limit.ts"
 
-export { quotaProtocol } from "@dotfiles/opencode-pool/quota"
-export type { ClaimAnswer, ClaimOutcome, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit } from "@dotfiles/opencode-pool/quota"
+export { quotaProtocol, retryAfterMs, unread, unreadAnswer, unreadOfStatus } from "@dotfiles/opencode-pool/quota"
+export type { ClaimAnswer, ClaimOutcome, QuotaReading, QuotaRefusal, QuotaResets, QuotaStatus, QuotaWindow, ResetCredit, UnreadAnswer, UnreadCause, UsageRead } from "@dotfiles/opencode-pool/quota"
 
 /** The most credentials whose newest reading is kept. */
 export const MAX_QUOTA_CREDENTIALS = 256

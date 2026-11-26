@@ -1,13 +1,63 @@
 // A provider's quota as its auth plugin reads it: each window's use and
 // reset, and why the provider refuses an account, if it does. The pool reads
 // it over the quota protocol (opencode/quota.ts) and checks it here field by field.
-import { Array as Arr, Option, Schema } from "effect"
+import { Array as Arr, Match, Option, Result, Schema } from "effect"
 
 /** Bound for the provider's usage read, including the body and optional reset credits. */
 export const USAGE_TIMEOUT_MS = 10_000
 /** The part of that read a first send waits for. Its result can still arrive in the background. */
 export const FIRST_USAGE_WAIT_MS = 3_000
 export const FIRST_USAGE_RETRY_MS = 60_000
+
+/**
+ * Why a usage read came back with no reading, by class: the endpoint rate
+ * limited it (429), failed (5xx), refused it otherwise (another 4xx, an
+ * untrusted endpoint), the login was signed out or had no good token (401),
+ * the read did not complete (a network error, a timeout), or its answer did
+ * not read (`decode`); `unknown` when the integration did not say.
+ */
+export const UnreadCause = Schema.Literals(["rate-limited", "server-error", "refused", "signed-out", "network", "decode", "unknown"])
+export type UnreadCause = typeof UnreadCause.Type
+
+/**
+ * Why a usage read has no reading, as the quota RPC's `usage` answers it
+ * beside `reading: null` (`unread`): its cause, and the wait the endpoint
+ * asked for (its `retry-after`), when it named one.
+ */
+export const UnreadAnswer = Schema.Struct({ cause: UnreadCause, retryAfterMs: Schema.optionalKey(Schema.Finite) })
+export type UnreadAnswer = typeof UnreadAnswer.Type
+
+/** A usage read that came back with no reading (`UnreadAnswer`). */
+export const UsageUnread = Schema.TaggedStruct("UsageUnread", UnreadAnswer.fields)
+export type UsageUnread = typeof UsageUnread.Type
+
+/** A usage read: the reading, or why there is none. */
+export type UsageRead = Result.Result<QuotaReading, UsageUnread>
+
+/** Why a read of `cause` has no reading, with the wait its endpoint asked for, if any. */
+export const unreadAnswer = (cause: UnreadCause, wait: Option.Option<number> = Option.none()): UnreadAnswer =>
+  Option.match(wait, { onNone: () => ({ cause }), onSome: (retryAfterMs) => ({ cause, retryAfterMs }) })
+
+/** An unread read of `cause`, with the wait its endpoint asked for, if any. */
+export const unread = (cause: UnreadCause, wait: Option.Option<number> = Option.none()): UsageRead =>
+  Result.fail(UsageUnread.make(unreadAnswer(cause, wait)))
+
+/** A `retry-after` header (seconds, or an HTTP date) as a wait in ms from `now`; none when it names none. */
+export const retryAfterMs = (header: Option.Option<string>, now: number): Option.Option<number> =>
+  Option.flatMap(Option.filter(Option.map(header, (text) => text.trim()), (text) => text !== ""), (text) =>
+    Option.orElse(
+      Option.map(Option.filter(Option.some(Number(text)), (seconds) => Number.isFinite(seconds) && seconds >= 0), (seconds) => seconds * 1000),
+      () => Option.map(Option.filter(Option.some(Date.parse(text)), Number.isFinite), (at) => Math.max(at - now, 0)),
+    ),
+  )
+
+/** The class of a usage endpoint's answer that is neither a reading nor a 401. */
+export const unreadOfStatus = (status: number): UnreadCause =>
+  Match.value(status).pipe(
+    Match.when(429, (): UnreadCause => "rate-limited"),
+    Match.when((code) => code >= 500, (): UnreadCause => "server-error"),
+    Match.orElse((): UnreadCause => "refused"),
+  )
 
 /** A login last failed to return a usage reading; `nextTryAt` bounds when the next read is tried. */
 export const UsageReadFailure = Schema.Struct({ failedAt: Schema.Finite, nextTryAt: Schema.Finite })
@@ -432,6 +482,11 @@ export function quotaProtocol(integrationID: string) {
     required: ["credentialID"],
   } as const
   const answer = { type: "object", properties: { reading: {} } } as const
+  // A usage read with no reading says why beside `reading: null` (`UnreadAnswer`).
+  const usage = {
+    type: "object",
+    properties: { reading: {}, unread: { type: "object", properties: { cause: { type: "string" }, retryAfterMs: { type: "number" } }, required: ["cause"] } },
+  } as const
   const claim = {
     type: "object",
     properties: { credentialID: { type: "string" }, creditID: { type: "string" }, requestID: { type: "string" } },
@@ -441,7 +496,7 @@ export function quotaProtocol(integrationID: string) {
     id: `credential-quota.${integrationID}`,
     methods: {
       reading: { input: credential, output: answer },
-      usage: { input: credential, output: answer },
+      usage: { input: credential, output: usage },
       claim: { input: claim, output: { type: "object", properties: { outcome: { type: "string" }, message: { type: "string" } } } },
     },
     events: {

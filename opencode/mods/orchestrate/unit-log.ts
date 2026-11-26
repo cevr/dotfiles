@@ -59,7 +59,7 @@ export const startOf = (agent: string, description: string | undefined): Transit
 }
 
 /** The hand-back line: `<role> <unit> r<N>: <verdict> <path>`, maybe in backticks or bold. */
-const HAND_BACK = /^[`*\s]*(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\d+):\s*(ready|blocked|accepted|changes|stuck)\b[`*]*\s*([^\s`*]*)/i
+const HAND_BACK = /^[`*\s]*(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\d+):\s*(ready|blocked|pass|issues|accepted|changes|stuck)\b[`*]*\s*([^\s`*]*)/i
 
 /** A role's hand-back: the unit (a verifier's batch) and verdict it names, its move, and the file it names (as written, maybe relative). */
 export interface HandBack {

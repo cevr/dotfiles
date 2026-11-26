@@ -264,6 +264,23 @@ describe("resetRows", () => {
     )
   })
 
+  test("a try not sent says so, why and when it goes again, never that a claim did not go through; one sent and failed still does", () => {
+    const reset = { pool: "anthropic", provider: "claude", credentialID: "cred-a", label: "Max 1", creditID: "g", requestID: "pool-x", why: "expiring", stage: "failed", attempts: 0 }
+    const answer = {
+      resets: [
+        { ...reset, key: "k2", at: now, message: "not sent: the account could not be read just before the claim (rate limited)", unsent: { why: "unread", cause: "rate-limited", tries: 1 }, retryAt: now + 120_000 },
+        { ...reset, key: "k1", at: now - 60_000, attempts: 1, outcome: "failed", message: "timeout" },
+      ],
+      claims: [],
+    }
+    expect(Option.map(Schema.decodeUnknownOption(PaneResets)(answer), resetRows)).toEqual(
+      Option.some([
+        { asking: false, text: "Claude · Max 1 · not sent: the account could not be read just before the claim (rate limited); tries again 2026-11-04 15:02Z (expiring unused) · 2026-11-04 15:00Z" },
+        { asking: false, text: "Claude · Max 1 · claim did not go through, will retry (expiring unused) · 2026-11-04 14:59Z" },
+      ]),
+    )
+  })
+
   test("a pool that has worked no reset draws none", () => {
     expect(resetRows({ resets: [], claims: [] })).toEqual([])
   })

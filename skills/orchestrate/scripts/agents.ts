@@ -1,42 +1,28 @@
 #!/usr/bin/env bun
 // Writes one agent per orchestrate role for each host, from protocol.md and
 // loop/safety.md: Claude Code's agents/<role>.md and Codex's
-// codex/agents/<role>.toml. A worker starts with its rules in its
-// prompt instead of reading them, and on Claude Code each role is its own agent
-// kind with its own tuned compaction window. protocol.md stays the one copy.
+// codex/agents/<role>.toml. A worker starts with its rules in its prompt
+// instead of reading them. protocol.md stays the one copy.
 // A file it wrote for a role it no longer has is removed, and --check fails on it.
 // Usage: bun agents.ts [--check]
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BLOCK, block, document, PROTOCOL_BLOCK } from './round-policy.ts';
-const BLOCK_PATTERN = new RegExp(BLOCK);
 
 const here = import.meta.dir;
 const PROTOCOL = join(here, '..', 'protocol.md');
 const SAFETY = join(here, '..', '..', 'loop', 'safety.md');
 export const AGENTS = join(here, '..', '..', '..', 'agents');
 export const CODEX_AGENTS = join(here, '..', '..', '..', 'codex', 'agents');
-const END_OF_STEP = join(here, '..', 'end-of-step.md');
 const TOOLS = 'Bash, Read, Edit, Write, Skill, Monitor, TaskStop, WebFetch, WebSearch';
 
 export const ROLES = Object.freeze({
-  planner: 'Writes one orchestrate unit\'s spec and its red acceptance check. Changes no product code.',
-  implementor: 'The sole writer of one orchestrate unit: builds its spec on the unit\'s branch and hands back a round request.',
-  verifier: 'Verifies what an orchestrate batch file names (a range of main, a landed batch, or one deep unit before its merge) on a clean checkout of its head: tries to break each unit\'s change against its spec, and writes findings per unit.',
+  planner: 'Writes one orchestrate unit\'s spec and its red acceptance law. Changes no product code.',
+  implementor: 'The sole writer of one orchestrate unit: builds it until its acceptance law is green and hands back a stat block.',
+  verifier: 'Runs what an orchestrate unit or batch built, on a clean checkout of its head, and files only failures a run proves.',
 } as const);
-
-/** What a role's first message names: a unit's spec, or for the verifier its batch's file. */
-const SUBJECT: Record<Role, string> = {
-  planner: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
-  implementor: "one orchestrate unit. Your first message names the unit's `spec.md` and the round.",
-  verifier: "one orchestrate verify. Your first message names its batch file, which names each unit's `spec.md` and round.",
-};
 export type Role = keyof typeof ROLES;
 
-// The Codex efforts in SKILL.md's role table. The model is the spawn's (the newest
-// sol; Codex never implements), so no file pins one; an effort in the file wins over a Codex spawn's,
-// and a Claude Code orchestrator's mcp__codex__start effort wins over the file's.
-// A verifier runs at medium, always.
+/** The Codex efforts in SKILL.md's role table; no file pins a model. A verifier runs at medium, always. */
 const CODEX_EFFORT: Record<Role, string> = { planner: 'high', implementor: 'max', verifier: 'medium' };
 
 /** protocol.md's `## ` sections by heading. */
@@ -45,15 +31,13 @@ const sections = (text: string) =>
 
 const WRITTEN = 'Written by skills/orchestrate/scripts/agents.ts from protocol.md and loop/safety.md. Edit those, then run it.';
 
-/** A role's instructions: the safety rules, the shared protocol sections and its own section. */
+/** A role's instructions: the safety rules, the shared section and its own section. */
 export function instructions(role: Role, protocol: string, safety: string): string {
   const s = sections(protocol);
   const rules = safety.slice(safety.indexOf('SAFETY (mandatory')).trim();
   const own = s[role.charAt(0).toUpperCase() + role.slice(1)];
-  if (!s['Ending a step'] || !s.Rounds || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
-  if (!BLOCK_PATTERN.test(s['Ending a step'])) throw new Error("protocol.md's Ending a step lost its round-policy block");
-  const ending = s['Ending a step'].replace(BLOCK_PATTERN, () => block(role));
-  return `You are the ${role} of ${SUBJECT[role]} This prompt carries the worker protocol and the safety rules, so do not read \`protocol.md\` or \`safety.md\`.
+  if (!s['Every role'] || !own || !rules.startsWith('SAFETY')) throw new Error(`protocol.md or safety.md lost a section ${role} needs`);
+  return `You are the ${role} of one orchestrate unit; your first message is its brief. This prompt carries the worker protocol and the safety rules.
 
 # Safety
 
@@ -61,9 +45,7 @@ ${rules}
 
 # Worker protocol
 
-${ending}
-
-${s.Rounds}
+${s['Every role']}
 
 ${own}
 `;
@@ -81,7 +63,7 @@ ${instructions(role, protocol, safety)}`;
 /** The Codex custom agent file for a role. */
 export function codexFile(role: Role, protocol: string, safety: string): string {
   const text = role === 'verifier'
-    ? `Verification runs on Claude Opus only, never Codex. Do not perform the review here: tell the parent to start a Claude Opus verifier and wait if Claude is held.\n\n${instructions(role, protocol, safety)}`
+    ? `Verification runs on Claude Opus only, never Codex: tell the parent to start a Claude Opus verifier.\n\n${instructions(role, protocol, safety)}`
     : instructions(role, protocol, safety);
   if (text.includes("'''")) throw new Error("the instructions hold ''', which ends a TOML literal string");
   return `# ${WRITTEN}
@@ -93,29 +75,14 @@ ${text}'''
 `;
 }
 
-/** `text` with its end-of-step block rewritten as `block`; throws when it has none. */
-const withBlock = (path: string, text: string, block: string) => {
-  if (!BLOCK_PATTERN.test(text)) throw new Error(`${path} lost its round-policy block`);
-  return text.replace(BLOCK_PATTERN, () => block);
-};
-
-/**
- * Every file this script writes: protocol.md's and the lean worker's end-of-step blocks, end-of-step.md, and
- * each role's agent files from the protocol as rewritten.
- */
+/** Every file this script writes: each role's agent files. */
 const built = () => {
-  const protocol = withBlock(PROTOCOL, readFileSync(PROTOCOL, 'utf8'), PROTOCOL_BLOCK);
+  const protocol = readFileSync(PROTOCOL, 'utf8');
   const safety = readFileSync(SAFETY, 'utf8');
-  const worker = join(AGENTS, 'worker.md');
-  return [
-    [PROTOCOL, protocol] as const,
-    [END_OF_STEP, document()] as const,
-    [worker, withBlock(worker, readFileSync(worker, 'utf8'), block('worker'))] as const,
-    ...(Object.keys(ROLES) as Role[]).flatMap((role) => [
-      [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
-      [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
-    ]),
-  ];
+  return (Object.keys(ROLES) as Role[]).flatMap((role) => [
+    [join(AGENTS, `${role}.md`), agentFile(role, protocol, safety)] as const,
+    [join(CODEX_AGENTS, `${role}.toml`), codexFile(role, protocol, safety)] as const,
+  ]);
 };
 
 /** Agent files this script wrote for a role it no longer has, or under a role's former name (`orchestrate-<role>`). */

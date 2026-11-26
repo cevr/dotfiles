@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Stream } from "effect"
+import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Result, Schedule, Schema, Stream } from "effect"
 import { GateDecision } from "@dotfiles/opencode-pool/antigravity/gate"
 import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
 import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
@@ -30,7 +30,7 @@ import * as PeersTest from "@dotfiles/opencode-pool/memory/peers"
 import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import * as ResetsTest from "@dotfiles/opencode-pool/memory/resets"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
-import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
+import type { QuotaReading, UsageRead } from "@dotfiles/opencode-pool/quota"
 import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
@@ -160,7 +160,9 @@ const quietUsage = Layer.effect(
     return Quota.of({
       ...base,
       usage: (pool, credentialID) =>
-        base.usage(pool, credentialID).pipe(Effect.flatMap((reading) => Option.match(Option.fromUndefinedOr(reading), { onNone: () => Effect.map(Clock.currentTimeMillis, quiet), onSome: Effect.succeed }))),
+        base.usage(pool, credentialID).pipe(
+          Effect.flatMap((read) => Result.match(read, { onSuccess: () => Effect.succeed(read), onFailure: () => Effect.map(Clock.currentTimeMillis, (now): UsageRead => Result.succeed(quiet(now))) })),
+        ),
     })
   }),
 )

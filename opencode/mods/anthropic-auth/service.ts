@@ -5,7 +5,7 @@
 import { Context, type Effect, Schema } from "effect"
 import type { ConnectionInfo } from "./rate-limit.ts"
 import type { CallbackParams, OAuthCredential, TokenGrant } from "./oauth.ts"
-import type { ClaimAnswer, QuotaReading } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading, UnreadAnswer } from "./quota.ts"
 import type { SourcedCredential } from "./credential-source.ts"
 
 // ── failures ──
@@ -119,8 +119,8 @@ export class CredentialSources extends Context.Service<
 export type UsageAnswer =
   | { readonly status: "ok"; readonly body: unknown }
   | { readonly status: "unauthorized" }
-  /** Not read: an untrusted endpoint, or an answer that is not a success. */
-  | { readonly status: "unread" }
+  /** Not read: an untrusted endpoint, or an answer that is not a success, by its class (`UnreadCause`) and the `retry-after` it named. */
+  | ({ readonly status: "unread" } & UnreadAnswer)
 
 /** Anthropic's usage endpoints: what a login has left of its windows, and the claim of one of its reset grants. */
 export class UsageEndpoint extends Context.Service<

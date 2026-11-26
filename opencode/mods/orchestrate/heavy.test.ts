@@ -3,7 +3,7 @@
 // prompts for the footer's one-footer rule.
 import { describe, expect, test } from "bun:test"
 import { Option } from "effect"
-import { FOOTER_MARK, footerFor, footerOf, type HeavyRole, shareOf, withFooter } from "./heavy.ts"
+import { CLOSING, FOOTER_MARK, footerFor, footerOf, type HeavyRole, shareOf, withFooter } from "./heavy.ts"
 
 const CORES = Array.from({ length: 256 }, (_, index) => index + 1)
 const WORKING = Array.from({ length: 65 }, (_, index) => index)
@@ -73,23 +73,23 @@ describe("footerOf", () => {
         expect(footer).toContain(`\`bun test --parallel=${share}\``)
         expect(footer).toContain(`Go's \`-p ${share}\` with \`GOMAXPROCS=${share}\``)
         expect(footer).toContain(`Cargo's \`-j ${share}\``)
-        expect(footer).toContain("never the full gate, the full e2e or an affected-acceptance run, because the batch runs them once")
+        expect(footer).toContain("never the full gate, the full e2e or an affected-acceptance run")
         expect(count(footer, FOOTER_MARK)).toBe(1)
+        expect(footer.split("\n").at(-1)).toBe(CLOSING)
       }
   })
 
-  test("an implementor's says in one sentence that it runs its spec's round gate only", () => {
-    const sentence = footerOf("implementor", 6, 12).split("\n").find((line) => line.includes("round gate"))
+  test("an implementor's says in one sentence that it runs only the checks its change affects", () => {
+    const sentence = footerOf("implementor", 6, 12).split("\n").find((line) => line.includes("affects"))
     expect(sentence).toBe(
-      "You run your spec's round gate only, never the full gate, the full e2e or an affected-acceptance run, because the batch runs them once on its merged head.",
+      "You run only the checks your change affects, never the full gate, the full e2e or an affected-acceptance run: the land runs them.",
     )
   })
 
-  test("a verifier's says its share is the batch lane's, and that it reads the batch's gate and accept logs and reruns neither", () => {
+  test("a verifier's says its share is the batch lane's, and that it runs only what proves or disproves the change", () => {
     const footer = footerOf("verifier", 6, 12)
     expect(footer).toContain("6 of this host's 12 cores, the batch lane's share")
-    expect(footer).toContain("you read the batch's gate and accept logs and rerun neither")
-    expect(footer).not.toContain("round gate")
+    expect(footer).toContain("You run only what proves or disproves the change")
   })
 
   test("footerFor: a heavy role's footer at its share of the host; none for any other agent", () => {

@@ -17,7 +17,7 @@
 // known still count as spent, and the line is the week's own. This host is then
 // never looser than the shared line, and the status says which line is in force.
 import { Array as Arr, Match, Option, Order, Record as Rec, Schema } from "effect"
-import { Claim, pacePlans, type ResetProvider, type Spend } from "./resets.ts"
+import { Claim, pacePlans, type ResetProvider, type ResetsState, type Spend } from "./resets.ts"
 import type { AccountStatus, PlanRecords } from "./status.ts"
 import { lineOf, ordinaryPlan, type PacePlan } from "./weekly-pace.ts"
 
@@ -128,9 +128,11 @@ export const fleetPlans = (
   peers: ReadonlyArray<PeerPlans>,
   now: number,
   planCredits = false,
+  /** This host's reset records (resets.ts `pacePlans`); host-local, so a line that came to read them would no longer be the fleet's. */
+  resets: ResetsState["resets"] = {},
 ): FleetLine => {
   const { records, source } = fleetRecords(own, peers)
-  const plans = pacePlans(provider, accounts, records.claims, now, records.spends, planCredits)
+  const plans = pacePlans(provider, accounts, records.claims, now, records.spends, planCredits, resets)
   return {
     plans: Match.value(source).pipe(Match.tagsExhaustive({ shared: () => plans, withheld: () => withhold(plans, accounts, now) })),
     source,
