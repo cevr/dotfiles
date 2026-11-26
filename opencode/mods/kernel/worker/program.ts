@@ -15,6 +15,9 @@
  * - `attach(...paths)` records image files for the host to show the model
  *   after the cell: only their paths, resolved against the session's working
  *   directory, travel in the result frame (`attached`); the host reads them.
+ * - `kernel.bindings(filter?)` lists the bindings the worker holds, each
+ *   with how a restart keeps it and its stored bytes (`BindingInfo`): what
+ *   a new kernel's notice points to when a restore lost something.
  * - A binding is any global a cell added or changed. The host takes a
  *   snapshot of them after each cell and restores it into a fresh worker:
  *   top-level functions, classes and imports as their source
@@ -26,7 +29,7 @@
  *
  * @module
  */
-import { Effect, Option, Semaphore } from "effect"
+import { Effect, Option, Schema, Semaphore } from "effect"
 import { createRequire } from "node:module"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { resolve } from "node:path"
@@ -223,7 +226,7 @@ const makeTools = (listing: () => ReadonlyArray<Listing>, callHost: (id: string,
 }
 
 /**
- * Installs a host global (`tools`, `attach`) once per realm as an accessor
+ * Installs a host global (`tools`, `attach`, `kernel`) once per realm as an accessor
  * that is not configurable and whose setter throws, so no cell can rebind,
  * delete or shadow it.
  */
@@ -238,6 +241,27 @@ const installHostGlobal = (name: string, value: unknown, what: string) => {
     configurable: false,
   })
 }
+
+// ── kernel ──────────────────────────────────────────────────────────────────
+
+/**
+ * One binding as `kernel.bindings()` lists it: how a restart keeps it (an
+ * import or a declaration as its source, any other value as a clone) and
+ * what the store holds of it. `unkept` names why a restart loses a value.
+ */
+export interface BindingInfo {
+  readonly name: string
+  readonly kind: "import" | "declaration" | "value"
+  readonly bytes: number
+  readonly unkept?: string
+}
+
+// Taken at load: a cell may replace the globals before it lists its bindings.
+const jsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+const byteLength = Buffer.byteLength
+
+/** The bytes a stored value takes in the store. */
+const storedBytes = (stored: Json): number => byteLength(jsonText(stored))
 
 // ── attach ──────────────────────────────────────────────────────────────────
 
@@ -354,6 +378,14 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
     ),
     "the kernel's image attachment",
   )
+  // Defined below, once the baseline and the declarations exist; installed here so the baseline holds it.
+  let bindingsOf: (filter: string) => ReadonlyArray<BindingInfo> = () => []
+  installHostGlobal(
+    "kernel",
+    /** `kernel.bindings(filter?)`: every binding, or those whose name contains `filter`, by name. */
+    Object.freeze({ bindings: (filter = "") => bindingsOf(filter) }),
+    "the kernel's own namespace",
+  )
   if (typeof Reflect.get(globalThis, "require") !== "function")
     Object.defineProperty(globalThis, "require", {
       value: createRequire(`${workingDirectory}/`),
@@ -416,6 +448,34 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
     Object.defineProperty(globalThis, "console", { value, writable: true, configurable: true })
 
   const declarations = makeDeclarations()
+  /**
+   * Each binding as the snapshot would store it: a carried name by its source
+   * (a global an import added has none of its own), any other as a clone, or
+   * the reason a restart loses it. Runs no code a cell wrote.
+   */
+  bindingsOf = (filter: string) => {
+    const globals = namespace()
+    const sources = declarations.snapshot(globals)
+    const sourced = new BindingMap<string, BindingInfo>()
+    for (const binding of sources.bindings) {
+      const source = decodeDeclaration(binding.value)
+      if (binding.name !== "" && source) sourced.set(binding.name, { name: binding.name, kind: source.kind, bytes: storedBytes(binding.value) })
+    }
+    const listed: BindingInfo[] = []
+    for (const [name, value] of globals) {
+      // The cell's own console is the worker's, set while the cell runs: no binding.
+      if (!name.includes(filter) || (name === "console" && value === cellConsole)) continue
+      if (sources.carried.has(name)) {
+        listed.push(sourced.get(name) || { name, kind: "import", bytes: 0 })
+        continue
+      }
+      const encoded = encodeSnapshot(new BindingMap([[name, value]]), sources.classes)
+      for (const stored of encoded.bindings) listed.push({ name, kind: "value", bytes: storedBytes(stored.value) })
+      for (const lost of encoded.omitted) listed.push({ name, kind: "value", bytes: 0, unkept: lost.reason })
+    }
+    // By code unit, as the snapshot names them.
+    return listed.sort((left, right) => Number(left.name > right.name) - Number(left.name < right.name))
+  }
   const compile = (code: string) => transpiler.transformSync(code)
   /** A global's value, read from its descriptor. */
   const valueOf = (name: string): unknown => {

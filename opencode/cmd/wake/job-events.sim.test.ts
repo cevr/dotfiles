@@ -258,7 +258,11 @@ seeded("an archived owner gets its job's end once, in its own session, across th
     yield* world.restart
     for (const id of [kept, gone]) yield* doorbell(world, id)
     yield* world.advance(2 * RECOVER_MS)
-    // The archived session holds the one letter; the deleted one's record says nobody, and nothing is owed.
+    // The fork refuses a plugin's letter to an archived session and admits nothing: none is there yet.
+    expect(lettersIn(world, archived, kept)).toEqual([])
+    // Back from the archive, the session gets the one letter; the deleted one's record says nobody, and nothing is owed.
+    yield* world.unarchive(archived)
+    yield* world.advance(2 * RECOVER_MS)
     expect(lettersIn(world, archived, kept).map(kindIn)).toEqual(["succeeded"])
     const final = (id: string) => finalOf(runner, id)
     expect([final(kept), final(gone)]).toEqual(["delivered to letter", "delivered to nobody"])

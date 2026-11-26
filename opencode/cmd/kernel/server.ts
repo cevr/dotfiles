@@ -33,6 +33,11 @@
  *   through the `subagents` tool the plugin adds beside the kernel: a session
  *   lists, reads and stops its own subagents, and only its own
  *   (mods/kernel/subagents.ts). A stop is the host's own session interrupt.
+ * - Each call's time, from its arrival to its answer, is kept per session for
+ *   the last hour (../../mods/kernel/cell-time.ts), in the plugin's storage so
+ *   a restart keeps it. The `time({ sessionIDs })` RPC (`KERNEL_TIME`) answers
+ *   each session's share of the hour in cells; a root over 15% is told so, at
+ *   most once an hour, in a message that waits for its next turn.
  * - Without `codeOnly` it is a direct tool beside the others (`codemode:
  *   false`), whose calls skip the hooks; with `denyExecute`, every agent the
  *   plugins define denies code mode's `execute`.
@@ -46,14 +51,16 @@
  * - `direct`: with `codeOnly`, the tool ids offered beside the kernel; default the memory tools (`DIRECT`).
  */
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Context, Effect, Layer, Schema, Scope, Stream } from "effect"
+import { Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { description, KernelInput } from "@dotfiles/opencode-kernel/description"
 import * as Frozen from "@dotfiles/opencode-kernel/frozen"
 import type { Reply } from "@dotfiles/opencode-kernel/attachment"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as Model from "@dotfiles/opencode-kernel/model"
 import * as Operations from "@dotfiles/opencode-kernel/operations"
-import type { Files, Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
+import type { CellTimes, Files, Notices, Sessions, Snapshots, Workers } from "@dotfiles/opencode-kernel/service"
+import { KERNEL_TIME, TimeInput, type TimeAnswer } from "@dotfiles/opencode-kernel/cell-time"
+import * as OpenCodeCellTimes from "@dotfiles/opencode-kernel/opencode/cell-times"
 import { KernelSessionId } from "@dotfiles/opencode-kernel/session"
 import * as OpenCodeSessions from "@dotfiles/opencode-kernel/opencode/sessions"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
@@ -95,7 +102,7 @@ export const Options = Schema.Struct({
 export type Options = typeof Options.Type
 
 /** The contracts the model runs on, built once; a call's tools come with the call. */
-export type Contracts = Workers | Snapshots | Sessions | Files
+export type Contracts = Workers | Snapshots | Sessions | Files | CellTimes | Notices
 
 /** One implementation of each contract, as OpenCode and Bun provide them. */
 export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Contracts> =>
@@ -104,6 +111,8 @@ export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Contrac
     OpenCodeSnapshots.layer(ctx.storage),
     OpenCodeSessions.fromContext(ctx),
     FileStoreFiles.layer,
+    OpenCodeCellTimes.layer(ctx.storage),
+    OpenCodeCellTimes.noticesFromContext(ctx),
   )
 
 /** A reply as the tool's content: its text, then each image as a file part with a data URI, named by its path. */
@@ -154,7 +163,13 @@ export const make = (
             // before the call settles: the host refuses progress after that.
             const journal = Operations.journal((metadata) => context.progress(metadata))
             return kernel
-              .run({ session: KernelSessionId.make(context.sessionID), agent: context.agent, code: input.code, reset: input.reset === true })
+              .run({
+                session: KernelSessionId.make(context.sessionID),
+                agent: context.agent,
+                code: input.code,
+                reset: input.reset === true,
+                description: Option.fromUndefinedOr(input.description),
+              })
               .pipe(
                 Effect.provide(OpenCodeToolbox.forCall(ctx, context, journal)),
                 Effect.ensuring(journal.close),
@@ -214,6 +229,18 @@ export const make = (
         yield* ctx.session.hook("compaction", freeze)
         yield* ctx.session.hook("generate", freeze)
       }
+
+      // Each session's last hour in cells, for the status pane and orchestrate status. An input that is not one
+      // answers no sessions; an RPC that cannot be registered stops the plugin.
+      yield* ctx.rpc
+        .register(KERNEL_TIME, {
+          time: (input) =>
+            Schema.decodeUnknownEffect(TimeInput)(input).pipe(
+              Effect.flatMap(({ sessionIDs }) => kernel.time(sessionIDs)),
+              Effect.orElseSucceed((): TimeAnswer => ({ times: [] })),
+            ),
+        })
+        .pipe(Effect.orDie)
 
       // A deleted session's worker stops and its stored bindings go, and its frozen description.
       yield* Effect.forkScoped(

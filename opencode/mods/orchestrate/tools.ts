@@ -630,6 +630,28 @@ export const statusAnswer = (runs: ReadonlyArray<Run>, lanes: ReadonlyArray<Lane
   ].join("\n")
 }
 
+// ── Time in cells ──
+
+/** A root's hour in cells as the kernel's time RPC reads it (the kernel's `SessionTime`, as far as status needs it). */
+export interface CellTimeReading {
+  /** `cells 4% of the last hour · 31 cells · 2 cut`. */
+  readonly line: string
+  /** Over the kernel's bound. */
+  readonly unwell: boolean
+}
+
+const cellTimeLine = (time: CellTimeReading, boundPercent: number) => {
+  if (!time.unwell) return `orchestrate: ${time.line}.`
+  return `orchestrate: ${time.line} · warning: over the ${boundPercent}% bound; a long wait belongs in the background, where it wakes you.`
+}
+
+/**
+ * The status lines of each root's last hour in cells (law W6): `orchestrate: cells 4% of the last hour · 31 cells ·
+ * 2 cut`, with a warning over the bound. None when the kernel did not answer.
+ */
+export const cellTimeLines = (times: Option.Option<ReadonlyArray<CellTimeReading>>, boundPercent: number): ReadonlyArray<string> =>
+  Option.match(times, { onNone: () => [], onSome: (read) => read.map((time) => cellTimeLine(time, boundPercent)) })
+
 // ── Main since the last verify ──
 
 /** A verify the run dirs record: its batch file, the head it names, and when its findings' verdict was written. */

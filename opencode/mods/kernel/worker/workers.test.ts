@@ -15,6 +15,7 @@ import * as Operations from "../operations.ts"
 import { Workers, type Cell } from "../service.ts"
 import { KernelSessionId } from "../session.ts"
 import { CallFailed } from "../tools.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import * as ProcessWorkers from "./workers.ts"
 
 /** A scratch directory of the scope's own, removed when the scope closes. */
@@ -149,6 +150,35 @@ describe("a worker", () => {
         expect((yield* workers.evaluate(first, cell("[n, m.get('a'), f(1)]"))).display).toBe("[ 5, 1n, 6 ]")
       }),
     ))
+
+  test("lists its bindings through kernel.bindings(), restored ones included, and keeps kernel out of them", () =>
+    scenario(
+      Effect.gen(function* () {
+        const workers = yield* started()
+        yield* workers.evaluate(first, cell('const big = "x".repeat(1000); const f = () => big; const live = new WeakMap()'))
+        const snapshot = yield* workers.snapshot(first)
+        yield* workers.start(first, yield* Work)
+        expect(yield* workers.restore(first, snapshot.bindings)).toEqual(["f", "big"])
+        yield* workers.evaluate(first, cell("const fresh = 1"))
+        const sized = "JSON.stringify(kernel.bindings().map(({ name, kind, bytes }) => [name, kind, bytes > 1000 ? 'over 1000' : bytes > 0 ? 'some' : 'none']))"
+        expect(parsed((yield* workers.evaluate(first, cell(sized))).display)).toEqual([
+          ["big", "value", "over 1000"],
+          ["f", "declaration", "some"],
+          ["fresh", "value", "some"],
+        ])
+        const unkept = yield* workers.evaluate(first, cell("const gone = new WeakMap(); JSON.stringify([kernel.bindings('gon'), kernel.bindings('f').map((item) => item.name)])"))
+        expect(parsed(unkept.display)).toEqual([[{ name: "gone", kind: "value", bytes: 0, unkept: "live" }], ["f", "fresh"]])
+        // No cell can rebind it, and it is never a binding of its own.
+        expect((yield* workers.evaluate(first, cell("kernel = 1"))).display).toBe("TypeError: kernel is the kernel's own namespace; choose another name")
+        expect((yield* workers.evaluate(first, cell("var kernel = 2"))).ok).toBe(false)
+        expect((yield* workers.evaluate(first, cell("typeof kernel.bindings"))).display).toBe("function")
+        const names = (yield* workers.snapshot(first)).bindings.map((binding) => binding.name)
+        expect(names).not.toContain("kernel")
+        expect(names).toContain("fresh")
+      }),
+    ),
+    hangGuard("process-fixture"),
+  )
 
   test("makes a shell result a live handle whose methods call the shell tool with its id, and rebuilds one by id", () =>
     scenario(

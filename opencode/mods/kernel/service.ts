@@ -4,6 +4,7 @@
 // `laws.ts` states what every implementation owes.
 import { Context, type Effect, Schema } from "effect"
 import type { FileTooLarge, FileUnreadable } from "./attachment.ts"
+import type { CellTimeState } from "./cell-time.ts"
 import type { Evaluation, Json, Listing, Snapshot, SnapshotBinding } from "./frame.ts"
 import type { KernelSessionId } from "./session.ts"
 import type { CallFailed, Rule } from "./tools.ts"
@@ -109,6 +110,31 @@ export class Toolbox extends Context.Service<
     readonly reach: (rules: ReadonlyArray<Rule>) => Effect.Effect<CellTools>
   }
 >()("dotfiles-opencode/kernel/Toolbox") {}
+
+// ── Cell times ──
+
+/**
+ * Each session's view of its cells' times (cell-time.ts), kept across a
+ * restart so the last hour survives it. A store that cannot be read, or holds
+ * something else, holds the empty view.
+ */
+export class CellTimes extends Context.Service<
+  CellTimes,
+  {
+    readonly load: (session: KernelSessionId) => Effect.Effect<CellTimeState>
+    readonly save: (session: KernelSessionId, state: CellTimeState) => Effect.Effect<void>
+    readonly drop: (session: KernelSessionId) => Effect.Effect<void>
+  }
+>()("dotfiles-opencode/kernel/CellTimes") {}
+
+/**
+ * Tells a root session something without waking it: the message waits for its
+ * next turn. A session with a parent is told nothing.
+ */
+export class Notices extends Context.Service<
+  Notices,
+  { readonly tell: (session: KernelSessionId, notice: { readonly text: string; readonly description: string }) => Effect.Effect<void> }
+>()("dotfiles-opencode/kernel/Notices") {}
 
 // ── Files ──
 

@@ -10,13 +10,15 @@ import type { JobRecord, JobSpec, Launched } from "./job.ts"
 import type { Delivery } from "./job-event.ts"
 import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
+import type { Handle } from "./handle.ts"
 import type { Check, Entry, Notice } from "./wake.ts"
 
-/** The host would not take the fire into the session; `gone` when the session no longer exists. */
+/** The host would not take the fire into the session; `gone` when the session no longer exists, `archived` when it is archived (nothing was admitted). */
 export class DeliveryRefused extends Schema.TaggedError<DeliveryRefused>()("DeliveryRefused", {
   sessionID: Schema.String,
   message: Schema.String,
   gone: Schema.Boolean,
+  archived: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** The OS scheduler would not take, drop or list a job; `message` says why. */
@@ -28,6 +30,11 @@ export class BackstopRefused extends Schema.TaggedError<BackstopRefused>()("Back
  * - `read` gives one entry, or undefined when none (or none that reads).
  * - `write` replaces an entry whole; `remove` forgets it, and removing none is no failure.
  * - Notices go by their delivery id the same way.
+ * - The registry's handles (handle.ts) go by their id beside the entries, apart from them: `handles` lists
+ *   every handle that reads (each `version: 1`, with its owner), `writeHandle` replaces one whole,
+ *   `removeHandle` forgets one, and removing none is no failure.
+ * - `nextEpoch` counts an instance of a server in a location: one more than the last one's there (1 for the
+ *   first), kept with the handles, so a reload's instance outranks the one it replaced (registry.ts, H4).
  */
 export class WakeStore extends Context.Service<
   WakeStore,
@@ -40,6 +47,10 @@ export class WakeStore extends Context.Service<
     readonly notices: Effect.Effect<ReadonlyArray<Notice>>
     readonly writeNotice: (notice: Notice) => Effect.Effect<void>
     readonly removeNotice: (delivery: string) => Effect.Effect<void>
+    readonly handles: Effect.Effect<ReadonlyArray<Handle>>
+    readonly writeHandle: (handle: Handle) => Effect.Effect<void>
+    readonly removeHandle: (id: string) => Effect.Effect<void>
+    readonly nextEpoch: (server: string, location: string) => Effect.Effect<number>
   }
 >()("dotfiles-opencode/wake/WakeStore") {}
 

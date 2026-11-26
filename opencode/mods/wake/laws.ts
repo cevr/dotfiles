@@ -2,7 +2,8 @@
 // test suites. Each implementation's test beside it runs the suite over its
 // Layer.
 import { describe, expect, test } from "bun:test"
-import { Effect, type Layer, type Scope } from "effect"
+import { Array as Arr, Effect, type Layer, Order, type Scope } from "effect"
+import { type Handle, Phase } from "./handle.ts"
 import type { Latch, Mark, Opened } from "./latch.ts"
 import type { Letter } from "./message.ts"
 import { Backstop, Courier, Opener, WakeStore } from "./service.ts"
@@ -162,7 +163,50 @@ export const storeLaws = (name: string, make: Effect.Effect<StoreProbe, never, S
           expect(yield* run((store) => store.notices)).toEqual([])
         }),
       ))
+
+    test("keeps the registry's handles by id apart from the entries and notices, every field and phase kept", () =>
+      scenario(
+        Effect.gen(function* () {
+          const run = using(yield* make)
+          expect(yield* run((store) => store.handles)).toEqual([])
+          for (const handle of [openCall, claimedLand]) yield* run((store) => store.writeHandle(handle))
+          yield* run((store) => store.write(alarm))
+          expect(Arr.sort(yield* run((store) => store.handles), Order.mapInput(Order.String, (handle: Handle) => handle.id))).toEqual([openCall, claimedLand])
+          expect(yield* run((store) => store.ids)).toEqual([alarm.id])
+          expect(yield* run((store) => store.notices)).toEqual([])
+          const settled: Handle = { ...openCall, phase: Phase.cases.Settled.make({ disposition: "lost", at: SET + 5 }) }
+          yield* run((store) => store.writeHandle(settled))
+          yield* run((store) => store.removeHandle(claimedLand.id))
+          yield* run((store) => store.removeHandle(claimedLand.id))
+          expect(yield* run((store) => store.handles)).toEqual([settled])
+          expect(yield* run((store) => store.read(alarm.id))).toEqual(alarm)
+        }),
+      ))
+
+    test("counts each server's instances in a location from 1, each pair apart, kept across the store's layers", () =>
+      scenario(
+        Effect.gen(function* () {
+          const run = using(yield* make)
+          expect(yield* run((store) => store.nextEpoch("srv_1", "/work/app"))).toBe(1)
+          expect(yield* run((store) => store.nextEpoch("srv_1", "/work/app"))).toBe(2)
+          expect(yield* run((store) => store.nextEpoch("srv_1", "/work/other"))).toBe(1)
+          expect(yield* run((store) => store.nextEpoch("srv_2", "/work/app"))).toBe(1)
+          expect(yield* run((store) => store.nextEpoch("srv_1", "/work/app"))).toBe(3)
+          expect(yield* run((store) => store.handles)).toEqual([])
+        }),
+      ))
   })
+
+export const openCall: Handle = { version: 1, id: "h000001", session: "ses_a", kind: "call", owner: "srv_1//work/app/1", tool: "webfetch", phase: Phase.cases.Open.make({}) }
+
+export const claimedLand: Handle = {
+  version: 1,
+  id: "h000002",
+  session: "ses_b",
+  kind: "land",
+  owner: "srv_1//work/app/1",
+  phase: Phase.cases.Claimed.make({ disposition: "succeeded", at: 1_700_000_000_005, delivery: "msg_h", mode: "wake", parked: true }),
+}
 
 /** A message a session received: its id, what it carried, and whether it woke the session. */
 export interface Received {

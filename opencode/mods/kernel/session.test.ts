@@ -33,17 +33,17 @@ const cell = (fields: Partial<Omit<CellRan, "_tag" | "session">> = {}) =>
 describe("a call", () => {
   test("starts a worker; with nothing stored it restores nothing and says nothing of it", () =>
     run(
-      Story.when(StartKernel.make({ session, stored: 0, restored: [] })),
-      Story.then(KernelStarted.make({ session })),
+      Story.when(StartKernel.make({ session, stored: 0, restored: [], lost: [] })),
+      Story.then(KernelStarted.make({ session, lost: [] })),
       Story.state(LiveKernel.make({})),
       Story.view(CellAnswer, { notes: [], outcome: { _tag: "Pending" } }),
     ))
 
-  test("starts a worker from the stored bindings, and its answer names those it restored", () =>
+  test("starts a worker from the stored bindings; its answer says nothing when it restored them all", () =>
     run(
-      Story.when(StartKernel.make({ session, stored: 2, restored: ["f", "kept"] })),
-      Story.then(KernelStarted.make({ session, restored: ["f", "kept"] })),
-      Story.view(CellAnswer, { notes: ["[new kernel; restored f, kept]"], outcome: { _tag: "Pending" } }),
+      Story.when(StartKernel.make({ session, stored: 2, restored: ["f", "kept"], lost: [] })),
+      Story.then(KernelStarted.make({ session, restored: ["f", "kept"], lost: [] })),
+      Story.view(CellAnswer, { notes: [], outcome: { _tag: "Pending" } }),
     ))
 
   test("runs its cell; the bindings the store left out are named by the cell that bound them only", () =>

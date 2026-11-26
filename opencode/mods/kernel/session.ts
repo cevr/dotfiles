@@ -32,18 +32,27 @@ export declare namespace ResetKernel {
 
 // ── StartKernel: a call found no live worker; a new one took back the stored bindings ──
 
-/** `stored` bindings were in the store; the worker defined `restored` from them. */
+/**
+ * `stored` bindings were in the store; the worker defined `restored` from
+ * them, and `lost` names the stored ones it could not.
+ */
 export const StartKernel = Schema.TaggedStruct("StartKernel", {
   session: KernelSessionId,
   stored: Schema.Number,
   restored: Schema.Array(Schema.String),
+  lost: Schema.Array(Schema.String),
 })
 export interface StartKernel extends Schema.Schema.Type<typeof StartKernel> {}
 
-/** `restored` is set when the store had bindings: then the call's answer names them. */
+/**
+ * `restored` is set when the store had bindings; `lost` names those that did
+ * not come back: the last worker held them and this one does not. Only a loss
+ * is news to the call's answer (answer.ts).
+ */
 export const KernelStarted = Schema.TaggedStruct("KernelStarted", {
   session: KernelSessionId,
   restored: Schema.optional(Schema.Array(Schema.String)),
+  lost: Schema.optional(Schema.Array(Schema.String)),
 })
 export interface KernelStarted extends Schema.Schema.Type<typeof KernelStarted> {}
 
@@ -141,7 +150,11 @@ export const KernelSession: Decider<KernelSessionState, Command, Event> = {
         return Effect.succeed([KernelReset.make({ session: command.session })])
       case "StartKernel":
         return Effect.succeed([
-          KernelStarted.make({ session: command.session, ...(command.stored > 0 ? { restored: command.restored } : {}) }),
+          KernelStarted.make({
+            session: command.session,
+            ...(command.stored > 0 ? { restored: command.restored } : {}),
+            lost: command.lost,
+          }),
         ])
       case "RecordCell":
         // A binding left out is named once, by the cell that bound it; later cells do not repeat it.

@@ -1,5 +1,5 @@
 // The /pool pane: the account pool, the fleet, the running agents and the
-// orchestrate runs. Thin: it reads the pool's RPC and the status RPC every 2 seconds,
+// orchestrate runs, and each root's hour in cells. Thin: it reads the pool's RPC, the status RPC and the kernel's time RPC every 2 seconds,
 // takes the running child sessions from the same collection Prime's dock
 // counts, and draws the rows pane.ts projects from them. An answer that fails
 // or does not decode keeps the last reading and says so; a pool with no fleet,
@@ -9,8 +9,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Match, Option, Schema } from "effect"
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { KERNEL_TIME, TimeAnswer } from "@dotfiles/opencode-kernel/cell-time"
 import { POOL_STATUS } from "@dotfiles/opencode-pool/status"
-import { accountRows, agentRows, type AntigravityRow, antigravityRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
+import { accountRows, agentRows, type AntigravityRow, antigravityRows, type CellRow, cellRoots, cellRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "../pane.ts"
 import { Snapshot, STATUS } from "../status.ts"
 
 const decodePools = Schema.decodeUnknownOption(PanePools)
@@ -19,6 +20,7 @@ const decodeFleet = Schema.decodeUnknownOption(PaneFleet)
 const decodeResets = Schema.decodeUnknownOption(PaneResets)
 const decodeLimits = Schema.decodeUnknownOption(PaneLimits)
 const decodeAntigravity = Schema.decodeUnknownOption(PaneAntigravity)
+const decodeTimes = Schema.decodeUnknownOption(TimeAnswer)
 
 /** What an answer decodes to; a call that failed decodes to nothing. */
 const answer = <A,>(result: PromiseSettledResult<unknown>, decode: (input: unknown) => Option.Option<A>) =>
@@ -39,7 +41,18 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const [claims, setClaims] = createSignal<PaneResets>()
   const [limits, setLimits] = createSignal<string>()
   const [antigravity, setAntigravity] = createSignal<ReadonlyArray<AntigravityRow>>([])
+  const [cells, setCells] = createSignal<ReadonlyArray<CellRow>>([])
   const [errors, setErrors] = createSignal<ReadonlyArray<string>>([])
+  /** The pane's session's root: its parents followed up, as far as the client knows them. */
+  const ownRoot = () => {
+    let id = props.sessionID
+    for (let depth = 0; depth < 32; depth++) {
+      const parent = Option.fromUndefinedOr(ctx.data.session.get(id)?.parentID)
+      if (Option.isNone(parent)) return id
+      id = parent.value
+    }
+    return id
+  }
   const [at, setAt] = createSignal<number>()
   const abort = new AbortController()
   let pending = false
@@ -48,13 +61,16 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     if (pending) return
     pending = true
     const location = ctx.location
-    const [poolResult, statusResult, fleetResult, resetsResult, limitsResult, antigravityResult] = await Promise.allSettled([
+    // Each root's hour in cells: the pane's root and the runs' orchestrators of the last status read.
+    const roots = cellRoots(ownRoot(), snapshot()?.runs ?? [])
+    const [poolResult, statusResult, fleetResult, resetsResult, limitsResult, antigravityResult, timesResult] = await Promise.allSettled([
       ctx.client.rpc(POOL_STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(STATUS).status({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).fleet({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).resets({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).limits({}, { location, signal: abort.signal }),
       ctx.client.rpc(POOL_STATUS).antigravity({}, { location, signal: abort.signal }),
+      ctx.client.rpc(KERNEL_TIME).time({ sessionIDs: [...roots] }, { location, signal: abort.signal }),
     ])
     if (closed) return
     const pools = answer(poolResult, decodePools)
@@ -65,6 +81,13 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
     setClaims(Option.getOrUndefined(answer(resetsResult, decodeResets)))
     setLimits(Option.getOrUndefined(answer(limitsResult, decodeLimits))?.line)
     setAntigravity(Option.match(answer(antigravityResult, decodeAntigravity), { onNone: () => [], onSome: antigravityRows }))
+    // No kernel, or no answer, and the section is absent.
+    setCells(
+      Option.match(answer(timesResult, decodeTimes), {
+        onNone: () => [],
+        onSome: (times) => cellRows(times.times, (id) => Option.fromUndefinedOr(ctx.data.session.get(id)?.title)),
+      }),
+    )
     setErrors(unavailable(Option.isNone(pools), Option.isNone(status)))
     setAt(Date.now())
     pending = false
@@ -105,6 +128,11 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
   const theme = () => ctx.theme
   const heading = (label: string) => <text fg={theme().text.base} attributes={1} marginTop={1}>{label}</text>
   const muted = (text: string) => <text fg={theme().text.muted}>{text}</text>
+  /** A root over the bound in the warning colour. */
+  const toneOf = (row: CellRow) => {
+    if (row.warn) return theme().text.feedback.warning.base
+    return theme().text.base
+  }
   const antigravityColor = (row: AntigravityRow) =>
     Match.value(row).pipe(
       Match.when({ warn: true }, () => theme().text.feedback.warning.base),
@@ -155,6 +183,10 @@ export function Pane(props: { ctx: Plugin.Context; sessionID: string; panel: Pan
               </For>
             </>
           )}
+        </Show>
+        <Show when={cells().length > 0}>
+          {heading("Time in cells")}
+          <For each={cells()}>{(row) => <text fg={toneOf(row)}>{row.text}</text>}</For>
         </Show>
         {heading(`Running agents (${agents().length})`)}
         <For each={agents()} fallback={muted("No running agents.")}>

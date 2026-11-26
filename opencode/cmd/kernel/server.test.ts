@@ -18,6 +18,7 @@ import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as MemorySessions from "@dotfiles/opencode-kernel/memory/sessions"
+import * as OpenCodeCellTimes from "@dotfiles/opencode-kernel/opencode/cell-times"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
 import Kernel, { make } from "./server.ts"
@@ -69,6 +70,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
   Effect.gen(function* () {
     const work = yield* scratchWork
     const entries = new Map<string, Json>()
+    const times = new Map<string, Json>()
     const hooks = new Map<string, Array<(event: RequestEvent) => Effect.Effect<void>>>()
     const synthetics: Array<{ readonly sessionID: string; readonly text: string; readonly resume?: boolean }> = []
     const announced = yield* Queue.unbounded<void>()
@@ -129,6 +131,13 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
         snapshots,
         MemorySessions.layer({ sessions: world.noSessions ? {} : { ses_1: { directory: work } }, agents: {} }),
         FileStoreFiles.layer,
+        // The cells' times in a store of their own; cmd/kernel/cell-time.sim.test.ts checks them and their notice.
+        OpenCodeCellTimes.layer({
+          get: (key) => Effect.sync(() => times.get(key)),
+          set: (key, value) => Effect.sync(() => void times.set(key, value)),
+          remove: (key) => Effect.sync(() => void times.delete(key)),
+        }),
+        OpenCodeCellTimes.notices({ parentOf: () => Effect.succeedNone, tell: () => Effect.void }),
       ),
     ).effect(host)
     expect(added).toBeDefined()
@@ -271,7 +280,7 @@ describe("the kernel tool", () => {
         const { call, fail } = yield* start()
         yield* call("let kept = 7; const f = () => kept")
         expect(yield* fail("process.exit(5)")).toContain("exited (code 5)")
-        expect(yield* call("[kept, f()]")).toBe("[new kernel; restored f, kept]\n[ 7, 7 ]")
+        expect(yield* call("[kept, f()]")).toBe("[ 7, 7 ]")
       }),
     ))
 
@@ -282,7 +291,7 @@ describe("the kernel tool", () => {
         yield* call("const block = new Uint8Array(4 * 1024 * 1024).fill(3); const loop = { block }; loop.self = loop")
         expect(yield* fail("process.exit(5)")).toContain("exited (code 5)")
         expect(yield* call("[block.length, block[100], loop.self === loop, loop.block.length]")).toBe(
-          "[new kernel; restored block, loop]\n[ 4194304, 3, true, 4194304 ]",
+          "[ 4194304, 3, true, 4194304 ]",
         )
       }),
     ))
@@ -298,11 +307,14 @@ describe("the kernel tool", () => {
             { name: "lookup", value: tag("map", [["a", tag("bigint", "12")]]) },
             { name: "when", value: tag("date", 0) },
             { name: "tagged", value: tag("object", { $kernel: "kept", n: tag("number", "NaN") }) },
+            // A tag no format wrote: lost, and the only name the notice gives.
+            { name: "broken", value: tag("nope", 0) },
           ],
         })
         expect(yield* call("[count, lookup.get('a'), when.getTime(), tagged.$kernel, tagged.n]")).toBe(
-          '[new kernel; restored count, lookup, when, tagged]\n[ 3, 12n, 0, "kept", NaN ]',
+          '[new kernel; 4 bindings restored, 1 lost: broken; kernel.bindings() lists what it holds]\n[ 3, 12n, 0, "kept", NaN ]',
         )
+        expect(yield* call("kernel.bindings().map((binding) => binding.name)")).toBe('[ "count", "lookup", "tagged", "when" ]')
       }),
     ))
 
@@ -330,7 +342,7 @@ describe("the kernel tool", () => {
         const { call, fail } = yield* start({ timeoutMs: 300 })
         yield* call("let before = 1")
         expect(yield* fail("while (true) {}")).toContain("0.3 s of compute")
-        expect(yield* call("before")).toBe("[new kernel; restored before]\n1")
+        expect(yield* call("before")).toBe("1")
       }),
     ))
 
@@ -340,7 +352,7 @@ describe("the kernel tool", () => {
         const { call } = yield* start({ idleMs: 100 })
         yield* call("let waited = 1")
         yield* TestClock.adjust(100)
-        expect(yield* call("waited")).toBe("[new kernel; restored waited]\n1")
+        expect(yield* call("waited")).toBe("1")
       }).pipe(Effect.provide(TestClock.layer())),
     ))
 

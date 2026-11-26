@@ -27,7 +27,7 @@
 //   the metadata whole, so a mark is merged into what the session has; the TUI
 //   reads the change from `session.metadata.updated`.
 import { Model, type Plugin } from "@opencode/plugin/effect"
-import { Array as Arr, Cause, Clock, Effect, Layer, Match, Option, Random } from "effect"
+import { Array as Arr, Cause, Clock, DateTime, Effect, Layer, Match, Option, Predicate, Random } from "effect"
 import { MARK_KEY, type Mark } from "../latch.ts"
 import type { Letter } from "../message.ts"
 import { type CallAnswer, type Child, Courier, DeliveryRefused, type Start } from "../service.ts"
@@ -72,7 +72,11 @@ export const messageOf = (cause: unknown): string => {
 }
 
 /** Whether the host's failure says it has no such session. */
-export const notFound = (cause: unknown): boolean => typeof cause === "object" && cause !== null && "_tag" in cause && cause._tag === "Session.NotFoundError"
+export const notFound = (cause: unknown): boolean => Option.contains(tagOf(cause), "Session.NotFoundError")
+
+/** The tag of a host failure, when it has one. */
+const tagOf = (cause: unknown): Option.Option<string> =>
+  Option.flatMap(Option.liftPredicate(cause, (value) => Predicate.hasProperty(value, "_tag")), (tagged) => Option.liftPredicate(tagged._tag, Predicate.isString))
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -121,8 +125,13 @@ export const minted = (prefix: string, descending = false): Effect.Effect<string
   })
 }
 
-const refusal = (sessionID: string) => (cause: unknown) =>
-  notFound(cause) ? new DeliveryRefused({ sessionID, message: "no such session", gone: true }) : new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false })
+/** The host's refusal of a delivery: no such session (`gone`), an archived one (`archived`: nothing admitted), or another failure. */
+const refusal = (sessionID: string) => (cause: unknown): DeliveryRefused =>
+  Match.value(Option.getOrElse(tagOf(cause), () => "")).pipe(
+    Match.when("Session.NotFoundError", () => new DeliveryRefused({ sessionID, message: "no such session", gone: true })),
+    Match.when("Session.ArchivedError", () => new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false, archived: true })),
+    Match.orElse(() => new DeliveryRefused({ sessionID, message: messageOf(cause), gone: false })),
+  )
 
 export const layer = (host: Host, mintMessage: Effect.Effect<string> = minted("msg_"), mintSession: Effect.Effect<string> = minted("ses_", true)) =>
   Layer.succeed(Courier, {
@@ -265,5 +274,19 @@ export const beforeCompaction = (ctx: Plugin.Context, sessionID: Ids["sessionID"
 export const ownerHere = (ctx: Plugin.Context) => (sessionID: string) =>
   ctx.session.get({ sessionID: sessionOf(sessionID) }).pipe(
     Effect.map((session) => session.location.directory === ctx.location.directory),
+    Effect.orElseSucceed(() => false),
+  )
+
+/**
+ * Whether a turn of the session runs now: its last busy time is after its last idle one (`session.time`, as the
+ * host keeps them). A session that cannot be read is not busy: its letter then waits the window and wakes it.
+ */
+export const busyOf = (ctx: Plugin.Context) => (sessionID: string) =>
+  ctx.session.get({ sessionID: sessionOf(sessionID) }).pipe(
+    Effect.map((session) =>
+      Option.exists(Option.map(Option.fromNullishOr(session.time.busy), DateTime.toEpochMillis), (busy) =>
+        Option.match(Option.map(Option.fromNullishOr(session.time.idle), DateTime.toEpochMillis), { onNone: () => true, onSome: (idle) => busy > idle }),
+      ),
+    ),
     Effect.orElseSucceed(() => false),
   )

@@ -8,7 +8,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
-import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, type Subscriber } from "./host.ts"
+import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, SessionArchived, type Subscriber } from "./host.ts"
 import { permissionAssert } from "./host-permission.ts"
 import { makeSkillCatalog } from "./host-skills.ts"
 import { type JsonObject, plain } from "./runtime.ts"
@@ -518,6 +518,11 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       )(input).pipe(
         Effect.flatMap((parsed) =>
           host.sessionOr(parsed.sessionID).pipe(
+            // A plugin's synthetic message keeps its input, so an archived session refuses it, typed, and admits nothing (the fork's SessionAdmission.typed).
+            Effect.filterOrFail(
+              (found) => !host.archived.has(found.id),
+              (found) => new SessionArchived({ sessionID: found.id, message: `Session ${found.id} is archived` }),
+            ),
             Effect.flatMap((found) =>
               host.admit(found, {
                 id: parsed.id ?? host.mint("msg_"),
@@ -633,7 +638,13 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
             host.updates.delete(instance)
           },
         ),
-      list: () => Effect.sync(() => [...host.toolsOf(loaded.directory).keys()].map((name) => ({ id: name, name }))),
+      // As the host lists them: a plugin's tool as it registered it; a built-in by its name, its words the host's own.
+      list: () =>
+        Effect.sync(() =>
+          [...host.toolsOf(loaded.directory)].map(([name, info]) =>
+            Option.match(info, { onNone: () => ({ id: name, name, description: "" }), onSome: (tool) => ({ ...tool, id: name }) }),
+          ),
+        ),
       hook: domainHook("tool", new Set(["execute.before", "execute.after"])),
     },
     shell: { hook: domainHook("shell", new Set(["create.before"])) },

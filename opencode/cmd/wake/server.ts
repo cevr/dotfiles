@@ -41,13 +41,15 @@ import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { Plugin, Tool } from "@opencode/plugin/effect"
-import { Clock, Context, Effect, Layer, Ref, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Layer, Option, Ref, Schema, Stream } from "effect"
 import { AUTOMATION_IDS } from "@dotfiles/opencode-wake/automations"
 import * as CronBackstop from "@dotfiles/opencode-wake/cron/backstop"
 import * as MemoryBackstop from "@dotfiles/opencode-wake/memory/backstop"
 import { DEFAULT_WAIT_MS, MAX_WAIT_MS } from "@dotfiles/opencode-wake/job"
 import { alarmReceipt, cancelReceipt, durationOf, jobListing, jobReceipt, jobReport, listing, monitorReceipt } from "@dotfiles/opencode-wake/message"
+import * as Handles from "@dotfiles/opencode-wake/handle"
 import * as Model from "@dotfiles/opencode-wake/model"
+import * as Registry from "@dotfiles/opencode-wake/registry"
 import * as OpenCodeCourier from "@dotfiles/opencode-wake/opencode/courier"
 import * as OpenCodeOpener from "@dotfiles/opencode-wake/opencode/opener"
 import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
@@ -196,14 +198,28 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       // Changes are announced once the RPC is registered; one before then has no reader to tell.
       const announce = yield* Ref.make<(sessionID: string) => Effect.Effect<void>>(() => Effect.void)
       const changes = Layer.succeed(Changes, { changed: (sessionID) => Effect.flatMap(Ref.get(announce), (emit) => emit(sessionID)) })
-      const services = yield* Layer.build(Model.layer({
-        directory: ctx.location.directory,
-        classifyJob,
-        answered: OpenCodeCourier.answeredOf(ctx),
-        ownerHere: OpenCodeCourier.ownerHere(ctx),
-        server: { id: ProcessRunner.serverHere(), live: (id) => Effect.sync(() => ProcessRunner.serverRuns(id)) },
-      }).pipe(Layer.provide(Layer.merge(externals(ctx, options), changes))))
+      const server = { id: ProcessRunner.serverHere(), live: (id: string) => Effect.sync(() => ProcessRunner.serverRuns(id)) }
+      const cancelledTo = yield* Ref.make<(ids: ReadonlyArray<string>) => Effect.Effect<void>>(() => Effect.void)
+      const services = yield* Layer.build(
+        Layer.merge(
+          Model.layer({
+            directory: ctx.location.directory,
+            classifyJob,
+            answered: OpenCodeCourier.answeredOf(ctx),
+            ownerHere: OpenCodeCourier.ownerHere(ctx),
+            server,
+          }),
+          Registry.layer({
+            server: server.id,
+            location: ctx.location.directory,
+            live: server.live,
+            busy: OpenCodeCourier.busyOf(ctx),
+            cancelled: (ids) => Effect.flatMap(Ref.get(cancelledTo), (tell) => tell(ids)),
+          }),
+        ).pipe(Layer.provide(Layer.merge(externals(ctx, options), changes))),
+      )
       const wakes = Context.get(services, Model.WakesModel)
+      const registry = Context.get(services, Registry.Registry)
 
       yield* ctx.tool.transform((editor) => {
         // The wake tools replace OpenCode's automation tools: an automation fires by prompting its session with its
@@ -270,11 +286,31 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
       // committed to its session (or failed there) settles the end it took; a revert gives the ends its calls held
       // back to their letters.
       yield* Effect.forkScoped(
-        ctx.event.subscribe({ types: ["session.deleted", "session.inbox.delivered", "session.tool.success", "session.tool.failed", "session.revert.committed", "session.moved"] }).pipe(
+        ctx.event
+          .subscribe({
+            types: [
+              "session.deleted",
+              "session.inbox.delivered",
+              "session.tool.success",
+              "session.tool.failed",
+              "session.revert.committed",
+              "session.moved",
+              "session.unarchived",
+              "session.execution.interrupted",
+            ],
+          })
+          .pipe(
           Stream.runForEach((event) => {
             switch (event.type) {
               case "session.deleted":
-                return wakes.forget(event.data.sessionID).pipe(Effect.ignoreCause)
+                return wakes.forget(event.data.sessionID).pipe(Effect.andThen(registry.forget(event.data.sessionID)), Effect.ignoreCause)
+              // An archived session's parked letters go, under their ids, once it is back.
+              case "session.unarchived":
+                return registry.unpark(event.data.sessionID).pipe(Effect.ignoreCause)
+              // H10: the owner's stop of a running session cancels its open handles; no letter follows.
+              case "session.execution.interrupted":
+                if (event.data.reason !== "user") return Effect.void
+                return registry.stopped(event.data.sessionID).pipe(Effect.ignoreCause)
               case "session.inbox.delivered":
                 return wakes.read(event.data.inboxID).pipe(Effect.ignoreCause)
               case "session.tool.success":
@@ -344,8 +380,52 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         .pipe(Effect.orDie)
       yield* Ref.set(announce, (sessionID) => registration.events.emit("changed", { sessionID }).pipe(Effect.ignore))
 
-      // Arm what was set before this start, and fire what came due meanwhile, without holding up the start.
+      // The registry's RPC (HANDLES): the kernel opens and settles its handles, a cell reads them, a stop cancels them.
+      const handles = yield* ctx.rpc
+        .register(Handles.HANDLES, {
+          open: (input) =>
+            Schema.decodeUnknownEffect(Handles.OpenAsk)(input).pipe(
+              Effect.flatMap((ask) => registry.open({ id: ask.id, sessionID: ask.sessionID, kind: ask.kind, tool: Option.fromUndefinedOr(ask.tool) })),
+              Effect.map((opened) => ({ opened })),
+              Effect.orElseSucceed(() => ({ opened: false })),
+            ),
+          settle: (input) =>
+            Schema.decodeUnknownEffect(Handles.SettleAsk)(input).pipe(
+              Effect.flatMap((ask) => registry.settle({ id: ask.id, outcome: ask.outcome, value: Option.fromUndefinedOr(ask.value), to: Option.fromUndefinedOr(ask.to) })),
+              Effect.as({ settled: true }),
+              Effect.orElseSucceed(() => ({ settled: false })),
+            ),
+          get: (input) =>
+            Schema.decodeUnknownEffect(Handles.HandleAsk)(input).pipe(
+              Effect.flatMap(({ sessionID, id }) => registry.get(sessionID, id)),
+              Effect.orElseSucceed((): Handles.Reading => ({ state: "unknown" })),
+            ),
+          list: (input) =>
+            Schema.decodeUnknownEffect(Handles.SessionAsk)(input).pipe(
+              Effect.flatMap(({ sessionID }) => registry.list(sessionID)),
+              Effect.map((listed) => ({ handles: listed.map(({ id, kind, phase, tool }) => ({ id, kind, state: phase._tag, tool })) })),
+              Effect.orElseSucceed(() => ({ handles: [] })),
+            ),
+          cancel: (input) =>
+            Schema.decodeUnknownEffect(Handles.HandleAsk)(input).pipe(
+              Effect.flatMap(({ sessionID, id }) => registry.cancel(sessionID, id)),
+              Effect.map((cancelled) => ({ cancelled })),
+              Effect.orElseSucceed(() => ({ cancelled: false })),
+            ),
+          stopped: (input) =>
+            Schema.decodeUnknownEffect(Handles.SessionAsk)(input).pipe(
+              Effect.flatMap(({ sessionID }) => registry.stopped(sessionID)),
+              Effect.map((ids) => ({ ids })),
+              Effect.orElseSucceed(() => ({ ids: [] })),
+            ),
+        })
+        .pipe(Effect.orDie)
+      yield* Ref.set(cancelledTo, (ids) => handles.events.emit("cancelled", { ids }).pipe(Effect.ignore))
+
+      // Arm what was set before this start, and fire what came due meanwhile, without holding up the start; the
+      // registry retires the dead owners, then sends every owed letter again under its delivery id.
       yield* Effect.forkScoped(wakes.start.pipe(Effect.ignoreCause))
+      yield* Effect.forkScoped(registry.start.pipe(Effect.ignoreCause))
     }),
   })
 
