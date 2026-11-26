@@ -131,10 +131,10 @@ export const COMMANDS: ReadonlyArray<Command> = [
   },
   {
     path: "cmd/guard/host-admit.ts",
-    packages: ["effect", "@effect/platform-bun"],
+    packages: ["effect"],
     probes: [
-      { args: ["--version"], exit: 0, says: "host-admit 1" },
-      { args: ["holder", "list", "--json"], exit: 0, says: '"complete":true' },
+      { args: ["--version"], exit: 0, says: "host-admit 2" },
+      { args: ["check", "run", "--", "printf", "ran"], exit: 0, says: "ran" },
     ],
   },
   {

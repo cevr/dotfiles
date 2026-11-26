@@ -29,7 +29,10 @@
  * `node x.mjs`, `bun -e`) whose text does: such a Chrome puts a keychain
  * dialog on the owner's screen, and the refusal points to Playwright or browse
  * (`@dotfiles/opencode-guard/chrome`); the script is read from disk only for
- * a line that runs one. Everything else runs untouched.
+ * a line that runs one. Everything else runs untouched, and every command
+ * OpenCode spawns runs as written: the guard registers no shell hook, so no
+ * launcher, `nice`, systemd scope or host lease stands between a call and
+ * its process (the host's admission gate was removed, 2026-11-26).
  *
  * The hook is the registry's, so it sees every call the registry runs: a
  * direct call, a call from code mode's `execute`, and a kernel cell's
@@ -38,39 +41,21 @@
  * `codeOnly` runs a cell's tools directly, skipping the hooks; it leaves the
  * shell out of a cell for that reason (mods/kernel/tools.ts, HOOKED_TOOLS).
  *
- * The shell policy rides the shell's own `create.before` hook, which sees
- * every command OpenCode spawns (a direct call, a cell's, the user's `!`): a
- * heavy one (`bun test`, `tsc`, a gate; `@dotfiles/opencode-guard/heavy`) is
- * spawned through a launcher that stands in for the shell, at `nice` and, on
- * Linux, in a systemd scope under `MemoryMax`
- * (`@dotfiles/opencode-guard/launcher`). The command text stays as written.
- *
  * Options (all optional; an absent one takes its default, a malformed one stops the plugin):
  * - `home`: the directory `~` and `$HOME` name; default the user's home.
- * - `heavy`: additional heavy patterns; the installed guard always classifies `DEFAULT_HEAVY`.
- * - `nice`: the niceness added to a heavy command, 0 to 19; default 10.
- * - `memoryMax`: the scope's `MemoryMax` on Linux; default `12G`.
- * - `cpuWeight`: the scope's `CPUWeight` on Linux, 1 to 10000; default 20.
- * - `launchers`: the directory the launchers are written to; default `~/.cache/opencode/guard-launchers`.
+ * An older config's `heavy`, `nice`, `memoryMax`, `cpuWeight` and `launchers` are extra keys, ignored as any is.
  */
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
-import { join } from "node:path"
-import { fileURLToPath } from "node:url"
-import { which } from "bun"
 import { Plugin, Tool } from "@opencode/plugin/effect"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import * as FilesystemLaunchers from "@dotfiles/opencode-guard/filesystem/launchers"
 import * as FilesystemRepoRoots from "@dotfiles/opencode-guard/filesystem/repo-roots"
-import { DEFAULT_HEAVY } from "@dotfiles/opencode-guard/heavy"
-import { DEFAULT_LIMITS, launcherName } from "@dotfiles/opencode-guard/launcher"
 import * as Model from "@dotfiles/opencode-guard/model"
 import * as PsProcesses from "@dotfiles/opencode-guard/process/processes"
-import * as ProcessScopes from "@dotfiles/opencode-guard/process/scopes"
 import * as OpenCodeSessionDirectories from "@dotfiles/opencode-guard/opencode/session-directories"
 import * as OpenCodeSubagents from "@dotfiles/opencode-guard/opencode/subagents"
 import * as ProcessCheckouts from "@dotfiles/opencode-guard/process/checkouts"
 import * as WorkReservations from "@dotfiles/opencode-guard/process/reservations"
-import type { Checkouts, Launchers, Processes, RepoRoots, Reservations, Scopes, ScriptFiles, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
+import type { Checkouts, Processes, RepoRoots, Reservations, ScriptFiles, SessionDirectories, Subagents } from "@dotfiles/opencode-guard/service"
 import { type KeychainPrompt, keychainMessage } from "@dotfiles/opencode-guard/chrome"
 import { type CannotTell, type CommandForm, renderForm, renderUnknown } from "@dotfiles/opencode-guard/message"
 import * as FilesystemScriptFiles from "@dotfiles/opencode-guard/filesystem/script-files"
@@ -88,15 +73,8 @@ const withDefault =
   <S extends Schema.Codec<A, any, never, never>>(schema: S) =>
     schema.pipe(Schema.withDecodingDefaultType(Effect.succeed(fallback)))
 
-const Int = (min: number, max: number) => Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max }))
-
 export const Options = Schema.Struct({
   home: Schema.String.pipe(withDefault(TuiDirs.dirs().home)),
-  heavy: Schema.Array(Schema.String).pipe(withDefault<ReadonlyArray<string>>(DEFAULT_HEAVY)),
-  nice: Int(0, 19).pipe(withDefault(DEFAULT_LIMITS.nice)),
-  memoryMax: Schema.String.check(Schema.isPattern(/^(\d+[KMGT]?|\d+%|infinity)$/)).pipe(withDefault(DEFAULT_LIMITS.memoryMax)),
-  cpuWeight: Int(1, 10_000).pipe(withDefault(DEFAULT_LIMITS.cpuWeight)),
-  launchers: Schema.String.pipe(withDefault(join(TuiDirs.dirs().home, ".cache/opencode/guard-launchers"))),
 })
 export type Options = typeof Options.Type
 
@@ -121,7 +99,7 @@ const wordsOf = (outcome: Destructive | FullCopy | KeychainPrompt | Idle | Comma
 }
 
 /** The outside systems the model runs on. */
-export type Externals = Checkouts | Launchers | Processes | RepoRoots | Reservations | Scopes | ScriptFiles | SessionDirectories | Subagents
+export type Externals = Checkouts | Processes | RepoRoots | Reservations | ScriptFiles | SessionDirectories | Subagents
 
 type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
 
@@ -135,23 +113,18 @@ export const sessionsOf = (ctx: Plugin.Context): Layer.Layer<SessionDirectories 
 }
 
 /** The outside systems as the filesystem and OpenCode provide them. */
-export const live = (ctx: Plugin.Context, options: Options): Layer.Layer<Externals> =>
+export const live = (ctx: Plugin.Context): Layer.Layer<Externals> =>
   Layer.mergeAll(
     FilesystemRepoRoots.layer,
     ProcessCheckouts.layer(),
     WorkReservations.layer(),
     FilesystemScriptFiles.layer,
-    FilesystemLaunchers.layer(options.launchers),
     PsProcesses.layer(),
-    ProcessScopes.layer(),
     sessionsOf(ctx),
   )
 
 /** The plugin on `externals`: the live systems in OpenCode, memory layers in the seam test. */
-export const make = (
-  externals: (ctx: Plugin.Context, options: Options) => Layer.Layer<Externals>,
-  admission?: (options: Options) => ReadonlyArray<string>,
-) =>
+export const make = (externals: (ctx: Plugin.Context) => Layer.Layer<Externals>) =>
   Plugin.define({
     id: "dotfiles-opencode.guard",
     effect: Effect.fn("Guard.plugin")(function* (ctx) {
@@ -160,29 +133,8 @@ export const make = (
         Effect.mapError((error) => new Error(`dotfiles-opencode.guard: invalid options: ${error.message}`)),
         Effect.orDie,
       )
-      const limits = { nice: options.nice, memoryMax: options.memoryMax, cpuWeight: options.cpuWeight }
-      const services = yield* Layer.build(
-        Layer.mergeAll(Model.layer({ home: options.home, server: process.pid }), Model.policyLayer({ heavy: options.heavy, limits, admission: admission?.(options) })).pipe(
-          Layer.provide(externals(ctx, options)),
-        ),
-      )
+      const services = yield* Layer.build(Model.layer({ home: options.home, server: process.pid }).pipe(Layer.provide(externals(ctx))))
       const guard = Context.get(services, Model.Guard)
-      const policy = Context.get(services, Model.ShellPolicy)
-
-      // The command stays as written: only the program that runs it changes.
-      yield* ctx.shell.hook("create.before", (invocation) =>
-        policy.shellFor(invocation.shell, invocation.command).pipe(
-          Effect.map((shell) => {
-            invocation.shell = shell
-          }),
-          // This pre-permission host hook cannot reject with a typed error.
-          // Preserve the shell dialect in its name, but never fall back to a
-          // payload executable if installing its admission wrapper failed.
-          Effect.catchTag("LauncherUnavailable", () => Effect.sync(() => {
-            invocation.shell = `/dev/null/${launcherName(invocation.shell)}`
-          })),
-        ),
-      )
 
       yield* ctx.tool.hook("execute.before", (event) => {
         if (!SHELL_TOOLS.has(event.tool)) return Effect.void
@@ -204,4 +156,4 @@ export const make = (
     }),
   })
 
-export default make(live, (options) => [which("bun") ?? join(options.home, ".bun/bin/bun"), fileURLToPath(new URL("host-admit.ts", import.meta.url))])
+export default make(live)

@@ -6,15 +6,14 @@
 // calls (destructive, harmless, heavy, kills by pattern, a long sleep), each
 // made by the session's model in a turn, as `shell` or as `bash` with its input
 // an object or a JSON string (the host's input repair turns both into
-// `shell`'s), and faults: a process table that cannot be read, a launcher that
-// cannot be written, a restart at any point, time passing.
+// `shell`'s), and faults: a process table that cannot be read, a restart at any
+// point, time passing.
 //
 // After each call: a call the guard must refuse (a reset, `rm -rf` of the home
 // or a repository, a kill by a pattern that matches the server, any kill by
 // pattern while `ps` fails, a subagent's foreground long sleep) answers in the
 // guard's words and never reaches the shell; any other reaches it exactly once,
-// its command as written, a heavy one through a launcher unless none can be
-// written (then with the shell itself), a light one with the shell itself. An
+// its command as written, with the shell itself, a heavy-looking one as a light one. An
 // aliased call's answer names the tool that ran. After each restart, one copy's
 // hooks are registered; at the end, no timer of a closed copy fired.
 import { expect } from "bun:test"
@@ -65,15 +64,13 @@ type CallCommand = { readonly type: "call"; readonly call: Call; readonly form: 
 type Command =
   | CallCommand
   | { readonly type: "ps-fails"; readonly on: boolean }
-  | { readonly type: "launchers-fail"; readonly on: boolean }
   | { readonly type: "restart" }
   | { readonly type: "advance"; readonly ms: number }
 
 const commandOf = (random: ReturnType<typeof generator>): Command => {
   const pick = below(random, 20)
   if (pick < 13) return { type: "call", call: CALLS[below(random, CALLS.length)], form: FORMS[below(random, FORMS.length)], child: below(random, 2) === 1 }
-  if (pick < 15) return { type: "ps-fails", on: below(random, 2) === 1 }
-  if (pick < 17) return { type: "launchers-fail", on: below(random, 2) === 1 }
+  if (pick < 16) return { type: "ps-fails", on: below(random, 2) === 1 }
   if (pick < 18) return { type: "restart" }
   return { type: "advance", ms: 1 + below(random, 120_000) }
 }
@@ -113,7 +110,7 @@ const GUARD_WORDS = /^Error: Refused by guard-(destructive|sleep): /
 const judge = (
   check: typeof expect,
   command: CallCommand,
-  state: { readonly psFails: boolean; readonly launchersFail: boolean },
+  state: { readonly psFails: boolean },
   answer: Pick<ToolMessage, "output" | "error">,
   spawned: ReadonlyArray<World.Spawned>,
 ) => {
@@ -127,10 +124,7 @@ const judge = (
     refusal: false,
     spawned: [command.call.command],
   })
-  const heavyLauncher = command.call.kind === "heavy" && !state.launchersFail
-  const shell = spawned.map((each) => each.shell).join("")
-  check({ ...what, heavyLauncher, launcher: shell.startsWith("/launchers/") && shell.endsWith("/zsh") }).toEqual({ ...what, heavyLauncher, launcher: heavyLauncher })
-  if (!heavyLauncher) check({ ...what, shell }).toEqual({ ...what, shell: World.SHELL })
+  check({ ...what, shell: spawned.map((each) => each.shell).join("") }).toEqual({ ...what, shell: World.SHELL })
   check({ ...what, aliasNoted: answer.output.includes(World.aliasNote("bash", "shell")) }).toEqual({ ...what, aliasNoted: command.form.name === "bash" })
 }
 
@@ -171,14 +165,13 @@ const exercise = ({ seed, expect: check }: Seeded, commands: ReadonlyArray<Comma
       yield* world.load(Plugins.guard(machine), { directory: WORK, options: { home: HOME } })
       const root = yield* world.session(WORK)
       const child = yield* world.session(WORK, { parentID: root })
-      const seen: Array<{ refused: boolean; commands: ReadonlyArray<string>; launcher: boolean; alias: boolean }> = []
+      const seen: Array<{ refused: boolean; commands: ReadonlyArray<string>; alias: boolean }> = []
       for (const command of commands) {
         if (command.type === "ps-fails") machine.psFails = command.on
-        if (command.type === "launchers-fail") machine.launchersFail = command.on
         if (command.type === "advance") yield* world.advance(command.ms)
         if (command.type === "restart") {
           yield* world.restart
-          check({ toolHooks: world.hooked(World.TOOL_BEFORE), shellHooks: world.hooked(World.SHELL_CREATE) }).toEqual({ toolHooks: 1, shellHooks: 1 })
+          check({ toolHooks: world.hooked(World.TOOL_BEFORE), shellHooks: world.hooked(World.SHELL_CREATE) }).toEqual({ toolHooks: 1, shellHooks: 0 })
         }
         if (command.type !== "call") continue
         const before = world.spawned().length
@@ -187,43 +180,36 @@ const exercise = ({ seed, expect: check }: Seeded, commands: ReadonlyArray<Comma
           sent(command),
         )
         const spawned = world.spawned().slice(before)
-        judge(check, command, { psFails: machine.psFails, launchersFail: machine.launchersFail }, answer, spawned)
-        seen.push({ refused: answer.error && GUARD_WORDS.test(answer.output), commands: spawned.map((each) => each.command), launcher: spawned.some((each) => each.shell.startsWith("/launchers/")), alias: answer.output.includes(World.aliasNote("bash", "shell")) })
+        judge(check, command, { psFails: machine.psFails }, answer, spawned)
+        seen.push({ refused: answer.error && GUARD_WORDS.test(answer.output), commands: spawned.map((each) => each.command), alias: answer.output.includes(World.aliasNote("bash", "shell")) })
       }
       check(world.stale()).toEqual([])
       return { seen, loaded: world.logs().filter((line) => line.message === "loading plugin").length }
     })
 
 seeded(
-  "a generated run of shell calls in a root and its subagent, under an unreadable process table, unwritable launchers and restarts, refuses exactly what loses work or idles a subagent, and runs the rest once as written",
+  "a generated run of shell calls in a root and its subagent, under an unreadable process table and restarts, refuses exactly what loses work or idles a subagent, and runs the rest once as written",
   (run) => exercise(run, commandsOf(run.seed)),
 )
 
 const callForms = CALLS.flatMap((call) => FORMS.flatMap((form) => GUARD_ROLES.map((child): CallCommand => ({ type: "call", call, form, child }))))
 const input = { seed: 1, expect }
 const restart: Command = { type: "restart" }
-const faults = (on: boolean): ReadonlyArray<Command> => [{ type: "ps-fails", on }, { type: "launchers-fail", on }]
+const faults = (on: boolean): ReadonlyArray<Command> => [{ type: "ps-fails", on }]
 const nameOf = (call: CallCommand) => `${call.call.kind}/${call.form.id}/${call.child}`
 const matrix = callForms.flatMap((call) => GUARD_STATES.map((faulted) => ({ call, faulted, name: `${nameOf(call)}/faults=${faulted}` })))
 const matrixFixtures = Object.fromEntries(matrix.map(({ call, faulted, name }) => {
   const refused = mustRefuse(call, faulted)
   return [name, {
-    expected: { refused, commands: [call.call.command].filter(() => !refused), launcher: call.call.kind === "heavy" && !faulted, alias: !refused && call.form.name === "bash" },
+    expected: { refused, commands: [call.call.command].filter(() => !refused), alias: !refused && call.form.name === "bash" },
     run: (cause: boolean) => Effect.map(exercise(input, [...faults(faulted), restart, ...[call].filter(() => cause)]), (run) => run.seen.at(0)),
   }]
 }))
-const faultCases = callForms.filter((call) => call.call.kind === "kill-other" || call.call.kind === "heavy")
-const faultFixtures = Object.fromEntries(faultCases.map((call) => {
-  const readsProcessTable = call.call.kind === "kill-other"
-  return [nameOf(call), {
-    expected: readsProcessTable,
-    run: (cause: boolean) => Effect.map(exercise(input, [...faults(cause), restart, call]), (run) => {
-      const seen = Option.getOrThrow(Arr.head(run.seen))
-      if (readsProcessTable) return seen.refused
-      return seen.launcher
-    }),
-  }]
-}))
+const faultCases = callForms.filter((call) => call.call.kind === "kill-other")
+const faultFixtures = Object.fromEntries(faultCases.map((call) => [nameOf(call), {
+  expected: true,
+  run: (cause: boolean) => Effect.map(exercise(input, [...faults(cause), restart, call]), (run) => Option.getOrThrow(Arr.head(run.seen)).refused),
+}]))
 
 simulationTest(
   "W: every call in every form is judged in a root and subagent, with both faults on after a restart and with faults off",

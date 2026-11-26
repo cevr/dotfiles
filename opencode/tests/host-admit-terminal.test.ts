@@ -1,69 +1,40 @@
 // @reads all
-// @reads-reason subprocess reads at tests/host-admit-terminal.test.ts: Effect.sync(() => spawn([...program], {
-import { argv, readableStreamToText, spawn } from "bun"
+// @reads-reason subprocess reads at tests/host-admit-terminal.test.ts: the stub runs real commands with the caller's streams
+// host-admit, the stub, in a terminal's place: the command reads the
+// caller's stdin and writes its stdout, and a signal sent to host-admit
+// reaches the command, whose own exit then stands.
+import { describe, expect } from "bun:test"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Effect, FileSystem, Path, Predicate } from "effect"
-import { expect, it } from "effect-bun-test"
+import { argv } from "bun"
+import { Effect, Path, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { it } from "effect-bun-test"
 import { hangGuard } from "./hang-guard.ts"
-import { scratch } from "./scratch.ts"
 
-const cli = Effect.fn("TerminalHarness.cli")(function* () {
+const [bun = "bun"] = argv
+const started = (args: ReadonlyArray<string>, stdin: ChildProcess.CommandInput) => Effect.gen(function* () {
   const path = yield* Path.Path
-  const file = yield* path.fromFileUrl(new URL("./fixtures/host-admit-test-entry.ts", import.meta.url))
-  const [exe = "bun"] = argv
-  return [exe, file]
+  const entry = yield* path.fromFileUrl(new URL("../cmd/guard/host-admit.ts", import.meta.url))
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  return yield* spawner.spawn(ChildProcess.make(bun, [entry, ...args], { stdin, stderr: "ignore", forceKillAfter: "5 seconds" }))
 })
 
-const invoke = Effect.fn("TerminalHarness.invoke")(function* (program: ReadonlyArray<string>, folder: string, limit = 16_000) {
-  const task = yield* Effect.acquireRelease(
-    Effect.sync(() => spawn([...program], {
-      cwd: folder, env: { HOME: folder, XDG_STATE_HOME: folder, PATH: "/usr/bin:/bin" },
-      stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true,
-    })),
-    (task) => Effect.sync(() => {
-      if (Predicate.isNull(task.exitCode) && Predicate.isNull(task.signalCode)) task.kill("SIGTERM")
-    }),
-  )
-  const [status, output, error] = yield* Effect.all([
-    Effect.promise(() => task.exited),
-    Effect.promise(() => readableStreamToText(task.stdout)),
-    Effect.promise(() => readableStreamToText(task.stderr)),
-  ], { concurrency: 3 }).pipe(Effect.timeout(limit))
-  return { status, output, error }
+describe("host-admit, the stub, as a terminal sees it", () => {
+  it.effect("the command reads the caller's stdin and writes to its stdout", () => Effect.gen(function* () {
+    const child = yield* started(["check", "run", "--width", "1", "--", "cat"], Stream.make(new TextEncoder().encode("typed\nlines\n")))
+    const [out, code] = yield* Effect.all([child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode], { concurrency: 2 })
+    expect({ out, code: Number(code) }).toEqual({ out: "typed\nlines\n", code: 0 })
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer)), hangGuard("local-fixture"))
+
+  it.effect("a SIGTERM to host-admit reaches the command, and the command's exit stands", () => Effect.gen(function* () {
+    const script = 'trap "echo stopped; exit 5" TERM; echo ready; while :; do sleep 0.1; done'
+    const child = yield* started(["check", "run", "--", "sh", "-c", script], "ignore")
+    const lines = child.stdout.pipe(Stream.decodeText(), Stream.splitLines)
+    // Once the command says it is ready, host-admit is sent SIGTERM; the command's trap answers it.
+    const said = yield* lines.pipe(
+      Stream.tap((line) => Effect.when(child.kill({ killSignal: "SIGTERM" }), Effect.succeed(line === "ready"))),
+      Stream.runCollect,
+    )
+    expect({ said, code: Number(yield* child.exitCode) }).toEqual({ said: ["ready", "stopped"], code: 5 })
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer)), hangGuard("local-fixture"))
 })
-
-it.scopedLive("standalone checks preserve their payload under pipes and under an ordinary nested terminal shell", () =>
-  Effect.gen(function* () {
-    if (process.platform !== "darwin") return
-    using dir = scratch("hcl-terminal-")
-    const fs = yield* FileSystem.FileSystem
-    yield* fs.writeFileString(`${dir.path}/host-admit-supply.json`, '{"outside":500}')
-    const payload = [...(yield* cli()), "check", "run", "--", "/bin/sh", "-c", "printf 'payload-marker\\n'"]
-    const plain = yield* invoke(payload, dir.path)
-    expect(plain.status).toBe(0)
-    expect(plain.output).toContain("payload-marker")
-    const nested = yield* invoke([
-      "/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c",
-      '"$@"; printf "caller-back=%s\\n" "$?"', "fixture", ...payload,
-    ], dir.path)
-    expect(nested.status).toBe(0)
-    expect(nested.output).toContain("payload-marker")
-    expect(nested.output).toContain("caller-back=0")
-  }).pipe(Effect.provide(BunServices.layer)),
-  hangGuard("local-fixture"),
-)
-
-it.scopedLive("the foreground shell gets its tty back on stop and on Ctrl-C, and the resumed payload reads stdin", () =>
-  Effect.gen(function* () {
-    if (process.platform !== "darwin") return
-    using dir = scratch("hcl-job-control-")
-    const fs = yield* FileSystem.FileSystem
-    yield* fs.writeFileString(`${dir.path}/host-admit-supply.json`, '{"outside":500}')
-    const path = yield* Path.Path
-    const driver = yield* path.fromFileUrl(new URL("./fixtures/host-admit-pty.py", import.meta.url))
-    const { status, output, error } = yield* invoke(["/usr/bin/python3", driver, dir.path, ...(yield* cli())], dir.path, 25_000)
-    expect({ status, error }).toEqual({ status: 0, error: "" })
-    expect(output).toContain("Ctrl-C exit and drain verified")
-  }).pipe(Effect.provide(BunServices.layer)),
-  hangGuard("local-pair"),
-)

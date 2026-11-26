@@ -6,29 +6,23 @@
 // calls are refused, the words of a refusal, and the options.
 // tests/guard.test.ts runs it in OpenCode, with direct and kernel-cell calls.
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Layer, Option, type Scope } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Config, Effect, Exit, FileSystem, Layer, Option, Path, type Scope } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { keychainLaunch } from "@dotfiles/opencode-guard/chrome"
 import { MAX_CODE_DEPTH, MAX_PATH_STATES } from "@dotfiles/opencode-guard/executable"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
-import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryProcesses from "@dotfiles/opencode-guard/memory/processes"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
 import * as MemoryScriptFiles from "@dotfiles/opencode-guard/memory/script-files"
 import * as MemorySessionDirectories from "@dotfiles/opencode-guard/memory/session-directories"
 import * as MemorySubagents from "@dotfiles/opencode-guard/memory/subagents"
+import { hangGuard } from "../../tests/hang-guard.ts"
 import Guard, { make } from "./server.ts"
 
 type Host = Parameters<(typeof Guard)["effect"]>[0]
 type Hook = (event: Record<string, unknown>) => Effect.Effect<void, { readonly _tag: string; readonly message: string }>
-/** What the shell's `create.before` hook receives, as `@opencode/plugin/effect/shell` declares it. */
-interface Invocation {
-  command: string
-  cwd: string
-  timeout: number
-  shell: string
-  env: Record<string, string | undefined>
-}
 
 const HOME = "/Users/owner"
 /** The machine: this test process stands for the server the plugin runs in (it reads `process.pid`), beside a dev server. */
@@ -46,14 +40,13 @@ interface World {
   readonly processes?: MemoryProcesses.World
   readonly reservations?: MemoryReservations.World
   readonly scripts?: MemoryScriptFiles.World
-  readonly launchers?: Omit<MemoryLaunchers.World, "written">
 }
 
 /** The plugin started on a stand-in host, and a call through the hooks it registered. */
 const start = (options: Record<string, unknown> = { home: HOME }, world: World = {}) =>
   Effect.gen(function* () {
     const hooks: Record<string, Array<Hook>> = {}
-    const shellHooks: Record<string, Array<(invocation: Invocation) => Effect.Effect<void>>> = {}
+    const shellHooks: Record<string, Array<unknown>> = {}
     const register =
       <C>(into: Record<string, Array<C>>) =>
       (name: string, callback: C) =>
@@ -62,7 +55,6 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
           return { dispose: Effect.void }
         })
     const host = { options, tool: { hook: register(hooks) }, shell: { hook: register(shellHooks) } } as unknown as Host
-    const written = new Map<string, string>()
     yield* make(() =>
       Layer.mergeAll(
         MemorySessionDirectories.layer(world.sessions ?? { ses_1: "/work/app", ses_child: "/work/app" }),
@@ -72,16 +64,8 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
         MemoryScriptFiles.layer(world.scripts),
         MemorySubagents.layer(world.parents ?? { ses_1: undefined, ses_child: "ses_1" }),
         MemoryProcesses.layer(world.processes ?? PROCESSES),
-        MemoryLaunchers.layer({ scope: false, ...world.launchers, written }),
       ),
     ).effect(host)
-
-    /** One spawn through the shell's `create.before` hooks, as OpenCode resolves it: what it spawns afterwards. */
-    const spawn = Effect.fn("GuardServerTest.spawn")(function* (command: string, shell = "/bin/zsh") {
-      const invocation: Invocation = { command, cwd: "/work/app", timeout: 0, shell, env: { PATH: "/usr/bin" } }
-      for (const hook of shellHooks["create.before"] ?? []) yield* hook(invocation)
-      return invocation
-    })
 
     /** One tool call through the `execute.before` hooks: the refusal's message, or undefined when it may run. */
     const call = Effect.fn("GuardServerTest.call")(function* (tool: string, input: unknown, sessionID = "ses_1") {
@@ -95,7 +79,7 @@ const start = (options: Record<string, unknown> = { home: HOME }, world: World =
       }
       return undefined
     })
-    return { call, hooks, spawn, written }
+    return { call, hooks, shellHooks }
   })
 
 const scenario = <A, E>(body: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(body))
@@ -568,52 +552,65 @@ describe("the guard plugin", () => {
     ))
 })
 
-describe("the shell policy", () => {
-  test("spawns a heavy command through a launcher of its shell, the command as written, and any other through its shell", () =>
+// guard-no-admission's law: a command OpenCode spawns runs as written. For
+// every line of a generated set (plain, heavy-looking, with and without a
+// host-admit prefix, nested), no hook of the guard's stands between the call
+// and its process, and the process starts in the class of one the test
+// spawns untouched: the same niceness and cgroup (no nice launcher, no
+// systemd scope), with other commands running beside it.
+const WORK = [
+  "bun test /nonexistent/loop-probe-x",
+  "bun run gate --nonexistent-loop-probe-x",
+  "tsc -p /nonexistent/loop-probe-x",
+  "go build /nonexistent/loop-probe-x",
+  "cargo build --manifest-path /nonexistent/loop-probe-x",
+  "vitest run /nonexistent/loop-probe-x",
+  "limactl start /nonexistent/loop-probe-x",
+  "ls /nonexistent/loop-probe-x",
+  "git -C /nonexistent/loop-probe-x status",
+]
+const FORMS = [
+  (line: string) => line,
+  (line: string) => `cd -- "$PWD" && ${line}`,
+  (line: string) => `host-admit check run --class check --width 4 -- ${line}`,
+  (line: string) => `host-admit check run -- sh -c '${line}'`,
+  (line: string) => `timeout 30 env A=1 ${line}`,
+  (line: string) => `sh -c 'host-admit check run --width 2 -- ${line}'`,
+]
+const LINES = WORK.flatMap((line) => FORMS.map((form) => form(line)))
+// What the started process reports of itself: its niceness and its cgroup.
+const REPORT = "ps -o ni= -p $$; cat /proc/self/cgroup 2>/dev/null; true"
+
+describe("the shell", () => {
+  test("registers no shell hook: every command OpenCode spawns runs as written, and an older config's limits are ignored", () =>
     scenario(
       Effect.gen(function* () {
-        const { spawn, written } = yield* start()
-        const heavy = yield* spawn("cd opencode && bun run gate")
-        expect(heavy.command).toBe("cd opencode && bun run gate")
-        expect(heavy.shell).toBe("/launchers/0/zsh")
-        expect(written.get("/launchers/0/zsh")).toContain("exec nice -n 10 '/bin/zsh' \"$@\"")
-        expect((yield* spawn("bun test", "/bin/bash")).shell).toBe("/launchers/1/bash")
-        expect((yield* spawn("bun test")).shell).toBe("/launchers/0/zsh")
-        const light = yield* spawn("ls -la")
-        expect(light).toEqual({ command: "ls -la", cwd: "/work/app", timeout: 0, shell: "/bin/zsh", env: { PATH: "/usr/bin" } })
+        const { shellHooks, call } = yield* start({ home: HOME, heavy: ["make check"], nice: 5, memoryMax: "8G", cpuWeight: 50, launchers: "/nowhere" })
+        expect(shellHooks).toEqual({})
+        expect(yield* call("shell", { command: "bun test" })).toBeUndefined()
       }),
     ))
 
-  test("on systemd it caps memory at 12G with CPU weight 20 by default, and takes the options' limits and patterns", () =>
+  test("every generated line starts at its caller's niceness and cgroup, with others running", () =>
     scenario(
       Effect.gen(function* () {
-        const defaults = yield* start({ home: HOME }, { launchers: { scope: true } })
-        yield* defaults.spawn("vitest run")
-        expect([...defaults.written.values()][0]).toContain("systemd-run --user --scope --quiet --collect -p MemoryMax=12G -p CPUWeight=20 -- '/bin/zsh'")
-        const tuned = yield* start({ home: HOME, heavy: ["make check"], nice: 5, memoryMax: "8G", cpuWeight: 50 }, { launchers: { scope: true } })
-        expect((yield* tuned.spawn("bun test")).shell).toBe("/bin/zsh")
-        expect((yield* tuned.spawn("make check")).shell).toBe("/launchers/0/zsh")
-        expect([...tuned.written.values()][0]).toContain("exec nice -n 5 systemd-run --user --scope --quiet --collect -p MemoryMax=8G -p CPUWeight=50 --")
-        const off = yield* start({ home: HOME, heavy: [] })
-        expect((yield* off.spawn("bun test")).shell).toBe("/bin/zsh")
-      }),
-    ))
-
-  test("runs a heavy command as it would have when no launcher can be written", () =>
-    scenario(
-      Effect.gen(function* () {
-        const { spawn } = yield* start({ home: HOME }, { launchers: { scope: false, unwritable: true } })
-        expect((yield* spawn("bun test")).shell).toBe("/bin/zsh")
-      }),
-    ))
-
-  test("stops on a malformed limit", () =>
-    scenario(
-      Effect.gen(function* () {
-        for (const options of [{ nice: 20 }, { nice: 1.5 }, { memoryMax: "lots" }, { cpuWeight: 0 }, { heavy: "bun test" }]) {
-          const exit = yield* Effect.exit(start({ home: HOME, ...options }))
-          expect([options, Exit.isFailure(exit) && String(exit.cause).includes("dotfiles-opencode.guard: invalid options")]).toEqual([options, true])
-        }
-      }),
-    ))
+        const { shellHooks } = yield* start()
+        // No hook of the guard's runs before a spawn: OpenCode spawns `<shell> -c <line>` as written.
+        expect(Object.keys(shellHooks)).toEqual([])
+        const fs = yield* FileSystem.FileSystem
+        const path = yield* Path.Path
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+        // This tree's host-admit answers the prefixed lines, not the installed one.
+        const bin = yield* fs.makeTempDirectoryScoped()
+        yield* fs.symlink(yield* path.fromFileUrl(new URL("./host-admit.ts", import.meta.url)), path.join(bin, "host-admit"))
+        // Every line runs in an empty folder: a heavy-looking line finds no package, test or module and ends at once.
+        const cwd = yield* fs.makeTempDirectoryScoped()
+        const env = { PATH: `${bin}:${yield* Config.String("PATH")}` }
+        const shell = (line: string) => spawner.string(ChildProcess.make("/bin/sh", ["-c", line], { cwd, env, extendEnv: true, stderr: "ignore", forceKillAfter: "5 seconds" }))
+        yield* Effect.forEach(Array.from({ length: 8 }), () => spawner.spawn(ChildProcess.make("sleep", ["20"], { stdout: "ignore", stderr: "ignore", forceKillAfter: "5 seconds" })))
+        const untouched = (yield* shell(REPORT)).trim()
+        const reports = yield* Effect.forEach(LINES, (line) => shell(`${line}; ${REPORT}`), { concurrency: 8 })
+        expect(reports.flatMap((report, i) => Option.toArray(Option.liftPredicate(`${LINES[i]}: ${report.trim()}`, () => !report.trim().endsWith(untouched))))).toEqual([])
+      }).pipe(Effect.provide(BunServices.layer)),
+    ), hangGuard("process-fixture"))
 })

@@ -13,7 +13,6 @@ import IdleCompact from "@dotfiles/opencode-cmd-idle-compact/server"
 import ModelNext from "@dotfiles/opencode-cmd-model-next/server"
 import type { ProcessInfo } from "@dotfiles/opencode-guard/kill"
 import * as MemoryCheckouts from "@dotfiles/opencode-guard/memory/checkouts"
-import * as MemoryLaunchers from "@dotfiles/opencode-guard/memory/launchers"
 import * as MemoryRepoRoots from "@dotfiles/opencode-guard/memory/repo-roots"
 import * as MemoryReservations from "@dotfiles/opencode-guard/memory/reservations"
 import * as MemoryScriptFiles from "@dotfiles/opencode-guard/memory/script-files"
@@ -100,8 +99,8 @@ export const wake = (world: World, runner: MemoryRunner.MemoryRunner = MemoryRun
 }
 
 /**
- * The machine the guard reads beside OpenCode: its process table, the repositories on disk, and the launchers it
- * writes, each with the fault a test may turn on at any instant: `ps` that fails, a launcher that cannot be written.
+ * The machine the guard reads beside OpenCode: its process table and the repositories on disk, with the fault a
+ * test may turn on at any instant: `ps` that fails.
  */
 export interface GuardMachine {
   processes: ReadonlyArray<ProcessInfo>
@@ -111,11 +110,6 @@ export interface GuardMachine {
   readonly checkouts: MemoryCheckouts.World
   /** The work bases, with the workspaces of each still being made. */
   readonly reservations: MemoryReservations.World
-  /** Each launcher written, by its path (`/launchers/<n>/<name>`). */
-  readonly launchers: Map<string, string>
-  launchersFail: boolean
-  /** Whether a systemd scope runs here: never on the world's machine unless a test says so. */
-  readonly scope: boolean
 }
 
 export const guardMachine = (input: {
@@ -129,15 +123,12 @@ export const guardMachine = (input: {
   repos: input.repos ?? [],
   checkouts: input.checkouts ?? { checkouts: [] },
   reservations: input.reservations ?? { bases: {} },
-  launchers: new Map(),
-  launchersFail: false,
-  scope: false,
 })
 
 /**
  * The guard (`cmd/guard/server.ts`'s `make`) on the world: where a session runs and whether it is a subagent through
- * its own OpenCode adapters on the world's context (`sessionsOf`); the process table, the repositories and the
- * launchers are the `machine`'s, under the guard's memory doubles' rules (`mods/guard/memory`, held by `mods/guard/laws.ts`).
+ * its own OpenCode adapters on the world's context (`sessionsOf`); the process table and the repositories
+ * are the `machine`'s, under the guard's memory doubles' rules (`mods/guard/memory`, held by `mods/guard/laws.ts`).
  */
 export const guard = (machine: GuardMachine) =>
   makeGuard((ctx) =>
@@ -148,14 +139,6 @@ export const guard = (machine: GuardMachine) =>
       MemoryReservations.layer(machine.reservations),
       // No script on the world's disk: the keychain rule's script reads are the seam test's (cmd/guard/server.test.ts).
       MemoryScriptFiles.layer(),
-      // The memory launchers read `unwritable` at each write: the machine's fault, as it is now.
-      MemoryLaunchers.layer({
-        written: machine.launchers,
-        scope: machine.scope,
-        get unwritable() {
-          return machine.launchersFail
-        },
-      }),
       Layer.succeed(
         Processes,
         Processes.of({

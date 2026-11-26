@@ -1,4 +1,4 @@
-// @reads cmd/guard cmd/guard/server.ts cmd/kernel
+// @reads cmd/guard cmd/kernel
 // accept: deep (56.4 s alone on a quiet host: 1-minute load 9.8–12.8 on 12 cores; it boots real OpenCode and drives its scenario through events that take that long)
 // The guard in real OpenCode (the fork, through its SDK) on the scripted
 // model, beside the kernel: what only the real host proves. The guard's
@@ -10,14 +10,14 @@
 // its `tools.shell` call goes through the guard (the kernel runs in a Bun
 // worker the world does not model); the work repository's HEAD and dirty file
 // stay as they were on disk; a session the fork's subagent tool starts is a
-// subagent to the guard; a heavy command's launcher is a file on disk that
-// really runs it niced; the host's own `ps` shows the server a kill by
+// subagent to the guard; a heavy-looking command really runs at the run's
+// niceness, with no launcher; the host's own `ps` shows the server a kill by
 // pattern would hit. Every shell call runs in a git repository the run makes
 // in a scratch dir. The guard on its own is tested beside its code in
 // mods/guard and cmd/guard.
 import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { readScratchDirectorySync as readdirSync, readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
+import { readScratchFileSync as readFileSync, scratchExistsSync as existsSync } from "./read-path.ts"
 import { getPriority } from "node:os"
 import { join, resolve } from "node:path"
 import { DIRTY, git, KEPT_FILE } from "./guard/repo.ts"
@@ -133,11 +133,11 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
     hangGuard("fork-turn"),
   )
 
-  // Real alone: the niceness a process runs at, the launcher file on disk, and the host's own process table (`ps`)
-  // listing the server. Which program each command spawns with and the launcher's text are simulated
+  // Real alone: the niceness a process runs at, that no launcher is written, and the host's own process table (`ps`)
+  // listing the server. Which program each command spawns with is simulated
   // (cmd/guard/guard.sim.test.ts, the policy case).
   test(
-    "a heavy command's launcher is a file on disk named as the shell, and runs it 10 nicer than a light one; the real process table shows the server a kill by pattern would hit",
+    "a heavy-looking command runs at the same niceness as a light one, with no launcher written; the real process table shows the server a kill by pattern would hit",
     async () => {
       const result = await run("policy", { task: POLICY_TASK, codeOnly: false })
       const parts = toolParts(result.messages)
@@ -146,16 +146,11 @@ describe.skipIf(!fork)("in real OpenCode, on the scripted model", () => {
       const kill = parts.find((part) => part.state.input.command === killByPattern(join(scratch, "policy/spec.json")))
       expect(kill?.state.status).toBe("error")
       expect(said(kill)).toContain("would also kill the OpenCode server this session runs on")
-      // The run's process, and so OpenCode's shells, start at this test's niceness; the guard adds 10, up to the
-      // system's highest niceness (20 on macOS, 19 on Linux).
+      // The run's process, and so OpenCode's shells, start at this test's niceness, a heavy-looking line's too.
       const base = getPriority()
       expect(niceness(light)).toBe(base)
-      expect(niceness(heavy)).toBe(Math.min(base + 10, process.platform === "darwin" ? 20 : 19))
-      const launchers = join(scratch, "policy/home/.cache/opencode/guard-launchers")
-      // One launcher, named as the shell it stands in for, so OpenCode reads the command in that shell's dialect.
-      const written = readdirSync(launchers).flatMap((hash) => readdirSync(join(launchers, hash)))
-      expect(written).toHaveLength(1)
-      expect(written[0]).toMatch(/^(ba|z|da|k)?sh$/)
+      expect(niceness(heavy)).toBe(base)
+      expect(existsSync(join(scratch, "policy/home/.cache/opencode/guard-launchers"))).toBe(false)
     },
     hangGuard("fork-turn"),
   )

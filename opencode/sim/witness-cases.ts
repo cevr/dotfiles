@@ -1,7 +1,7 @@
 /** Required coverage domains. This file declares laws, not simulator fixtures. */
 export const GUARD_CALLS = ["reset", "rm-home", "rm-repo", "kill-server", "kill-other", "sleep", "harmless", "heavy"] as const
 export const GUARD_FORMS = ["shell", "bash", "shell-text", "bash-text"] as const
-export const GUARD_FAULTS = ["kill-other", "heavy"] as const
+export const GUARD_FAULTS = ["kill-other"] as const
 export const GUARD_ROLES = [false, true] as const
 export const GUARD_STATES = [true, false] as const
 export const GUARD_RESTART = "guard reloads its copy on the restarted world"

@@ -1,8 +1,7 @@
 // The contracts the guard needs from outside: whether a path is a
 // repository's root, the directory a session's shell runs in, whether a
-// session is a subagent, the processes running on the machine, a checkout's
-// file system and origin with the workspaces' bases, and where
-// launchers live and whether systemd scopes work. Each states its failure;
+// session is a subagent, the processes running on the machine, and a
+// checkout's file system and origin with the workspaces' bases. Each states its failure;
 // `laws.ts` states what every implementation owes.
 import { Context, type Effect, type Option, Schema } from "effect"
 import type { ProcessInfo } from "./kill.ts"
@@ -50,31 +49,6 @@ export class SessionDirectories extends Context.Service<
     readonly directoryOf: (sessionID: string) => Effect.Effect<string, SessionUnreadable>
   }
 >()("dotfiles-opencode/guard/SessionDirectories") {}
-
-/** A launcher could not be written. */
-export class LauncherUnavailable extends Schema.TaggedError<LauncherUnavailable>()("LauncherUnavailable", {
-  message: Schema.String,
-}) {}
-
-/** Where launchers (launcher.ts) live on disk. */
-export class Launchers extends Context.Service<
-  Launchers,
-  {
-    /** The absolute path of an executable file named `name` holding `script`, written when no such file exists yet. Two scripts never share a path. */
-    readonly install: (name: string, script: string) => Effect.Effect<string, LauncherUnavailable>
-  }
->()("dotfiles-opencode/guard/Launchers") {}
-
-/** Whether this machine can run a command in a systemd user scope, and in the idle I/O class. */
-export class Scopes extends Context.Service<
-  Scopes,
-  {
-    /** True when `systemd-run --user --scope` works here; asked once, then known. */
-    readonly available: Effect.Effect<boolean>
-    /** True when `ionice -c3` can run a command here (Linux, with `ionice` on PATH). */
-    readonly ionice: Effect.Effect<boolean>
-  }
->()("dotfiles-opencode/guard/Scopes") {}
 
 /** The guard could not read a checkout, or the bases workspaces copy from. */
 export class CheckoutUnknown extends Schema.TaggedError<CheckoutUnknown>()("CheckoutUnknown", {

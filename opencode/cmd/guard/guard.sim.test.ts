@@ -4,16 +4,16 @@
 // names, with what the world carries of each claim. The guard runs from its
 // composition root (`cmd/guard/server.ts`'s `make`) on the world's context: the
 // registry's `execute.before` hook after the host's input repair, the shell's
-// `create.before` hook on each spawn (sim/host-laws.ts holds both to real
-// OpenCode). Where a session runs and whether it is a subagent come through the
-// guard's own OpenCode adapters; the process table, the repositories and the
-// launchers are the world's machine (sim/plugins.ts `guard`).
+// spawn as OpenCode makes it, with no shell hook of the guard's (sim/host-laws.ts
+// holds both to real OpenCode). Where a session runs and whether it is a subagent
+// come through the guard's own OpenCode adapters; the process table and the
+// repositories are the world's machine (sim/plugins.ts `guard`).
 //
 // What stays real (tests/parity/hooks.json says which, by name): the kernel's
 // cell (a Bun worker), the subagent tool's own part, a work repository's HEAD
-// and dirty file on disk, the niceness a launcher really runs at, and the
-// launcher file on disk. The world proves the guard's decisions: what is
-// refused in which words, what reaches the shell, and with which program.
+// and dirty file on disk, and the niceness a command really runs at. The world
+// proves the guard's decisions: what is refused in which words, what reaches
+// the shell, and with which program.
 import { Array as Arr, Effect, Option, Schema } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import { simulationRunner } from "../../sim/seed.ts"
@@ -243,10 +243,10 @@ seeded("a subagent's shell call opening with sleep 60 is refused in the guard's 
 )
 
 seeded(
-  "a heavy command runs niced under its command as written, a light one at the run's niceness, and a kill by a pattern that matches the server is refused",
+  "a heavy-looking command runs as written at the run's niceness, as a light one does, and a kill by a pattern that matches the server is refused",
   ({ seed, expect }) =>
     Effect.gen(function* () {
-      const { world, root, held, tools } = yield* run(seed, POLICY_TASK)
+      const { world, root, tools } = yield* run(seed, POLICY_TASK)
       // The model's calls, and so the tool parts, show each command as the model wrote it: only the program that runs it changes.
       const [heavyCall, lightCall, killCall] = commandsOf(world, root)
       expect(heavyCall).toBe(HEAVY_NICE)
@@ -258,15 +258,10 @@ seeded(
       expect(light?.error).toBe(false)
       const [heavySpawn, lightSpawn, ...spawnedRest] = world.spawned()
       expect(spawnedRest).toEqual([])
-      // The heavy line runs as written, through the one launcher, named as the shell it stands in for, at nice 10.
+      // The heavy-looking line runs as written, with the shell itself: no launcher stands in for it.
       expect(heavySpawn?.command).toBe(HEAVY_NICE)
-      const launchers = [...held.launchers]
-      expect(launchers).toHaveLength(1)
-      const [path, text] = launchers[0] ?? ["", ""]
-      expect(heavySpawn?.shell).toBe(path)
-      expect(path.slice(path.lastIndexOf("/") + 1)).toMatch(/^(ba|z|da|k)?sh$/)
-      expect(text).toContain(`exec nice -n 10 '${World.SHELL}' "$@"`)
-      // The light line runs with the shell itself, at the run's niceness.
+      expect(heavySpawn?.shell).toBe(World.SHELL)
+      // So does the light line.
       expect(lightSpawn?.command).toBe(LIGHT_NICE)
       expect(lightSpawn?.shell).toBe(World.SHELL)
       expect(kill?.name).toBe("shell")
