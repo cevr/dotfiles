@@ -31,7 +31,7 @@ import {
   type LedgerState,
 } from "./account-pool.ts"
 import { CACHE_LIFE_MS, DEFAULT_HOLD_MS, DEFAULT_RULES, PIN_IDLE_MS, WINDOW_MS, type RequestKind } from "./accounts.ts"
-import { dispatchPace } from "./pace.ts"
+import { dispatchPace, eligibleFor } from "./pace.ts"
 import type { QuotaReading } from "./quota.ts"
 
 const MINUTE = 60_000
@@ -216,6 +216,56 @@ describe("a request is placed", () => {
       Story.clock(T0 + PIN_IDLE_MS),
       ...placed("s1", "b", T0 + PIN_IDLE_MS),
     ))
+
+  // Spend-evenly placement (placement.ts `expiring`) moves only what placement places: a run's pin and a live cache stay.
+  test("a run bound to an account stays mid-turn when another week would expire more unused; its next run after the cache goes there", () =>
+    run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      ...read("a", reading({ windows: [{ name: "7d", utilization: 0.2, resetAt: T0 + 20 * HOUR }] })),
+      ...read("b", reading({ windows: [{ name: "7d", utilization: 0.2, resetAt: T0 + 150 * HOUR }] })),
+      ...placed("s1", "a", T0),
+      // b's week now would expire more unused than a's: new work goes to b.
+      ...read("a", reading({ windows: [{ name: "7d", utilization: 0.9, resetAt: T0 + 20 * HOUR }] })),
+      ...read("b", reading({ windows: [{ name: "7d", utilization: 0.1, resetAt: T0 + 30 * HOUR }] })),
+      ...placed("s2", "b", T0),
+      // s1's turn goes on: each of its requests stays on a.
+      ...placed("s1", "a", T0),
+      ...placed("s1", "a", T0, "title"),
+      ...released("s1"),
+      // Its turn over, its next run stays on a while its cache lives there.
+      ...placed("s1", "a", T0),
+      ...released("s1"),
+      // Once the cache is gone, its next run goes where the week would expire most unused.
+      Story.clock(T0 + CACHE_LIFE_MS),
+      ...placed("s1", "b", T0 + CACHE_LIFE_MS),
+    ))
+
+  test("a week at 95% to 99% that resets soonest still takes new work; at the week's 99% hold line it takes none", () => {
+    const week = (utilization: number, hours: number) => reading({ windows: [{ name: "7d", utilization, resetAt: T0 + hours * HOUR }] })
+    // The pace's own rule (pace.ts eligibleFor) names who may take the run; placement orders those.
+    const admitted = (a: number) =>
+      eligibleFor(
+        [
+          { credentialID: "a", live: 0, load: 0, noRoom: false, reading: week(a, 2) },
+          { credentialID: "b", live: 0, load: 0, noRoom: false, reading: week(0.1, 150) },
+        ],
+        T0,
+      ).map((account) => account.credentialID)
+    expect(admitted(0.97)).toEqual(["a", "b"])
+    expect(admitted(0.99)).toEqual(["b"])
+    return run(
+      accounts("a", "b"),
+      Story.clock(T0),
+      ...read("b", week(0.1, 150)),
+      ...read("a", week(0.97, 2)),
+      Story.when(PlaceRequest.make({ sessionID: "s1", kind: "primary", eligible: admitted(0.97) })),
+      recorded(RequestPlaced.make({ sessionID: "s1", kind: "primary", credentialID: "a", at: T0 })),
+      ...read("a", week(0.99, 2)),
+      Story.when(PlaceRequest.make({ sessionID: "s2", kind: "primary", eligible: admitted(0.99) })),
+      recorded(RequestPlaced.make({ sessionID: "s2", kind: "primary", credentialID: "b", at: T0 })),
+    )
+  })
 
   test("the soonest weekly reset wins between fresh accounts", () =>
     run(

@@ -2,9 +2,19 @@
  * Where a run goes: the placement walk, over plain data.
  *
  * The choice comes first, then the eligible accounts below their sustainable
- * live load by weekly reset (missing weekly readings last), then the others
- * by score (those with no room after those with some; equal scores by weekly
- * reset), then held accounts in pool order. Equal resets keep pool order.
+ * live load by weekly reset (missing weekly readings last), then the others:
+ * those with no room after those with some; then the week that would expire
+ * most unused first (`expiring`), weeks not read after those read; then by
+ * score, equal scores by weekly reset; then held accounts in pool order.
+ * Equal resets keep pool order.
+ *
+ * `expiring` is the share of its week an account would leave unused at its
+ * reset if it kept its week's rate so far (`used / elapsed`), per hour left to
+ * that reset: `(TARGET − used) / left − used / elapsed`. A soon reset and a
+ * week far under its line both raise it, so the quota that is about to be
+ * lost gets the work, and an account that takes work sees it fall. The pace
+ * (pace.ts) still decides which accounts may take the run at all: an account
+ * past its line is not eligible, so this order never sends one past it.
  *
  * `score = load / unit + live`, where a unit is the mean recorded price of a
  * session on the provider (`spent / sessions`). With no recorded price, or no
@@ -19,6 +29,10 @@
  * pace place only a run whose cache is gone, or one that left a held account.
  * With none eligible, the preferred account, else the pool's first.
  */
+import { Option, Order } from "effect"
+import { TARGET, WEEK } from "./weekly-pace.ts"
+
+const HOUR = 3_600_000
 
 /** What placement reads of one account. */
 export interface PlacementSlot<Slot> {
@@ -38,6 +52,8 @@ export interface PlacementSlot<Slot> {
   readonly sustainable?: number
   /** Its weekly window's reset, epoch ms, when read. */
   readonly weeklyResetAt?: number
+  /** The share of its week used (0 to 1), as last read; with `weeklyResetAt` and the table's `now` it gives `expiring`. */
+  readonly weeklyUsed?: number
   /**
    * False when the request's admission (pace.ts `eligibleFor`) leaves it out
    * for the model asked: it is chosen only when no eligible account is left,
@@ -55,7 +71,27 @@ export interface PlacementTable<Slot> {
   readonly sessions: number
   /** Where the run's prompt cache still lives, if anywhere. */
   readonly preferred?: Slot
+  /** The placement's time, epoch ms: without it no week is read as expiring. */
+  readonly now?: number
 }
+
+/**
+ * The share of its week an account would leave unused at its reset at its
+ * week's rate so far, per hour left: none without a week read, or once the
+ * reset it names has passed (the new week's reading is not in yet).
+ */
+export const expiring = (used: number, resetAt: number, now: number): Option.Option<number> =>
+  Option.liftPredicate(resetAt - now, (left) => left > 0 && left <= WEEK).pipe(
+    Option.map((left) => (TARGET - used) / (left / HOUR) - used / Math.max(1, (WEEK - left) / HOUR)),
+  )
+
+const expiringOf = <Slot>(entry: PlacementSlot<Slot>, now: Option.Option<number>): Option.Option<number> =>
+  Option.all([Option.fromUndefinedOr(entry.weeklyUsed), Option.fromUndefinedOr(entry.weeklyResetAt), now]).pipe(
+    Option.flatMap(([used, resetAt, at]) => expiring(used, resetAt, at)),
+  )
+
+/** The week that would expire most unused first; a week not read after every one read. */
+const byExpiring = Order.flip(Option.makeOrder(Order.Number))
 
 /** The accounts in the order a run should try them; the first is the choice. */
 export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot, ...Slot[]] {
@@ -72,6 +108,7 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
     return leftReset < rightReset ? -1 : 1
   }
   const admitted = (entry: PlacementSlot<Slot>) => entry.eligible !== false
+  const now = Option.fromUndefinedOr(table.now)
   const eligible = table.slots
     .filter((entry) => !entry.held)
     .sort((left, right) => {
@@ -84,6 +121,8 @@ export function rankPlacement<Slot>(table: PlacementTable<Slot>): readonly [Slot
       const leftFull = noRoom(left)
       const rightFull = noRoom(right)
       if (leftFull !== rightFull) return leftFull ? 1 : -1
+      const byWeek = byExpiring(expiringOf(left, now), expiringOf(right, now))
+      if (byWeek !== 0) return byWeek
       const byScore = score(left) - score(right)
       if (byScore !== 0) return byScore
       return byWeeklyReset(left, right)

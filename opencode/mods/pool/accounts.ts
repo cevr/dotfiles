@@ -11,8 +11,10 @@
 //   cache belongs to one account. It leaves only when that account is held:
 //   room, load, live sessions and pace never move it.
 // - Any other new run is placed by `rankPlacement`: held accounts last,
-//   accounts at their share after those with room, then by recorded load and
-//   live sessions, and equal accounts by the soonest weekly reset.
+//   accounts at their 5-hour share after those with room, then the week that
+//   would expire most unused at its reset first (placement.ts `expiring`),
+//   then by recorded load and live sessions, and equal accounts by the
+//   soonest weekly reset.
 // - An account is held until the time its refusal names: a plan limit until
 //   its window resets, a rate limit for its `retry-after`, a rejected token
 //   until the host refreshes it, a failed sign-in for as long as the provider
@@ -21,7 +23,7 @@ import { Option, Schema } from "effect"
 import type { AccountPoolState } from "./account-pool.ts"
 import { rankPlacement, type PlacementSlot } from "./placement.ts"
 import type { AccountStatus, Hold, SessionAccount } from "./status.ts"
-import { tracked, type QuotaReading } from "./quota.ts"
+import type { QuotaReading } from "./quota.ts"
 export { DEFAULT_HOLD_MS } from "./hold.ts"
 
 const MINUTE = 60_000
@@ -37,8 +39,6 @@ export const CACHE_LIFE_MS = 5 * MINUTE
 export const PIN_IDLE_MS = 30 * MINUTE
 /** The share of an account's 5-hour window a pool spends before the account has no room. */
 export const FIVE_HOUR_SHARE = 0.9
-/** The share of any other window a pool spends before the account has no room. */
-export const OTHER_WINDOW_SHARE = 0.95
 
 /** What the pool's rules read from its settings. */
 export interface Rules {
@@ -164,8 +164,6 @@ export const placedKey = (sessionID: string, kind: RequestKind) => `${sessionID}
 /** The same step, wherever it is held. */
 export const stepIdentity = (step: Step) => `${step.at}/${step.sessionID}/${step.credentialID}/${step.cost}`
 
-const shareOf = (window: string) => (window === "5h" ? FIVE_HOUR_SHARE : OTHER_WINDOW_SHARE)
-
 export const held = (state: AccountPoolState, credentialID: string, now: number): boolean => {
   const hold = state.holds[credentialID]
   return hold !== undefined && liveHold(hold, now)
@@ -187,9 +185,15 @@ const freshReading = (state: AccountPoolState, credentialID: string, now: number
   }
 }
 
-/** At its share: a tracked window spent to the pool's share of it; a model's own window limits only that model, and an unknown window never binds. */
+/**
+ * At its share: the 5-hour window spent to the pool's share of it. The week is
+ * not a share here: the even line and the week's hold line (pace.ts) bound it,
+ * and placement spends the week that would expire most unused first
+ * (placement.ts `expiring`), its last points too. A model's own window limits
+ * only that model, and an unknown window never binds.
+ */
 const noRoom = (reading: QuotaReading | undefined): boolean =>
-  reading !== undefined && reading.windows.some((window) => tracked(window.name) && window.utilization >= shareOf(window.name))
+  reading !== undefined && reading.windows.some((window) => window.name === "5h" && window.utilization >= FIVE_HOUR_SHARE)
 
 /** Each session whose run, or cache, is on an account now. */
 const liveSessions = (state: AccountPoolState, now: number, rules: Rules): Map<string, string> => {
@@ -231,7 +235,7 @@ export const rank = (
       live: [...where].filter(([session, account]) => session !== sessionID && account === credentialID).length,
       held: held(state, credentialID, now),
       noRoom: noRoom(reading),
-      ...(weekly?.resetAt === undefined ? {} : { weeklyResetAt: weekly.resetAt }),
+      ...(weekly?.resetAt === undefined ? {} : { weeklyResetAt: weekly.resetAt, weeklyUsed: weekly.utilization }),
       eligible: Option.match(Option.fromUndefinedOr(eligible), { onNone: () => true, onSome: (ids) => ids.includes(credentialID) }),
     }
   }
@@ -244,6 +248,7 @@ export const rank = (
     slots: [slot(first), ...others.map(slot)],
     spent,
     sessions,
+    now,
     ...(preferred === undefined ? {} : { preferred }),
   })
 }

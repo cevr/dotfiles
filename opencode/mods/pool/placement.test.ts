@@ -63,6 +63,32 @@ describe("rankPlacement", () => {
     expect(ranked).toEqual(["c", "a", "b"])
   })
 
+  test("among accounts with room, the order is by the share of the week that would expire unused at its reset at its rate so far, per hour left ((99% − used) / hours left − used / hours elapsed, highest first), so the soonest reset and the week furthest under its line come first, unread weeks after read ones, before load", () => {
+    const week = (used: number, hoursLeft: number, fields: Partial<PlacementSlot<string>> = {}) => ({ weeklyUsed: used, weeklyResetAt: T0 + hoursLeft * HOUR, ...fields })
+    const ranked = rankPlacement({
+      slots: [
+        // Ahead of its line: (0.99 − 0.8) / 100 − 0.8 / 68 < 0.
+        slot("ahead", week(0.8, 100)),
+        // On its line with a late reset: 0.49 / 84 − 0.5 / 84 ≈ 0.
+        slot("even", week(0.5, 84)),
+        // Under its line, resetting late: 0.89 / 120 − 0.1 / 48 ≈ 0.0053.
+        slot("late", week(0.1, 120)),
+        // Resetting soon, far under its line, though it carries the most load: 0.59 / 10 − 0.4 / 158 ≈ 0.057.
+        slot("soon", week(0.4, 10, { load: 50, live: 3 })),
+        // No week read: after every read one.
+        slot("unread"),
+      ],
+      spent: 10,
+      sessions: 5,
+      now: T0,
+    })
+    expect(ranked).toEqual(["soon", "late", "even", "ahead", "unread"])
+    // A held account and one at its share still go after it, whatever their week.
+    expect(rankPlacement({ slots: [slot("held", { held: true, ...week(0, 5) }), slot("full", { noRoom: true, ...week(0, 5) }), slot("ahead", week(0.8, 100))], spent: 0, sessions: 0, now: T0 })).toEqual(["ahead", "full", "held"])
+    // The preferred account keeps the run whatever the week says.
+    expect(rankPlacement({ slots: [slot("soon", week(0.4, 10)), slot("ahead", week(0.8, 100))], spent: 0, sessions: 0, now: T0, preferred: "ahead" })[0]).toBe("ahead")
+  })
+
   test("an account at its share goes after every account with room, whatever its score", () => {
     const ranked = rankPlacement({
       slots: [slot("full", { noRoom: true }), slot("busy", { live: 3 })],
