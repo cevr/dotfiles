@@ -207,6 +207,7 @@ const snapshotOf = (info: Info, mark: MarkRead): Snapshot => {
       const checked = Option.fromUndefinedOr(recheckAt)
       if (Option.isSome(checked)) value.latch = Phase.cases.Latched.make({ ...times, recheckAt: checked.value })
       else value.latch = Phase.cases.Latched.make(times)
+      value.latchAt = mark.mark.at
     }
   }
   return value

@@ -414,6 +414,8 @@ export interface Snapshot {
   readonly idleAt?: number
   readonly background?: "Shell" | "Child" | "Wake"
   readonly latch?: Extract<Phase, { readonly _tag: "Latched" }>
+  /** When the pending latch was kept: one kept after the last round ended is the next round's (a continued round's). */
+  readonly latchAt?: number
   readonly latchCancelled?: boolean
   readonly latchFailed?: boolean
   readonly stopUncertain?: boolean
@@ -543,6 +545,8 @@ const phaseOf = (state: Projection, snapshot: Snapshot, applicable: boolean, bac
     subject: "stop", id: state.child, seenIn: Option.fromUndefinedOr(state.stopSeenIn),
   })
   const exit = Option.filter(Option.fromUndefinedOr(state.exits?.[0]), () => !snapshotIsNewer(state, snapshot))
+  // A continued round held after the last one ended is latched, not that round's end (batch 2026-11-26g).
+  if (snapshot.latch && latchedAfter(state.segment, Option.fromUndefinedOr(snapshot.latchAt))) return session(snapshot.latch, "wake-mark")
   if (applicable && state.segment) return orderedPhase(state.segment, background, exit, uncertainInput(state, state.segment.point.seq))
   if (snapshot.running) return session(Phase.cases.Running.make({}), "session")
   if (Option.isSome(background) && snapshot.outcome !== "interrupted") return continuing(background.value)
@@ -556,6 +560,11 @@ const phaseOf = (state: Projection, snapshot: Snapshot, applicable: boolean, bac
   if (snapshot.outcome && !applicable) return session(Phase.cases.Settled.make({ outcome: snapshot.outcome, cause: "Unknown" }), "session", {})
   return claim(Phase.cases.Unknown.make({}))
 }
+
+/** Whether a latch kept at `at` came after the recorded round ended: an ended segment whose end it follows. */
+const latchedAfter = (segment: Projection["segment"], at: Option.Option<number>) =>
+  Option.exists(Option.filter(Option.fromUndefinedOr(segment), ({ terminal }) => Boolean(terminal)), ({ point }) =>
+    Option.exists(at, (kept) => kept >= point.at))
 
 const uncertainInput = (state: Projection, after: number) =>
   Option.map(Option.filter(Option.fromUndefinedOr(state.uncertainInput), ({ seq }) => seq > after),
