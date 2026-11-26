@@ -28,6 +28,8 @@
 // Warm the root Effect test adapter before the fork TUI locks its plugin runtime to its own Effect copy.
 import "effect-bun-test"
 import "@opentui/solid/preload"
+// Before the fork's preload: it reads whether the scratch home was given (scratch-home.ts).
+import * as ScratchHome from "./scratch-home.ts"
 import "@opencode-tui/test/preload.ts"
 import { jest } from "bun:test"
 import * as NodeServices from "@effect/platform-node/NodeServices"
@@ -586,6 +588,7 @@ const navigateTo = (sessionID: string) =>
 
 const start = Effect.fn("SimTui.start")(function* (options: BootOptions, limitMs: number, hostLoad: Effect.Effect<SeedHostLoad>) {
   const before = yield* hostLoad
+  yield* ScratchHome.restore
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url))
@@ -707,7 +710,7 @@ export const shutdown = Effect.gen(function* () {
   }
   harness.release()
   // The host dirs go however the file ends: its app closed, its close failed, or its start failed with no app made.
-}).pipe(Effect.ensuring(Effect.orDie(dropHost)), Effect.provide(NodeServices.layer))
+}).pipe(Effect.ensuring(Effect.orDie(Effect.andThen(dropHost, ScratchHome.release))), Effect.provide(NodeServices.layer))
 
 /** The app for `options.file`, booted once per process: the app of another file closes first, so its timers and requests stop. */
 export const boot = (options: BootOptions) => bootWithin(options, BOOT_LIMIT_MS)

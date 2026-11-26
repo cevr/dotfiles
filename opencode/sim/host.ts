@@ -48,6 +48,7 @@ import type { Provider } from "@opencode/schema/provider"
 import { SessionID } from "@opencode/schema/session-id"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Array as Arr, type Cause, Data, DateTime, Effect, Exit, Fiber, Match, Option, Predicate, Queue, Result, Schema, type Types } from "effect"
+import { actionDenied } from "../mods/kernel/tools.ts"
 import { AUTOMATION_TOOLS } from "../mods/wake/automations.ts"
 import * as Faults from "./faults.ts"
 import * as Http from "./http.ts"
@@ -611,11 +612,8 @@ const agentOf = (id: string): MutableAgent => {
   }
 }
 
-/** Whether an agent's permissions deny a tool outright: its last matching rule denies every resource (packages/core/src/tool.ts `whollyDisabled`). */
-const denied = (name: string, agent: Types.DeepMutable<Agent.Info>) => {
-  const rule = agent.permissions.findLast((candidate) => candidate.action === "*" || candidate.action === name)
-  return rule?.resource === "*" && rule.effect === "deny"
-}
+/** Whether an agent's permissions deny a tool outright, as the registry decides (the fork's PermissionPolicy `isActionDenied`). */
+const denied = (name: string, agent: Types.DeepMutable<Agent.Info>) => actionDenied(name, agent.permissions)
 
 const ShellInput = Schema.Struct({ command: Schema.String, workdir: Schema.optional(Schema.String), background: Schema.optional(Schema.Boolean) })
 
