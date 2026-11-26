@@ -323,7 +323,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
           // refills the other spent account once the first refill is observed (its 5-hour window read back), once.
           const first = `${anthropic.claims[0]?.account}`
           const other = ["a", "b"].filter((account) => account !== first).join("")
-          quotas.set(first, { ...quotas.get(first)!, fiveHour: { utilization: 0.95, resetAt: stamp() + 4 * HOUR } })
+          quotas.set(first, { ...quotas.get(first)!, fiveHour: { utilization: 0.95, resetAt: now + 4 * HOUR } })
           yield* Effect.promise(() => pacing(claimCount, (count) => count > 1, () => `the other spent account's refill (${log()})`))
           yield* Effect.promise(() => swept(anthropic, 2, ["anthropic"]))
           expect(anthropic.claims.map(({ account, result }) => ({ account, result }))).toEqual([
