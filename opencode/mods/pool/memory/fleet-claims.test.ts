@@ -18,7 +18,7 @@
 //   reading right before the send: nothing more is spent.
 // - A restarted host lends nothing while a lease it lent may be live.
 import { describe, expect, test } from "bun:test"
-import { Clock, Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { Clock, Context, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
@@ -545,5 +545,129 @@ describe("a restart and the kill switch (batch 2026-11-11g probes)", () => {
         expect(account.sent).toEqual([])
         expect([...hosts.mac.owner.asked, ...hosts.workbox.owner.asked]).toEqual([])
       }),
+    ))
+})
+
+describe("two accounts, two hosts each holding work (q223 across the fleet)", () => {
+  /**
+   * Accounts A and B at the provider, both 5h spent with a 5-hour grant in hand; each host lists both (its own
+   * login ids) and reads them at the clock's time. A claim clears the account's 5-hour window.
+   */
+  const pair = (now: { at: number }) => {
+    const grant = (id: string): ResetCredit => ({ id, count: 1, usable: true, expiresAt: now.at + 120 * DAY, clears: ["five_hour"] })
+    const accounts = new Map(["a", "b"].map((name) => [name, { fiveHour: 1, grants: new Map([[`grant-${name}`, 1]]) }]))
+    const spent: Array<string> = []
+    const of = (credentialID: string) => accounts.get(credentialID.slice(0, 1))!
+    const reading = (credentialID: string): QuotaReading => {
+      const account = of(credentialID)
+      const credits = [...account.grants].map(([id, count]) => ({ ...grant(id), count, usable: count > 0 }))
+      return {
+        at: now.at,
+        windows: [
+          { name: "5h", utilization: account.fiveHour, resetAt: now.at + 2 * HOUR },
+          { name: "7d", utilization: 0.4, resetAt: now.at + 3 * DAY },
+        ],
+        resets: { available: credits.filter((credit) => credit.usable).length, credits },
+      }
+    }
+    const quota = Layer.succeed(Quota, {
+      reading: (_pool, credentialID) => Effect.sync(() => reading(credentialID)),
+      usage: (_pool, credentialID) => Effect.sync(() => reading(credentialID)),
+      readings: () => Stream.empty,
+      claim: (_pool, input) =>
+        Effect.sync((): ClaimAnswer => {
+          const account = of(input.credentialID)
+          const left = account.grants.get(input.creditID) ?? 0
+          if (left <= 0) return { outcome: "no-credit" }
+          account.grants.set(input.creditID, left - 1)
+          account.fiveHour = 0
+          spent.push(input.credentialID.slice(0, 1))
+          return { outcome: "reset" }
+        }),
+    })
+    return { accounts, spent, quota }
+  }
+
+  test("both hosts hold a start with both accounts spent: one refilled; the refilled one takes both hosts' work, the other stays in hand past the lease and the wait; a start it cannot take refills the other, once", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = { at: Date.parse("2026-11-25T19:00:00Z") }
+        yield* TestClock.setTime(now.at)
+        const world = pair(now)
+        const pools = new Map<string, Model.Pool["Service"]>()
+        const build = (self: string, other: string) =>
+          Effect.gen(function* () {
+            const integration: LoginsTest.Integration = {
+              connections: new Map([[ANTHROPIC, ["a", "b"].map((name) => ({ type: "credential" as const, method: "oauth" as const, id: `${name}-${self}`, label: `Claude ${name.toUpperCase()}` }))]]),
+              marks: [],
+            }
+            const config: Model.Config = {
+              providers: { anthropic: ANTHROPIC },
+              cacheLifeMs: CACHE_LIFE_MS,
+              resets: { anthropic: "claude" },
+              fleet: { ...Model.DEFAULT_FLEET, host: self, leaseMs: LEASE_MS, leaseWaitMs: WAIT_MS },
+            }
+            const externals = Layer.mergeAll(
+              LoginsTest.layer(integration),
+              world.quota,
+              LedgerTest.layer(),
+              PeersTest.layer(new Map([[other, { down: "not polled here" }]]), (_peer, message) =>
+                Effect.suspend(() => Option.match(Option.fromUndefinedOr(pools.get(other)), { onNone: () => Effect.never, onSome: (pool) => pool.lease(message) }))),
+              FleetTest.layer(),
+              ResetsTest.layer(new Map()),
+              OwnerTest.layer(OwnerTest.empty()),
+              Layer.succeed(Lease.Leases, Lease.make({ quietMs: 0 })),
+            )
+            const services = yield* Layer.build(Model.layer(config).pipe(Layer.provide(externals)))
+            const pool = Context.get(services, Model.Pool)
+            pools.set(self, pool)
+            return pool
+          })
+        const mac = yield* build("mac", "workbox")
+        const workbox = yield* build("workbox", "mac")
+        const hosts = [["mac", mac], ["workbox", workbox]] as const
+        const sweepBoth = Effect.all([mac.sweep, workbox.sweep], { concurrency: 2, discard: true })
+        const at = (ms: number) => Effect.gen(function* () {
+          now.at += ms
+          yield* TestClock.adjust(ms)
+        })
+
+        // Each host: three agents busy and a start held, both accounts spent.
+        for (const [name, pool] of hosts) {
+          yield* Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_${name}_${n}`, "anthropic"), { discard: true })
+          expect((yield* pool.pace("anthropic", undefined, `ses_${name}`)).ok).toBe(false)
+        }
+        yield* Effect.yieldNow
+        yield* sweepBoth
+        // One refill across the fleet: the other host's claim waits on the lease, then on the first refill showing.
+        expect(world.spent).toHaveLength(1)
+        const first = world.spent[0]!
+        const other = first === "a" ? "b" : "a"
+
+        // A minute on, the refill shows in both hosts' readings; each host's held start asks again and goes out.
+        yield* at(MINUTE)
+        for (const [name, pool] of hosts) expect((yield* pool.pace("anthropic", undefined, `ses_${name}`)).ok).toBe(true)
+        yield* sweepBoth
+        // Past the lease's SETTLE_MS and the wait's WAIT_MS (5 min each): the refilled account takes both hosts' work.
+        for (const step of [2, 3, 4, 5, 6]) {
+          yield* at(MINUTE)
+          for (const [name, pool] of hosts) yield* pool.stepStarted(`ses_${name}_${step}`, "anthropic")
+          yield* sweepBoth
+        }
+        expect(world.spent).toEqual([first])
+        // Not even decided: no host weighed a claim on the other account (a lease refusal alone is not the rule).
+        const label = `Claude ${other.toUpperCase()}`
+        for (const [, pool] of hosts) expect((yield* pool.resets).claims.filter((claim) => claim.label === label)).toEqual([])
+
+        // The refilled account at its 5-hour hold line: a start on the workbox it cannot take refills the other, once.
+        world.accounts.get(first)!.fiveHour = 0.95
+        yield* at(MINUTE)
+        expect((yield* workbox.pace("anthropic", undefined, "ses_workbox")).ok).toBe(false)
+        yield* Effect.yieldNow
+        yield* sweepBoth
+        yield* at(MINUTE)
+        yield* sweepBoth
+        expect(world.spent).toEqual([first, other])
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 })

@@ -715,9 +715,10 @@ export const takesWork = (account: AccountStatus, now: number, model?: string, r
  * STALE_AFTER_MS (30 min) or reported absent there, no failed usage read since
  * the last good one, and at least one tracked window REPORTED, under its hold
  * line. An unread or absent window is no room; an account may lack either.
+ * With `model`, room for a request of that model (its own windows too).
  */
-export const hasRoom = (account: AccountStatus, now: number): boolean =>
-  takesWork(account, now) &&
+export const hasRoom = (account: AccountStatus, now: number, model?: string): boolean =>
+  takesWork(account, now, model) &&
   !freshFailedUsage(account, now) &&
   TRACKED_WINDOWS.some((name) => accountWindow(account, name)._tag === "Reported")
 

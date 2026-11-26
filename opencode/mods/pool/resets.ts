@@ -716,7 +716,8 @@ export const claimOut = (state: ResetsState, provider: ResetProvider, now: numbe
  * through within OBSERVE_MS and the claimed account's reading after it (`accounts`, as the pool holds them now): a
  * start held before that claim, or judged on the account's reading from before it, was the claim's
  * to answer; once the claim freed the account the start may go there, so it is no work waiting for
- * another claim.
+ * another claim. Nor is a start held before a reading of a login that takes its work now: a claim
+ * another host made, which this host's claims do not list, frees work the same way.
  */
 const waiting = (state: ResetsState, pool: string, now: number, accounts: ReadonlyArray<AccountStatus>): Wait | undefined =>
   Option.fromUndefinedOr(state.waits[pool]).pipe(
@@ -729,6 +730,9 @@ const waiting = (state: ResetsState, pool: string, now: number, accounts: Readon
           return Math.max(claim.at, read) >= wait.at
         }),
     ),
+    // A login read after the wait that takes its work now (`hasRoom`, for its model): the start, asked again, goes
+    // there, whichever host's claim freed it; it is no work waiting.
+    Option.filter((wait) => !accounts.some((account) => Option.exists(Option.fromUndefinedOr(readAt(account)), (read) => read > wait.at) && hasRoom(account, now, wait.model))),
     Option.getOrUndefined,
   )
 
