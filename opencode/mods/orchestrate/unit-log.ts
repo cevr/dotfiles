@@ -61,6 +61,9 @@ export const startOf = (agent: string, description: string | undefined): Transit
 /** The hand-back line: `<role> <unit> r<N>: <verdict> <path>`, maybe in backticks or bold. */
 const HAND_BACK = /^[`*\s]*(planner|implementor|verifier) ([a-z0-9][a-z0-9._-]*) r(\d+):\s*(ready|blocked|pass|issues|accepted|changes|stuck)\b[`*]*\s*([^\s`*]*)/i
 
+/** The skill's verifier words as the record's verdicts: `pass` is `accepted`, `issues` is `changes`. */
+const VERDICT_OF: Readonly<Record<string, string>> = Object.freeze({ pass: "accepted", issues: "changes" })
+
 /** A role's hand-back: the unit (a verifier's batch) and verdict it names, its move, and the file it names (as written, maybe relative). */
 export interface HandBack {
   readonly unit: string
@@ -80,7 +83,7 @@ export const handBackOf = (agent: string, text: string | undefined): HandBack | 
   if (match === null) return undefined
   const [, role, unit, n, said, path] = match
   if (role === undefined || unit === undefined || n === undefined || said === undefined || role.toLowerCase() !== agent) return undefined
-  const verdict = said.toLowerCase()
+  const verdict = VERDICT_OF[said.toLowerCase()] ?? said.toLowerCase()
   const round = Number(n)
   const file = path === undefined || path === "" ? undefined : path
   const name = file?.split("/").pop()

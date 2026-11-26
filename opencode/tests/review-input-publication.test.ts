@@ -173,9 +173,6 @@ for (const [name, putOld, putNew, path] of cases) {
 `
 
 const MATRIX = WRITERS + `
-const { ReceiptSource, SourceRef } = await import(code + "/mods/orchestrate/batch-input.ts");
-const { receiptSource } = await import(code + "/mods/orchestrate/filestore/receipt-source.ts");
-const BunServices = await import(code + "/node_modules/@effect/platform-bun/dist/BunServices.js");
 const maybeText = (path) => existsSync(path) ? readFileSync(path, "utf8") : undefined;
 const modeOf = (path) => statSync(path).mode & 0o777;
 async function readPublished(root, layout, name, expected) {
@@ -188,14 +185,7 @@ async function readPublished(root, layout, name, expected) {
     }
     return;
   }
-  const ref = name === "receipt" ? SourceRef.Receipt({ head: layout.head, kind: "round" })
-    : name === "land" ? SourceRef.Land({ head: layout.head })
-    : name === "handoff" ? SourceRef.Handoff() : SourceRef.Installed();
-  const source = receiptSource({ host: "fixture", repository: { key: "fixture", checkouts: [root] }, receipts: layout.receipts,
-    installed: layout.record, handoff: layout.mark, maxBytes: 65536, readWithin: "1 second" });
-  const read = await run(ReceiptSource.use((files) => files.read(ref)).pipe(Effect.provide(source), Effect.provide(BunServices.layer)));
-  if (expected === undefined) assert.equal(read._tag, "Absent");
-  else assert.deepEqual({ tag: read._tag, text: read.text }, { tag: "Present", text: expected });
+  assert.equal(maybeText(layout.names[name][0]), expected);
 }
 async function check(name, umask, existing, crash) {
   const fixture = mkdtempSync(join(root, name + "-"));

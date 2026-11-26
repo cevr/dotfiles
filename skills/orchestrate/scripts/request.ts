@@ -1,29 +1,11 @@
 #!/usr/bin/env bun
-// The orchestrator's check of a round's request before the unit waits in ready for its batch
-// (protocol.md, Implementor → Request): it exists and names its head commit (a missing `Digest:` line is a hint), and it names a red
-// test for each Blocker or Major the last round's findings mark `repeat of`.
+// The orchestrator's check of a round's request before the unit lands (protocol.md, Implementor): it exists and
+// names its head commit (a missing `Digest:` line is a hint).
 // Usage: bun request.ts <unit dir> <round>   Exit 0: it is ready to land. Exit 1: send the reasons back.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const read = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : undefined);
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** The ids of the Blockers and Majors whose first line says `repeat of r<N> <id>`. */
-export function repeats(findings: string): string[] {
-  const out: string[] = [];
-  let failing = false, id: string | undefined;
-  for (const line of findings.split('\n')) {
-    const heading = /^#{1,6}\s*\**\s*(blockers?|majors?|minor|optional|test strength|unproven|on base|rejected|receipts)\b/i.exec(line)?.[1];
-    if (heading) { failing = /^(blocker|major)/i.test(heading); id = undefined; continue; }
-    if (!failing) continue;
-    const at = line.search(/repeat of r\d+/i);
-    const own = /\b([A-Z]{1,2}\d+)\b/.exec(at >= 0 ? line.slice(0, at) : line)?.[1];
-    if (own) id = own;
-    if (at >= 0 && id && !out.includes(id)) out.push(id);
-  }
-  return out;
-}
 
 /** The head commit a request names: `Head: <sha>`, or the right side of `<base>..<head>`. */
 export function headOf(request: string): string | undefined {
@@ -39,31 +21,20 @@ export function digestOf(request: string): string | undefined {
   return undefined;
 }
 
-/**
- * What round `n`'s request should add, without being held back for it: a `Digest:` line. For one release a request
- * from a worker on the older protocol, which has none, is accepted with this hint.
- */
+/** What round `n`'s request should add, without being held back for it: a `Digest:` line. */
 export function hints(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
   if (request === undefined || digestOf(request)) return [];
   return [`round-${n}-request.md has no \`Digest:\` line: add it as line 2 (what changed or blocks, then why it matters)`];
 }
 
-/** Why round `n`'s request cannot wait in ready; empty when it can. */
+/** Why round `n`'s request cannot land; empty when it can. */
 export function refusals(dir: string, n: number): string[] {
   const request = read(join(dir, `round-${n}-request.md`));
   if (request === undefined) return [`round-${n}-request.md is missing`];
-  const out: string[] = [];
   // `Head: <sha>`, or a range `<base>..<head>`.
-  if (!/\bhead\b[^\n]*\b[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b/i.test(request)) out.push(`round-${n}-request.md names no head commit`);
-  const verified = headOf(read(join(dir, `round-${n - 1}-request.md`)) ?? '');
-  for (const id of repeats(read(join(dir, `round-${n - 1}-findings.md`)) ?? '')) {
-    const m = new RegExp(String.raw`^[\s>*-]*repeat\s+${escape(id)}\**:\s*\S.*?\bred at\s+\`?([0-9a-f]{7,40})\b`, 'im').exec(request);
-    if (!m) out.push(`${id} is a repeat: add \`repeat ${id}: <new test> red at <the head round ${n - 1} verified>\``);
-    else if (!verified) out.push(`repeat ${id}: round-${n - 1}-request.md names no head commit`);
-    else if (!(verified.startsWith(m[1]) || m[1].startsWith(verified))) out.push(`repeat ${id}: ${m[1]} is not the head round ${n - 1} verified (${verified})`);
-  }
-  return out;
+  if (!/\bhead\b[^\n]*\b[0-9a-f]{7,40}\b|\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\b/i.test(request)) return [`round-${n}-request.md names no head commit`];
+  return [];
 }
 
 if (import.meta.main) {

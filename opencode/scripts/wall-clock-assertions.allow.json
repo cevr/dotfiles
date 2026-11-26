@@ -595,13 +595,6 @@
   },
   {
     "group": "measured",
-    "file": "opencode/tests/receipt-source-race.test.ts",
-    "target": "receipt reader retires after the configured I/O deadline",
-    "budget": "< 1500 ms",
-    "why": "Existing product performance contract; scheduling recorded in round-3-request.md"
-  },
-  {
-    "group": "measured",
     "file": "opencode/tests/stall.test.ts",
     "target": "stall profile filename identifies a threshold crossing",
     "budget": ">= 2000 ms",

@@ -268,7 +268,6 @@ export const Happening = Schema.TaggedUnion({
   invariant_declared: { docPath: Schema.String, anchor: Schema.String, blob: Schema.String, commit: Schema.String },
 })
 export type Happening = typeof Happening.Type
-export type EventType = Happening["_tag"]
 
 export interface Actor {
   readonly id: string

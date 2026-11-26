@@ -928,6 +928,10 @@ describe("a unit's files", () => {
     expect(holdsVerdict("Verdict: ACCEPTED\n")).toBe(true)
     expect(holdsVerdict("intro\n\nverifier main-abc1234 r1: changes /x\n")).toBe(true)
     expect(holdsVerdict("nothing decided yet\n")).toBe(false)
+    // The skill's verifier words read as the record's verdicts.
+    expect(findingsVerdictOf("pass\n")).toEqual(Option.some("accepted"))
+    expect(findingsVerdictOf("verifier batch-3 r1: issues /x\n")).toEqual(Option.some("changes"))
+    expect(holdsVerdict("verifier main-abc1234 r1: pass /x\n")).toBe(true)
   })
 
   test("the land's pushed commit and a unit's round, as the log's move takes them", () => {
