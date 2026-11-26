@@ -27,6 +27,7 @@ A heavy check waits at its launcher until the host can admit it. Native shells, 
 2. Keep permission pending, then decline: there is no holder. Allow a different attempt, bind it and restart. A duplicate binding does not spawn again.
 3. Retire its owner without proving scope exit. The next check still waits. Report scope exit under the right generation; the next check starts exactly once.
 4. Run a heavy job with an unavailable host and with a disk below its floor. Neither starts a payload. A light job still starts, and `heavy: false` cannot exempt a classified command.
+5. Read `host status --json`, then ask each offered class within its maxima on its `defaultVolume`: each is queued or granted, never refused (`mods/guard/process/status-admission.test.ts`). On a btrfs Linux host (the workbox) `capabilities.disk` is `measured`, and `check run --class check --width 1 -- /bin/true` exits 0; four parallel `sleep` checks on an unattested host run three at a time, the fourth starting when a holder ends. A refusal names its cause in `detail`.
 
 ## Driving it with real OpenCode
 
