@@ -66,7 +66,7 @@ export function newest(dir: string, kind: 'request' | 'findings'): { round: numb
 /** The verdict a findings file's first non-blank line states, lowercased. */
 export function verdictOf(text: string): string | undefined {
   const first = text.split('\n').find((line) => line.trim() !== '') ?? '';
-  return /\b(accepted|changes|stuck)\b/i.exec(first)?.[1]?.toLowerCase();
+  return /\b(pass|issues|blocked|accepted|changes|stuck)\b/i.exec(first)?.[1]?.toLowerCase();
 }
 
 /** One git command in `repo`: its exit code and trimmed output. */

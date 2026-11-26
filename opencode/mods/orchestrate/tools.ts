@@ -7,6 +7,7 @@
 import { Array as Arr, Match, Option, Predicate, Result, Schema } from "effect"
 import { toolInput } from "@dotfiles/decider/tool-input"
 import { headsOf } from "./fleet.ts"
+import { CLOSING } from "./heavy.ts"
 import type { Run, RunUnit } from "./idle.ts"
 
 /** The tool's name: a direct tool, its policy in the plugin's hooks. */
@@ -882,8 +883,8 @@ export const mainVerifyAnswer = (batch: MainBatch, file: Option.Option<string>, 
     )}`,
     `Start its verifier, in that checkout: subagent({ agent: "verifier", description: "verifier ${batch.name} r1", prompt: ${quote(
       Option.match(file, {
-        onSome: (path) => `Verify ${batch.name}: the batch file ${path}. Write your findings beside it, ${mainFindingsPathOf(path)}.`,
-        onNone: () => `Verify ${batch.name}: main ${batch.base}..${batch.head}.`,
+        onSome: (path) => `Verify ${batch.name}: the batch file ${path}. Write your findings beside it, ${mainFindingsPathOf(path)}. ${CLOSING}`,
+        onNone: () => `Verify ${batch.name}: main ${batch.base}..${batch.head}. ${CLOSING}`,
       }),
     )}, background: true }).`,
   ].join("\n")
