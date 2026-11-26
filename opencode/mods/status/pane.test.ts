@@ -2,7 +2,7 @@
 // running agents named by their call, unit lines, and which read failed.
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
-import { accountRows, agentRows, antigravityRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
+import { accountRows, agentRows, antigravityRows, cellRoots, cellRows, fleetRows, PaneAntigravity, PaneFleet, PaneLimits, PanePools, PaneResets, resetRows, resetsLine, runLine, stamp, unavailable, unitLine } from "./pane.ts"
 
 const now = Date.parse("2026-11-04T15:00:00Z")
 
@@ -314,6 +314,28 @@ describe("antigravityRows", () => {
       { warn: false, detail: true, text: "  5h 12% used of 100% · reset Nov 25, 2026, 1:00:00 AM EST" },
       { warn: true, detail: false, text: "antigravity / Claude & GPT (shared) · limited until Nov 24, 2026, 10:05:00 PM EST (a pane's limit)" },
       { warn: true, detail: true, text: "  peer workbox · stale (12 min ago): ssh timed out" },
+    ])
+  })
+})
+
+describe("time in cells", () => {
+  test("the pane's root first, then each run's orchestrator, each once", () => {
+    expect(cellRoots("ses_root", [{ session: "ses_orch" }, {}, { session: "ses_root" }, { session: "ses_orch" }])).toEqual(["ses_root", "ses_orch"])
+  })
+
+  test("each root's line, named by its title, warned over the bound", () => {
+    const titles = new Map([["ses_root", "Kernel wake"]])
+    expect(
+      cellRows(
+        [
+          { sessionID: "ses_root", unwell: true, line: "cells 56% of the last hour · 20 cells · 0 cut" },
+          { sessionID: "ses_orch", unwell: false, line: "cells 4% of the last hour · 31 cells · 2 cut" },
+        ],
+        (id) => Option.fromUndefinedOr(titles.get(id)),
+      ),
+    ).toEqual([
+      { text: "Kernel wake · cells 56% of the last hour · 20 cells · 0 cut", warn: true },
+      { text: "ses_orch · cells 4% of the last hour · 31 cells · 2 cut", warn: false },
     ])
   })
 })

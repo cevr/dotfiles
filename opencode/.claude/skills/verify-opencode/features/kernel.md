@@ -10,6 +10,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 - `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait). A subagent handle carries its start's `.model` and `.note` when named. Its `.observation` separates phase from a diagnostic; a notice alone does not settle the child.
 - `kernel-attach`: `attach(path)` shows an image to the next request.
 - `kernel-transcript`: the cell's header is its description, over the rows of the tool calls it made.
+- `kernel-time`: each call's time, from its arrival to its answer, is kept per session for the last hour across a restart; the `time({ sessionIDs })` RPC, the /pool pane's "Time in cells" section and `orchestrate({ action: "status" })` show `cells 4% of the last hour · 31 cells · 2 cut` per root, in the warning colour over 15%; a root over 15% gets one notice an hour (no turn) naming its three longest cells by description, a subagent none.
 
 ## How to get to it (user POV)
 
@@ -20,7 +21,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 
 - **Preconditions:** none.
 - **States:** default, error (a cell that throws), refused (a tool not offered). Loading and empty are `n/a`.
-- **World suites:** `cmd/kernel/settle-child-attempts.sim.test.ts`. This drives the direct child observation tool; a cell runs in a real Bun worker process, so drive the cell checks with --real.
+- **World suites:** `cmd/kernel/settle-child-attempts.sim.test.ts`. This drives the direct child observation tool; a cell runs in a real Bun worker process, so drive the cell checks with --real. `cmd/kernel/cell-time.sim.test.ts` (`kernel-time`): its cells sleep in virtual time on a stand-in worker; the notice once an hour and the hour kept across a restart.
 - **Code:** `mods/kernel/`, `cmd/kernel/`, `tests/kernel.test.ts`, `tests/kernel/` (its real check); `tests/owned.ts`, `tests/scratch.ts` (the spawn helper and scratch folders its real checks run through: a change to them is due on every such check)
 - **Regression:** `mods/kernel/worker/workers.test.ts` (a real worker: bindings, restarts, handles, calls in parallel and their overlap), `mods/kernel/operations.test.ts` (the journal and its overlap count), `mods/kernel/description.test.ts` (the words the model reads), `cmd/kernel/server.test.ts` (the plugin's seam).
 

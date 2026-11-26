@@ -177,6 +177,7 @@ import * as RunsLive from "@dotfiles/opencode-orchestrate/opencode/runs"
 import * as SessionsLive from "@dotfiles/opencode-orchestrate/opencode/sessions"
 import * as SteerLive from "@dotfiles/opencode-orchestrate/opencode/steer"
 import * as Tools from "@dotfiles/opencode-orchestrate/tools"
+import { KERNEL_TIME, TimeAnswer, UNWELL_SHARE } from "@dotfiles/opencode-kernel/cell-time"
 import * as PoolStatus from "@dotfiles/opencode-orchestrate/pool-status"
 import * as Commitments from "@dotfiles/opencode-orchestrate/commitments-tool"
 import * as MemoryRecord from "@dotfiles/opencode-orchestrate/memory/record"
@@ -220,6 +221,9 @@ import {
   type WorkGit,
 } from "@dotfiles/opencode-orchestrate/service"
 import type { Status } from "@dotfiles/opencode-orchestrate/tool-call"
+
+/** The kernel's time answer, as status reads it: an answer that does not read is no line. */
+const decodeTimes = Schema.decodeUnknownOption(TimeAnswer)
 
 export const DEFAULT_LOG = join(TuiDirs.dirs().home, ".cache/orchestrate/opencode-agents.jsonl")
 /** The orchestrate skill's Codex admission: `admit: …` exit 0, `hold: …[; opens about <time>Z]` exit 1. */
@@ -1024,7 +1028,7 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
         return PoolStatus.poolStatusRows(pools, agy)
       })
 
-      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane, commitments and pool rows. */
+      /** Status: lost work first (lost-now.ts), then the verify-due line, the run tables, each open unit's lane, the caller's hour in cells, commitments and pool rows. */
       const status = (sessionID: string) =>
         Effect.gen(function* () {
           const tables = yield* runs.list
@@ -1038,7 +1042,13 @@ export const withTaskFork = (forkTask: ForkTask) => <R = never>(
           )
           const section = yield* recordSection(sessionID, true)
           const quota = yield* poolQuotaRows
-          return [...lost, answer, ...section.lines, ...quota].join("\n")
+          // The caller's hour in cells, from the kernel: bounded so it never slows status; no answer, no line.
+          const cells = yield* Effect.suspend(() => ctx.rpc(KERNEL_TIME).time({ sessionIDs: [sessionID] })).pipe(
+            Effect.timeoutOption("500 millis"),
+            Effect.catchCause(() => Effect.succeedNone),
+            Effect.map((answer) => Tools.cellTimeLines(Option.map(Option.flatMap(answer, decodeTimes), (read) => read.times), Math.round(UNWELL_SHARE * 100))),
+          )
+          return [...lost, answer, ...cells, ...section.lines, ...quota].join("\n")
         })
 
       // A root that compacted is told its status, its ledger and the re-read, once per compaction, by this location's

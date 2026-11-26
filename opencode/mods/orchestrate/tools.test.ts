@@ -7,6 +7,7 @@ import { Array as Arr, Match, Option, Predicate, Schema } from "effect"
 import type { Run } from "./idle.ts"
 import {
   ACTIONS,
+  cellTimeLines,
   type Action,
   FIELDS,
   type Field,
@@ -937,5 +938,20 @@ describe("a unit's files", () => {
     expect(pushedOf("Checked 1 workspace(s) as one batch in /x on main since 1234567; rift.push is false")).toEqual(Option.none())
     const runs: ReadonlyArray<Run> = [{ name: "app", units: [{ unit: "a", state: "ready", round: "3" }, { unit: "b", state: "ready" }] }]
     expect([roundIn("a", runs), roundIn("b", runs), roundIn("c", runs)]).toEqual([Option.some(3), Option.some(1), Option.none()])
+  })
+})
+
+describe("cellTimeLines", () => {
+  test("the caller's hour in cells; over the bound, with its warning", () => {
+    expect(cellTimeLines(Option.some([{ line: "cells 4% of the last hour · 31 cells · 2 cut", unwell: false }]), 15)).toEqual([
+      "orchestrate: cells 4% of the last hour · 31 cells · 2 cut.",
+    ])
+    expect(cellTimeLines(Option.some([{ line: "cells 56% of the last hour · 20 cells · 0 cut", unwell: true }]), 15)).toEqual([
+      "orchestrate: cells 56% of the last hour · 20 cells · 0 cut · warning: over the 15% bound; a long wait belongs in the background, where it wakes you.",
+    ])
+  })
+
+  test("no answer from the kernel is no line", () => {
+    expect(cellTimeLines(Option.none(), 15)).toEqual([])
   })
 })

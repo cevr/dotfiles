@@ -633,7 +633,13 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
             host.updates.delete(instance)
           },
         ),
-      list: () => Effect.sync(() => [...host.toolsOf(loaded.directory).keys()].map((name) => ({ id: name, name }))),
+      // As the host lists them: a plugin's tool as it registered it; a built-in by its name, its words the host's own.
+      list: () =>
+        Effect.sync(() =>
+          [...host.toolsOf(loaded.directory)].map(([name, info]) =>
+            Option.match(info, { onNone: () => ({ id: name, name, description: "" }), onSome: (tool) => ({ ...tool, id: name }) }),
+          ),
+        ),
       hook: domainHook("tool", new Set(["execute.before", "execute.after"])),
     },
     shell: { hook: domainHook("shell", new Set(["create.before"])) },

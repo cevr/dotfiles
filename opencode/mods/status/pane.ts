@@ -2,7 +2,7 @@
 // 5-hour and 7-day windows, each running agent with its role and what it was
 // asked, each run's units, and the fleet: the agents this host and each of the
 // owner's other hosts admitted that still count on the pace, and a host that
-// cannot be read; and the rate-limit resets the pool works: a question waiting
+// cannot be read; each root's last hour in cells (the kernel's time RPC); and the rate-limit resets the pool works: a question waiting
 // on the owner, a claim under way, the claims made. The pane reads the pool's RPC
 // (dotfiles-opencode.pool) and this mod's (status.ts) and draws these rows.
 import { Array as Arr, Match, Option, Schema } from "effect"
@@ -397,6 +397,33 @@ export const runLine = (run: Pick<Run, "name">) => run.name
 
 /** A unit's line under its run. */
 export const unitLine = (unit: Unit) => `  ${unit.unit} · ${unit.state} · r${unit.round || "?"} · ${unit.since}`
+
+/** A root's last hour in cells, as the pane draws it: warned when over the bound (law W6). */
+export interface CellRow {
+  readonly text: string
+  readonly warn: boolean
+}
+
+/**
+ * The roots whose hour in cells the pane shows: the pane's own root first, then
+ * each run's orchestrator, each once.
+ */
+export const cellRoots = (own: string, runs: ReadonlyArray<Pick<Run, "session">>): ReadonlyArray<string> => [
+  ...new Set([own, ...runs.flatMap((run) => Option.toArray(Option.fromUndefinedOr(run.session)))]),
+]
+
+/** A root's hour as the kernel's time RPC answers it, as far as the pane draws it. */
+export interface CellTime {
+  readonly sessionID: string
+  /** `cells 4% of the last hour · 31 cells · 2 cut`. */
+  readonly line: string
+  /** Over the kernel's bound. */
+  readonly unwell: boolean
+}
+
+/** Each root's line, named by its title when the client knows one. */
+export const cellRows = (times: ReadonlyArray<CellTime>, titleOf: (session: string) => Option.Option<string>): ReadonlyArray<CellRow> =>
+  times.map((time) => ({ text: `${Option.getOrElse(titleOf(time.sessionID), () => time.sessionID)} · ${time.line}`, warn: time.unwell }))
 
 /** Which of the pane's two reads failed this time; the pane keeps the last reading of each. */
 export const unavailable = (pool: boolean, status: boolean): ReadonlyArray<string> => [

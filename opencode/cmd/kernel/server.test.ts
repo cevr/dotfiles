@@ -18,6 +18,7 @@ import type { Json } from "@dotfiles/opencode-kernel/frame"
 import type { Reached, Rule } from "@dotfiles/opencode-kernel/tools"
 import * as FileStoreFiles from "@dotfiles/opencode-kernel/filestore/files"
 import * as MemorySessions from "@dotfiles/opencode-kernel/memory/sessions"
+import * as OpenCodeCellTimes from "@dotfiles/opencode-kernel/opencode/cell-times"
 import * as OpenCodeSnapshots from "@dotfiles/opencode-kernel/opencode/snapshots"
 import * as ProcessWorkers from "@dotfiles/opencode-kernel/worker/workers"
 import Kernel, { make } from "./server.ts"
@@ -69,6 +70,7 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
   Effect.gen(function* () {
     const work = yield* scratchWork
     const entries = new Map<string, Json>()
+    const times = new Map<string, Json>()
     const hooks = new Map<string, Array<(event: RequestEvent) => Effect.Effect<void>>>()
     const synthetics: Array<{ readonly sessionID: string; readonly text: string; readonly resume?: boolean }> = []
     const announced = yield* Queue.unbounded<void>()
@@ -129,6 +131,13 @@ const start = (options: Record<string, unknown> = {}, world: World = {}, stored:
         snapshots,
         MemorySessions.layer({ sessions: world.noSessions ? {} : { ses_1: { directory: work } }, agents: {} }),
         FileStoreFiles.layer,
+        // The cells' times in a store of their own; cmd/kernel/cell-time.sim.test.ts checks them and their notice.
+        OpenCodeCellTimes.layer({
+          get: (key) => Effect.sync(() => times.get(key)),
+          set: (key, value) => Effect.sync(() => void times.set(key, value)),
+          remove: (key) => Effect.sync(() => void times.delete(key)),
+        }),
+        OpenCodeCellTimes.notices({ parentOf: () => Effect.succeedNone, tell: () => Effect.void }),
       ),
     ).effect(host)
     expect(added).toBeDefined()

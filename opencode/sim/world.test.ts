@@ -404,7 +404,38 @@ const pooledInvariants = (seed: number) => (world: World, anthropic: Anthropic, 
   ).toEqual([])
 }
 
+/** A plugin whose `tools` tool answers the host's tool list as `ctx.tool.list` gives it: each id with its words. */
+const lister = Plugin.define({
+  id: "sim-lister",
+  effect: (ctx) =>
+    ctx.tool
+      .transform((editor) => {
+        editor.add({
+          name: "tools",
+          description: "list the host's tools",
+          input: Schema.Struct({}),
+          execute: () =>
+            ctx.tool.list().pipe(Effect.map((tools) => ({ content: line(tools.map((tool) => ({ id: tool.id, description: tool.description }))) }))),
+        })
+      })
+      .pipe(Effect.asVoid),
+})
+
 describe("the world", () => {
+  simulationTest(
+    "lists a plugin's tool as it registered it, and every tool with its words (host law: ctx.tool.list answers Tool.Info)",
+    Effect.gen(function* () {
+      const world = make({ seed: 1, script: () => say("ok") })
+      yield* world.load(lister, { directory: "/scratch/tools" })
+      const session = yield* world.session("/scratch/tools")
+      const listed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String, description: Schema.String }))))(
+        (yield* world.tool(session, "tools", {})).output,
+      )
+      expect(listed.find((tool) => tool.id === "tools")?.description).toBe("list the host's tools")
+      expect(listed.map((tool) => tool.id)).toContain("shell")
+    }),
+  )
+
   simulationTest(
     "one seed replays byte for byte, holds no wall-clock value, and 50 seeds give at least 10 different runs",
     Effect.gen(function* () {
