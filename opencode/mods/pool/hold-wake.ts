@@ -1,26 +1,32 @@
 // Pure interim wake decision for hosts with no Step to hold (pin c6664062):
 // decides whether a recorded held-send row should wait, wake the subagent,
-// be checked again later, or be left alone, and what the row records after a
-// delivery and after a failed one. Deleted by the pool-hold-latch unit once
-// the host holds the Step.
+// be checked again later, tell the subagent's parent that it will not be
+// woken, or be left alone, and what the row records after each outcome.
+// Deleted by the pool-hold-latch unit once the host holds the Step.
 //
 // A row is one hold that ended one turn: its `retryAt` is the time that hold
-// named and never changes, so the wake's message id, built from the session
-// and that time, is the same on every attempt, every pool copy, every process
-// and every restart. The host admits one id once, so an attempt repeated after
-// a failure, an interrupt or a lost mark wakes nobody twice. The mark
-// (`wokenAt`) is written only after the host took the wake: it saves asking
-// again, and its loss costs one more admission the host refuses as a repeat.
+// named and never changes, so each message the pool sends for it (the wake,
+// or the word to the parent) has an id built from the session and that time,
+// the same on every attempt, every pool copy, every process and every
+// restart. The host admits one id once, so an attempt repeated after a
+// failure, an interrupt or a lost mark sends nothing twice. A mark (`wokenAt`,
+// `toldAt`) is written only after the host took the message.
+//
+// The parent of a held subagent read "this session resumes by itself". That
+// stays true until the pool says otherwise: a row that is due is tried again
+// for as long as it lives, a failure backing off to `WAKE_RETRY_MAX_MS` and no
+// further; the pool stops only when the child is gone, and then it tells the
+// parent once.
 import { Option, Schema } from "effect"
-import { nextRetryAt, type WirePace } from "./pace.ts"
-import type { HeldSend } from "./refuse.ts"
+import { HoldReason, nextRetryAt } from "./pace.ts"
+import { HeldSend } from "./refuse.ts"
 
-/** The first wait after a failed delivery; each later failure doubles it, up to `WAKE_RETRY_MAX_MS`. */
+/** The first wait after a failed attempt; each later failure doubles it, up to `WAKE_RETRY_MAX_MS`. */
 export const WAKE_RETRY_MS = 30_000
-/** The longest wait between two delivery attempts. */
+/** The longest wait between two attempts: however long the host was down, the child is woken this soon after. */
 export const WAKE_RETRY_MAX_MS = 10 * 60_000
-/** Failed deliveries after which the pool stops trying and logs that the child's parent must wake it. */
-export const MAX_WAKE_FAILURES = 8
+/** How long one delivery may take before it counts as failed (the same id goes again). */
+export const DELIVERY_TIMEOUT_MS = 60_000
 
 /** Synthetic wake message delivered when a subagent's hold opens. It defers to a newer task that came with it. */
 export const WAKE_TEXT =
@@ -29,46 +35,67 @@ export const WAKE_TEXT =
 /** Short description stored on the synthetic wake message. */
 export const WAKE_DESCRIPTION = "pool hold opened"
 
+/** What the parent of a held subagent reads once the child is gone: the pool will not wake it. */
+export const goneText = (sessionID: string): string =>
+  `The pool will not wake it: the subagent ${sessionID}, which a pool hold stopped and which was to resume by itself, no longer exists, so its last task did not finish. Start that work again if it is still needed.`
+
+/** Short description stored on the parent's notice. */
+export const GONE_DESCRIPTION = "held subagent gone"
+
 /**
  * Appended to a held subagent's turn-ending error on hosts without a Step. A stopped Session is not woken by a
  * notice (the host keeps it for the Session's next task, where `WAKE_TEXT` gives way to that task).
  */
 export const SUBAGENT_RESUME_NOTE = " This session resumes by itself then, unless it is stopped first."
 
-/** Whether the session behind a held-send row is a subagent, a root, or unreadable. */
-export const SessionRole = Schema.Literals(["subagent", "root", "gone"])
+/**
+ * The session behind a held-send row: a subagent, a root, gone (the host says it does not exist), or unknown (the
+ * host did not answer, which says nothing of the session).
+ */
+export const SessionRole = Schema.Literals(["subagent", "root", "gone", "unknown"])
 export type SessionRole = typeof SessionRole.Type
 
 /** What the wake scanner does for one held-send row. */
 export const Decision = Schema.TaggedUnion({
-  /** Not due yet: look again at `dueAt`. */
+  /** Not due yet, or no admission answer: look again at `dueAt`. */
   Wait: {},
   /** Due and admitted: deliver the wake with this id. */
   Wake: { id: Schema.String },
   /** Due and still held: look again at `recheckAt` (strictly later than now). */
   Hold: { recheckAt: Schema.Finite },
-  /** Never woken by the pool: a root, a gone session, a Step's row, a row the installed pool wrote, or woken already. */
+  /** Due, but the host did not say what the session is: count it as a failed attempt and back off. */
+  Retry: {},
+  /** The child is gone: tell its parent once, with this id, that it will not be woken. */
+  Tell: { parentID: Schema.String, id: Schema.String },
+  /** Never sent anything by the pool: a root, a gone child with no known parent, a Step's row, a row the installed pool wrote, or done. */
   Drop: {},
 })
 export type Decision = typeof Decision.Type
+
+/** What the held request's own admission answers now (asked, not taken): admitted, or held until `retryAt`. */
+export const Answer = Schema.TaggedUnion({
+  Admitted: {},
+  Held: { retryAt: Schema.Finite },
+})
+export type Answer = typeof Answer.Type
 
 export interface WakeInput {
   readonly row: HeldSend
   readonly session: SessionRole
   readonly now: number
-  readonly pace: Option.Option<WirePace>
+  readonly answer: Option.Option<Answer>
 }
 
 /**
- * When the row is next looked at, or none when the pool never wakes it: woken already, a Step's row (the host holds
- * that request), a row with no `model` (the installed pool wrote it, and its parent was never told the child resumes
- * by itself), or one whose deliveries failed `MAX_WAKE_FAILURES` times.
+ * When the row is next looked at, or none when the pool never sends anything for it: woken or its parent told
+ * already, a Step's row (the host holds that request), or a row with no `model` (the installed pool wrote it, and its
+ * parent was never told the child resumes by itself). Failed attempts never end it: they only move `recheckAt`.
  */
 export const dueAt = (row: HeldSend): Option.Option<number> => {
   if (Option.isSome(Option.fromUndefinedOr(row.wokenAt))) return Option.none()
+  if (Option.isSome(Option.fromUndefinedOr(row.toldAt))) return Option.none()
   if (Option.isSome(Option.fromUndefinedOr(row.stepID))) return Option.none()
   if (Option.isNone(Option.fromUndefinedOr(row.model))) return Option.none()
-  if (Option.getOrElse(Option.fromUndefinedOr(row.wakeFailures), () => 0) >= MAX_WAKE_FAILURES) return Option.none()
   return Option.some(heldUntil(row))
 }
 
@@ -81,21 +108,28 @@ export const needsCheck = (row: HeldSend, now: number): boolean => Option.exists
 
 /**
  * Pure wake decision for one held-send row:
- * - never woken by the pool (`dueAt` none), or a session that is no subagent -> Drop
- * - not yet due, or no admission answer -> Wait
- * - due and admitted -> Wake with the hold's one id
- * - due and still held -> Hold with a strictly later recheck
+ * - never sent anything by the pool (`dueAt` none), or a root -> Drop
+ * - not yet due -> Wait
+ * - the host did not answer -> Retry
+ * - the child is gone -> Tell its parent, or Drop when no parent is known
+ * - a subagent with no admission answer -> Wait; admitted -> Wake with the hold's one id; held -> Hold, strictly later
  */
 export const decide = (input: WakeInput): Decision => {
   const due = dueAt(input.row)
-  if (Option.isNone(due) || input.session !== "subagent") return Decision.cases.Drop.make({})
+  if (Option.isNone(due) || input.session === "root") return Decision.cases.Drop.make({})
   if (input.now < due.value) return Decision.cases.Wait.make({})
-  return Option.match(input.pace, {
+  if (input.session === "unknown") return Decision.cases.Retry.make({})
+  if (input.session === "gone")
+    return Option.match(Option.fromUndefinedOr(input.row.parentID), {
+      onNone: () => Decision.cases.Drop.make({}),
+      onSome: (parentID) => Decision.cases.Tell.make({ parentID, id: goneNoticeId(input.row.sessionID, input.row.retryAt) }),
+    })
+  return Option.match(input.answer, {
     onNone: () => Decision.cases.Wait.make({}),
-    onSome: (answer) => {
-      if (answer.ok) return Decision.cases.Wake.make({ id: wakeDeliveryId(input.row.sessionID, input.row.retryAt) })
-      return Decision.cases.Hold.make({ recheckAt: nextRetryAt(input.now, [answer.retryAt]) })
-    },
+    onSome: Answer.match({
+      Admitted: () => Decision.cases.Wake.make({ id: wakeDeliveryId(input.row.sessionID, input.row.retryAt) }),
+      Held: ({ retryAt }) => Decision.cases.Hold.make({ recheckAt: nextRetryAt(input.now, [retryAt]) }),
+    }),
   })
 }
 
@@ -106,14 +140,49 @@ export const sameHold = (seen: HeldSend, current: HeldSend): boolean =>
 /** The row once the host took its wake. */
 export const delivered = (row: HeldSend, now: number): HeldSend => ({ ...row, wokenAt: now })
 
-/** The wait after the `failures`-th failed delivery (1-based). */
-export const retryDelay = (failures: number): number =>
-  Math.min(WAKE_RETRY_MAX_MS, WAKE_RETRY_MS * 2 ** Math.max(0, failures - 1))
+/** The row once the host took the word to the parent that the child will not be woken (or the parent is gone too). */
+export const told = (row: HeldSend, now: number): HeldSend => ({ ...row, toldAt: now })
 
-/** The row after one more failed delivery: counted, and looked at again after `retryDelay`. */
+/** The wait after the `failures`-th failed attempt (1-based): doubling from `WAKE_RETRY_MS`, never past `WAKE_RETRY_MAX_MS`. */
+export const retryDelay = (failures: number): number =>
+  Math.min(WAKE_RETRY_MAX_MS, WAKE_RETRY_MS * 2 ** Math.min(16, Math.max(0, failures - 1)))
+
+/** The row after one more failed attempt: counted, and looked at again after `retryDelay`. */
 export const failed = (row: HeldSend, now: number): HeldSend => {
   const failures = Option.getOrElse(Option.fromUndefinedOr(row.wakeFailures), () => 0) + 1
   return { ...row, wakeFailures: failures, recheckAt: now + retryDelay(failures) }
+}
+
+/** What can be read of a stored row that does not decode: its key names its session. */
+const Damaged = Schema.Struct({
+  providerID: Schema.optionalKey(Schema.Unknown),
+  model: Schema.String,
+  reasonCode: Schema.optionalKey(Schema.Unknown),
+  retryAt: Schema.optionalKey(Schema.Unknown),
+  parentID: Schema.optionalKey(Schema.Unknown),
+})
+const damagedOf = Schema.decodeUnknownOption(Damaged)
+const stringOf = Schema.decodeUnknownOption(Schema.String)
+const finiteOf = Schema.decodeUnknownOption(Schema.Finite)
+const reasonOf = Schema.decodeUnknownOption(HoldReason)
+
+/**
+ * A row this pool's kind wrote (it names a `model`, so its parent read "resumes by itself") that no longer decodes,
+ * rebuilt from what can be read, `now` standing in for a time that cannot: the wake goes on for it rather than drop
+ * it in silence. None for a row that names no model (not the wake's) or one that decodes.
+ */
+export const repaired = (sessionID: string, stored: Schema.Json, now: number): Option.Option<HeldSend> => {
+  if (Option.isSome(Schema.decodeUnknownOption(HeldSend)(stored))) return Option.none()
+  return Option.map(damagedOf(stored), (head) =>
+    HeldSend.make({
+      sessionID,
+      providerID: Option.getOrElse(stringOf(head.providerID), () => "anthropic"),
+      model: head.model,
+      reasonCode: Option.getOrElse(reasonOf(head.reasonCode), () => "record-unreadable"),
+      retryAt: Option.getOrElse(finiteOf(head.retryAt), () => now),
+      ...Option.match(stringOf(head.parentID), { onNone: () => ({}), onSome: (parentID) => ({ parentID }) }),
+    }),
+  )
 }
 
 /** Appends the subagent self-resume notice once to a turn-ending hold message. */
@@ -155,12 +224,17 @@ const hashTail = (seed: string): string => {
   }).join("")
 }
 
+const messageId = (timestamp: number, seed: string): string => {
+  const clamped = Math.max(0, Math.trunc(timestamp))
+  return `msg_${hexTime(clamped)}${hashTail(`${seed}\0${clamped}`)}`
+}
+
 /**
  * Deterministic host message id for waking one held turn (`sessionID`, `retryAt`),
  * matching `msg_` + 12 hex timestamp digits + 14 base62 characters. Every pool copy
  * and every restart computes the same id for the same hold so the host admits it once.
  */
-export const wakeDeliveryId = (sessionID: string, retryAt: number): string => {
-  const clamped = Math.max(0, Math.trunc(retryAt))
-  return `msg_${hexTime(clamped)}${hashTail(`${sessionID}\0${clamped}`)}`
-}
+export const wakeDeliveryId = (sessionID: string, retryAt: number): string => messageId(retryAt, sessionID)
+
+/** Deterministic id of the word to the parent that the held child `sessionID` will not be woken, distinct from its wake's. */
+export const goneNoticeId = (sessionID: string, retryAt: number): string => messageId(retryAt, `${sessionID}\0gone`)

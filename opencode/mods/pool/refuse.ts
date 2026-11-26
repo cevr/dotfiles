@@ -14,11 +14,14 @@ export const HeldSend = Schema.Struct({
   model: Schema.optionalKey(Schema.String),
   reasonCode: HoldReason,
   retryAt: Schema.Finite,
-  // The interim wake's own fields (mods/pool/hold-wake.ts): when it looks at the row again, how many deliveries
-  // failed, and when the host took its wake. `retryAt` stays the time the hold named.
+  // The interim wake's own fields (mods/pool/hold-wake.ts): the held subagent's parent, when it looks at the row
+  // again, how many deliveries failed, when the host took its wake, and when its parent took the word that it will
+  // not be woken. `retryAt` stays the time the hold named.
+  parentID: Schema.optionalKey(Schema.String),
   recheckAt: Schema.optionalKey(Schema.Finite),
   wakeFailures: Schema.optionalKey(Schema.Int),
   wokenAt: Schema.optionalKey(Schema.Finite),
+  toldAt: Schema.optionalKey(Schema.Finite),
 })
 export type HeldSend = typeof HeldSend.Type
 export const HeldSendAnswer = Schema.Union([

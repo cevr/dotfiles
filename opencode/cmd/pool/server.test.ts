@@ -7,10 +7,13 @@
 // storage. tests/pool-failover.test.ts and tests/pool-store-opencode.test.ts
 // run it in OpenCode.
 import { describe, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Path, Queue, Schedule, Schema, Scope, Stream } from "effect"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Array as Arr, Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Order, Path, Queue, Schedule, Schema, Scope, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GateDecision } from "@dotfiles/opencode-pool/antigravity/gate"
 import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
 import type * as AgySource from "@dotfiles/opencode-pool/antigravity/source"
@@ -44,7 +47,7 @@ import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
 import Pool, { type AntigravityHost, type AntigravityRoot, CACHE_TTL_HEADER, CREDENTIAL_HEADER, LIVE_STORE_HOST, liveAntigravity, liveWith, make, NO_ANTIGRAVITY } from "./server.ts"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
-import { stamp } from "../../tests/hang-guard.ts"
+import { hangGuard, stamp } from "../../tests/hang-guard.ts"
 import { sendCost } from "../../tests/pool-openai-send/cost.ts"
 
 /** The live adapters of one process: each start is a process of its own, its shared storage read anew. */
@@ -142,27 +145,69 @@ interface World {
    * `fails` of them fail before the host admits anything, `hang` holds a call after the host admitted it (the pool
    * never hears back), and `scans` counts the pool's reads of its held-send rows.
    */
-  readonly wakeAccess: { calls: number; fails: number; hang: boolean; scans: number }
+  readonly wakeAccess: { calls: number; fails: number; hang: boolean; scans: number; down: boolean }
+  /**
+   * Where the plugin's held-send rows live: in `storage` by default, or in a file other processes write too
+   * (`sqliteRows`). `down` fails the host's `session.get` and `session.synthetic` as a host that cannot answer does.
+   */
+  rows: HeldRows
 }
 
-const world = (): World => ({
-  readings: new Map(),
-  integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
-  storage: new Map(),
-  holdAccess: { scans: 0, usage: 0, unavailable: false, beforeRead: Effect.void },
-  agents: new Map([["build", undefined]]),
-  forks: new Map(),
-  peers: new Map(),
-  credentials: new Map(),
-  active: new Map(),
-  owner: OwnerTest.empty(),
-  parents: new Map(),
-  missing: new Set(),
-  stopped: new Set(),
-  synthetics: [],
-  admitted: new Set(),
-  wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0 },
+/** The plugin's `held-send/` rows, wherever the stand-in host keeps them. */
+interface HeldRows {
+  readonly get: (key: string) => Option.Option<Schema.Json>
+  readonly set: (key: string, value: Schema.Json) => void
+  readonly remove: (key: string) => void
+  readonly keys: (prefix: string) => ReadonlyArray<string>
+}
+const HELD_PREFIX = "held-send/"
+const mapRows = (storage: Map<string, Schema.Json>): HeldRows => ({
+  get: (key) => Option.fromUndefinedOr(storage.get(key)),
+  set: (key, value) => void storage.set(key, value),
+  remove: (key) => void storage.delete(key),
+  keys: (prefix) => [...storage.keys()].filter((key) => key.startsWith(prefix)),
 })
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json))
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+/** Rows in a SQLite file, as OpenCode's KV keeps a plugin's storage: every process that opens the file shares them. */
+const sqliteRows = (file: string): HeldRows & { readonly close: () => void } => {
+  const db = new Database(file, { create: true })
+  db.run("create table if not exists kv (key text primary key, value text not null)")
+  const one = db.query<{ value: string }, [string]>("select value from kv where key = ?")
+  return {
+    get: (key) => Option.map(Option.fromNullishOr(one.get(key)), ({ value }) => decodeJson(value)),
+    set: (key, value) => void db.run("insert or replace into kv (key, value) values (?, ?)", [key, encodeJson(value)]),
+    remove: (key) => void db.run("delete from kv where key = ?", [key]),
+    keys: (prefix) => db.query<{ key: string }, [string]>("select key from kv where substr(key, 1, length(?1)) = ?1 order by key").all(prefix).map(({ key }) => key),
+    close: () => db.close(),
+  }
+}
+
+/** A host that cannot answer: `session.get` and `session.synthetic` fail, as neither would on a missing session. */
+const HostDown = Schema.TaggedStruct("HostDown", { sessionID: Schema.String })
+
+const world = (): World => {
+  const storage = new Map<string, Schema.Json>()
+  return {
+    readings: new Map(),
+    integration: { connections: new Map([[ANTHROPIC, CONNECTIONS]]), marks: [] },
+    storage,
+    holdAccess: { scans: 0, usage: 0, unavailable: false, beforeRead: Effect.void },
+    agents: new Map([["build", undefined]]),
+    forks: new Map(),
+    peers: new Map(),
+    credentials: new Map(),
+    active: new Map(),
+    owner: OwnerTest.empty(),
+    parents: new Map(),
+    missing: new Set(),
+    stopped: new Set(),
+    synthetics: [],
+    admitted: new Set(),
+    wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0, down: false },
+    rows: mapRows(storage),
+  }
+}
 
 /** The outside systems as test layers over `state`. */
 /** A reading as the ledger keeps it, as far as a test reads it: its windows' use. */
@@ -287,10 +332,16 @@ const start = <R = never,>(
     }
     const hostOptions = { limitsFile: scratchLimits(root), ...options }
     const storage = LedgerTest.storage(state.storage)
+    /** The held-send rows for a `held-send/` key, else the plugin's other storage. */
+    const rowsOf = (key: string): HeldRows => {
+      if (key.startsWith(HELD_PREFIX)) return state.rows
+      return mapRows(state.storage)
+    }
     const host = {
       options: hostOptions,
       session: {
         get: ({ sessionID }: { readonly sessionID: string }) => {
+          if (state.wakeAccess.down) return Effect.fail(HostDown.make({ sessionID }))
           if (state.missing.has(sessionID)) return Effect.fail(SessionNotFound.make({ sessionID }))
           const source = state.forks.get(sessionID)
           const parentID = state.parents.get(sessionID)
@@ -303,6 +354,7 @@ const start = <R = never,>(
         synthetic: (input: { readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean }) =>
           Effect.suspend((): Effect.Effect<void, unknown> => {
             state.wakeAccess.calls += 1
+            if (state.wakeAccess.down) return Effect.fail(HostDown.make({ sessionID: input.sessionID }))
             if (state.missing.has(input.sessionID)) return Effect.fail(SessionNotFound.make({ sessionID: input.sessionID }))
             if (state.wakeAccess.fails > 0) {
               state.wakeAccess.fails -= 1
@@ -382,15 +434,42 @@ const start = <R = never,>(
       ),
       storage: {
         ...storage,
-        get: (key: string) => Effect.sync(() => state.storage.get(key)),
+        get: (key: string) => Effect.sync(() => Option.getOrUndefined(rowsOf(key).get(key))),
+        set: (key: string, value: Schema.Json) => {
+          if (!key.startsWith(HELD_PREFIX)) return storage.set(key, value)
+          return Effect.sync(() => state.rows.set(key, value))
+        },
+        remove: (key: string) => {
+          if (!key.startsWith(HELD_PREFIX)) return storage.remove(key)
+          return Effect.sync(() => state.rows.remove(key))
+        },
+        // As OpenCode's KV: written only over the value whose `rev` is `rev` (none counts as 0), or with none only if absent.
+        setIf: (key: string, value: Schema.Json, rev?: number) => Effect.sync(() => {
+          const rows = rowsOf(key)
+          const stored = rows.get(key)
+          const storedRev = Option.map(stored, (current) => Option.getOrElse(Schema.decodeUnknownOption(Schema.Struct({ rev: Schema.Number }))(current).pipe(Option.map(({ rev }) => rev)), () => 0))
+          const fits = Option.match(Option.fromUndefinedOr(rev), { onNone: () => Option.isNone(stored), onSome: (expected) => Option.contains(storedRev, expected) })
+          if (fits) rows.set(key, value)
+          return fits
+        }),
         scan: (input: Parameters<typeof storage.scan>[0]) => Effect.suspend(() => {
           if (input.prefix.startsWith("anthropic/hold/")) {
             state.holdAccess.scans += 1
             if (state.holdAccess.unavailable) return Effect.die("hold store unavailable")
             return state.holdAccess.beforeRead.pipe(Effect.andThen(storage.scan(input)))
           }
-          if (input.prefix.startsWith("held-send/")) state.wakeAccess.scans += 1
-          return storage.scan(input)
+          if (!input.prefix.startsWith(HELD_PREFIX)) return storage.scan(input)
+          state.wakeAccess.scans += 1
+          return Effect.sync(() => {
+            const limit = Option.getOrElse(Option.fromUndefinedOr(input.limit), () => LedgerLive.PAGE)
+            const after = Option.fromUndefinedOr(input.after)
+            const keys = state.rows.keys(input.prefix).filter((key) => Option.match(after, { onNone: () => true, onSome: (cursor) => key > cursor }))
+            const page = keys.slice(0, limit)
+            return {
+              entries: page.flatMap((key) => Option.toArray(Option.map(state.rows.get(key), (value) => ({ key, value })))),
+              ...Option.match(Option.filter(Arr.last(page), () => keys.length > limit), { onNone: () => ({}), onSome: (next) => ({ next }) }),
+            }
+          })
         }),
       },
     } as unknown as Host
@@ -2624,3 +2703,318 @@ describe("interim hold-wake on hosts without a Step", () => {
       expect(stepped.synthetics).toEqual([])
     })))
 })
+
+// The interim's three laws, each over its whole space: (1) what the parent was told of a held child stays true
+// until the pool tells it otherwise; (2) the wake's re-check is the child's own question, and a pure one; (3) every
+// row is found, whoever wrote it.
+describe("interim hold-wake laws", () => {
+  const advance = (ms: number, step = 30_000) =>
+    Effect.gen(function* () {
+      for (let left = ms; left > 0; left -= step) {
+        yield* TestClock.adjust(Math.min(step, left))
+        yield* settle
+      }
+    })
+  const toSession = (state: World, sessionID: string) => state.synthetics.filter((entry) => entry.sessionID === sessionID)
+  /** The stored held row for `sessionID`, `null` when there is none. */
+  const heldRow = (state: World, sessionID = "ses_child") => Option.getOrNull(state.rows.get(`${HELD_PREFIX}${sessionID}`))
+  /** The text of the one message the parent was told, `""` when it was told none. */
+  const toldText = (state: World) => Option.getOrElse(Option.map(Arr.head(toSession(state, "ses_root")), (entry) => entry.text), () => "")
+  const DecisionRow = Schema.Struct({ wokenAt: Schema.optional(Schema.Number), recheckAt: Schema.optional(Schema.Number) })
+  const decodeDecision = Schema.decodeUnknownSync(DecisionRow)
+  /** Whether the wake decided the row: it woke the child, or holds it to a re-check time. */
+  const decided = (state: World) =>
+    Option.isSome(Option.flatMap(Schema.decodeUnknownOption(DecisionRow)(heldRow(state)), (row) =>
+      Option.orElse(Option.fromUndefinedOr(row.wokenAt), () => Option.fromUndefinedOr(row.recheckAt))))
+  const heldWorld = (until: number, child = "ses_child") => {
+    const state = world()
+    state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+    state.parents.set(child, "ses_root")
+    state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until })
+    return state
+  }
+
+  // (1) Truth to the parent. The host is down (it answers neither `session.get` nor `session.synthetic`) or refuses
+  // every delivery, for any time, and the pool restarts at any point: once the host is back, the child is woken once,
+  // within the longest back-off and a minute.
+  const OUTAGES = ["host down", "deliveries refused"] as const
+  const RESTARTS = ["no restart", "a restart while down", "a restart after recovery"] as const
+  const DURATIONS = [0, 45 * MINUTE, 6 * HOUR] as const
+  for (const outage of OUTAGES)
+    for (const restart of RESTARTS)
+      test(`a held child is woken once after ${outage} for any time, with ${restart}; its parent hears nothing more`, () =>
+        onTestClock(Effect.gen(function* () {
+          for (const duration of DURATIONS) {
+            const label = `${outage}, ${restart}, ${duration / MINUTE} min`
+            const until = (yield* Clock.currentTimeMillis) + 2 * MINUTE
+            const state = heldWorld(until)
+            const first = yield* Scope.make()
+            const plugin = yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(first))
+            expect(yield* refusalOf(plugin.request("ses_child"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+            if (duration > 0 && outage === "host down") state.wakeAccess.down = true
+            if (duration > 0 && outage === "deliveries refused") state.wakeAccess.fails = 1_000_000
+            yield* advance(until - (yield* Clock.currentTimeMillis) + duration, 5 * MINUTE)
+            const later = yield* Scope.make()
+            if (restart === "a restart while down") {
+              yield* Scope.close(first, Exit.void)
+              yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+            }
+            state.wakeAccess.down = false
+            state.wakeAccess.fails = 0
+            if (restart === "a restart after recovery") {
+              yield* Scope.close(first, Exit.void)
+              yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+            }
+            yield* advance(HoldWake.WAKE_RETRY_MAX_MS + MINUTE, MINUTE)
+            expect([label, toSession(state, "ses_child").map((entry) => entry.id)]).toEqual([label, [HoldWake.wakeDeliveryId("ses_child", until)]])
+            expect([label, toSession(state, "ses_root")]).toEqual([label, []])
+            yield* Scope.close(later, Exit.void)
+            yield* Scope.close(first, Exit.void)
+          }
+        })), hangGuard("in-memory"))
+
+  // (1) When the pool stops for a reason it can know, it says so once: the child is gone, or its row cannot be read.
+  for (const restart of RESTARTS)
+    test(`a held child that is gone is never woken and its parent is told once, plainly, with ${restart}`, () =>
+      onTestClock(Effect.gen(function* () {
+        const until = (yield* Clock.currentTimeMillis) + 2 * MINUTE
+        const state = heldWorld(until)
+        const first = yield* Scope.make()
+        const plugin = yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(first))
+        yield* refusalOf(plugin.request("ses_child"))
+        state.missing.add("ses_child")
+        state.wakeAccess.down = true
+        yield* advance(until - (yield* Clock.currentTimeMillis) + 45 * MINUTE, 5 * MINUTE)
+        const later = yield* Scope.make()
+        if (restart === "a restart while down") {
+          yield* Scope.close(first, Exit.void)
+          yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+        }
+        state.wakeAccess.down = false
+        if (restart === "a restart after recovery") {
+          yield* Scope.close(first, Exit.void)
+          yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+        }
+        yield* advance(HoldWake.WAKE_RETRY_MAX_MS + MINUTE, MINUTE)
+        yield* start({ sweepMinutes: 0 }, state, live()).pipe(Scope.provide(later))
+        yield* advance(HoldWake.WAKE_RETRY_MAX_MS + MINUTE, MINUTE)
+        expect(toSession(state, "ses_child")).toEqual([])
+        const told = toSession(state, "ses_root")
+        expect(told).toHaveLength(1)
+        expect(toldText(state)).toContain("ses_child")
+        expect(toldText(state)).toContain("will not wake it")
+        yield* Scope.close(later, Exit.void)
+        yield* Scope.close(first, Exit.void)
+      })), hangGuard("in-memory"))
+
+  // A row this pool's kind wrote (it names a model, so the parent read "resumes by itself") whose time is damaged
+  // is not dropped in silence: it is rebuilt once, whichever of two server processes reads it first, and the child is
+  // woken once; a gone child's parent is told once.
+  for (const child of ["alive", "gone"] as const)
+    test(`a held row that no longer decodes is rebuilt and goes on: its ${child} child is woken once or its parent told once`, () =>
+      onTestClock(Effect.gen(function* () {
+        const state = heldWorld(0)
+        state.storage.delete("anthropic/hold/cred-a")
+        if (child === "gone") state.missing.add("ses_child")
+        state.rows.set("held-send/ses_child", { providerID: "anthropic", reasonCode: "account-held", retryAt: "soon", model: model.id, parentID: "ses_root" })
+        yield* start({ sweepMinutes: 0 }, state, live())
+        yield* start({ sweepMinutes: 0 }, state, live())
+        yield* advance(2 * MINUTE)
+        yield* start({ sweepMinutes: 0 }, state, live())
+        yield* advance(HoldWake.WAKE_RETRY_MAX_MS + MINUTE, MINUTE)
+        const repaired = Schema.decodeUnknownSync(Schema.Struct({ sessionID: Schema.String, retryAt: Schema.Number }))(heldRow(state))
+        expect(repaired.sessionID).toBe("ses_child")
+        const woken = toSession(state, "ses_child").map((entry) => entry.id)
+        const told = toSession(state, "ses_root")
+        if (child === "alive") {
+          expect(woken).toEqual([HoldWake.wakeDeliveryId("ses_child", repaired.retryAt)])
+          expect(told).toEqual([])
+        }
+        if (child === "gone") {
+          expect(woken).toEqual([])
+          expect(told).toHaveLength(1)
+          expect(toldText(state)).toContain("ses_child")
+          expect(toldText(state)).toContain("will not wake it")
+        }
+      })), hangGuard("in-memory"))
+
+  // (2) The re-check is the child's own question. For generated pool states, two identical worlds at one instant: in
+  // W the wake re-checks a due row, in R the child's own request goes. Their answers agree (admitted, or held to the
+  // same time), and the question changes nothing in W's decision stores (the reset review's waits, claims and spends,
+  // the fleet, other held rows); with no evidence due (no usage read taken), nothing in the store at all.
+  const DECISION_STORES = ["resets/", "fleet/", HELD_PREFIX] as const
+  const snapshot = (state: World, keep: (key: string) => boolean) =>
+    encodeJson(Arr.sort(
+      [...state.storage.entries(), ...state.rows.keys(HELD_PREFIX).map((key): readonly [string, Schema.Json] => [key, Option.getOrNull(state.rows.get(key))])]
+        .filter(([key]) => keep(key) && key !== "held-send/ses_child"),
+      Order.mapInput(Order.String, ([key]: readonly [string, Schema.Json]) => key),
+    ))
+  test("the wake's re-check answers as the child's own request at the same instant, and records nothing", () =>
+    onTestClock(Effect.gen(function* () {
+      const random = generator("hold-wake-question")
+      const seen = { admitted: 0, held: 0, evidence: 0, quiet: 0 }
+      for (let index = 0; index < 16; index += 1) {
+        const base = yield* Clock.currentTimeMillis
+        const due = base + MINUTE
+        const weekLeft = Option.getOrElse(Arr.get([72, 72, 30, 150] as const, below(random, 4)), () => 72) * HOUR
+        const plain = {
+          at: Option.getOrElse(Option.filter(Option.some(due - MINUTE), () => below(random, 4) > 0), () => base - 3 * HOUR),
+          usage: { at: base, samples: 1 as const },
+          windows: [
+            { name: "5h", utilization: Option.getOrElse(Arr.get([0.1, 0.1, 0.6, 1] as const, below(random, 4)), () => 0.1), resetAt: base + (1 + below(random, 4)) * HOUR },
+            { name: "7d", utilization: 0.45 + below(random, 40) / 100, resetAt: base + weekLeft },
+          ],
+        }
+        const resets = { available: 1, credits: [{ id: "grant-1", count: 2, usable: true, expiresAt: base + 120 * 24 * HOUR, clears: ["five_hour", "seven_day_overage_included"] }] }
+        // Half the readings carry a reset credit.
+        const reading = Option.match(Option.liftPredicate(below(random, 2), (coin) => coin === 1), { onNone: () => plain, onSome: () => ({ ...plain, resets }) })
+        const hold = below(random, 4)
+        const label = `case ${index}: ${encodeJson(reading)} hold ${hold}`
+        const make = () => {
+          const state = world()
+          state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+          state.parents.set("ses_child", "ses_root")
+          state.readings.set("cred-a", reading)
+          if (hold === 0) state.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: base, until: due + 10 * MINUTE })
+          return state
+        }
+        // W: the wake; R: the child's own request. Both pools run on one clock.
+        const w = make()
+        w.rows.set("held-send/ses_child", { sessionID: "ses_child", providerID: "anthropic", reasonCode: "even-line", retryAt: due, model: model.id, parentID: "ses_root" })
+        const r = make()
+        const scope = yield* Scope.make()
+        const waker = yield* start({ sweepMinutes: 0 }, w, live()).pipe(Scope.provide(scope))
+        const own = yield* start({ sweepMinutes: 0 }, r, live()).pipe(Scope.provide(scope))
+        // Half the pools took the auth plugin's reading already, as it published it: with a fresh one the request has no
+        // evidence to take.
+        if (below(random, 2) === 0) {
+          yield* waker.publish({ credentialID: "cred-a", reading })
+          yield* own.publish({ credentialID: "cred-a", reading })
+        }
+        yield* settle
+        const usageBefore = w.holdAccess.usage
+        const ledger = snapshot(w, (key) => key.startsWith("anthropic/"))
+        const everything = snapshot(w, () => true)
+        const decisions = snapshot(w, (key) => DECISION_STORES.some((prefix) => key.startsWith(prefix)))
+        yield* advance(due - (yield* Clock.currentTimeMillis), 15_000)
+        yield* waitFor(`${label}: the wake's decision`, () => decided(w))
+        // Evidence: a usage read, or a reading (and the hold it makes) the pool had not taken yet; the request takes both.
+        const evidence = w.holdAccess.usage !== usageBefore || snapshot(w, (key) => key.startsWith("anthropic/")) !== ledger
+        const row = decodeDecision(heldRow(w))
+        const wake = Option.match(Option.fromUndefinedOr(row.wokenAt), { onSome: () => "admitted", onNone: () => `held to ${row.recheckAt}` })
+        expect([label, snapshot(w, (key) => DECISION_STORES.some((prefix) => key.startsWith(prefix)))]).toEqual([label, decisions])
+        if (!evidence) expect([label, snapshot(w, () => true)]).toEqual([label, everything])
+        // R at the same instant.
+        const sent = (yield* refusalOf(own.request("ses_child"))) === ""
+        const ownRow = Schema.decodeUnknownOption(Schema.Struct({ retryAt: Schema.Number }))(heldRow(r))
+        const asked = Option.match(Option.liftPredicate(sent, (admitted) => admitted), {
+          onSome: () => "admitted",
+          onNone: () => `held to ${Option.getOrUndefined(Option.map(ownRow, ({ retryAt }) => retryAt))}`,
+        })
+        expect([label, wake]).toEqual([label, asked])
+        yield* Scope.close(scope, Exit.void)
+        seen.admitted += Number(sent)
+        seen.held += Number(!sent)
+        seen.evidence += Number(evidence)
+        seen.quiet += Number(!evidence)
+        yield* TestClock.adjust(HOUR)
+      }
+      // The generated states reach both answers, with and without evidence due.
+      expect([encodeJson(seen), Object.values(seen).every((count) => count > 0)]).toEqual([encodeJson(seen), true])
+    })), hangGuard("in-memory"))
+
+  test("an OpenAI-style row is asked its request's own gate (the known hold, then the send), never a pace its request is never asked", () =>
+    onTestClock(Effect.gen(function* () {
+      const base = yield* Clock.currentTimeMillis
+      const due = base + MINUTE
+      const make = () => {
+        const state = world()
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+        state.active.set("anthropic", "cred-a")
+        state.parents.set("ses_child", "ses_root")
+        // Far over the spend-evenly line early in the week: the pace holds a new start; nothing holds a send.
+        state.readings.set("cred-a", { at: base, usage: { at: base, samples: 1 }, windows: [
+          { name: "5h", utilization: 0.2, resetAt: base + 3 * HOUR },
+          { name: "7d", utilization: 0.95, resetAt: base + 150 * HOUR },
+        ] })
+        return state
+      }
+      const options = { paced: { sim: "anthropic" }, sweepMinutes: 0 }
+      const w = make()
+      w.rows.set("held-send/ses_child", { sessionID: "ses_child", providerID: "sim", reasonCode: "account-held", retryAt: due, model: model.id, parentID: "ses_root" })
+      const r = make()
+      yield* start(options, w, live())
+      const own = yield* start(options, r, live())
+      yield* advance(MINUTE)
+      yield* waitFor("the OpenAI-style row's decision", () => decided(w))
+      expect(toSession(w, "ses_child").map((entry) => entry.id)).toEqual([HoldWake.wakeDeliveryId("ses_child", due)])
+      // The child's own request at the same instant passes its gate, the known hold and then the send.
+      const event = { sessionID: "ses_child", agent: "build", kind: "primary", model: { ...model, providerID: "sim" }, headers: {} }
+      expect(yield* refusalOf((yield* registered(own.hooks, "model.request"))(event))).toBe("")
+      expect(yield* refusalOf((yield* registered(own.hooks, "http.request"))(event))).toBe("")
+      // The pace would hold a new start: that is the question the wake must not ask.
+      expect(yield* own.pace("sim", "ses_other")).toMatchObject({ ok: false })
+    })), hangGuard("in-memory"))
+
+  // (3) Every row is found. Another server process on the same store (a SQLite file, as OpenCode's KV) writes a held
+  // row and stops for good or keeps running, before or after this process started: this process wakes it within one
+  // sweep of its time. With no rows anywhere, the wake adds no look of its own to the sweep's.
+  const WRITER = [
+    'import { Database } from "bun:sqlite"',
+    "const [file, key, value, stay] = process.argv.slice(2)",
+    "const db = new Database(file, { create: true })",
+    'db.run("create table if not exists kv (key text primary key, value text not null)")',
+    'db.run("insert or replace into kv (key, value) values (?, ?)", [key, value])',
+    "db.close()",
+    'console.log("written")',
+    'if (stay === "stay") setInterval(() => {}, 1 << 30)',
+  ].join("\n")
+  const WRITERS = ["before this process started, then stopped", "after it started, then stopped for good", "after it started, still running"] as const
+  test("a held row another server process wrote is found within one sweep, whether that process stopped or still runs", () =>
+    onTestClock(Effect.gen(function* () {
+      const dir = yield* scratchRoot
+      const script = join(dir, "writer.ts")
+      writeFileSync(script, WRITER)
+      for (const writer of WRITERS) {
+        const file = join(dir, `${writers(writer)}.db`)
+        const rows = sqliteRows(file)
+        yield* Effect.addFinalizer(() => Effect.sync(() => rows.close()))
+        const state = world()
+        state.rows = rows
+        state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+        state.parents.set("ses_other", "ses_root")
+        const due = (yield* Clock.currentTimeMillis) + 2 * MINUTE
+        const row = encodeJson({ sessionID: "ses_other", providerID: "anthropic", reasonCode: "account-held", retryAt: due, model: model.id, parentID: "ses_root" })
+        const scope = yield* Scope.make()
+        // A separate bun process in its own group, ended with this case's scope if it still runs.
+        const write = (mode: "exit" | "stay") =>
+          Effect.gen(function* () {
+            const processes = yield* ChildProcessSpawner.ChildProcessSpawner
+            const child = yield* processes.spawn(ChildProcess.make("bun", [script, file, "held-send/ses_other", row, mode], { detached: true, stdin: "ignore", stderr: "inherit", forceKillAfter: "1 second" }))
+            yield* Stream.decodeText(child.stdout).pipe(Stream.takeUntil((text) => text.includes("written")), Stream.runDrain)
+          }).pipe(Effect.provide(BunServices.layer), Scope.provide(scope))
+        if (writer === WRITERS[0]) yield* write("exit")
+        yield* start({ sweepMinutes: 10 }, state, live()).pipe(Scope.provide(scope))
+        yield* advance(MINUTE)
+        if (writer === WRITERS[1]) yield* write("exit")
+        if (writer === WRITERS[2]) yield* write("stay")
+        yield* advance(due - (yield* Clock.currentTimeMillis) + 10 * MINUTE + MINUTE, MINUTE)
+        expect([writer, toSession(state, "ses_other").map((entry) => entry.id)]).toEqual([writer, [HoldWake.wakeDeliveryId("ses_other", due)]])
+        yield* Scope.close(scope, Exit.void)
+      }
+    }).pipe(Effect.scoped)), hangGuard("process-fixture"))
+
+  test("with no held rows anywhere, the sweep's own look at the rows is the only one", () =>
+    onTestClock(Effect.gen(function* () {
+      const state = world()
+      state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
+      yield* start({ sweepMinutes: 10 }, state, live())
+      yield* advance(2 * MINUTE, MINUTE)
+      const scans = state.wakeAccess.scans
+      yield* advance(10 * HOUR, 10 * MINUTE)
+      // One look per sweep (the held-send cleanup's), 60 sweeps in 10 hours: nothing of the wake's own.
+      expect(state.wakeAccess.scans - scans).toBe(60)
+    })), hangGuard("in-memory"))
+})
+
+const writers = (writer: string) => writer.replace(/[^a-z]+/g, "-")

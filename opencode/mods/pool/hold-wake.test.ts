@@ -1,24 +1,27 @@
 import { describe, expect, test } from "bun:test"
 import { Option, Schema } from "effect"
 import {
+  Answer,
   appendSubagentNote,
   decide,
   Decision,
   delivered,
   dueAt,
   failed,
+  goneNoticeId,
   heldUntil,
-  MAX_WAKE_FAILURES,
   needsCheck,
+  repaired,
   retryDelay,
   sameHold,
   type SessionRole,
   SUBAGENT_RESUME_NOTE,
+  told,
   WAKE_RETRY_MAX_MS,
   WAKE_RETRY_MS,
   wakeDeliveryId,
 } from "./hold-wake.ts"
-import { HoldReason, type WirePace } from "./pace.ts"
+import { HoldReason } from "./pace.ts"
 import { HeldSend } from "./refuse.ts"
 
 const BASE = 1_700_000_000_000
@@ -26,7 +29,7 @@ const MINUTE = 60_000
 const RETRY = BASE + 10 * MINUTE
 const RECHECK = RETRY + 5 * MINUTE
 
-const SESSIONS: ReadonlyArray<SessionRole> = ["subagent", "root", "gone"]
+const SESSIONS: ReadonlyArray<SessionRole> = ["subagent", "root", "gone", "unknown"]
 const CLOCKS: ReadonlyArray<readonly [string, number]> = [
   ["before", RETRY - 1],
   ["at", RETRY],
@@ -36,16 +39,17 @@ const CLOCKS: ReadonlyArray<readonly [string, number]> = [
 ]
 const MODELS: ReadonlyArray<Option.Option<string>> = [Option.none(), Option.some("claude-opus-4-6")]
 const WOKEN: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(RETRY)]
+const TOLD: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(RETRY)]
 const STEPS: ReadonlyArray<Option.Option<string>> = [Option.none(), Option.some("step_1")]
 const RECHECKS: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(RECHECK)]
-const FAILURES: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(1), Option.some(MAX_WAKE_FAILURES - 1), Option.some(MAX_WAKE_FAILURES)]
+const PARENTS: ReadonlyArray<Option.Option<string>> = [Option.none(), Option.some("ses_root")]
+const FAILURES: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(1), Option.some(10_000)]
 
-const pacesAt = (now: number): ReadonlyArray<readonly [string, Option.Option<WirePace>]> => [
+const answersAt = (now: number): ReadonlyArray<readonly [string, Option.Option<Answer>]> => [
   ["none", Option.none()],
-  ["admit-measured", Option.some<WirePace>({ ok: true, measured: true, reason: "within pace" })],
-  ["admit-unmeasured", Option.some<WirePace>({ ok: true, measured: false, reason: "no weekly window" })],
-  ["held-future", Option.some<WirePace>({ ok: false, measured: true, reason: "still held", reasonCode: "account-held", retryAt: now + 5 * MINUTE })],
-  ["held-stale", Option.some<WirePace>({ ok: false, measured: true, reason: "stale time", reasonCode: "quota-limit", retryAt: now })],
+  ["admitted", Option.some(Answer.cases.Admitted.make({}))],
+  ["held-future", Option.some(Answer.cases.Held.make({ retryAt: now + 5 * MINUTE }))],
+  ["held-stale", Option.some(Answer.cases.Held.make({ retryAt: now }))],
 ]
 
 /** The fields a row is built from, each present or absent. */
@@ -53,8 +57,10 @@ interface RowFields {
   readonly reasonCode: HoldReason
   readonly model: Option.Option<string>
   readonly wokenAt: Option.Option<number>
+  readonly toldAt: Option.Option<number>
   readonly stepID: Option.Option<string>
   readonly recheckAt: Option.Option<number>
+  readonly parentID: Option.Option<string>
   readonly wakeFailures: Option.Option<number>
 }
 
@@ -66,80 +72,92 @@ const makeRow = (fields: RowFields): HeldSend =>
     retryAt: RETRY,
     ...Option.match(fields.model, { onNone: () => ({}), onSome: (model) => ({ model }) }),
     ...Option.match(fields.wokenAt, { onNone: () => ({}), onSome: (wokenAt) => ({ wokenAt }) }),
+    ...Option.match(fields.toldAt, { onNone: () => ({}), onSome: (toldAt) => ({ toldAt }) }),
     ...Option.match(fields.stepID, { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
     ...Option.match(fields.recheckAt, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
+    ...Option.match(fields.parentID, { onNone: () => ({}), onSome: (parentID) => ({ parentID }) }),
     ...Option.match(fields.wakeFailures, { onNone: () => ({}), onSome: (wakeFailures) => ({ wakeFailures }) }),
   })
 
-const FRESH: RowFields = { reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), stepID: Option.none(), recheckAt: Option.none(), wakeFailures: Option.none() }
+const FRESH: RowFields = {
+  reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), toldAt: Option.none(), stepID: Option.none(),
+  recheckAt: Option.none(), parentID: Option.some("ses_root"), wakeFailures: Option.none(),
+}
 
-/** Whether the pool may ever wake a row built from `fields`, as the rules state it (not read from the row). */
-const wakeable = (fields: RowFields): boolean =>
-  Option.isNone(fields.wokenAt) &&
-  Option.isNone(fields.stepID) &&
-  Option.isSome(fields.model) &&
-  !Option.exists(fields.wakeFailures, (count) => count >= MAX_WAKE_FAILURES)
+/** Whether the pool may ever send anything for a row built from `fields`, as the rules state it (not read from the row). Failures never end it. */
+const live = (fields: RowFields): boolean =>
+  Option.isNone(fields.wokenAt) && Option.isNone(fields.toldAt) && Option.isNone(fields.stepID) && Option.isSome(fields.model)
 
 /** The decision as the rules state it, from the fields the row was built from. */
-const expectedDecision = (fields: RowFields, session: SessionRole, now: number, pace: Option.Option<WirePace>): string => {
-  if (!wakeable(fields) || session !== "subagent") return "Drop"
-  if (now < Option.getOrElse(fields.recheckAt, () => RETRY) || Option.isNone(pace)) return "Wait"
-  return Option.match(Option.liftPredicate(pace.value, (answer) => answer.ok), { onNone: () => "Hold", onSome: () => "Wake" })
+const expectedDecision = (fields: RowFields, session: SessionRole, now: number, answer: Option.Option<Answer>): string => {
+  if (!live(fields) || session === "root") return "Drop"
+  if (now < Option.getOrElse(fields.recheckAt, () => RETRY)) return "Wait"
+  if (session === "unknown") return "Retry"
+  if (session === "gone") return Option.match(fields.parentID, { onNone: () => "Drop", onSome: () => "Tell" })
+  return Option.match(answer, { onNone: () => "Wait", onSome: (given) => Option.getOrElse(Option.map(Option.liftPredicate(given, Answer.guards.Admitted), () => "Wake"), () => "Hold") })
 }
 
 /** Every combination of the row's fields. */
 const everyRow: ReadonlyArray<RowFields> = HoldReason.literals.flatMap((reasonCode) =>
   MODELS.flatMap((model) =>
     WOKEN.flatMap((wokenAt) =>
-      STEPS.flatMap((stepID) =>
-        RECHECKS.flatMap((recheckAt) => FAILURES.map((wakeFailures) => ({ reasonCode, model, wokenAt, stepID, recheckAt, wakeFailures }))),
+      TOLD.flatMap((toldAt) =>
+        STEPS.flatMap((stepID) =>
+          RECHECKS.flatMap((recheckAt) =>
+            PARENTS.flatMap((parentID) => FAILURES.map((wakeFailures) => ({ reasonCode, model, wokenAt, toldAt, stepID, recheckAt, parentID, wakeFailures }))),
+          ),
+        ),
       ),
     ),
   ),
 )
 
-const labelOf = (fields: RowFields, clock: string, session: SessionRole, pace: string) =>
+const labelOf = (fields: RowFields, clock: string, session: SessionRole, answer: string) =>
   [
     fields.reasonCode,
     `model=${Option.isSome(fields.model)}`,
     `woken=${Option.isSome(fields.wokenAt)}`,
+    `told=${Option.isSome(fields.toldAt)}`,
     `step=${Option.isSome(fields.stepID)}`,
     `recheck=${Option.isSome(fields.recheckAt)}`,
+    `parent=${Option.isSome(fields.parentID)}`,
     `failures=${Option.getOrElse(fields.wakeFailures, () => 0)}`,
     clock,
     session,
-    pace,
+    answer,
   ].join("/")
 
 /** One case of the domain: the decision, its id or recheck, and whether `needsCheck` agrees. */
-const checkCase = (fields: RowFields, session: SessionRole, [clock, now]: readonly [string, number], [paceName, pace]: readonly [string, Option.Option<WirePace>]) => {
+const checkCase = (fields: RowFields, session: SessionRole, [clock, now]: readonly [string, number], [answerName, answer]: readonly [string, Option.Option<Answer>]) => {
   const row = makeRow(fields)
-  const label = labelOf(fields, clock, session, paceName)
-  const actual = decide({ row, session, now, pace })
-  expect([label, actual._tag]).toEqual([label, expectedDecision(fields, session, now, pace)])
-  // A wake carries the hold's one id; a recheck is strictly later than now.
+  const label = labelOf(fields, clock, session, answerName)
+  const actual = decide({ row, session, now, answer })
+  expect([label, actual._tag]).toEqual([label, expectedDecision(fields, session, now, answer)])
+  // A wake carries the hold's one id, a word to the parent its own; a recheck is strictly later than now.
   if (Decision.guards.Wake(actual)) expect([label, actual.id]).toEqual([label, wakeDeliveryId("ses_child", RETRY)])
+  if (Decision.guards.Tell(actual)) expect([label, actual]).toEqual([label, Decision.cases.Tell.make({ parentID: "ses_root", id: goneNoticeId("ses_child", RETRY) })])
   if (Decision.guards.Hold(actual)) expect([label, actual.recheckAt > now]).toEqual([label, true])
-  // needsCheck is false only where no Wake or Hold can come.
-  if (!needsCheck(row, now)) expect([label, Decision.guards.Wake(actual) || Decision.guards.Hold(actual)]).toEqual([label, false])
+  // needsCheck is false only where nothing can be sent or recorded.
+  if (!needsCheck(row, now)) expect([label, Decision.guards.Drop(actual) || Decision.guards.Wait(actual)]).toEqual([label, true])
 }
 
 describe("hold-wake decision domain", () => {
-  test("enumerates the entire input domain: reason, model, woken, Step, recheck, failures, session, clock and pace", () => {
+  test("enumerates the entire input domain: reason, model, woken, told, Step, recheck, parent, failures, session, clock and answer", () => {
     let checked = 0
     for (const fields of everyRow)
       for (const session of SESSIONS)
         for (const clock of CLOCKS)
-          for (const pace of pacesAt(clock[1])) {
-            checkCase(fields, session, clock, pace)
+          for (const answer of answersAt(clock[1])) {
+            checkCase(fields, session, clock, answer)
             checked += 1
           }
     expect(checked).toBe(
-      HoldReason.literals.length * MODELS.length * WOKEN.length * STEPS.length * RECHECKS.length * FAILURES.length * SESSIONS.length * CLOCKS.length * 5,
+      HoldReason.literals.length * MODELS.length * WOKEN.length * TOLD.length * STEPS.length * RECHECKS.length * PARENTS.length * FAILURES.length *
+        SESSIONS.length * CLOCKS.length * 4,
     )
   })
 
-  test("a row only this pool wrote has a due time: no model, woken, a Step's, or out of attempts never wakes", () => {
+  test("a row only this pool wrote has a due time: no model, woken, told, or a Step's never sends; failures never end it", () => {
     const row = makeRow(FRESH)
     expect(dueAt(row)).toEqual(Option.some(RETRY))
     const { model: _model, ...legacy } = row
@@ -147,6 +165,8 @@ describe("hold-wake decision domain", () => {
     expect(dueAt({ ...row, recheckAt: RECHECK })).toEqual(Option.some(RECHECK))
     // A recheck never moves the due time before the hold's own time.
     expect(dueAt({ ...row, recheckAt: RETRY - MINUTE })).toEqual(Option.some(RETRY))
+    expect(dueAt({ ...row, wakeFailures: 1_000_000, recheckAt: RECHECK })).toEqual(Option.some(RECHECK))
+    expect(dueAt(told(row, RETRY))).toEqual(Option.none())
     expect(heldUntil({ ...row, recheckAt: RECHECK })).toBe(RECHECK)
     expect(heldUntil(row)).toBe(RETRY)
   })
@@ -162,30 +182,59 @@ describe("what the row records", () => {
     expect(dueAt(after)).toEqual(Option.none())
   })
 
-  test("each failed delivery counts and backs off, bounded, and the hold's id never changes", () => {
+  test("failed attempts back off, doubling to the longest wait and staying there, for as long as the row lives; the hold's id never changes", () => {
     let current: HeldSend = row
     let now = RETRY
     const waits: Array<number> = []
-    for (let attempt = 1; attempt <= MAX_WAKE_FAILURES; attempt += 1) {
-      const decision = decide({ row: current, session: "subagent", now, pace: Option.some<WirePace>({ ok: true, measured: true, reason: "ok" }) })
+    for (let attempt = 1; attempt <= 200; attempt += 1) {
+      const decision = decide({ row: current, session: "subagent", now, answer: Option.some(Answer.cases.Admitted.make({})) })
       expect(decision).toEqual(Decision.cases.Wake.make({ id: wakeDeliveryId("ses_child", RETRY) }))
       current = failed(current, now)
       expect(current.wakeFailures).toBe(attempt)
       expect(current.retryAt).toBe(RETRY)
-      waits.push(Option.getOrThrow(dueAt(current).pipe(Option.orElse(() => Option.some(now)))) - now)
-      now = Option.getOrElse(dueAt(current), () => now)
+      const due = Option.getOrThrow(dueAt(current))
+      waits.push(due - now)
+      now = due
     }
-    expect(dueAt(current)).toEqual(Option.none())
-    expect(waits.slice(0, -1)).toEqual(Array.from({ length: MAX_WAKE_FAILURES - 1 }, (_, index) => retryDelay(index + 1)))
+    expect(waits.slice(0, 5)).toEqual([WAKE_RETRY_MS, 2 * WAKE_RETRY_MS, 4 * WAKE_RETRY_MS, 8 * WAKE_RETRY_MS, 16 * WAKE_RETRY_MS])
+    expect(waits.slice(5).every((wait) => wait === WAKE_RETRY_MAX_MS)).toBe(true)
     expect(retryDelay(1)).toBe(WAKE_RETRY_MS)
-    expect(retryDelay(2)).toBe(2 * WAKE_RETRY_MS)
-    expect(retryDelay(MAX_WAKE_FAILURES)).toBe(WAKE_RETRY_MAX_MS)
+    expect(retryDelay(Number.MAX_SAFE_INTEGER)).toBe(WAKE_RETRY_MAX_MS)
+  })
+
+  test("a host that does not answer is a failed attempt, never a gone child", () => {
+    expect(decide({ row, session: "unknown", now: RETRY, answer: Option.none() })).toEqual(Decision.cases.Retry.make({}))
+    expect(decide({ row: { ...row, wakeFailures: 50 }, session: "unknown", now: RETRY, answer: Option.none() })).toEqual(Decision.cases.Retry.make({}))
+  })
+
+  test("a gone child's parent is told with an id of its own, once; the row then sends nothing more", () => {
+    const decision = decide({ row, session: "gone", now: RETRY, answer: Option.none() })
+    expect(decision).toEqual(Decision.cases.Tell.make({ parentID: "ses_root", id: goneNoticeId("ses_child", RETRY) }))
+    expect(goneNoticeId("ses_child", RETRY)).not.toBe(wakeDeliveryId("ses_child", RETRY))
+    expect(decide({ row: told(row, RETRY), session: "gone", now: RETRY, answer: Option.none() })).toEqual(Decision.cases.Drop.make({}))
   })
 
   test("a newer hold of the session is not the hold that was woken", () => {
     expect(sameHold(row, { ...row, retryAt: RETRY + 1 })).toBe(false)
     expect(sameHold(row, { ...row, sessionID: "ses_other" })).toBe(false)
     expect(sameHold(row, { ...row, recheckAt: RECHECK, wakeFailures: 2 })).toBe(true)
+  })
+})
+
+describe("a row that no longer decodes", () => {
+  test("of the wake's kind (it names a model) is rebuilt from what can be read, its key naming the session", () => {
+    expect(repaired("ses_child", { model: "m", retryAt: "soon", parentID: "ses_root", reasonCode: "even-line" }, RETRY)).toEqual(
+      Option.some(HeldSend.make({ sessionID: "ses_child", providerID: "anthropic", model: "m", reasonCode: "even-line", retryAt: RETRY, parentID: "ses_root" })),
+    )
+    expect(repaired("ses_child", { model: "m", providerID: "sim", retryAt: RECHECK, reasonCode: 7 }, RETRY)).toEqual(
+      Option.some(HeldSend.make({ sessionID: "ses_child", providerID: "sim", model: "m", reasonCode: "record-unreadable", retryAt: RECHECK })),
+    )
+  })
+
+  test("of another kind, or one that decodes, is left as it is", () => {
+    expect(repaired("ses_child", { retryAt: "soon" }, RETRY)).toEqual(Option.none())
+    expect(repaired("ses_child", "garbage", RETRY)).toEqual(Option.none())
+    expect(repaired("ses_child", makeRow(FRESH), RETRY)).toEqual(Option.none())
   })
 })
 
@@ -202,13 +251,15 @@ describe("HeldSend schema backward compatibility", () => {
       sessionID: "ses_sub",
       providerID: "anthropic",
       model: "claude-opus-4-6",
+      parentID: "ses_root",
       reasonCode: "even-line",
       retryAt: RETRY,
       recheckAt: RECHECK,
       wakeFailures: 2,
       wokenAt: RECHECK + 5_000,
+      toldAt: RECHECK + 6_000,
     })
-    expect(full).toMatchObject({ model: "claude-opus-4-6", recheckAt: RECHECK, wakeFailures: 2, wokenAt: RECHECK + 5_000 })
+    expect(full).toMatchObject({ model: "claude-opus-4-6", parentID: "ses_root", recheckAt: RECHECK, wakeFailures: 2, wokenAt: RECHECK + 5_000, toldAt: RECHECK + 6_000 })
   })
 })
 
@@ -222,6 +273,7 @@ describe("wakeDeliveryId", () => {
     expect(wakeDeliveryId("ses_child_a", RETRY + 0.9)).toBe(id)
     expect(wakeDeliveryId("ses_child_b", RETRY)).not.toBe(id)
     expect(wakeDeliveryId("ses_child_a", RETRY + 1)).not.toBe(id)
+    expect(goneNoticeId("ses_child_a", RETRY)).toMatch(HOST_MSG_ID)
   })
 
   test("orders ids ascending with retryAt and clamps negative timestamps to zero", () => {
