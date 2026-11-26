@@ -14,6 +14,8 @@ const refuse = (detail: string) => () => new AdmissionUnavailable({ reason: "unq
 
 interface ProcessIdentity {
   readonly pid: number
+  /** Its parent's pid (0 for none). */
+  readonly parent: number
   readonly start: number
   readonly group: number
   readonly uid: number
@@ -198,7 +200,7 @@ const darwinIdentity = (host: BootHost, pid: number): Option.Option<ProcessIdent
   const start = Number(view.getBigUint64(120, true) * 1_000_000n + view.getBigUint64(128, true))
   if (!Number.isSafeInteger(start) || start <= 0) return Option.none()
   const command = commandLabel(new TextDecoder().decode(bsdinfo.subarray(48, 64)))
-  return Option.some({ pid, start, group: view.getUint32(100, true), uid: view.getUint32(28, true), command })
+  return Option.some({ pid, parent: view.getUint32(16, true), start, group: view.getUint32(100, true), uid: view.getUint32(28, true), command })
 }
 
 const linuxIdentity = Effect.fn("LaunchScope.linuxIdentity")(function* (pid: number) {
@@ -214,13 +216,26 @@ const linuxIdentity = Effect.fn("LaunchScope.linuxIdentity")(function* (pid: num
   const group = Number(fields[2])
   const uid = Number(status.match(/^Uid:\s*(\d+)/mu)?.[1])
   if (![start, group, uid].every((n) => Number.isSafeInteger(n) && n >= 0) || start === 0 || group === 0) return Option.none()
-  return Option.some({ pid, start, group, uid, command })
+  return Option.some({ pid, parent: Number(fields[1]) || 0, start, group, uid, command })
 })
 
 export const processIdentity = (host: BootHost, pid: number) => {
   if (host.platform === "darwin") return Effect.sync(() => darwinIdentity(host, pid))
   return linuxIdentity(pid)
 }
+
+/** The pids above `pid`, nearest first, up to the first that cannot be read. */
+export const ancestorsOf = Effect.fn("LaunchScope.ancestors")(function* (host: BootHost, pid: number) {
+  const found: number[] = []
+  let current = pid
+  while (found.length < 64) {
+    const identity = yield* processIdentity(host, current)
+    if (Option.isNone(identity) || identity.value.parent <= 1) break
+    current = identity.value.parent
+    found.push(current)
+  }
+  return found
+})
 
 export const callerOf = Effect.fn("LaunchScope.caller")(function* (host: BootHost) {
   const core = host.kernel.core.symbols

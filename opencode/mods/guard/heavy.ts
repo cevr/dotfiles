@@ -83,9 +83,21 @@ const startsWith = (texts: ReadonlyArray<string>, pattern: ReadonlyArray<string>
 export const matchesCommand = (line: CommandLine, patterns: ReadonlyArray<string>) =>
   patterns.some((pattern) => line.runs.some(({ argv }) => startsWith(argv, pattern.split(/\s+/u).filter(Boolean))))
 
+/** `host-admit check run …` (or `bun …/host-admit.ts check run …`): a run that
+ * asks admission itself, with its own declared width. */
+export const admitsItself = (argv: ReadonlyArray<string>): boolean => {
+  const rest = argv.slice(Number(executable(argv[0] ?? "") === "bun"))
+  const tool = executable(rest[0] ?? "").replace(/\.ts$/u, "")
+  return tool === "host-admit" && rest[1] === "check" && rest[2] === "run"
+}
+
+/** Heavy: a run of the line matches a pattern, or the line cannot be resolved.
+ * A run that is itself `host-admit check run` is already admitted at the
+ * width it declares; wrapping the line again would charge it twice, the
+ * outer lease at unknown width (the whole pool) holding the inner one. */
 export const heavyCommand = (line: CommandLine, patterns: ReadonlyArray<string>): boolean => {
   if (line.kind === "opaque" && line.unresolved) return patterns.some((pattern) => pattern.trim().length > 0)
-  return matchesCommand(line, patterns)
+  return matchesCommand({ ...line, runs: line.runs.filter(({ argv }) => !admitsItself(argv)) }, patterns)
 }
 
 /** Entry for callers that only need classification. */

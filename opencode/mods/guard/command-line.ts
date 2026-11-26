@@ -1,5 +1,5 @@
 import { Option, Predicate } from "effect"
-import { SHELLS, simpleCommands, type Word } from "./shell-line.ts"
+import { COMMAND_STARTS, SHELLS, simpleCommands, type Word } from "./shell-line.ts"
 
 export type CommandEnvironment = Readonly<Partial<Record<string, string>>>
 type Invocation = { readonly argv: ReadonlyArray<string>; readonly env: CommandEnvironment }
@@ -165,12 +165,25 @@ const wrapperChild = (named: string, argv: ReadonlyArray<string>, args: Readonly
   if (opaqueEnvironment.has(named)) return advisory(run)
   return run
 }
+/** A shell's own words before a command: `L=value` (alone it runs
+ * nothing, a resolved no-op; a substitution in the value is a run of its own
+ * in `simpleCommands`), and `while`, `until`, `if`, `do`, `then`,
+ * `elif`, `else`, which run the command after them. */
+const shellWords = (shell: boolean, head: string, args: ReadonlyArray<string>, env: CommandEnvironment, depth: number): Option.Option<CommandLine> => {
+  if (!shell) return Option.none()
+  const bound = binding(head)
+  if (Option.isSome(bound) && args.length === 0) return Option.some(literal([]))
+  if (Option.isSome(bound)) return Option.some(child(args, assign(env, bound.value), depth + 1, true))
+  if (COMMAND_STARTS.has(head) && args.length > 0) return Option.some(child(args, env, depth + 1, true))
+  return Option.none()
+}
+
 function child(argv: ReadonlyArray<string>, env: CommandEnvironment, depth: number, shell = false): CommandLine {
   const [head = "", ...args] = argv
   if (!head || depth >= 20) return opaque
   const named = executable(head)
-  const bound = binding(head)
-  if (shell && Option.isSome(bound)) return child(args, assign(env, bound.value), depth + 1, true)
+  const own = shellWords(shell, head, args, env, depth)
+  if (Option.isSome(own)) return own.value
   if (named === "env") return envChild(argv, args, env, depth)
   if (SHELLS.has(named)) return shellChild(argv, args, env, depth)
   if ((named === "pnpm" || named === "yarn") && (args[0] === "exec" || args[0] === "dlx"))

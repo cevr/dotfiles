@@ -4,7 +4,7 @@ import { Config, Console, Effect, FileSystem, Option, Path, Predicate, Schema } 
 import * as BunServices from "@effect/platform-bun/BunServices"
 import { AdmissionUnavailable } from "@dotfiles/opencode-guard/admission"
 import { Counter, OpaqueId, Purpose, qualifiedForm, Request, Width } from "@dotfiles/opencode-guard/admission-wire"
-import { checkModel, joinWidth, readWidth } from "@dotfiles/opencode-guard/check-demand"
+import { checkModel, readWidth } from "@dotfiles/opencode-guard/check-demand"
 import { parseArgv } from "@dotfiles/opencode-guard/command-line"
 import { Holder } from "@dotfiles/opencode-guard/host-resources"
 import { admissionPurpose } from "@dotfiles/opencode-guard/launcher"
@@ -161,9 +161,16 @@ export const checkSpec = Effect.fn("HostAdmit.checkSpec")(function* (payload: Re
   if (enforced && Option.isSome(hint) && Predicate.isNumber(hint.value))
     return { purpose: purpose.value, width: hint.value, imposed: true, advice: "The Linux CPU controller enforces the declared width." }
   const model = checkModel(command)
-  const width = joinWidth(model.width, Option.getOrElse(hint, () => model.width))
+  // An explicit --width is the truth, whatever the command (a script,
+  // `timeout`, `systemd-run`, `unshare`, `env`, a tool the model reads
+  // wider): the caller declared it. Without one, the tool model decides.
+  const width = Option.getOrElse(hint, () => model.width)
   if (width === "invalid") return yield* new AdmissionUnavailable({ reason: "invalid-width" })
-  return { purpose: purpose.value, width, imposed: false, advice: model.advice }
+  const advice = Option.match(hint, {
+    onNone: () => model.advice,
+    onSome: (stated) => `The declared width ${String(stated)} stands (the tool model reads ${String(model.width)}).`,
+  })
+  return { purpose: purpose.value, width, imposed: false, advice }
 })
 
 const check = Effect.fn("HostAdmit.check")(function* (host: Host, args: ReadonlyArray<string>) {

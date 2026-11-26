@@ -31,7 +31,9 @@ seeded("a Linux declaration is a scope cap, not a tool inference or advisory hin
     const linux = yield* checkSpec(payload, options, true)
     const darwin = yield* checkSpec(payload, options, false)
     expect({ width: String(linux.width), imposed: linux.imposed }).toEqual({ width: "1", imposed: true })
-    expect({ width: darwin.width, imposed: darwin.imposed }).toEqual({ width: "unknown", imposed: false })
+    // No tool model knows the command: the declared width stands on an
+    // unenforced host too (host-admit-queue law c).
+    expect({ width: String(darwin.width), imposed: darwin.imposed }).toEqual({ width: "1", imposed: false })
     const demand = enforceDeclaredWidth(demandOnVolume(linux, "fixture"))
     const cap = cpuDemand(demand, 10000)
     expect(cap).toBe(1000)

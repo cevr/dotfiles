@@ -29,8 +29,11 @@ export const widthMismatch = (demand: Pick<Lease["request"]["demand"], "width" |
   model: { readonly width: number | "unknown" | "full" | "invalid"; readonly advice: string }): Option.Option<AdmissionUnavailable> => {
   const command = Option.getOrElse(Option.fromNullishOr(args[0]), () => "the command")
   if (model.width === "invalid") return Option.some(refuse("invalid-width", `${command}: its width option is not a positive integer`))
-  if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(model.width) ||
-    model.width * 1000 > Math.max(demand.width * 1000, demand.cpuMilli)))
+  // An unknown model under a numeric lease: the lease's declared width is
+  // the truth (a script, an unmodeled tool). Only a model that proves the
+  // tool wider than the lease, or the whole host, is a mismatch.
+  if (Predicate.isNumber(demand.width) && (model.width === "full" ||
+    (Predicate.isNumber(model.width) && model.width * 1000 > Math.max(demand.width * 1000, demand.cpuMilli))))
     return Option.some(refuse("unqualified", `${command}'s width by its tool model is ${String(model.width)}, ` +
       `not within the lease's width ${demand.width}: lease it at that width, or pass the tool a width within it (${model.advice})`))
   return Option.none()
@@ -87,6 +90,12 @@ const warnFull = (width: Width, advice: string, observation: Observation, reason
   if (width * 1000 === maximum) return Console.error(`host-admit: whole managed CPU pool: ${status}. ${advice}`)
   return Effect.void
 }
+/** The lease whose owner is the nearest ancestor of this process, if any:
+ * a check run inside it is that lease (re-entrant), never a second
+ * request queued behind it. */
+export const enclosing = (ancestors: ReadonlyArray<number>, owners: ReadonlyArray<{ readonly row: Lease; readonly pid: Option.Option<number> }>) =>
+  Option.fromNullishOr(ancestors.values().map((ancestor) => owners.find(({ pid }) => Option.contains(pid, ancestor))).find(Predicate.isNotUndefined)?.row)
+const widthText = (row: Lease) => String(Option.getOrElse(Option.map(row.admittedDemand, ({ width }) => width), () => row.request.demand.width))
 const describeWait = (width: Width, advice: string) => {
   let reported = false
   return (observation: Observation, reason: Reason) => {
@@ -156,6 +165,9 @@ const inspectScope = Effect.fn("HostAdmission.inspectScope")(function* (
 })
 
 const loop = Schedule.spaced(500)
+/** How often a waiting check looks again: woken by a ledger change, but
+ * never sooner than `floorMs` after its last look. */
+export const WAITER = { floorMs: 1000, ceilingMs: 5000 } as const
 
 export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const fs = yield* FileSystem.FileSystem
@@ -260,11 +272,11 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     return (yield* step({ op: "status", id, owner: caller.owner })).reply
   })
 
-  const waitForChange = (timeoutMs: number) => {
+  const waitForChange = (timeoutMs: number, floorMs = 125) => {
     const event = Stream.runHead(fs.watch(config.directory)).pipe(Effect.timeoutOption(timeoutMs), Effect.ignore)
     // SQLite's own observation writes also reach the watcher. Coalesce them
     // so competing local waiters cannot wake/measure in a tight loop.
-    return Effect.all([event, Effect.sleep(125)], { concurrency: 2, discard: true })
+    return Effect.all([event, Effect.sleep(floorMs)], { concurrency: 2, discard: true })
   }
 
   const watch = Effect.fn("HostAdmission.watch")(function* (id: string, after: number) {
@@ -287,6 +299,22 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     }
   })
 
+  // A waiter sleeps (case 6: eight waiters, each re-measuring the host on
+  // every other's write, spun about a core). Between full steps it only
+  // reads its own row, woken by a ledger change at most every
+  // WAITER.floorMs; another caller's step grants it, and a full step comes
+  // at least every WAITER.ceilingMs to sample and serve the queue.
+  const sleepWhileQueued = Effect.fn("HostAdmission.sleepWhileQueued")(function* (id: string) {
+    const start = yield* Supply.clockOf(host)
+    for (;;) {
+      const now = yield* Supply.clockOf(host)
+      if (now - start >= WAITER.ceilingMs) return
+      yield* waitForChange(WAITER.ceilingMs - (now - start), WAITER.floorMs)
+      const { leases } = yield* ledger.inspect()
+      if (leases[id]?.state !== "queued") return
+    }
+  })
+
   const wait = Effect.fn("HostAdmission.awaitGrant")(function* (address: Address, explain: ReturnType<typeof describeWait>) {
     for (;;) {
       const { reply, state, observation } = yield* step({ op: "status", ...address })
@@ -296,7 +324,7 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       if (!row) return yield* fail("unknown-id")
       if (!granting(row)) return yield* fail("stale")
       if (row.state === "granted") return { row, observation }
-      yield* waitForChange(500)
+      yield* sleepWhileQueued(address.id)
     }
   })
 
@@ -426,12 +454,33 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     }
   })
 
+  // Re-entrancy (host-admit-queue, case 6): a check run from inside a lease's
+  // own process tree (a guard-wrapped line that calls host-admit itself)
+  // would wait behind the lease that is its own ancestor, forever. It is
+  // that lease: it runs under it, with no second request.
+  const enclosingLease = Effect.fn("HostAdmission.enclosingLease")(function* (pid: number) {
+    const ancestors = yield* Scope.ancestorsOf(host, pid)
+    const { leases } = yield* ledger.inspect()
+    const owners = yield* Effect.forEach(Object.values(leases).filter((row) => !terminal(row.state)), (row) =>
+      native.peer(row.owner).pipe(Effect.map((peer) => ({ row, pid: Option.map(Option.fromNullishOr(peer), (found) => found.pid) }))))
+    return enclosing(ancestors, owners)
+  })
+  const inside = Effect.fn("HostAdmission.inside")(function* (row: Lease, args: ReadonlyArray<string>) {
+    if (!active(row)) return yield* refuse("invalid-request",
+      `this check runs inside lease :${row.ticket}, which is ${row.state}: a request from its own process tree would wait on itself`)
+    yield* Console.error(`host-admit: runs inside lease :${row.ticket} (width ${widthText(row)}), which its own process tree holds: no second request`)
+    const work = yield* Scope.spawnOwned(args, config.cwd)
+    return yield* work.exited.pipe(Effect.onInterrupt(() => work.stop))
+  })
+
   const run = Effect.fn("HostAdmission.runCheck")(function* (
     demand: CheckDemand, args: ReadonlyArray<string>, advice: string, imposed: boolean,
   ) {
     const now = yield* Supply.clockOf(host)
     if (Option.isNone(target)) return yield* fail("unknown-volume")
     const pid = host.kernel.core.symbols.getpid()
+    const within = yield* enclosingLease(pid)
+    if (Option.isSome(within)) return yield* inside(within.value, args)
     const self = yield* Scope.processIdentity(host, pid)
     if (Option.isNone(self)) return yield* new AdmissionUnavailable({ reason: "unavailable", detail: `cannot read this process's identity (pid ${pid})` })
     const owner = Supply.ref("waiter", `${host.bootId}:${self.value.pid}:${self.value.start}`)

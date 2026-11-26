@@ -15,11 +15,13 @@ const refusalOf = (width: ReturnType<typeof wide> | "unknown" | "full", args: Re
   Option.map(widthMismatch({ width, cpuMilli: 1000 }, args, { width: model, advice }), ({ reason, detail }) => ({ reason, detail }))
 
 describe("the width a launch runs at", () => {
-  test("a tool wider than its lease, or of unknown width under a numeric lease, is refused naming the command and both widths", () => {
+  test("a tool its model proves wider than its lease is refused naming the command and both widths", () => {
     expect(refusalOf(wide(1), ["bun", "test"], 4)).toEqual(Option.some({ reason: "unqualified",
       detail: "bun's width by its tool model is 4, not within the lease's width 1: lease it at that width, or pass the tool a width within it (Pass --parallel=N.)" }))
-    expect(Option.map(refusalOf(wide(2), ["sleep", "1"], "unknown"), ({ detail }) => detail))
-      .toEqual(Option.some("sleep's width by its tool model is unknown, not within the lease's width 2: lease it at that width, or pass the tool a width within it (Pass --parallel=N.)"))
+  })
+  test("under a numeric lease a command no model knows runs at the declared width (host-admit-queue law c)", () => {
+    expect(refusalOf(wide(2), ["sleep", "1"], "unknown")).toEqual(Option.none())
+    expect(refusalOf(wide(2), ["timeout", "600", "sh", "leg.sh"], "unknown")).toEqual(Option.none())
   })
   test("a command within its lease, or under an unknown or full lease, is no mismatch", () => {
     expect(refusalOf(wide(4), ["bun", "test"], 4)).toEqual(Option.none())
