@@ -8,7 +8,7 @@
 import type { Plugin } from "@opencode/plugin/effect"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Option, Order, Predicate, Queue, Schema, type Scope, Stream, type Types } from "effect"
-import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, type Subscriber } from "./host.ts"
+import { type AgentEditor, type Handler, type Hook, type HookInput, type Host, type Login, type Published, SessionArchived, type Subscriber } from "./host.ts"
 import { permissionAssert } from "./host-permission.ts"
 import { makeSkillCatalog } from "./host-skills.ts"
 import { type JsonObject, plain } from "./runtime.ts"
@@ -518,6 +518,11 @@ export const contextFor = (host: Host, loaded: Loaded, instance: number, plugin:
       )(input).pipe(
         Effect.flatMap((parsed) =>
           host.sessionOr(parsed.sessionID).pipe(
+            // A plugin's synthetic message keeps its input, so an archived session refuses it, typed, and admits nothing (the fork's SessionAdmission.typed).
+            Effect.filterOrFail(
+              (found) => !host.archived.has(found.id),
+              (found) => new SessionArchived({ sessionID: found.id, message: `Session ${found.id} is archived` }),
+            ),
             Effect.flatMap((found) =>
               host.admit(found, {
                 id: parsed.id ?? host.mint("msg_"),

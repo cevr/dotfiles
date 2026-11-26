@@ -308,6 +308,8 @@ export const SIM_MODEL: CatalogModel = { providerID: "sim", id: "sim-model", mod
 // ── Failures, as the fork tags them ──
 
 export class SessionNotFound extends Data.TaggedError("Session.NotFoundError")<{ readonly sessionID: string; readonly message: string }> {}
+/** The fork's refusal of a plugin's synthetic message to an archived session (core/src/session/admission.ts `ArchivedError`): nothing admitted. */
+export class SessionArchived extends Data.TaggedError("Session.ArchivedError")<{ readonly sessionID: string; readonly message: string }> {}
 export class CatalogNotFound extends Data.TaggedError("NotFoundError")<{ readonly message: string }> {}
 export class RpcNotFound extends Data.TaggedError("RpcNotFoundError")<{ readonly message: string }> { readonly type = "rpc.method_not_found" }
 /** An RPC whose handler died: the call fails, as the fork's `rpc.internal`. */
@@ -819,6 +821,12 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
       if (archived.has(session.id)) return Effect.void
       archived.add(session.id)
       return publish({ type: "session.archived", data: { sessionID: session.id } })
+    })
+  /** A client unarchives it: `session.unarchived` once; a session not archived is nothing. */
+  const unarchive = (session: Session) =>
+    Effect.suspend(() => {
+      if (!archived.delete(session.id)) return Effect.void
+      return publish({ type: "session.unarchived", data: { sessionID: session.id } })
     })
 
   /** Each copy's agent transform, in load order: the agents are rebuilt from them for each read. */
@@ -2110,6 +2118,7 @@ export const makeHost = (options: Options, runtime: Runtime, start: number) => {
     catalogNotFound,
     removeSession,
     archive,
+    unarchive,
     archived,
     processes,
     spawned,

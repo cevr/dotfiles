@@ -329,6 +329,8 @@ export const make = (worldOptions: WorldOptions) => {
       run(Option.match(Option.fromNullishOr(host.sessions.get(sessionID)), { onNone: () => Effect.void, onSome: host.removeSession })),
     /** The owner archives the session from a client. */
     archive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.archive(session)))),
+    /** A client unarchives the session: a plugin's synthetic message is admitted again. */
+    unarchive: (sessionID: string) => sessionOf(sessionID).pipe(Effect.flatMap((session) => run(host.unarchive(session)))),
     /** Calls an RPC method as a client of the host (the TUI, another plugin) would: by its id, or its definition as a client names it. */
     rpc: (id: string | { readonly id: string }, method: string, input: Schema.Json) => run(host.callRpc(Match.value(id).pipe(Match.when(Predicate.isString, (named) => named), Match.orElse((definition) => definition.id)), method, input)),
     /**
