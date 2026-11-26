@@ -1,8 +1,11 @@
-// Pure interim wake decision for hosts with no Step to hold (pin c6664062):
+// Pure interim wake decision for holds that end a turn (a host with no Step to
+// hold, pin c6664062; and on a host with one, fork 24dca3c1, a signed provider's
+// placement, which the pool does not defer on the Step yet; a row held on a Step,
+// one with a `stepID`, is the host's and never woken here):
 // decides whether a recorded held-send row should wait, wake the subagent,
 // be checked again later, tell the subagent's parent that it will not be
 // woken, or be left alone, and what the row records after each outcome.
-// Deleted by the pool-hold-latch unit once the host holds the Step.
+// Deleted by the pool-hold-latch unit, which holds every primary on the Step.
 //
 // A row is one hold that ended one turn: its `retryAt` is the time that hold
 // named and never changes, so each message the pool sends for it (the wake,
@@ -43,7 +46,7 @@ export const goneText = (sessionID: string): string =>
 export const GONE_DESCRIPTION = "held subagent gone"
 
 /**
- * Appended to a held subagent's turn-ending error on hosts without a Step. A stopped Session is not woken by a
+ * Appended to a held subagent's turn-ending error (a hold no Step holds). A stopped Session is not woken by a
  * notice (the host keeps it for the Session's next task, where `WAKE_TEXT` gives way to that task).
  */
 export const SUBAGENT_RESUME_NOTE = " This session resumes by itself then, unless it is stopped first."

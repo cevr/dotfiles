@@ -94,6 +94,8 @@ interface SessionEvent {
 
 /** A session missing from the stand-in host, matching OpenCode's Session.NotFoundError shape. */
 const SessionNotFound = Schema.TaggedStruct("Session.NotFoundError", { sessionID: Schema.String })
+/** An archived session refuses a plugin's notice, as fork 24dca3c1 does (SessionAdmission: a plugin keeps its input). */
+const SessionArchived = Schema.TaggedStruct("Session.ArchivedError", { sessionID: Schema.String })
 /** The stand-in host could not admit a notice (`World.wakeAccess.fails`). */
 const SyntheticRefused = Schema.TaggedStruct("Session.SyntheticConflictError", { sessionID: Schema.String })
 
@@ -136,6 +138,8 @@ interface World {
   readonly missing: Set<string>
   /** Sessions stopped by their parent: `session.synthetic` admits the notice without waking them. */
   readonly stopped: Set<string>
+  /** Sessions the user archived: `session.synthetic` refuses a plugin's notice (`Session.ArchivedError`), admitting nothing. */
+  readonly archived: Set<string>
   /** Synthetic messages delivered by the plugin, with whether the host woke the session on each. */
   readonly synthetics: Array<{ readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean; readonly woke: boolean }>
   /** Admitted synthetic ids (`${sessionID}\0${id}`), modelling the host's first-admission-wins reconciliation. */
@@ -203,6 +207,7 @@ const world = (): World => {
     parents: new Map(),
     missing: new Set(),
     stopped: new Set(),
+    archived: new Set(),
     synthetics: [],
     admitted: new Set(),
     wakeAccess: { calls: 0, fails: 0, hang: false, scans: 0, down: false, lookups: false },
@@ -359,6 +364,7 @@ const start = <R = never,>(
             state.wakeAccess.calls += 1
             if (state.wakeAccess.down) return Effect.fail(HostDown.make({ sessionID: input.sessionID }))
             if (state.missing.has(input.sessionID)) return Effect.fail(SessionNotFound.make({ sessionID: input.sessionID }))
+            if (state.archived.has(input.sessionID)) return Effect.fail(SessionArchived.make({ sessionID: input.sessionID }))
             if (state.wakeAccess.fails > 0) {
               state.wakeAccess.fails -= 1
               return Effect.fail(SyntheticRefused.make({ sessionID: input.sessionID }))
@@ -2669,7 +2675,7 @@ describe("interim hold-wake on hosts without a Step", () => {
       expect(state.synthetics).toEqual([])
     })))
 
-  test("rows the installed pool wrote (no model) are not woken; a row this pool wrote wakes once with an absent 5-hour window; gone sessions and hosts with a Step wake none", () =>
+  test("rows the installed pool wrote (no model) are not woken; a row this pool wrote wakes once with an absent 5-hour window; gone sessions and Step-held rows wake none", () =>
     onTestClock(Effect.gen(function* () {
       const state = world()
       state.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
@@ -2700,17 +2706,23 @@ describe("interim hold-wake on hosts without a Step", () => {
         text: HoldWake.WAKE_TEXT,
         woke: true,
       })
-      // On a host with a Step (`experimental.model.resolve` with `step`), hold-wake does not wake or append the note.
+      // On a host with a Step (`experimental.model.resolve` with `step`, fork 24dca3c1), a signed provider's hold
+      // still ends the turn (the pool defers only a paced provider's Step until pool-hold-latch): its subagent reads
+      // the note and is woken once. A row held on a Step (it names a `stepID`) is the host's: never woken here.
       const stepped = world()
       stepped.integration.connections.set(ANTHROPIC, [CONNECTIONS[0]])
       stepped.parents.set("ses_stepped", "ses_root")
-      stepped.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until: (yield* Clock.currentTimeMillis) + MINUTE })
+      stepped.parents.set("ses_step_held", "ses_root")
+      const opens = (yield* Clock.currentTimeMillis) + MINUTE
+      stepped.storage.set("anthropic/hold/cred-a", { kind: "rate-limit", at: 0, until: opens })
+      stepped.storage.set("held-send/ses_step_held", { sessionID: "ses_step_held", providerID: "openai", reasonCode: "account-held", retryAt: opens, model: model.id, stepID: "step_9" })
       const plugin = yield* start({ sweepMinutes: 0 }, stepped, live())
       const resolve = yield* registered(plugin.hooks, "experimental.model.resolve")
       yield* resolve({ sessionID: "ses_stepped", agent: "build", kind: "primary", model, step: { id: "step_1" } })
-      expect(yield* refusalOf(plugin.request("ses_stepped"))).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      expect(yield* refusalOf(plugin.request("ses_stepped"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      const heldUntil = Schema.decodeUnknownSync(Schema.Struct({ retryAt: Schema.Number }))(stepped.storage.get("held-send/ses_stepped")).retryAt
       yield* advance(2 * MINUTE)
-      expect(stepped.synthetics).toEqual([])
+      expect(stepped.synthetics.map((entry) => [entry.sessionID, entry.id])).toEqual([["ses_stepped", HoldWake.wakeDeliveryId("ses_stepped", heldUntil)]])
     })))
 })
 
@@ -2818,6 +2830,27 @@ describe("interim hold-wake laws", () => {
         yield* Scope.close(later, Exit.void)
         yield* Scope.close(first, Exit.void)
       })), hangGuard("in-memory"))
+
+  // An archived child (fork 24dca3c1: a plugin's notice to an archived session is refused, `Session.ArchivedError`,
+  // nothing admitted; unarchiving wakes nothing) is not gone: the wake backs off as for any refused delivery, for as
+  // long as it stays archived, and lands once within the longest back-off of its unarchiving. Its parent hears nothing.
+  test("an archived held child is tried again while archived and woken once after it is unarchived; its parent hears nothing", () =>
+    onTestClock(Effect.gen(function* () {
+      const until = (yield* Clock.currentTimeMillis) + 2 * MINUTE
+      const state = heldWorld(until)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      expect(yield* refusalOf(plugin.request("ses_child"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      state.archived.add("ses_child")
+      const calls = state.wakeAccess.calls
+      yield* advance(until - (yield* Clock.currentTimeMillis) + 6 * HOUR, 5 * MINUTE)
+      // Tried again, backing off, and nothing admitted.
+      expect(state.wakeAccess.calls - calls).toBeGreaterThan(1)
+      expect(toSession(state, "ses_child")).toEqual([])
+      state.archived.delete("ses_child")
+      yield* advance(HoldWake.WAKE_RETRY_MAX_MS + MINUTE, MINUTE)
+      expect(toSession(state, "ses_child").map((entry) => entry.id)).toEqual([HoldWake.wakeDeliveryId("ses_child", until)])
+      expect(toSession(state, "ses_root")).toEqual([])
+    })), hangGuard("in-memory"))
 
   // A row this pool's kind wrote (it names a model, so the parent read "resumes by itself") whose time is damaged
   // is not dropped in silence: it is rebuilt once, whichever of two server processes reads it first, and the child is

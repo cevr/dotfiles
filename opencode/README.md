@@ -1513,8 +1513,11 @@ older pool kept them, is read too and folded into chunks in the background. A le
 
 ### Interim hold wake (`hold-wake`)
 
-On a host without a typed Step (`canDeferPrimary` false, pin `c6664062`), a
-held primary request still ends its turn in error. For a subagent (a session
+A held primary request that no Step holds still ends its turn in error: on a
+host without a typed Step (pin `c6664062`), and on one with it (fork
+`24dca3c1`) for a signed provider (Anthropic), whose placement the pool does not
+yet defer on the Step (`pool-hold-latch` does). A row held on a Step (it names a
+`stepID`) is the host's and is never woken here. For a subagent (a session
 with a `parentID`), the pool appends `This session resumes by itself then, unless it is stopped first.`
 to the refusal message and stores the request's `model` and the `parentID` on
 `held-send/<sessionID>` (`mods/pool/hold-wake.ts`). A row is one hold that ended

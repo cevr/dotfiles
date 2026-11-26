@@ -667,9 +667,10 @@ export const make = <R = never,>(
       ) {
         const now = yield* Clock.currentTimeMillis
         const retryAt = nextRetryAt(now, [retry])
-        // On a host with no Step, a held subagent's parent reads that it resumes by itself: its row names the parent,
-        // whom the pool tells should the child be gone before it can be woken.
-        const waking = !canDeferPrimary && scope.kind === "primary" && Option.isNone(Option.fromUndefinedOr(scope.stepID))
+        // A hold that ends the turn (no Step holds it: a host without one, or a signed provider's placement, which the
+        // pool does not defer yet) tells a held subagent's parent that it resumes by itself: its row names the parent,
+        // whom the pool tells should the child be gone before it can be woken. A row held on a Step is the host's.
+        const waking = scope.kind === "primary" && Option.isNone(Option.fromUndefinedOr(scope.stepID))
         const parent = yield* Option.match(Option.liftPredicate(scope.sessionID, () => waking), {
           onNone: () => Effect.succeed(Option.none<string>()),
           onSome: (sessionID) => Effect.map(hostSession(sessionID), (session) => Option.filter(session.parentID, () => session.role === "subagent")),
@@ -688,7 +689,7 @@ export const make = <R = never,>(
         // No successful/typed refusal is published before this commit.
         yield* sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold))
         // Every wake scanner of the process looks at the new row (a reload's copies too): a row it may wake has a time.
-        if (!canDeferPrimary && Option.isSome(HoldWake.dueAt(hold))) yield* Effect.sync(() => wakeBells().forEach((ring) => ring()))
+        if (Option.isSome(HoldWake.dueAt(hold))) yield* Effect.sync(() => wakeBells().forEach((ring) => ring()))
         return { ...hold, reason: message }
       })
       const removeHeld = (sessionID: string) => Effect.gen(function* () {
@@ -827,7 +828,6 @@ export const make = <R = never,>(
       })
       /** Look at every row once: the earliest time one is due again, or none when no row waits on the pool. */
       const wakeHeldSends = Effect.fn("Pool.wakeHeldSends")(function* () {
-        if (canDeferPrimary) return Option.none<number>()
         let next = Option.none<number>()
         let after = Option.none<string>()
         do {
@@ -919,7 +919,7 @@ export const make = <R = never,>(
           }
           after = Option.fromUndefinedOr(page.next)
         } while (Option.isSome(after))
-        if (found && !canDeferPrimary) yield* Effect.sync(ring)
+        if (found) yield* Effect.sync(ring)
       }).pipe(Effect.withSpan("Pool.pruneHeldSends"))
       yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -950,7 +950,7 @@ export const make = <R = never,>(
 
           yield* Effect.forkScoped(pool.follow)
 
-          // On hosts without a Step, held subagents are woken when the pool opens: the rows are read at start, then
+          // Held subagents whose hold ended their turn are woken when the pool opens: the rows are read at start, then
           // when one falls due or a new one is written.
           yield* Effect.forkScoped(wakeScanner)
 
