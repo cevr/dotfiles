@@ -372,8 +372,6 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
           ])
           // c's Fable reset ends in two hours, long before Fable's week resets: it is listed once the test says so.
           let fableListed = false
-          // d's weekly reset is listed once the waiting session is recorded, so its notice has a tray.
-          let weeklyListed = false
           const claimed: Array<string> = []
           const left = (grant: string, total: number) => total - claimed.filter((id) => id === grant).length
           const grantsOf = (account: string): ReadonlyArray<FakeGrant> => {
@@ -388,7 +386,7 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
                   givesBackWeekly: true,
                 },
               ]
-            if (account === "c" || !weeklyListed) return []
+            if (account === "c") return []
             return [{ id: "weekly-d", resetsLeft: left("weekly-d", 2), endsAt: now + 60 * DAY, clears: ["seven_day"], type: "weekly" }]
           }
           const anthropic = startFakeAnthropic({
@@ -407,12 +405,16 @@ describe.skipIf(!ready)("rate-limit resets (real OpenCode, fake Anthropic, fake 
           const { pool, questions, open, log, swept, work, pacing } = yield* Effect.promise(() => serve("kinds", accounts, anthropic.url, now))
           const claimsSeen = () => anthropic.claims.map(({ account, grant }) => [account, grant])
 
-          // ── Demand: a Fable start held on c's own spent week and d's spent week, its session recorded (work waiting that c cannot
-          // take); with d's weekly reset listed, three agents busy: d's week is refilled on its own though c has room (README rule 2),
-          // the owner told ──
-          expect(readPaced(yield* Effect.promise(() => pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION }))).ok).toBe(false)
-          weeklyListed = true
+          // ── Demand: three agents busy, a start paced each second, d's weekly reset listed: c has room for the running work and
+          // takes every start, so d's week is left (README rule 2: no work waiting) ──
           yield* Effect.promise(() => work(3, anthropic))
+          yield* Effect.promise(() => swept(anthropic, 2, ["anthropic"]))
+          expect(anthropic.claims).toEqual([])
+          expect(yield* Effect.promise(open)).toEqual([])
+
+          // ── A Fable start held on c's own spent week and d's spent week, its session recorded: work waiting that c cannot take.
+          // d's week is refilled on its own though c has room (README rule 2), the owner told ──
+          expect(readPaced(yield* Effect.promise(() => pool("pace", { providerID: "anthropic", model: "claude-fable-5-2", sessionID: SESSION }))).ok).toBe(false)
           const weeklyRows = yield* Effect.promise(() =>
             pacing(open, (rows) => rows.some((row) => row.header === "Pool reset claimed"), () => `the notice of d's claim (${claimsSeen().join(" ")}, ${log()})`),
           )
