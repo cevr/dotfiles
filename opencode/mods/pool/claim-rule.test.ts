@@ -158,7 +158,7 @@ const world = (seed: number) => {
 }
 
 /** A rule that never claims: the world as it runs with no reset spent. */
-const never: typeof decideClaim = () => decideClaim({ now: 0, held: 0, running: 0, hosts: 1, accounts: [], settling: false, pushed: false }, [])
+const never: typeof decideClaim = () => decideClaim({ now: 0, held: 0, running: 0, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, [])
 
 /** One step of the world: a window past its reset starts again, empty, and the work of `running` agents spreads over the accounts not spent. */
 const burnStep = (accounts: ReadonlyArray<Account>, running: number, now: number) => {
@@ -197,6 +197,7 @@ const simulate = (seed: number, rule: typeof decideClaim = decideClaim) => {
       accounts: accounts.map((account) => loadOf(account, now)),
       settling: false,
       pushed: false,
+      room: false,
     }
     const verdict = rule(situation, options)
     const snapshot = () => accounts.map((account) => ({ id: account.id, windows: account.windows.map((window) => ({ ...window })) }))
@@ -336,7 +337,7 @@ describe("the rule on one pool, by example", () => {
       ...fields,
     }
   }
-  const situation = (accounts: ReadonlyArray<AccountLoad>, running = 6): ClaimSituation => ({ now: NOW, held: 0, running, hosts: 2, accounts, settling: false, pushed: false })
+  const situation = (accounts: ReadonlyArray<AccountLoad>, running = 6): ClaimSituation => ({ now: NOW, held: 0, running, hosts: 2, accounts, settling: false, pushed: false, room: false })
   const verdictOf = (accounts: ReadonlyArray<AccountLoad>, options: ReadonlyArray<ClaimOption>, running?: number) => decideClaim(situation(accounts, running), options)
 
   test("forecast exhaustion cannot redeem a credit at 92%, however fast the burn", () => {
@@ -347,12 +348,19 @@ describe("the rule on one pool, by example", () => {
     if (verdict._tag === "NoClaim") expect(verdict.reasons[0]).toContain("wait for measured exhaustion")
   })
 
-  test("a measured limit is refilled even while another account has ample room", () => {
+  test("a measured limit is refilled while another account has ample room only for a start held there: running work alone goes to the room", () => {
     const full = load("a", 1, 3 * DAY, 0.02)
     const fresh = load("b", 0, 4 * DAY, 0)
-    const verdict = verdictOf([full, fresh], [option(full, "ra")])
-    expect(verdict._tag).toBe("Claim")
-    expect(verdict).toMatchObject({ step: "reset", option: { creditID: "ra" } })
+    const held = decideClaim({ ...situation([full, fresh]), room: true, held: 1 }, [option(full, "ra")])
+    expect(held._tag).toBe("Claim")
+    expect(held).toMatchObject({ step: "reset", option: { creditID: "ra" } })
+    const running = decideClaim({ ...situation([full, fresh]), room: true }, [option(full, "ra")])
+    expect(running._tag).toBe("NoClaim")
+    expect(running).toMatchObject({ step: Option.some("fresh"), reasons: ["an account of the pool has room for the running work, and no start is held"] })
+    // With no account of the pool left with room, the running work is work waiting: the refill goes.
+    const spentPool = decideClaim(situation([full]), [option(full, "ra")])
+    expect(spentPool._tag).toBe("Claim")
+    expect(spentPool).toMatchObject({ step: "reset", option: { creditID: "ra" } })
   })
 
   test("zero, tiny, and averaged burn never veto a measured refill", () => {

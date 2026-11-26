@@ -8,6 +8,8 @@ Orchestrate calls `reserveLaunch({ providerID, model, sessionID, launchID })` im
 
 The pool obtains positive agreement from every configured peer, reads their current reports after agreement, adds the proposed worker's estimate to their unsettled starts, and writes and confirms its own reservation before answering. The existing per-provider lease arbitrates competing hosts and reset claims. Missing, incompatible or clock-skewed peers hold new launches. Root replies and compaction do not require launch agreement.
 
+A launch on a provider this host does not pace still gets a reservation. The reservation carries the launch identity and no price, and is typed `unpaced: true`. It asks no peer for agreement and is not held by peer state. A peer may pace that provider on the same accounts (its `paced`). If it does, the peer counts the launch once among its unsettled starts, across retries, restarts and repeated reads, at its own launch estimate for the model. A start with neither a price nor the type comes from an older host and counts at the reader's floor. An unpaced reservation settles like a priced one. A reservation that cannot be written holds the launch, as for any other launch.
+
 ## Learning
 
 The configured `startCost` is the cold-start floor. Completed workers contribute whole-agent shared weekly cost estimated from actual token classes and the limit tally's measured model-family rate. Three completed samples in the past hour select that cohort; otherwise use the past day, adding floor-valued prior samples until the cohort has three observations. Running work, missing messages and uncalibrated records do not masquerade as cheap completed jobs.

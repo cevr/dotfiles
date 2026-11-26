@@ -1,5 +1,6 @@
 // Automatic usage resets under standing owner approval: redeem and notify.
-// Measured exhaustion with work to do authorizes an ordinary refill; expiring
+// Measured exhaustion with work waiting (a start held, or running work no
+// account of the pool has room for) authorizes an ordinary refill; expiring
 // credits get first choice. Anthropic preserves the weekly deadline, Codex
 // restarts it. Fable clears its own quota and subtracts only its reported
 // contribution from the shared week. See claim-rule.ts for exact boundaries.
@@ -42,7 +43,7 @@ import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import { periodBurn } from "./burn.ts"
 import { type AccountLoad, type ClaimOption, type ClaimSituation, type ClaimStep, decideClaim, EXPIRING_MS, LAST_CALL_MS, MIN_RESTORE, NATURAL_MS, STEP_TEXT, plural } from "./claim-rule.ts"
 import { windowMs } from "./limits.ts"
-import { type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
+import { hasRoom, type PacePlan, roomLeft, SHORT_5H, TARGET } from "./pace.ts"
 import { accountWide, accountWindow, ClaimOutcome, grantKind, limitsModel, type QuotaReading, QuotaWindow, type ResetCredit, ResetKind, scopeOf, UnreadCause } from "./quota.ts"
 import type { AccountStatus } from "./status.ts"
 import { percent, used } from "./usage-text.ts"
@@ -127,9 +128,10 @@ export const SETTLE_MS = 5 * MINUTE
 /**
  * How long after a claim that went through (`reset`) a reading may still show
  * its own recovery (`recoveryIn`): the provider's reporting can lag the
- * claim's answer, so a fresh reading that shows the week unchanged leaves the
- * claim pending, never spent and never claimed again, until a same-period
- * reading shows the week lower or this passes. A few sweeps' worth: a quiet
+ * claim's answer, so a fresh reading that shows the window it was for
+ * unchanged leaves the claim pending, never spent and never claimed again,
+ * until a reading shows that window lower (the week in the same period) or
+ * this passes. A few sweeps' worth: a quiet
  * provider never keeps a claim pending, nor its account settling, for longer.
  */
 export const OBSERVE_MS = 30 * MINUTE
@@ -261,6 +263,8 @@ export const Reset = Schema.Struct({
   unsent: Schema.optionalKey(Unsent),
   /** When a try not sent goes again (`unsentRetryAt`); one sent that failed goes again RETRY_MS after it. */
   retryAt: Schema.optionalKey(Schema.Number),
+  /** The windows it is claimed for, by name as read (`5h`, `7d`, `7d:Fable`): a reading showing one of them back observes it (`recovered`). */
+  judged: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type Reset = typeof Reset.Type
 
@@ -291,6 +295,8 @@ export const Claim = Schema.Struct({
    * the claim's own effect is its observation, never a later one another actor's spend or refund moved.
    */
   observed: Schema.optionalKey(Schema.Array(QuotaWindow)),
+  /** The windows it was claimed for (`Reset.judged`); a claim recorded without them is judged on the week. */
+  judged: Schema.optionalKey(Schema.Array(Schema.String)),
 })
 export type Claim = typeof Claim.Type
 
@@ -848,10 +854,30 @@ export const claimOut = (state: ResetsState, provider: ResetProvider, now: numbe
 // ── Review ──
 
 /** The newest held start of the pool, while it still waits. */
-const waiting = (state: ResetsState, pool: string, now: number): Wait | undefined => {
-  const wait = state.waits[pool]
-  return wait !== undefined && now - wait.at < WAIT_MS ? wait : undefined
-}
+/**
+ * The start the pace held on `pool` within WAIT_MS, and after each claim on the pool that went
+ * through within OBSERVE_MS and the claimed account's reading after it (`accounts`, as the pool holds them now): a
+ * start held before that claim, or judged on the account's reading from before it, was the claim's
+ * to answer; once the claim freed the account the start may go there, so it is no work waiting for
+ * another claim. Nor is a start held before a reading of a login that takes its work now: a claim
+ * another host made, which this host's claims do not list, frees work the same way.
+ */
+const waiting = (state: ResetsState, pool: string, now: number, accounts: ReadonlyArray<AccountStatus>): Wait | undefined =>
+  Option.fromUndefinedOr(state.waits[pool]).pipe(
+    Option.filter((wait) => now - wait.at < WAIT_MS),
+    Option.filter(
+      (wait) =>
+        !state.claims.some((claim) => {
+          if (claim.pool !== pool || (claim.outcome !== "reset" && claim.outcome !== "already-redeemed") || now - claim.at > OBSERVE_MS) return false
+          const read = Option.getOrElse(Option.flatMap(Arr.findFirst(accounts, (account) => account.credentialID === claim.credentialID), (account) => Option.fromUndefinedOr(readAt(account))), () => claim.at)
+          return Math.max(claim.at, read) >= wait.at
+        }),
+    ),
+    // A login read after the wait that takes its work now (`hasRoom`, for its model): the start, asked again, goes
+    // there, whichever host's claim freed it; it is no work waiting.
+    Option.filter((wait) => !accounts.some((account) => Option.exists(Option.fromUndefinedOr(readAt(account)), (read) => read > wait.at) && hasRoom(account, now, wait.model))),
+    Option.getOrUndefined,
+  )
 
 /** Whether every account the pool can use is held by a spent window; false for a pool with none. */
 const allSpent = (accounts: ReadonlyArray<AccountStatus>, now: number) =>
@@ -1040,12 +1066,12 @@ interface HeldWork {
  * on no Claude model's window).
  */
 const heldWork = (state: ResetsState, view: PoolView, pools: ReadonlyArray<PoolView>, now: number): HeldWork | undefined => {
-  const own = waiting(state, view.id, now)
+  const own = waiting(state, view.id, now, view.accounts)
   if (own !== undefined) return { wait: own, ...(own.model === undefined ? {} : { model: own.model }) }
   if (view.provider !== "codex") return undefined
   const claude = pools
     .filter((other) => other.provider === "claude" && allSpent(other.accounts, now))
-    .flatMap((other) => Option.toArray(Option.fromUndefinedOr(waiting(state, other.id, now))))[0]
+    .flatMap((other) => Option.toArray(Option.fromUndefinedOr(waiting(state, other.id, now, other.accounts))))[0]
   return claude === undefined ? undefined : { wait: claude }
 }
 
@@ -1176,7 +1202,7 @@ const leftAfter = (account: AccountStatus, credit: ResetCredit, now: number): Pi
 const ruleClaim = (view: PoolView, chosen: Candidate, step: ClaimStep, reason: string, now: number): ClaimDue => {
   const reset = resetOf(view, chosen.account, chosen.credit, chosen.key, step === "expiring" ? "expiring" : "forecast", "claiming", now)
   return ClaimDue.make({
-    reset: { ...reset, buys: buysOf(chosen.gives), reason: `${STEP_TEXT[step]}: ${reason}`, ...leftAfter(chosen.account, chosen.credit, now) },
+    reset: { ...reset, buys: buysOf(chosen.gives), reason: `${STEP_TEXT[step]}: ${reason}`, judged: [chosen.option.forecast], ...leftAfter(chosen.account, chosen.credit, now) },
   })
 }
 
@@ -1207,6 +1233,7 @@ const poolDue = (
     accounts: loadsOf(view, now),
     settling: view.accounts.some((account) => freeing(state, account, now)),
     pushed: work !== undefined && pushFor(state, work.wait, pushes) !== undefined,
+    room: view.accounts.some((account) => hasRoom(account, now)),
   }
   const verdict = decideClaim(situation, candidates.map((candidate) => candidate.option))
   const chosen = verdict._tag === "Claim" ? candidates.find((candidate) => candidate.option === verdict.option) : undefined
@@ -1296,15 +1323,39 @@ const givebackIn = (claim: Claim, windows: Option.Option<ReadonlyArray<QuotaWind
     Option.map(([was, now]) => ({ before: was.utilization, after: now.utilization })),
   )
 
+/** The window `name` in `windows` (the weekly one account-wide), read with them: not carried over from an older reading (`at`). */
+const ownWindowIn = (windows: ReadonlyArray<QuotaWindow>, name: string) =>
+  Arr.findFirst(windows, (window) => window.name === name && (name !== "7d" || accountWide(window)) && Option.isNone(Option.fromUndefinedOr(window.at)))
+
+/**
+ * Whether `windows` show the claim's recovery: a window the claim was for
+ * (`Claim.judged`: the 5-hour window, the week or a model's own week; the
+ * week for a claim recorded without one) read with them lower than the
+ * claim's reading before it, the week in the same period. A 5-hour refill
+ * leaves the week as it was, so its own window is what shows it.
+ */
+const recovered = (claim: Claim, windows: Option.Option<ReadonlyArray<QuotaWindow>>): boolean =>
+  Option.getOrElse(Option.fromUndefinedOr(claim.judged), () => ["7d"]).some((name) =>
+    Match.value(name).pipe(
+      Match.when("7d", () => Option.isSome(givebackIn(claim, windows))),
+      Match.orElse(() =>
+        Option.exists(
+          Option.all([Arr.findFirst(claim.before, (window) => window.name === name), Option.flatMap(windows, (read) => ownWindowIn(read, name))]),
+          ([was, now]) => now.utilization < was.utilization - 1e-9,
+        ),
+      ),
+    ),
+  )
+
 /**
  * The claim's own recovery in a reading of `windows` taken at `at`: a claim
- * that went through, a reading after it and within OBSERVE_MS of it, its
- * week lower than the claim's reading before it in the same period. A reading
- * that shows the week unchanged, a later one, or one of another period is
- * none: a quiet provider is not the claim's room, nor is a refund long after.
+ * that went through, a reading after it and within OBSERVE_MS of it, a window
+ * it was for lower than the claim's reading before it (`recovered`). A reading
+ * that shows that window unchanged, a later one, or a week of another period
+ * is none: a quiet provider is not the claim's room, nor is a refund long after.
  */
-export const recoveryIn = (claim: Claim, windows: ReadonlyArray<QuotaWindow>, at: number): Option.Option<{ readonly before: number; readonly after: number }> =>
-  Option.filter(Option.some(claim), (made) => made.outcome === "reset" && at > made.at && at <= made.at + OBSERVE_MS).pipe(Option.flatMap((made) => givebackIn(made, Option.some(windows))))
+export const recoveryIn = (claim: Claim, windows: ReadonlyArray<QuotaWindow>, at: number): boolean =>
+  claim.outcome === "reset" && at > claim.at && at <= claim.at + OBSERVE_MS && recovered(claim, Option.some(windows))
 
 /**
  * Each account's line (pace.ts `PacePlan`). Fresh, approved Anthropic stock
@@ -1411,7 +1462,7 @@ const pending = (claim: Claim, now: number): boolean =>
   claim.outcome === "reset" &&
   now <= claim.at + OBSERVE_MS &&
   Option.isNone(Option.fromUndefinedOr(claim.observed)) &&
-  Option.isNone(givebackIn(claim, Option.fromUndefinedOr(claim.after))) &&
+  !recovered(claim, Option.fromUndefinedOr(claim.after)) &&
   // Its own reading after it (not a window carried over from an older one) of another period: the week rolled over.
   !Option.exists(Option.all([weekIn(claim.before), ownWeekIn(Option.fromUndefinedOr(claim.after))]), ([was, after]) => !samePeriod(was, after))
 
@@ -1602,7 +1653,7 @@ const pushDue = (
     (reset) => reset.push !== undefined && ((reset.stage === "claiming" && now - reset.at < RETRY_MS) || retries(reset, current)),
   )
   if (busy) return []
-  const wait = waiting(state, view.id, now)
+  const wait = waiting(state, view.id, now, view.accounts)
   const held = wait?.hard === true ? wait : undefined
   // A start held in its scope is served first; else an account whose week is spent has its reset claimed at once.
   const covering = held === undefined ? undefined : pushFor(state, held, pushes)
@@ -1630,7 +1681,11 @@ const pushDue = (
   )[0]
   if (best === undefined) return []
   const reset = resetOf(view, best.option.account, best.option.credit, best.key, "push", "claiming", now)
-  return [ClaimDue.make({ reset: { ...reset, yes: true, push: grant.id, buys: buysOf(best.option.gives) } })]
+  return [
+    ClaimDue.make({
+      reset: { ...reset, yes: true, push: grant.id, buys: buysOf(best.option.gives), judged: best.option.gives.filter((give) => restoredOf(give) > 0).map((give) => give.window) },
+    }),
+  ]
 }
 
 /** The keys of the pushes' claims still current: each push, on each account a window holds for the pool's waiting model. */
@@ -1710,6 +1765,7 @@ const settleClaim = (state: ResetsState, command: SettleClaim, now: number): Rea
     ...(command.after === undefined ? {} : { after: command.after }),
     weekly: weeklyMove(command.before, command.after),
     ...(command.lease === undefined ? {} : { lease: command.lease }),
+    ...Option.match(Option.fromUndefinedOr(reset.judged), { onNone: () => ({}), onSome: (judged) => ({ judged }) }),
   }
   const settled = ClaimSettled.make({ claim, stage: retryable(command.outcome) ? "failed" : "settled" })
   if (!automatic(reset) || (command.outcome !== "reset" && command.outcome !== "already-redeemed")) return [settled]
@@ -1784,7 +1840,7 @@ export const staleReason = (view: PoolView, account: AccountStatus, reset: Pick<
   if (credit === undefined) return "the reset is no longer listed as claimable"
   if (reset.why === "forecast") {
     const options = candidatesOf(empty, { ...view, accounts: [account] }, new Set<string>(), now, new Set<string>()).filter((candidate) => candidate.credit.id === credit.id)
-    const verdict = decideClaim({ now, held: 0, running: 1, hosts: 1, accounts: [], settling: false, pushed: false }, options.map((candidate) => candidate.option))
+    const verdict = decideClaim({ now, held: 0, running: 1, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, options.map((candidate) => candidate.option))
     if (verdict._tag === "NoClaim") return "the account no longer has a claimable exhausted window"
   }
   const lastDay = Option.exists(Option.fromUndefinedOr(credit.expiresAt), (at) => at - now <= EXPIRING_MS)
@@ -1815,7 +1871,7 @@ export const decideSpend = (state: ResetsState, command: ObserveClaim | ReserveS
     case "ObserveClaim":
       return Option.toArray(
         awaitingObservation(state.claims, command.provider, command.credentialID, Math.min(now, command.at)).pipe(
-          Option.filter((claim) => claim.pool === command.pool && Option.isSome(recoveryIn(claim, command.windows, command.at))),
+          Option.filter((claim) => claim.pool === command.pool && recoveryIn(claim, command.windows, command.at)),
         ),
       ).map((claim) => ClaimObserved.make({ key: claim.key, windows: command.windows }))
     case "ReserveSpend":

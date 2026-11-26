@@ -1,34 +1,43 @@
 import { CryptoHasher, env, readableStreamToText, spawn } from "bun"
 import { dlopen, FFIType } from "bun:ffi"
-import { Array as Arr, Effect, FileSystem, Option, Predicate } from "effect"
+import { Array as Arr, Effect, FileSystem, Option, Predicate, Result } from "effect"
 import { AdmissionUnavailable, type Observation } from "../admission.ts"
 import { availableParallelism, totalmem } from "node:os"
-import { type Attestation, hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks, type Volume } from "../host-supply.ts"
+import { type Attestation, hostEnvelope, type Measurements, measureSupply, POLICY, type Ticks } from "../host-supply.ts"
 import { type Actuation, issue } from "./actuation.ts"
+import { controlGroupOf, dfFreeInodes, dfSizes, fsKindOf, keyed, meminfo, pressure, procTicks, swapPages, userPlaceOf, volumeReading } from "./readings.ts"
 
-const absent = () => new AdmissionUnavailable({ reason: "unavailable" })
-export const readProcess = Effect.fn("HostSupply.readProcess")(function* (argv: ReadonlyArray<string>) {
+const absent = (detail?: string) => new AdmissionUnavailable({
+  reason: "unavailable", ...Option.match(Option.fromNullishOr(detail), { onNone: () => ({}), onSome: (cause) => ({ detail: cause }) }),
+})
+const because = (detail: string) => () => absent(detail)
+/** One command's trimmed stdout. `timeoutMs` (default 1 s) bounds it; a slow helper fails naming the bound. */
+export const readProcess = Effect.fn("HostSupply.readProcess")(function* (argv: ReadonlyArray<string>, timeoutMs = 1000) {
+  const shown = argv.join(" ")
   const child = yield* Effect.try({
     try: () => spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: {
       LC_ALL: "C",
       XDG_RUNTIME_DIR: env["XDG_RUNTIME_DIR"],
       DBUS_SESSION_BUS_ADDRESS: env["DBUS_SESSION_BUS_ADDRESS"],
     } }),
-    catch: absent,
+    catch: because(`${shown}: cannot start`),
   })
   const port: Actuation = { dispatch: (intent) => Effect.sync(() => {
     if (intent.target === "retained-child" && Predicate.isNull(child.exitCode) && Predicate.isNull(child.signalCode))
       child.kill("SIGTERM")
   }) }
   const [code, out] = yield* Effect.all([
-    Effect.tryPromise({ try: () => child.exited, catch: absent }),
-    Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: absent }),
+    Effect.tryPromise({ try: () => child.exited, catch: because(`${shown}: no exit status`) }),
+    Effect.tryPromise({ try: () => readableStreamToText(child.stdout), catch: because(`${shown}: unreadable output`) }),
   ], { concurrency: 2 }).pipe(
     Effect.onInterrupt(() => issue(port, [{ target: "retained-child", signal: "TERM" }])),
-    Effect.timeout(1000),
-    Effect.mapError(absent),
+    Effect.timeout(timeoutMs),
+    Effect.mapError((error) => {
+      if (error instanceof AdmissionUnavailable) return error
+      return absent(`${shown}: no answer within ${timeoutMs} ms`)
+    }),
   )
-  if (code !== 0) return yield* absent()
+  if (code !== 0) return yield* absent(`${shown}: exit ${code}`)
   return out.trim()
 })
 
@@ -91,11 +100,11 @@ export type Kernel = ReturnType<typeof openKernel>
 export const bootHost = Effect.fn("HostSupply.identity")(function* () {
   const fs = yield* FileSystem.FileSystem
   const system = yield* readProcess(["/usr/bin/uname", "-s"])
-  if (system !== "Darwin" && system !== "Linux") return yield* absent()
+  if (system !== "Darwin" && system !== "Linux") return yield* absent(`uname -s answers ${system}, neither Darwin nor Linux`)
   const systems = { Darwin: "darwin", Linux: "linux" } as const
   const platform = systems[system]
   const sysctl = (key: string) => readProcess(["/usr/sbin/sysctl", "-n", key])
-  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(absent), Effect.map((text) => text.trim()))
+  const read = (file: string) => fs.readFileString(file).pipe(Effect.mapError(because(`cannot read ${file}`)), Effect.map((text) => text.trim()))
   const identities = {
     darwin: () => Effect.all([
       readProcess(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]).pipe(
@@ -106,8 +115,8 @@ export const bootHost = Effect.fn("HostSupply.identity")(function* () {
     linux: () => Effect.all([read("/etc/machine-id"), read("/proc/sys/kernel/random/boot_id")], { concurrency: 2 }),
   }
   const [host, boot] = yield* identities[platform]()
-  if (!/^[a-f\d-]{32,36}$/iu.test(host) || !/^[a-f\d-]{32,36}$/iu.test(boot)) return yield* absent()
-  const kernel = yield* Effect.acquireRelease(Effect.try({ try: () => openKernel(platform), catch: absent }), (kernel) =>
+  if (!/^[a-f\d-]{32,36}$/iu.test(host) || !/^[a-f\d-]{32,36}$/iu.test(boot)) return yield* absent("no machine or boot identity")
+  const kernel = yield* Effect.acquireRelease(Effect.try({ try: () => openKernel(platform), catch: because("cannot load the kernel symbols") }), (kernel) =>
     Effect.sync(() => {
       if (Option.isSome(kernel.mach)) kernel.mach.value.close()
       if (Option.isSome(kernel.linux)) kernel.linux.value.close()
@@ -117,15 +126,6 @@ export const bootHost = Effect.fn("HostSupply.identity")(function* () {
   return { hostId: ref("host", host), bootId: ref("boot", boot), platform, kernel }
 })
 export type BootHost = Effect.Success<ReturnType<typeof bootHost>>
-
-export const linuxTicks = (text: string, at: number): Option.Option<Ticks> => {
-  const cpu = text.split("\n").find((row) => row.startsWith("cpu "))
-  const ticks = cpu?.trim().split(/\s+/u).slice(1, 9).map(scalar) ?? []
-  if (ticks.length < 8) return Option.none()
-  // user/nice already include guest and guest_nice (omitted above). iowait is
-  // charged, not discarded as idle, because it may indicate blocked demand.
-  return Option.map(Option.all(ticks), (values) => ({ at, total: values.reduce((sum, tick) => sum + tick, 0), idle: values[3] ?? 0 }))
-}
 
 export const darwinTicks = (kernel: Kernel, at: number): Option.Option<Ticks> => {
   if (Option.isNone(kernel.mach)) return Option.none()
@@ -138,51 +138,42 @@ export const darwinTicks = (kernel: Kernel, at: number): Option.Option<Ticks> =>
 
 export const clockOf = Effect.fn("HostSupply.clock")(function* (host: BootHost) {
   const at = yield* Effect.sync(host.kernel.now)
-  if (Option.isNone(at)) return yield* absent()
+  if (Option.isNone(at)) return yield* absent("no boot clock")
   return at.value
 })
 
 const DF = "/bin/df"
-const last = (text: string) => text.split("\n").at(-1)?.trim().split(/\s+/u)
 export const volumeIdentity = Effect.fn("HostSupply.volumeIdentity")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
-  const cwd = yield* fs.realPath(path).pipe(Effect.mapError(absent))
-  const data = yield* readProcess([DF, "-kP", cwd])
-  const fields = last(data)
-  const totalBlocks = scalar(fields?.[1])
-  const freeBlocks = scalar(fields?.[3])
-  const mount = fields?.slice(5).join(" ")
-  if (!fields?.[0] || !mount || Option.isNone(freeBlocks) || Option.isNone(totalBlocks)) return yield* absent()
-  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(absent))
-  return { cwd, id: ref("volume", `${stat.dev}:${fields[0]}`), object: mount,
-    capacityBytes: totalBlocks.value * 1024, freeBytes: freeBlocks.value * 1024, diskFloorBytes: POLICY.diskFloorBytes }
+  const cwd = yield* fs.realPath(path).pipe(Effect.mapError(because(`cannot resolve the working directory ${path}`)))
+  const command = `${DF} -kP ${cwd}`
+  const sizes = dfSizes(yield* readProcess([DF, "-kP", cwd]), command)
+  if (Result.isFailure(sizes)) return yield* absent(sizes.failure)
+  const { device, totalBlocks, freeBlocks, mount } = sizes.success
+  const stat = yield* fs.stat(cwd).pipe(Effect.mapError(because(`cannot stat ${cwd}`)))
+  return { cwd, id: ref("volume", `${stat.dev}:${device}`), object: mount,
+    capacityBytes: totalBlocks * 1024, freeBytes: freeBlocks * 1024, diskFloorBytes: POLICY.diskFloorBytes }
 })
 
 const sampleVolume = Effect.fn("HostSupply.sampleVolume")(function* (host: BootHost, volume: Effect.Success<ReturnType<typeof volumeIdentity>>) {
   const { cwd, id, object, capacityBytes, freeBytes, diskFloorBytes } = volume
-  const nodeFields = last(yield* readProcess([DF, "-ki", cwd]))
+  const inodes = dfFreeInodes(yield* readProcess([DF, "-ki", cwd]), `${DF} -ki ${cwd}`)
   const fsTypeOf = { linux: () => readProcess(["/usr/bin/stat", "-f", "-c", "%T", cwd]), darwin: () => Effect.succeed("apfs") }
-  const fsType = yield* fsTypeOf[host.platform]()
-  const inodeIndex = { darwin: 6, linux: 3 }
-  let freeInodes: Option.Option<Volume["freeInodes"]> = scalar(nodeFields?.[inodeIndex[host.platform]])
-  if (fsType === "btrfs") freeInodes = Option.some("dynamic")
-  if (Option.isNone(freeInodes)) return yield* absent()
+  const fsKind = fsKindOf(yield* fsTypeOf[host.platform]())
   // A Linux btrfs mount's metadata budget is not interchangeable with its
   // data budget. Unknown metadata is fail-closed rather than assumed free.
-  let metadataFreeBytes = freeBytes
-  if (fsType === "btrfs") metadataFreeBytes = yield* linuxMetadata(cwd)
-  const sample: Volume = { capacityBytes, freeBytes, freeInodes: freeInodes.value, metadataFreeBytes, diskFloorBytes }
-  return { id, sample, object }
+  const usage = ["/usr/bin/btrfs", "filesystem", "usage", "-b", cwd]
+  let btrfsUsage = Option.none<{ readonly text: string; readonly command: string }>()
+  if (fsKind === "btrfs") btrfsUsage = Option.some({ text: yield* readProcess(usage), command: usage.join(" ") })
+  const sample = volumeReading({ fsKind, inodes, btrfsUsage, capacityBytes, freeBytes, diskFloorBytes })
+  if (Result.isFailure(sample)) return yield* absent(sample.failure)
+  return { id, sample: sample.success, object }
 })
+/** The volume's sample, for `host status` to name why a sample lacks it.
+ * A launch needs only `volumeIdentity`: free space is admission's decision. */
 export const volumeOf = (host: BootHost, path: string) =>
   volumeIdentity(path).pipe(Effect.flatMap((volume) => sampleVolume(host, volume)))
 
-const linuxMetadata = Effect.fn("HostSupply.linuxMetadata")(function* (cwd: string) {
-  const raw = yield* readProcess(["/usr/bin/btrfs", "filesystem", "usage", "-b", cwd])
-  const totals = [...raw.matchAll(/^\s*Metadata,.*?Size:\s*(\d+),\s*Used:\s*(\d+)\s*$/gmu)]
-  if (totals.length === 0) return yield* absent()
-  return totals.reduce((headroom, [, size, used]) => headroom + Math.max(0, Number(size) - Number(used)), 0)
-})
 
 export const cgroupOf = (raw: string) => {
   const path = raw.trim().split("\n").find((line) => line.startsWith("0::"))?.slice(3)
@@ -252,7 +243,7 @@ export const hostSources = (): LinuxSources => ({
   cgroupRoot: "/sys/fs/cgroup", proc: "/proc", cpuOnline: "/sys/devices/system/cpu/online",
   processors: availableParallelism(), memoryBytes: totalmem(),
   slice: (unit) => readProcess(["/usr/bin/systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value"]).pipe(
-    Effect.map((text) => Option.liftPredicate(text, (value) => value.length > 0)),
+    Effect.map(controlGroupOf),
     Effect.orElseSucceed(() => Option.none<string>()),
   ),
 })
@@ -365,7 +356,11 @@ const linuxEffective = Effect.fn("HostSupply.linuxEffective")(function* (sources
   const root = sources.cgroupRoot
   const online = Option.flatMap(yield* textOf(sources.cpuOnline), cpuList).pipe(Option.filter(positive))
   const hostCpus = Option.getOrElse(online, () => Math.max(1, sources.processors))
-  const own = Option.flatMap(yield* textOf(`${sources.proc}/self/cgroup`), cgroupOf)
+  // The caller's user slice, not its own scope: every caller of one user
+  // (a login session, the user manager's services, a transient scope with
+  // limits of its own) reads the same envelope, so status and admission
+  // agree whoever asks.
+  const own = Option.map(Option.flatMap(yield* textOf(`${sources.proc}/self/cgroup`), cgroupOf), userPlaceOf)
   const at = Option.match(budget, {
     onSome: ({ control }) => control,
     onNone: () => Option.match(own, { onSome: (relative) => `${root}${relative}`, onNone: () => root }),
@@ -405,12 +400,12 @@ export interface MeteredScope {
 
 const counterOf = Effect.fn("HostSupply.counter")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem
-  return yield* fs.readFileString(`${path}/cpu.stat`).pipe(Effect.mapError(absent), Effect.map((text) => cpuField(text, "usage_usec")))
+  return yield* fs.readFileString(`${path}/cpu.stat`).pipe(Effect.mapError(because(`cannot read ${path}/cpu.stat`)), Effect.map((text) => cpuField(text, "usage_usec")))
 })
 
 const checkedCounter = Effect.fn("HostSupply.scopedCounter")(function* (scope: MeteredScope) {
   const fs = yield* FileSystem.FileSystem
-  const read = (entry: string) => fs.readFileString(`${scope.path}/${entry}`).pipe(Effect.mapError(absent))
+  const read = (entry: string) => fs.readFileString(`${scope.path}/${entry}`).pipe(Effect.mapError(because(`cannot read ${scope.path}/${entry}`)))
   const [quota, stat, current, events, cpu, memory, io] = yield* Effect.all([
     read("cpu.max"), read("cpu.stat"), read("memory.current"), read("memory.events"),
     read("cpu.pressure"), read("memory.pressure"), read("io.pressure"),
@@ -430,11 +425,10 @@ export const linuxPressure = ({ cpu, memory, io, swap }: {
   if (cpu >= 20 || memory >= 2 || io >= 10 || swap >= 1024) return "degraded"
   return "clear"
 }
-const swapPages = (text: string) => Option.map(Option.all([cpuField(text, "pswpin"), cpuField(text, "pswpout")]), ([a, b]) => a + b)
 
 const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, scopes: ReadonlyArray<MeteredScope>) {
   const fs = yield* FileSystem.FileSystem
-  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(absent))
+  const read = (p: string) => fs.readFileString(p).pipe(Effect.mapError(because(`cannot read ${p}`)))
   const { budget, attestation } = yield* linuxBudget(hostSources())
   const { memoryLimit, ...limits } = yield* linuxEffective(hostSources(), budget)
   const metered = Option.match(budget, {
@@ -458,13 +452,17 @@ const linuxSupply = Effect.fn("HostSupply.linux")(function* (host: BootHost, sco
     read("/proc/meminfo"), read("/proc/pressure/cpu"), read("/proc/pressure/memory"), read("/proc/pressure/io"),
   ], { concurrency: 4 })
   const end = yield* clockOf(host)
-  const fields = Option.all({
-    before: linuxTicks(first, start), after: linuxTicks(second, end), runnable: cpuField(second, "procs_running"),
-    memKB: memField(mem, "MemAvailable"), totalKB: memField(mem, "MemTotal"), cpuPSI: psi(cpu, "some"), memPSI: psi(memory, "some"), ioPSI: psi(io, "some"),
-    swap: delta(swapPages(vmBefore), swapPages(vmAfter)),
+  const fields = Result.all({
+    before: procTicks(first, start), after: procTicks(second, end), runnable: keyed(second, "procs_running", "/proc/stat"),
+    memKB: meminfo(mem, "MemAvailable"), totalKB: meminfo(mem, "MemTotal"),
+    cpuPSI: pressure(cpu, "some", "/proc/pressure/cpu"), memPSI: pressure(memory, "some", "/proc/pressure/memory"),
+    ioPSI: pressure(io, "some", "/proc/pressure/io"),
+    swap: Result.flatMap(Result.all([swapPages(vmBefore), swapPages(vmAfter)]), ([a, b]) =>
+      Result.fromOption(delta(Option.some(a), Option.some(b)), () => `/proc/vmstat: pswpin + pswpout went from ${a} to ${b}`)),
   })
-  if (Option.isNone(fields) || end <= start) return yield* absent()
-  const { before, after, runnable, memKB, totalKB, cpuPSI, memPSI, ioPSI, swap } = fields.value
+  if (Result.isFailure(fields)) return yield* absent(fields.failure)
+  if (end <= start) return yield* absent("the boot clock did not advance across the sample")
+  const { before, after, runnable, memKB, totalKB, cpuPSI, memPSI, ioPSI, swap } = fields.success
   const usage = usageAfter.map((after, i) => {
     const [before = Option.none()] = usageBefore.slice(i)
     return Option.match(delta(before, after), { onNone: () => -1, onSome: (step) => step / (end - start) })
@@ -509,7 +507,7 @@ const darwinSupply = Effect.fn("HostSupply.darwin")(function* (host: BootHost) {
     physical: Option.filter(scalar(stats.match(/system has (\d+) \(/iu)?.[1]), positive),
     pages: Option.all(pages),
   })
-  if (Option.isNone(fields) || !/\bused = [\d.]+[KMG]/u.test(swap)) return yield* absent()
+  if (Option.isNone(fields) || !/\bused = [\d.]+[KMG]/u.test(swap)) return yield* absent("vm_stat, memory_pressure or sysctl lacks a field the sample needs")
   const { before: startTicks, after, cores, level, headroom, physical, pages: growth } = fields.value
   return {
     before: startTicks, after, hostCpuMilli: cores * 1000, effectiveCpuMilli: cores * 1000,
@@ -527,7 +525,7 @@ const darwinLimits = Effect.fn("HostSupply.darwinLimits")(function* () {
     readProcess(["/usr/sbin/sysctl", "-n", "hw.activecpu"]), readProcess(["/usr/sbin/sysctl", "-n", "hw.memsize"]),
   ], { concurrency: 2 })
   const capacity = Option.all([scalar(cpu), scalar(memory)])
-  if (Option.isNone(capacity)) return yield* absent()
+  if (Option.isNone(capacity)) return yield* absent("sysctl hw.activecpu or hw.memsize is not a count")
   const [cores, totalMemoryBytes] = capacity.value
   return { effectiveCpuMilli: cores * 1000, totalMemoryBytes, controllerAvailable: true }
 })

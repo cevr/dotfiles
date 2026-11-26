@@ -106,6 +106,13 @@ export const HoldReason = Schema.Literals([
 export type HoldReason = typeof HoldReason.Type
 /** The holds a REPORTED window makes: a person is told of these before an unread login's. */
 const REPORTED_LIMITS: ReadonlyArray<HoldReason> = ["model-limit", "quota-limit", "even-line"]
+/**
+ * The unmeasured holds that leave the work no login while a reset could free one (a damaged record, every
+ * login refused): the work waits as a measured hold's does, so the reset review hears of it (model.ts
+ * `pace`). Not `usage-unread`: it holds only when no login has a fresh reading, and no claim rests on
+ * less (resets.ts `freshView`), so the review would weigh nothing.
+ */
+export const LACKS_LOGIN: ReadonlyArray<HoldReason> = ["record-unreadable", "account-held"]
 
 /** The pace method's answer: whether a new agent may start now, and if not, when to ask again. */
 export const NoPoolLogin = Schema.Literal("not-tracked-no-pool-login")
@@ -687,6 +694,34 @@ const splitEvidence = (accounts: ReadonlyArray<AccountStatus>, now: number, requ
   return { fresh, gaps, heldUnread }
 }
 
+/**
+ * Whether placement may send a request of `model` on the account now, by the
+ * account alone: not signed out, no damaged record, its reading evidence of
+ * room (`evidenceGap`), no live hold of any kind, no window of the model's own
+ * spent, and nothing at a hold line (`eligibleFor`). The logins a dispatch
+ * names (`dispatchPace`'s `eligible`) are these, within the pace's even line;
+ * the room the reset review counts (`hasRoom`) is these on a trusted reading.
+ */
+export const takesWork = (account: AccountStatus, now: number, model?: string, required: ReadonlyArray<string> = requiredScopes([account], model)): boolean =>
+  !needsSignIn(account) &&
+  account.hold?.kind !== "record-unreadable" &&
+  Option.isNone(evidenceGap(account, now, required)) &&
+  eligibleFor([account], now, model).length > 0
+
+/**
+ * Whether the account is room for the running work, as the reset review reads
+ * it (resets.ts): placement would send work there now (`takesWork`), on a
+ * reading fresh enough to trust: each tracked window read in the last
+ * STALE_AFTER_MS (30 min) or reported absent there, no failed usage read since
+ * the last good one, and at least one tracked window REPORTED, under its hold
+ * line. An unread or absent window is no room; an account may lack either.
+ * With `model`, room for a request of that model (its own windows too).
+ */
+export const hasRoom = (account: AccountStatus, now: number, model?: string): boolean =>
+  takesWork(account, now, model) &&
+  !freshFailedUsage(account, now) &&
+  TRACKED_WINDOWS.some((name) => accountWindow(account, name)._tag === "Reported")
+
 /** What room an account has on its claim's room for one more request of `cost`: its rebased line less its use (`usedOf`), when it has one. */
 export const roomLeft = (account: AccountStatus, now: number, plan?: PacePlan): Option.Option<number> =>
   Option.all([freshWeek(account, now), Option.fromUndefinedOr(plan?.rebase)]).pipe(Option.map(([week]) => lineOf(week.resetAt, now, plan) - usedOf(week.utilization, plan)))
@@ -766,7 +801,7 @@ export function dispatchPace(
   const alternatives = [...Option.toArray(unreadHold), ...waitForLoginOrRepair]
   const inflight = Option.getOrElse(Option.fromUndefinedOr(policy.inflight), () => NO_INFLIGHT)
   const answer = budgetPace(fresh, now, inflight, model, plans)
-  const open = eligibleFor(fresh, now, model)
+  const open = accounts.filter((account) => takesWork(account, now, model, required))
   if (policy.priority === true && Option.isNone(Option.fromUndefinedOr(policy.auxiliary))) {
     const priority = fresh.filter((account) =>
       Option.isNone(Option.fromUndefinedOr(blockedUntil(account, now, model))) &&
@@ -778,8 +813,8 @@ export function dispatchPace(
     }
   }
   // The pace may name fewer accounts than are open: past the even line, only those with no week to pace.
-  const eligible = open.map((a) => a.credentialID).filter((id) =>
-    Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) }))
+  const eligible = open.values().map((a) => a.credentialID).filter((id) =>
+    Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) })).toArray()
   // A push can lift the even line, not the minimum evidence or any hard limit.
   if (policy.liftEvenLine === true && open.length > 0 && ((!answer.ok && answer.soft === true) || answer.ok))
     return { ok: true, measured: true, reason: answer.reason, admission: "ordinary", eligible: open.map((a) => a.credentialID) }

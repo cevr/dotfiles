@@ -223,7 +223,9 @@ const store = (db: Database, identity: Identity, readClock?: BootClock) => {
           const holder = controllerOf(identity, change, wall)
           insertHolder.run(change.sequence, holder.bootId, holder.holderId, holder.producerId, holder.producerSeq, canonicalHolder(holder))
         }
-        if (next.changes.length > 0) save(next.state)
+        // A new reading is shared state too: the next caller, sampler or
+        // not, decides on it. It moves no revision (no lease changed).
+        if (next.changes.length > 0 || next.state.readings !== before.value.readings) save(next.state)
         return Result.succeed(next)
       }))
       if (Result.isFailure(result)) return yield* reject(result.failure)

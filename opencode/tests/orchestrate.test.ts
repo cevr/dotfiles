@@ -14,6 +14,7 @@ import { spawnCheckoutBunSync } from "./scratch-child.ts"
 import { join, resolve } from "node:path"
 import { DEFAULT_SOURCE, OUT, parseAgent, ROOT } from "../scripts/agents.ts"
 import { effort, ORCHESTRATOR, orchestrator, ROLES } from "../mods/orchestrate/role.ts"
+import { actionDenied } from "../mods/kernel/tools.ts"
 import type { Result, Spec } from "./orchestrate/run.ts"
 import { ownedCheckoutBun } from "./owned.ts"
 import { scratch as scratchDir } from "./scratch.ts"
@@ -45,11 +46,8 @@ describe.skipIf(!skill)("the role agents", () => {
   })
 
   test("every role may ask the owner in the background: ask_user_async is not denied under the deny-all rule", () => {
-    // The fork hides a tool whose last matching rule denies every resource (packages/core/src/tool.ts `whollyDisabled`).
-    const disabled = (action: string, rules: ReadonlyArray<{ action: string; resource: string; effect: string }>) => {
-      const rule = rules.findLast((candidate) => candidate.action === "*" || candidate.action === action)
-      return rule?.resource === "*" && rule.effect === "deny"
-    }
+    // The fork hides a tool its rules deny for every resource (PermissionPolicy `isActionDenied`, mirrored by mods/kernel/tools.ts).
+    const disabled = actionDenied
     const written = JSON.parse(readFileSync(matchingInput(OUT), "utf8")) as { agents: Record<string, { permissions: ReadonlyArray<{ action: string; resource: string; effect: string }> }> }
     for (const role of ROLES) {
       expect([role, disabled("ask_user_async", written.agents[role]!.permissions)]).toEqual([role, false])

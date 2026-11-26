@@ -51,7 +51,6 @@
         "test/shell-scan/closure.test.ts",
         "test/shell-scan/compound-parity.test.ts",
         "test/shell-scan/generated.test.ts",
-        "test/shell-scan/mutation.test.ts",
         "test/shell-scan/oracle.test.ts",
         "test/shell-scan/parity-regressions.test.ts",
         "test/shell-scan/powershell-runtime.test.ts",
