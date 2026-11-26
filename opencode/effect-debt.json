@@ -361,7 +361,7 @@
     "cmd/orchestrate/tui.test.ts": {"effect/noAs":3,"effect/noChainedTypeAssertions":1,"effect/noKnownValueWidening":1,"effect/noNewPromise":1,"effect/noTernary":1},
     "cmd/orchestrate/tui.ts": {"effect/noGlobals":4,"effect/noNullish":6,"effect/noTernary":2,"effect/noUnknownReturns":3},
     "cmd/pool/server.test.ts": {"effect/noAs":17,"effect/noAsyncFunction":12,"effect/noChainedTypeAssertions":2,"effect/noConditionalEmptyObjectSpread":5,"effect/noEffectRunInTests":5,"effect/noFixedWaitInTests":2,"effect/noGlobals":12,"effect/noKnownValueWidening":1,"effect/noNewError":2,"effect/noNewPromise":3,"effect/noNodeBuiltinImport":2,"effect/noNullish":46,"effect/noPromiseChainsInTests":5,"effect/noTernary":15,"effect/noTryCatch":1,"effect/noUnknownParameters":7,"effect/noUnsafeDictionaryType":5,"effect/preferTaggedConstructors":4},
-    "cmd/pool/server.ts": {"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":6,"effect/noKnownValueWidening":1,"effect/noNewError":1,"effect/noNullish":43,"effect/noRuntimeTypeof":9,"effect/noTernary":22,"effect/noUnknownParameters":5,"effect/noUnsafeDictionaryType":1},
+    "cmd/pool/server.ts": {"effect/noAs":1,"effect/noConditionalEmptyObjectSpread":6,"effect/noKnownValueWidening":1,"effect/noNewError":1,"effect/noNullish":43,"effect/noRuntimeTypeof":8,"effect/noTernary":22,"effect/noUnknownParameters":5,"effect/noUnsafeDictionaryType":1},
     "cmd/prime/tui.tsx": {"effect/noNullish":4,"effect/noTernary":1},
     "cmd/questions/server.test.ts": {"effect/noAs":3,"effect/noChainedTypeAssertions":1,"effect/noEffectRunInTests":1,"effect/noNullish":4,"effect/noTernary":8,"effect/noUnknownParameters":5,"effect/noUnsafeDictionaryType":2},
     "cmd/questions/server.ts": {"effect/noTernary":2,"effect/preferServiceOf":1},

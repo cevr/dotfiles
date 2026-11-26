@@ -1521,10 +1521,14 @@ asks whether to claim one. One pure rule decides (`claim-rule.ts`
 Each account owns its weekly cadence and is paced toward 99% use before its
 reset, with five points of launch leeway. The optional 5-hour limit and
 Fable's separate weekly limit still bind. Fresh, approved Anthropic credits
-add their known capacity to the pacing target; every usable count contributes.
+that empty the shared week add what a claim at the stop gives back (99% of the
+week each) to the pacing target; every usable count contributes. A Fable reset
+adds nothing: it gives back only what Fable spent, so pacing every model on it
+would spend into a hole the reset does not clear. Nor does any credit in the
+last 30 minutes before the week resets by itself, when no claim is made.
 An expiry also moves the exhaustion target to six hours before that credit
 expires. Scheduling accelerates existing quota; it cannot bypass a quota or
-count an unobserved refund. Stale stock or model shares add no capacity.
+count an unobserved refund. Stale stock or a stale shared week adds no capacity.
 OpenAI credits add no projected weekly capacity because they restart the week.
 Burn forecasts remain advisory and do not authorize an ordinary redemption.
 
