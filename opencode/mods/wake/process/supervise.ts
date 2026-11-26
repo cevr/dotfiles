@@ -1,8 +1,7 @@
 // A job's runner: the process `bun cmd/wake/job.ts <dir>` that the process
 // runner launches outside the OpenCode server (a systemd user unit, or its own
 // session). It reads the job from <dir>, runs the command under /bin/sh in a
-// process group of its own (when heavy, through the guard's launcher: `nice -n
-// 10`, `ionice -c3` where it is, and on Linux with a user systemd a scope with `MemoryMax=12G`), its stdout and stderr to
+// process group of its own, as written (a heavy job too: no nice, no scope), its stdout and stderr to
 // <dir>/log, `$JOB_DRIP` naming <dir>/drip and `$JOB_ID` the job; stops it at
 // its timeout or on SIGTERM (TERM to the group, KILL after a grace to what is
 // left of the group, even once its leader is gone; the exit then names the
@@ -36,13 +35,7 @@
 import { dlopen, FFIType } from "bun:ffi"
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs"
 import path from "node:path"
-import { Duration, Effect, Match, Option, Predicate, Result, Schedule, Schema } from "effect"
-import { parseShell } from "@dotfiles/opencode-guard/command-line"
-import { DEFAULT_HEAVY, heavyCommand, isHeavy } from "@dotfiles/opencode-guard/heavy"
-import { admissionPurpose, DEFAULT_LIMITS, heavyArgv, type Host, ioniceAvailable, SCOPE_PROBE } from "@dotfiles/opencode-guard/launcher"
-import { checkPrefix } from "@dotfiles/opencode-guard/check-demand"
-import { issue, type Actuation } from "@dotfiles/opencode-guard/process/actuation"
-import { heavyJob, jobArgv } from "../job-admission.ts"
+import { Duration, Effect, Match, Option, Result, Schedule, Schema } from "effect"
 import type { Descriptor } from "../backstop.ts"
 import { type JobExit, type JobSpec, KILL_GRACE_MS } from "../job.ts"
 import { type Disposition, dispositionOfExit, generationOf, RunnerClaim } from "../job-event.ts"
@@ -387,36 +380,8 @@ export const writeExit = (dir: string, exit: JobExit, write: (file: string, valu
     Effect.orElseSucceed(() => false),
   )
 
-/** Whether a heavy job can run in a systemd scope: on Linux, when the guard's probe exits 0; never elsewhere. */
-export const scopeAvailable = (platform: string = process.platform, probe: ReadonlyArray<string> = SCOPE_PROBE): boolean => {
-  if (platform !== "linux") return false
-  return Option.exists(ranOf(probe), (ran) => ran.exitCode === 0)
-}
-
-/** What this machine offers a heavy job beyond `nice`: a scope (the guard's probe) and `ionice`. */
-export const hostOf = (platform: string = process.platform): Host => ({ scope: scopeAvailable(platform), ionice: ioniceAvailable(platform) })
-
-/**
- * The argv a job's command runs as: a heavy one through the guard's launcher (`nice`, `ionice -c3`
- * where the host has it, and in a scope under its memory cap where it has one). The host is asked
- * only for a heavy job: its scope probe starts a process.
- */
-export const argvOf = (spec: Pick<JobSpec, "command" | "heavy">, host: () => Host): ReadonlyArray<string> => {
-  const argv = ["/bin/sh", "-c", spec.command]
-  return spec.heavy ? heavyArgv(argv, DEFAULT_LIMITS, host()) : argv
-}
-
-export const classifyJob = (command: string) => isHeavy(command, DEFAULT_HEAVY)
-const admittedLaunch = (helper: ReadonlyArray<string>, command: string, requested: boolean) => {
-  const payload = jobArgv(command)
-  const parsed = parseShell(command)
-  if (heavyJob(requested, heavyCommand(parsed, DEFAULT_HEAVY)))
-    return { argv: [...helper, ...checkPrefix(admissionPurpose(parsed)), ...payload], delegated: true }
-  return { argv: payload, delegated: false }
-}
-
-export const admittedJobArgv = (helper: ReadonlyArray<string>, command: string, requested: boolean) =>
-  admittedLaunch(helper, command, requested).argv
+/** The argv a job's command runs as: the command as written, under /bin/sh, a heavy one too. */
+export const argvOf = (spec: Pick<JobSpec, "command">): ReadonlyArray<string> => ["/bin/sh", "-c", spec.command]
 
 /** Signal the process group `pid` leads; false when the group is already gone. */
 const signalGroup = (pid: number, signal: NodeJS.Signals | 0): boolean => {
@@ -457,8 +422,6 @@ export const supervise = async (
   notify?: (descriptor: Descriptor) => Promise<void>,
   grace = KILL_GRACE_MS,
   write: (file: string, value: JobExit) => void = writeTerminal,
-  launch: (spec: JobSpec) => { readonly argv: ReadonlyArray<string>; readonly delegated: boolean } =
-    (spec) => ({ argv: argvOf(spec, hostOf), delegated: false }),
 ): Promise<Option.Option<JobExit>> => {
   const root = path.dirname(dir)
   if (!openDir(dir, NODE_DISK, root)) return Option.none()
@@ -473,19 +436,7 @@ export const supervise = async (
   /** When a stop's grace ends: the SIGKILL then reaches what is left of the group. */
   let hardAt: number | undefined
   let hard: ReturnType<typeof setTimeout> | undefined
-  let delegated = false
-  const ownedLaunch: Actuation = { dispatch: (intent) => Effect.sync(() => {
-    if (intent.target !== "retained-child" || !child || !Predicate.isNull(child.exitCode) || !Predicate.isNull(child.signalCode)) return
-    child.kill("SIGTERM")
-    sent = "SIGTERM"
-  }) }
   const stop = () => {
-    if (delegated) {
-      // This helper owns its watchdog/cgroup, including descendants. Never
-      // infer the right to signal a numeric group from the job's snapshot.
-      Effect.runSync(issue(ownedLaunch, [{ target: "retained-child", signal: "TERM" }]))
-      return
-    }
     const pid = child?.pid
     // No group left: the command ended by itself before the stop reached it.
     if (pid === undefined || !signalGroup(pid, "SIGTERM")) return
@@ -537,9 +488,7 @@ export const supervise = async (
   const childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !(STARTUP as ReadonlyArray<string>).includes(name)))
   let spawned: ReturnType<typeof Bun.spawn>
   try {
-    const plan = launch(job.spec)
-    delegated = plan.delegated
-    spawned = Bun.spawn([...plan.argv], {
+    spawned = Bun.spawn([...argvOf(job.spec)], {
       cwd: job.spec.cwd,
       env: { ...childEnv, JOB_DRIP: drip, JOB_ID: job.spec.id },
       stdin: "ignore",
@@ -579,12 +528,6 @@ export const supervise = async (
   // own exit stands and it is neither killed nor timed out.
   return record(endOf({ exitCode, signalCode: spawned.signalCode, sent: Option.fromNullishOr(sent), timedOut, killed, startedAt, endedAt: Date.now() }))
 }
-
-/** Installed durable entry. Its classified path has no unmanaged default launcher. */
-export const superviseAdmitted = (dir: string, helper: ReadonlyArray<string>, notify?: (descriptor: Descriptor) => Promise<void>) =>
-  supervise(dir, notify, KILL_GRACE_MS, writeTerminal,
-    (spec) => admittedLaunch(helper, spec.command, spec.heavy),
-  )
 
 /** The exit a run that went its course records: the signal that ended it, whether its own or one this runner sent, wins over its code. */
 const endOf = (run: {

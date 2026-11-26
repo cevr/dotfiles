@@ -5,18 +5,12 @@
  * wakes' `due` through the OS backstop's script, starting the OpenCode
  * service when none answers, so the end letter goes now.
  */
-import { sealJobRoot, superviseAdmitted } from "@dotfiles/opencode-wake/process/supervise"
-import { argv } from "bun"
-import { fileURLToPath } from "node:url"
+import { sealJobRoot, supervise } from "@dotfiles/opencode-wake/process/supervise"
 import { scheduled } from "./backstop.ts"
 
 const [, , dir, root] = process.argv
 const accepted = dir && (dir !== "--seal-root" || root)
 if (!accepted) console.error("usage: bun job.ts <job dir> | --seal-root <job storage root>")
 else if (dir === "--seal-root" && root) sealJobRoot(root)
-else if (dir) {
-  const [executable = "bun"] = argv
-  const helper = [executable, fileURLToPath(new URL("../guard/host-admit.ts", import.meta.url))]
-  await superviseAdmitted(dir, helper, scheduled)
-}
+else if (dir) await supervise(dir, scheduled)
 process.exit(Number(!accepted) * 2)

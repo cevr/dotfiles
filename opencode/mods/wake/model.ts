@@ -128,7 +128,6 @@ export interface Config {
   readonly ownerHere?: (sessionID: string) => Effect.Effect<boolean>
   /** The server this model runs in, and whether a server (by its id) still runs: a call left running by one that does not can never be committed. None: none is known gone. */
   readonly server?: Server
-  readonly classifyJob?: (command: string) => boolean
 }
 
 /** A server that runs owners' calls: its id, and whether a server by id still runs (a fact of its process, not a timer). */
@@ -1344,7 +1343,7 @@ export const layer = (config: Config) =>
               sessionID,
               "j",
               (count) => `this session has ${count} jobs kept, the most it takes; wait for one, or stop one with job({ action: "kill", id })`,
-              (place) => jobOf({ ...ask, heavy: ask.heavy === true || config.classifyJob?.(ask.command) === true }, place),
+              (place) => jobOf({ ...ask, heavy: ask.heavy === true }, place),
             )
             // The entry is kept before the launch: a runner that calls `due` at once finds it.
             const launched = yield* runner.launch(specOf(job)).pipe(

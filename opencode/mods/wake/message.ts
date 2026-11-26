@@ -214,7 +214,7 @@ const runWord = (run: Run): string =>
 
 const whereLine = (view: JobView): string => {
   const ran = view.run.state === "ended" ? ` from ${formatNotificationTime(view.run.exit.startedAt)} to ${formatNotificationTime(view.run.exit.endedAt)}` : ""
-  return `It ran in ${view.spec.cwd}${ran}${view.spec.heavy ? ", niced (heavy)" : ""}. Log: ${view.log}${view.unit === undefined ? "" : ` (systemd unit ${view.unit})`}.`
+  return `It ran in ${view.spec.cwd}${ran}. Log: ${view.log}${view.unit === undefined ? "" : ` (systemd unit ${view.unit})`}.`
 }
 
 const bodyOf = (view: JobView): ReadonlyArray<string> => [
@@ -256,14 +256,9 @@ export const dripLetter = (job: Job, lines: string, firedAt: number): Letter => 
 })
 
 /** What starting a job answers: its id and log first, then how it runs and what comes back. */
-const startedJob = (launched: Launched) => {
-  if (launched.admission === "queued") return "queued for host admission"
-  return "started"
-}
-
 export const jobReceipt = (job: Job, launched: Launched): string =>
   [
-    `Job ${job.id} ${startedJob(launched)}. Log: ${launched.log}`,
+    `Job ${job.id} started. Log: ${launched.log}`,
     `It runs ${commandOf(job)} in ${job.cwd} ${launched.how === "systemd" ? `as the systemd user unit ${launched.unit ?? ""}` : "in its own process group"}${
       job.heavy ? ", niced" : ""
     }, outside the OpenCode server, so it outlives a restart; it is stopped if still running after ${durationOf(job.timeoutSeconds * 1000)}.`,

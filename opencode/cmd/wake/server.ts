@@ -55,7 +55,6 @@ import * as OpenCodeOpener from "@dotfiles/opencode-wake/opencode/opener"
 import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
 import * as ProcessChecks from "@dotfiles/opencode-wake/process/checks"
 import * as ProcessRunner from "@dotfiles/opencode-wake/process/runner"
-import { classifyJob } from "@dotfiles/opencode-wake/process/supervise"
 import { type Latched, LatchAsk } from "@dotfiles/opencode-wake/latch"
 import { type Backstop, Changes, type Checks, type Courier, type Opener, type Runner, type WakeStore } from "@dotfiles/opencode-wake/service"
 import {
@@ -204,7 +203,6 @@ export const make = (externals: (ctx: Plugin.Context, options: Options) => Layer
         Layer.merge(
           Model.layer({
             directory: ctx.location.directory,
-            classifyJob,
             answered: OpenCodeCourier.answeredOf(ctx),
             ownerHere: OpenCodeCourier.ownerHere(ctx),
             server,

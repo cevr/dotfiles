@@ -101,7 +101,7 @@ export const JobInput = toolInput(Schema.Struct({
   note: Schema.optional(Schema.String).annotate({
     description: "For run: what to do when the job ends, and what result means success. Arrives verbatim in the letter that wakes you.",
   }),
-  heavy: Schema.optional(Schema.Boolean).annotate({ description: "For run: a CPU-heavy command (a build, a full test suite); it runs at a lower priority (nice 10)." }),
+  heavy: Schema.optional(Schema.Boolean).annotate({ description: "For run: a CPU-heavy command (a build, a full test suite), recorded on the job; it runs as written, as every job does." }),
   timeoutSeconds: Schema.optional(Schema.Finite).annotate({
     description: `For run: stop the command past this long. Default ${DEFAULT_JOB_TIMEOUT_SECONDS}, at most ${MAX_JOB_TIMEOUT_SECONDS}.`,
   }),

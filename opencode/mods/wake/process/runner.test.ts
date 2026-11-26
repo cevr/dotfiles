@@ -21,7 +21,7 @@ import * as MemoryStore from "../memory/store.ts"
 import * as Model from "../model.ts"
 import { type CallAnswer, Changes, Runner, WakeStore } from "../service.ts"
 import * as ProcessRunner from "./runner.ts"
-import { argvOf, claim, type Disk, FILES, hostOf, NODE_DISK, processStart, ranOf, removeDurable, scopeAvailable, UNSEALED_ROOT, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
+import { argvOf, claim, type Disk, FILES, NODE_DISK, processStart, ranOf, removeDurable, UNSEALED_ROOT, writeAtomic, writeDurable, writeExit } from "./supervise.ts"
 import type { Ran } from "../cron/backstop.ts"
 import { bounded, notYet, type Observation, type Policy, ready, type TestBounds, waitFor } from "./readiness.ts"
 import { hangGuard, stamp } from "../../../tests/hang-guard.ts"
@@ -379,7 +379,7 @@ describe("the process runner", () => {
     }),
   )
 
-  fixtureTest("leaves BASH_ENV out of the command's environment and runs a heavy one niced", ({ runner, runnerOf, specOf }) =>
+  fixtureTest("leaves BASH_ENV out of the command's environment and runs a heavy one as written, at the light one's niceness", ({ runner, runnerOf, specOf }) =>
     Effect.gen(function* () {
       const env = { ...process.env, BASH_ENV: "/nonexistent/loop-probe-x" }
       const niced = runnerOf({ env })
@@ -395,8 +395,8 @@ describe("the process runner", () => {
         expect(env).toBe("env=none")
         return Number(nice)
       })
-      // The test may itself run niced: heavy is ten more than the same command run light, up to the ceiling.
-      expect(yield* niceness(heavy.id)).toBe(Math.min(mac ? 20 : 19, (yield* niceness(light.id)) + 10))
+      // `heavy` is recorded on the job and changes nothing: both run at one niceness.
+      expect(yield* niceness(heavy.id)).toBe(yield* niceness(light.id))
     }),
   )
 
@@ -687,28 +687,9 @@ describe("a record write killed at each barrier, then reopened", () => {
   )
 })
 
-describe("a heavy job's command goes through the guard's launcher", () => {
-  test("on a systemd host it runs niced in the idle I/O class and a user scope with MemoryMax=12G; a light one runs as is", () => {
-    const linux = () => ({ scope: true, ionice: true })
-    expect(argvOf({ command: "bun test", heavy: true }, linux)).toEqual([
-      "nice", "-n", "10",
-      "ionice", "-c3",
-      "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=12G", "-p", "CPUWeight=20", "--",
-      "/bin/sh", "-c", "bun test",
-    ])
-    expect(argvOf({ command: "bun test", heavy: false }, () => expect.unreachable("a light job asks no host"))).toEqual(["/bin/sh", "-c", "bun test"])
-  })
-
-  test("on the Mac it runs niced alone", () => {
-    expect(argvOf({ command: "bun test", heavy: true }, () => ({ scope: false, ionice: false }))).toEqual(["nice", "-n", "10", "/bin/sh", "-c", "bun test"])
-    expect(hostOf("darwin")).toEqual({ scope: false, ionice: false })
-  })
-
-  test("a scope is available only on Linux, when the probe exits 0", () => {
-    expect(scopeAvailable("darwin", ["true"])).toBe(false)
-    expect(scopeAvailable("linux", ["true"])).toBe(true)
-    expect(scopeAvailable("linux", ["false"])).toBe(false)
-    expect(scopeAvailable("linux", ["/nonexistent/loop-probe-x"])).toBe(false)
+describe("a job's command runs as written", () => {
+  test("a heavy job runs as a light one does: under /bin/sh, no nice, no scope", () => {
+    expect(argvOf({ command: "bun test" })).toEqual(["/bin/sh", "-c", "bun test"])
   })
 })
 

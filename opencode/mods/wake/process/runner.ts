@@ -293,8 +293,7 @@ export const layer = (config: Config) => {
           },
         })
         const files = { log: path.join(dir, FILES.log), drip: path.join(dir, FILES.drip) }
-        const where: Pick<Launched, "log" | "drip" | "admission"> = { ...files }
-        if (spec.heavy) Object.assign(where, { admission: "queued" })
+        const where: Pick<Launched, "log" | "drip"> = { ...files }
         let warning: string | undefined
         if (config.platform === "linux") {
           const unit = unitOf(spec.id)
