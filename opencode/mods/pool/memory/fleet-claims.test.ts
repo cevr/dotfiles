@@ -166,9 +166,14 @@ const fleet = (account: Provider) => {
         LedgerTest.layer(),
         PeersTest.layer(new Map([[other.name, { down: "not polled here" }]]), (peer, message) => {
           if (self.link === "down") return Effect.fail(new PeerUnreachable({ peer, message: "connection refused" }))
-          if (self.link === "silent" || other.pool === undefined) return Effect.never
-          if (message._tag === "Ask") other.onAsk?.()
-          return other.pool.lease(message)
+          if (self.link === "silent") return Effect.never
+          return Option.match(Option.fromUndefinedOr(other.pool), {
+            onNone: () => Effect.never,
+            onSome: (pool) => {
+              if (message._tag === "Ask") other.onAsk?.()
+              return pool.lease(message)
+            },
+          })
         }),
         FleetTest.layer(),
         ResetsTest.layer(self.store),
@@ -570,7 +575,7 @@ describe("two accounts, two hosts each holding work (q223 across the fleet)", ()
         resets: { available: credits.filter((credit) => credit.usable).length, credits },
       }
     }
-    const quota = Layer.succeed(Quota, {
+    const quota = Layer.succeed(Quota, Quota.of({
       reading: (_pool, credentialID) => Effect.sync(() => reading(credentialID)),
       usage: (_pool, credentialID) => Effect.sync(() => reading(credentialID)),
       readings: () => Stream.empty,
@@ -584,7 +589,7 @@ describe("two accounts, two hosts each holding work (q223 across the fleet)", ()
           spent.push(input.credentialID.slice(0, 1))
           return { outcome: "reset" }
         }),
-    })
+    }))
     return { accounts, spent, quota }
   }
 
@@ -626,6 +631,8 @@ describe("two accounts, two hosts each holding work (q223 across the fleet)", ()
         const mac = yield* build("mac", "workbox")
         const workbox = yield* build("workbox", "mac")
         const hosts = [["mac", mac], ["workbox", workbox]] as const
+        /** A start of the session asked for on the pool, of no model in particular. */
+        const start = (pool: Model.Pool["Service"], sessionID: string) => pool.pace("anthropic", undefined, sessionID)
         const sweepBoth = Effect.all([mac.sweep, workbox.sweep], { concurrency: 2, discard: true })
         const at = (ms: number) => Effect.gen(function* () {
           now.at += ms
@@ -635,18 +642,18 @@ describe("two accounts, two hosts each holding work (q223 across the fleet)", ()
         // Each host: three agents busy and a start held, both accounts spent.
         for (const [name, pool] of hosts) {
           yield* Effect.forEach([1, 2, 3], (n) => pool.stepStarted(`ses_${name}_${n}`, "anthropic"), { discard: true })
-          expect((yield* pool.pace("anthropic", undefined, `ses_${name}`)).ok).toBe(false)
+          expect((yield* start(pool, `ses_${name}`)).ok).toBe(false)
         }
         yield* Effect.yieldNow
         yield* sweepBoth
         // One refill across the fleet: the other host's claim waits on the lease, then on the first refill showing.
         expect(world.spent).toHaveLength(1)
         const first = world.spent[0]!
-        const other = first === "a" ? "b" : "a"
+        const other = ["a", "b"].filter((name) => name !== first).join("")
 
         // A minute on, the refill shows in both hosts' readings; each host's held start asks again and goes out.
         yield* at(MINUTE)
-        for (const [name, pool] of hosts) expect((yield* pool.pace("anthropic", undefined, `ses_${name}`)).ok).toBe(true)
+        for (const [name, pool] of hosts) expect((yield* start(pool, `ses_${name}`)).ok).toBe(true)
         yield* sweepBoth
         // Past the lease's SETTLE_MS and the wait's WAIT_MS (5 min each): the refilled account takes both hosts' work.
         for (const step of [2, 3, 4, 5, 6]) {
@@ -662,7 +669,7 @@ describe("two accounts, two hosts each holding work (q223 across the fleet)", ()
         // The refilled account at its 5-hour hold line: a start on the workbox it cannot take refills the other, once.
         world.accounts.get(first)!.fiveHour = 0.95
         yield* at(MINUTE)
-        expect((yield* workbox.pace("anthropic", undefined, "ses_workbox")).ok).toBe(false)
+        expect((yield* start(workbox, "ses_workbox")).ok).toBe(false)
         yield* Effect.yieldNow
         yield* sweepBoth
         yield* at(MINUTE)

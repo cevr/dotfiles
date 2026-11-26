@@ -813,8 +813,8 @@ export function dispatchPace(
     }
   }
   // The pace may name fewer accounts than are open: past the even line, only those with no week to pace.
-  const eligible = open.map((a) => a.credentialID).filter((id) =>
-    Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) }))
+  const eligible = open.values().map((a) => a.credentialID).filter((id) =>
+    Option.match(Option.fromUndefinedOr(answer.eligible), { onNone: () => true, onSome: (named) => named.includes(id) })).toArray()
   // A push can lift the even line, not the minimum evidence or any hard limit.
   if (policy.liftEvenLine === true && open.length > 0 && ((!answer.ok && answer.soft === true) || answer.ok))
     return { ok: true, measured: true, reason: answer.reason, admission: "ordinary", eligible: open.map((a) => a.credentialID) }

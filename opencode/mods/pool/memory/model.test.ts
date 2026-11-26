@@ -55,9 +55,9 @@ interface Claimed {
 const world = (
   config: Model.Config,
   connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>,
-  usage?: Parameters<typeof QuotaTest.layer>[3],
-  stored: Map<string, Schema.Json> = new Map(),
+  options: { readonly usage?: Parameters<typeof QuotaTest.layer>[3]; readonly stored?: Map<string, Schema.Json> } = {},
 ) => {
+  const { usage, stored = new Map<string, Schema.Json>() } = options
   const readings = new Map<PoolId, Map<string, QuotaReading>>([...connections.keys()].map((pool) => [pool, new Map()]))
   const claims: Array<Claimed> = []
   const owner = OwnerTest.empty()
@@ -128,7 +128,7 @@ test("dispatch starts every stale read together and ends a hung evidence round w
     yield* TestClock.setTime(now)
     const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
       new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]),
-      (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)))
+      { usage: (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)) })
     const pool = yield* fixture.pool
     const request = yield* Effect.forkChild(Effect.result(pool.place({
       providerID: "anthropic", sessionID: "hung", kind: "primary", model: "claude-haiku-4-5",
@@ -409,7 +409,7 @@ describe("Claude resets", () => {
         const now = stamp()
         const pair = new Map([[ANTHROPIC, [{ id: "claude-a", label: "Claude A" }, { id: "claude-b", label: "Claude B" }]]])
         // Claude B has room by its last reading, but its hold record does not read: no request goes out on it.
-        const claude = world(config, pair, undefined, new Map<string, Schema.Json>([["anthropic/hold/claude-b", "not a hold record"]]))
+        const claude = world(config, pair, { stored: new Map<string, Schema.Json>([["anthropic/hold/claude-b", "not a hold record"]]) })
         held(claude, now)
         claude.readings.get(ANTHROPIC)!.set("claude-b", reading(now, { fiveHour: 0.1, sevenDay: 0.2 }))
         const pool = yield* claude.pool

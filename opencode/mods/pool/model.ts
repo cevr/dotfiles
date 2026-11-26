@@ -32,7 +32,7 @@ import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
-import { dispatchPace, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, type HoldReason, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
@@ -1388,6 +1388,24 @@ export const layer = (config: Config) =>
         return LaunchCost.estimate(history, model, now, fleetConfig.startCost)
       })
 
+      /**
+       * Work held unmeasured for want of a login it may go out on (`LACKS_LOGIN`: a damaged record, every login
+       * refused) is work waiting, as a measured hold's is: a start, or a running agent's request at its dispatch
+       * (`admission`). The review hears of it as of a held start.
+       */
+      const noteUnmeasured = (
+        resetting: Option.Option<ResetsModel.NoteWait["pool"]>, reasonCode: HoldReason, session: Option.Option<string>, model: Option.Option<string>,
+      ) =>
+        Option.match(Option.filter(resetting, () => LACKS_LOGIN.includes(reasonCode)), {
+          onNone: () => Effect.void,
+          onSome: (pool) =>
+            sendResets(ResetsModel.NoteWait.make({
+              pool, hard: true,
+              ...Option.match(session, { onNone: () => ({}), onSome: (sessionID) => ({ sessionID }) }),
+              ...Option.match(model, { onNone: () => ({}), onSome: (id) => ({ model: id }) }),
+            })).pipe(Effect.andThen(Effect.forkIn(reviewResets, scope)), Effect.asVoid),
+        })
+
       const pace = Effect.fn("Pool.pace")(function* (
         providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
         work: "new-work" | "existing-request" = "new-work",
@@ -1402,19 +1420,7 @@ export const layer = (config: Config) =>
         if (Option.isSome(resetting) && Option.isSome(session)) askers.set(resetting.value, { at: now, sessionID: session.value })
         const answer = yield* withPending(paced, id, now)
         if (answer.ok) return answer
-        // Work held for lack of a login it may go out on is work waiting, measured or not: a start, or a running
-        // agent's request at its dispatch (`admission`). The review hears of it as of a held start.
-        if (!answer.measured) {
-          if (Option.isSome(resetting) && LACKS_LOGIN.includes(answer.reasonCode)) {
-            yield* sendResets(ResetsModel.NoteWait.make({
-              pool: resetting.value, hard: true,
-              ...(sessionID === undefined ? {} : { sessionID }),
-              ...(model === undefined ? {} : { model }),
-            }))
-            yield* Effect.forkIn(reviewResets, scope)
-          }
-          return answer
-        }
+        if (!answer.measured) return yield* Effect.as(noteUnmeasured(resetting, answer.reasonCode, session, Option.fromUndefinedOr(model)), answer)
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
         const root = yield* Option.match(Option.filter(session, () => active.length > 0), {

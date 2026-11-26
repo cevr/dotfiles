@@ -6,7 +6,7 @@
 // one claim; and a claim that did not go through goes again as the same
 // claim. After a claim the owner is told once.
 import { describe, expect, test } from "bun:test"
-import { Array as Arr, Effect, Option } from "effect"
+import { Array as Arr, Effect, Match, Option } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import * as Story from "@dotfiles/decider/story"
 import type { ResetCredit } from "./quota.ts"
@@ -426,8 +426,9 @@ describe("room is real room: another login is room for the running work only whe
   const spentA = () => account("cred-a", { fiveHour: 1, sevenDay: 0.4, credits: [claudeGrant("grant-a")] })
   const roomB = account("cred-b", { fiveHour: 0.1, sevenDay: 0.3 })
   /** The accounts claimed on one review of A (5h spent, a grant in hand) beside `b`, three agents running and no start held. */
-  const claimedBeside = (b: AccountStatus) =>
-    run([[T0, Review.make({ pools: [claude([spentA(), b])] })]]).events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset.credentialID] : []))
+  const claimedIn = (events: ReadonlyArray<Event>) =>
+    events.flatMap((event) => Match.value(event).pipe(Match.tag("ClaimDue", (due) => [due.reset.credentialID]), Match.orElse((): ReadonlyArray<string> => [])))
+  const claimedBeside = (b: AccountStatus) => claimedIn(run([[T0, Review.make({ pools: [claude([spentA(), b])] })]]).events)
   const holdOf = (kind: NonNullable<AccountStatus["hold"]>["kind"], until = T0 + 6 * HOUR) => ({ kind, until, at: T0 - MINUTE })
 
   test("a login with room on a fresh reading and nothing refusing it: the running work goes there, nothing is claimed", () => {
@@ -493,13 +494,14 @@ describe("room is real room: another login is room for the running work only whe
     const cases = states.flatMap(([name, b, takes]) => [0, BUSY].flatMap((running) => [false, true].map((held) => ({ name, b, takes, running, held }))))
     const wrong = cases.flatMap(({ name, b, takes, running, held }) => {
       const commands: ReadonlyArray<readonly [number, Command]> = [
-        ...(held ? [[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })] as const] : []),
+        ...Arr.filter([[T0, NoteWait.make({ pool: "anthropic", sessionID: "ses_root" })] as const], () => held),
         [T0, Review.make({ pools: [claude([spentA(), b], running)] })],
       ]
-      const claimed = run(commands).events.flatMap((event) => (event._tag === "ClaimDue" ? [event.reset.credentialID] : []))
+      const claimed = claimedIn(run(commands).events)
       const due = held || (running > 0 && !takes)
-      const expected = due ? ["cred-a"] : []
-      return JSON.stringify(claimed) === JSON.stringify(expected) ? [] : [`${name}, ${running} running, ${held ? "work held" : "nothing held"}: claimed ${JSON.stringify(claimed)}`]
+      const expected = Arr.filter(["cred-a"], () => due)
+      const work = Match.value(held).pipe(Match.when(true, () => "work held"), Match.orElse(() => "nothing held"))
+      return Arr.filter([`${name}, ${running} running, ${work}: claimed [${claimed.join(", ")}]`], () => claimed.join(",") !== expected.join(","))
     })
     expect(cases).toHaveLength(states.length * 4)
     expect(wrong).toEqual([])

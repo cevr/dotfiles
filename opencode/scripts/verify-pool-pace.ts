@@ -189,37 +189,48 @@ const fableMatches = (state: typeof ResetState.Type): boolean => {
   return Option.exists(week, (effect) => Math.abs(effect.to - number(state.afterWeek) / 100) < 1e-9 && effect.resetAt === resetAt) && Option.exists(own, (effect) => effect.to === number(state.afterFable) / 100)
 }
 
+/** What one reset snapshot exercised: a claim, a refill left for a login with room, a refill beside a refused or stale login. */
+interface Exercised {
+  readonly claim: boolean
+  readonly vetoed: boolean
+  readonly refused: boolean
+}
+
+/** One reset snapshot against the implementation: room through `hasRoom`, the verdict through `decideClaim`, a Fable refund through `effectOf`. */
+const checkReset = Effect.fn("PoolProof.checkReset")(function* (where: string, state: typeof ResetState.Type) {
+  const r = state.r
+  const room = otherLogin(r.other).some((login) => hasRoom(login, NOW))
+  if (room !== (r.other === "room")) return yield* new VerificationFailed({ message: `${where}: room mismatch: the other login ${r.other}, hasRoom ${room}` })
+  const verdict = decideClaim({ now: NOW, held: Number(r.held), running: 3 * Number(r.running), hosts: 1, accounts: [], settling: false, pushed: false, room }, resetOptions(r))
+  if ((verdict._tag === "Claim") !== state.claim)
+    return yield* new VerificationFailed({ message: `${where}: reset policy mismatch: ${r.kind} week=${number(r.week)}, own=${number(r.fable)}, running=${r.running}, held=${r.held}, other=${r.other}, got ${verdict._tag}` })
+  if (!fableMatches(state)) return yield* new VerificationFailed({ message: `${where}: Fable refund mismatch` })
+  // Running work and nothing held: left alone for a login with room, refilled beside a refused or stale one.
+  const ordinary = r.running && !r.held && number(r.expires) > 1440
+  const blind = decideClaim({ now: NOW, held: 0, running: 3, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, resetOptions(r))
+  return {
+    claim: state.claim,
+    vetoed: ordinary && r.other === "room" && blind._tag === "Claim",
+    refused: ordinary && (r.other === "signin" || r.other === "stale") && state.claim,
+  } satisfies Exercised
+})
+
 const replayResets = Effect.fn("PoolProof.replayResets")(function* (evidence: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  let snapshots = 0
-  let claims = 0
-  // Running work and nothing held: left alone for a login with room, refilled beside a refused or stale one.
-  let vetoed = 0
-  let refused = 0
+  const seen: Array<Exercised> = []
   for (const name of (yield* fs.readDirectory(evidence)).filter((name) => name.startsWith("reset-trace-") && name.endsWith(".json"))) {
     const trace = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Trace))(yield* fs.readFileString(path.join(evidence, name)))
     const key = Arr.findFirst(trace.vars, (name) => name.endsWith("::s"))
     if (Option.isNone(key)) return yield* new VerificationFailed({ message: `${name}: no reset snapshot` })
-    for (const raw of trace.states) {
-      const state = yield* Schema.decodeUnknownEffect(ResetState)(raw[key.value])
-      const r = state.r
-      const room = otherLogin(r.other).some((login) => hasRoom(login, NOW))
-      if (room !== (r.other === "room")) return yield* new VerificationFailed({ message: `${name}: room mismatch at ${snapshots}: the other login ${r.other}, hasRoom ${room}` })
-      const verdict = decideClaim({ now: NOW, held: Number(r.held), running: 3 * Number(r.running), hosts: 1, accounts: [], settling: false, pushed: false, room }, resetOptions(r))
-      if ((verdict._tag === "Claim") !== state.claim)
-        return yield* new VerificationFailed({ message: `${name}: reset policy mismatch at ${snapshots}: ${r.kind} week=${number(r.week)}, own=${number(r.fable)}, running=${r.running}, held=${r.held}, other=${r.other}, got ${verdict._tag}` })
-      if (!fableMatches(state)) return yield* new VerificationFailed({ message: `${name}: Fable refund mismatch at ${snapshots}` })
-      snapshots++
-      if (state.claim) claims++
-      const ordinary = r.running && !r.held && number(r.expires) > 1440
-      if (ordinary && r.other === "room" && decideClaim({ now: NOW, held: 0, running: 3, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, resetOptions(r))._tag === "Claim") vetoed++
-      if (ordinary && (r.other === "signin" || r.other === "stale") && state.claim) refused++
-    }
+    for (const raw of trace.states) seen.push(yield* checkReset(`${name} at ${seen.length}`, yield* Schema.decodeUnknownEffect(ResetState)(raw[key.value])))
   }
-  if (claims === 0 || claims === snapshots) return yield* new VerificationFailed({ message: "reset replay must exercise claims and waits" })
+  const claims = seen.filter((each) => each.claim).length
+  const vetoed = seen.filter((each) => each.vetoed).length
+  const refused = seen.filter((each) => each.refused).length
+  if (claims === 0 || claims === seen.length) return yield* new VerificationFailed({ message: "reset replay must exercise claims and waits" })
   if (vetoed === 0 || refused === 0) return yield* new VerificationFailed({ message: `reset replay must exercise the room veto (${vetoed}) and a refused or stale login that is no room (${refused})` })
-  yield* Console.log(`Reset conformance: ${snapshots} snapshots (${claims} claims; ${vetoed} left for a login with room, ${refused} refilled beside a refused or stale login) match decideClaim, hasRoom and Fable effectOf`)
+  yield* Console.log(`Reset conformance: ${seen.length} snapshots (${claims} claims; ${vetoed} left for a login with room, ${refused} refilled beside a refused or stale login) match decideClaim, hasRoom and Fable effectOf`)
 })
 
 const main = Effect.gen(function* () {
