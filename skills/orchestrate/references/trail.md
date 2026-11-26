@@ -2,7 +2,7 @@
 
 A long run keeps one reviewable record of its decisions: what was chosen, why, and the pointer that proves it. Adapted from pstack (`cursor/plugins`, `pstack/skills/show-me-your-work`), MIT.
 
-It is the record of the orchestrate skill's `long run` mode, and the first thing a replacement root reads, before the units' `state.md` files.
+It is the record of a long or unattended orchestrate run, and the first thing a replacement root reads, before the units' `state.md` files.
 
 ## The file
 

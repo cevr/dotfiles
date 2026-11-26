@@ -4,12 +4,10 @@
 // on the simulated host (sim/world.ts), loaded with its `skill` option at this checkout's orchestrate skill: a root
 // session on the default agent is OFFERED `subagent` and `principles`, asks `principles` to list and to search
 // "effort", then starts one child of each role. Each child's model request, as the scripted model receives it,
-// carries its role's generated prompt (mods/orchestrate/agents.json), the Ending-a-step sentence for that role and
-// the principle's name; both lookups answer principle-nothing-is-hard. NIH8: a child of each role and the lean
-// worker, its system read back from the model request and decoded (mods/orchestrate/round-policy.ts) equal to its
-// role's policy; a dropped artifact, a dropped refusal form and a swapped role block are each named by the decoder.
+// carries its role's generated prompt (mods/orchestrate/agents.json), the finish-every-item sentence and the
+// principle's name; both lookups answer principle-nothing-is-hard. NIH8: a child of each role and the lean worker
+// carries its own role's prompt, and no other role's.
 import { definitions } from "@dotfiles/opencode-orchestrate/role"
-import { block, delivered, policyFaults, project } from "@dotfiles/opencode-orchestrate/round-policy"
 import { fileURLToPath } from "bun"
 import { Array as Arr, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
@@ -24,11 +22,11 @@ const WORK = "/scratch/nothing-is-hard"
 const PIN = "2026-11-04T15:00:00Z"
 const ROOT_TASK = "start each role"
 const NAME = "principle-nothing-is-hard"
-/** Each role's own required-work line in its round-policy block (mods/orchestrate/round-policy.ts `REQUIRED`). */
+/** Each role's own line that its work is whole (protocol.md, Every role). */
 const ENDING = {
-  planner: "Your required work: every section of the spec filled, and its acceptance check runnable and recorded red.",
-  implementor: "Your required work: every item of the spec, built, gated and requested.",
-  verifier: "Your required work: every check of step 1 ran to a result that settles pass or fail, for every unit;",
+  planner: "Finish every item; difficulty is never a reason to stop short",
+  implementor: "Finish every item; difficulty is never a reason to stop short",
+  verifier: "Finish every item; difficulty is never a reason to stop short",
 } as const
 const ROLES = ["planner", "implementor", "verifier"] as const
 
@@ -128,21 +126,11 @@ const delivery = (seed: number) =>
     return children.map(([role, id]) => [role, Arr.findFirst(seen, (one) => one.sessionID === id).pipe(Option.map((one) => one.system), Option.getOrElse(() => ""))] as const)
   })
 
-seeded("NIH8: each role's model request carries its round policy, decoded equal to the source; a lost artifact, form or role is caught", ({ seed, expect }) =>
+seeded("NIH8: each role's model request carries its own generated prompt, and no other role's", ({ seed, expect }) =>
   Effect.gen(function* () {
     const systems = yield* delivery(seed)
     const of = (role: (typeof DELIVERED)[number]) => Option.getOrElse(Option.map(Arr.findFirst(systems, ([one]) => one === role), ([, system]) => system), () => "")
-    // Positive control: each delivered prompt's one block decodes to exactly its role's policy (every part, then the bytes).
-    for (const role of DELIVERED) expect([role, policyFaults(role, of(role)), delivered(role, of(role))]).toEqual([role, [], { ok: true, value: project(role) }])
-    // The implementor's blocked verdict loses state.md: the decoded F2 artifacts differ, named.
-    const implementor = of("implementor")
-    const noState = implementor.replace("`<unit dir>/state.md` current (even with no commit since) and ", "")
-    expect([noState !== implementor, policyFaults("implementor", noState).some((line) => line.startsWith("implementor: verdict blocked: source "))]).toEqual([true, true])
-    // A refusal that named a form loses its exact form field: the decoded stop evidence differs, named.
-    const noForm = implementor.replace(/\n\| a refusal named an accepted form \| `refused\.form` \|[^\n]*/, "")
-    expect([noForm !== implementor, policyFaults("implementor", noForm).some((line) => line.startsWith("implementor: stop refusalForm: source "))]).toEqual([true, true])
-    // Another role's block delivered in its place.
-    const swapped = of("planner").replace(block("planner"), () => block("implementor"))
-    expect(policyFaults("planner", swapped)).toContain("planner: role: source planner, shown implementor")
+    for (const role of DELIVERED) expect([role, of(role).includes(definitions[role].system)]).toEqual([role, true])
+    expect(of("planner").includes(definitions.implementor.system)).toBe(false)
   }),
 )

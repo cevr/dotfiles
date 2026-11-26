@@ -5,7 +5,7 @@ import { Array as Arr, Console, Effect, FileSystem, Match, Option, Path, Schema,
 import { ChildProcess } from "effect/process"
 import { decideClaim, type ClaimOption } from "../mods/pool/claim-rule.ts"
 import { effectOf } from "../mods/pool/resets.ts"
-import { dispatchPace, type PacePlan } from "../mods/pool/pace.ts"
+import { dispatchPace, hasRoom, type PacePlan } from "../mods/pool/pace.ts"
 import type { AccountStatus } from "../mods/pool/status.ts"
 
 const MODEL = "mods/pool/dynamic-pace.qnt"
@@ -86,9 +86,10 @@ const proveResets = Effect.fn("PoolProof.proveResets")(function* (evidence: stri
   if (installed !== VERSION) return yield* new VerificationFailed({ message: `expected Quint ${VERSION}, found ${installed}` })
   yield* command(evidence, "reset-typecheck", ["typecheck", RESET_MODEL])
   yield* command(evidence, "reset-verify", ["verify", RESET_MODEL, "--main", "reset_policy", "--invariant", "safe", "--max-steps", "8", "--verbosity", "1"])
-  for (const mutant of ["early_claim", "wrong_fable", "free_codex", "period_cap"])
+  for (const mutant of ["early_claim", "wrong_fable", "free_codex", "period_cap", "room_on_reading", "room_blind"])
     yield* command(evidence, `reset-${mutant}`, ["verify", RESET_MODEL, "--main", mutant, "--invariant", "safe", "--max-steps", "1", "--out-itf", path.join(evidence, `reset-${mutant}.itf.json`), "--verbosity", "1"], true)
   yield* command(evidence, "reset-traces", ["run", RESET_MODEL, "--main", "reset_policy", "--invariant", "safe", "--seed", "20261125", "--max-samples", "128", "--max-steps", "30", "--n-traces", "64", "--out-itf", path.join(evidence, "reset-trace-{seq}.json"), "--verbosity", "1"])
+  yield* command(evidence, "reset-traces-room", ["run", RESET_MODEL, "--main", "reset_policy", "--init", "initRoom", "--invariant", "safe", "--seed", "20261125", "--max-samples", "32", "--max-steps", "8", "--n-traces", "16", "--out-itf", path.join(evidence, "reset-trace-room-{seq}.json"), "--verbosity", "1"])
 })
 
 const replay = Effect.fn("PoolProof.replay")(function* (evidence: string) {
@@ -135,8 +136,26 @@ const replay = Effect.fn("PoolProof.replay")(function* (evidence: string) {
 
 const ResetReading = Schema.Struct({
   kind: Schema.Literals(["full", "fable", "codex"]), week: BigIntField, fable: BigIntField, fableShared: BigIntField,
-  weekLeft: BigIntField, expires: BigIntField, credits: BigIntField, work: Schema.Boolean, pending: Schema.Boolean, spent: BigIntField,
+  weekLeft: BigIntField, expires: BigIntField, credits: BigIntField, running: Schema.Boolean, held: Schema.Boolean,
+  other: Schema.Literals(["none", "room", "signin", "stale"]), pending: Schema.Boolean, spent: BigIntField,
 })
+
+/**
+ * The pool's other login as the model names it, as the pool would list it: with room by its reading (5h 10%, week 30%),
+ * also refused a sign-in, or read 31 minutes ago. Whether it is room is the implementation's own predicate (`hasRoom`).
+ */
+const otherLogin = (other: typeof ResetReading.Type["other"]): ReadonlyArray<AccountStatus> => {
+  const at = Match.value(other).pipe(Match.when("stale", () => NOW - 31 * 60_000), Match.orElse(() => NOW))
+  const login: AccountStatus = { credentialID: "b", live: 0, load: 0, noRoom: false, reading: { at, windows: [
+    { name: "5h", utilization: 0.1, resetAt: NOW + 2 * 3_600_000 },
+    { name: "7d", utilization: 0.3, resetAt: NOW + 4 * 24 * 3_600_000 },
+  ] } }
+  return Match.value(other).pipe(
+    Match.when("none", (): ReadonlyArray<AccountStatus> => []),
+    Match.when("signin", () => [{ ...login, hold: { kind: "signin" as const, until: NOW + 3_600_000, at: NOW - 60_000 } }]),
+    Match.orElse(() => [login]),
+  )
+}
 const ResetState = Schema.Struct({ r: ResetReading, claim: Schema.Boolean, afterWeek: BigIntField, afterFable: BigIntField, afterLeft: BigIntField })
 
 const resetOptions = (r: typeof ResetReading.Type): ReadonlyArray<ClaimOption> => {
@@ -170,28 +189,48 @@ const fableMatches = (state: typeof ResetState.Type): boolean => {
   return Option.exists(week, (effect) => Math.abs(effect.to - number(state.afterWeek) / 100) < 1e-9 && effect.resetAt === resetAt) && Option.exists(own, (effect) => effect.to === number(state.afterFable) / 100)
 }
 
+/** What one reset snapshot exercised: a claim, a refill left for a login with room, a refill beside a refused or stale login. */
+interface Exercised {
+  readonly claim: boolean
+  readonly vetoed: boolean
+  readonly refused: boolean
+}
+
+/** One reset snapshot against the implementation: room through `hasRoom`, the verdict through `decideClaim`, a Fable refund through `effectOf`. */
+const checkReset = Effect.fn("PoolProof.checkReset")(function* (where: string, state: typeof ResetState.Type) {
+  const r = state.r
+  const room = otherLogin(r.other).some((login) => hasRoom(login, NOW))
+  if (room !== (r.other === "room")) return yield* new VerificationFailed({ message: `${where}: room mismatch: the other login ${r.other}, hasRoom ${room}` })
+  const verdict = decideClaim({ now: NOW, held: Number(r.held), running: 3 * Number(r.running), hosts: 1, accounts: [], settling: false, pushed: false, room }, resetOptions(r))
+  if ((verdict._tag === "Claim") !== state.claim)
+    return yield* new VerificationFailed({ message: `${where}: reset policy mismatch: ${r.kind} week=${number(r.week)}, own=${number(r.fable)}, running=${r.running}, held=${r.held}, other=${r.other}, got ${verdict._tag}` })
+  if (!fableMatches(state)) return yield* new VerificationFailed({ message: `${where}: Fable refund mismatch` })
+  // Running work and nothing held: left alone for a login with room, refilled beside a refused or stale one.
+  const ordinary = r.running && !r.held && number(r.expires) > 1440
+  const blind = decideClaim({ now: NOW, held: 0, running: 3, hosts: 1, accounts: [], settling: false, pushed: false, room: false }, resetOptions(r))
+  return {
+    claim: state.claim,
+    vetoed: ordinary && r.other === "room" && blind._tag === "Claim",
+    refused: ordinary && (r.other === "signin" || r.other === "stale") && state.claim,
+  } satisfies Exercised
+})
+
 const replayResets = Effect.fn("PoolProof.replayResets")(function* (evidence: string) {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
-  let snapshots = 0
-  let claims = 0
+  const seen: Array<Exercised> = []
   for (const name of (yield* fs.readDirectory(evidence)).filter((name) => name.startsWith("reset-trace-") && name.endsWith(".json"))) {
     const trace = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Trace))(yield* fs.readFileString(path.join(evidence, name)))
     const key = Arr.findFirst(trace.vars, (name) => name.endsWith("::s"))
     if (Option.isNone(key)) return yield* new VerificationFailed({ message: `${name}: no reset snapshot` })
-    for (const raw of trace.states) {
-      const state = yield* Schema.decodeUnknownEffect(ResetState)(raw[key.value])
-      const r = state.r
-      const verdict = decideClaim({ now: NOW, held: Number(r.work), running: 0, hosts: 1, accounts: [], settling: false, pushed: false }, resetOptions(r))
-      if ((verdict._tag === "Claim") !== state.claim)
-        return yield* new VerificationFailed({ message: `${name}: reset policy mismatch at ${snapshots}: ${r.kind} week=${number(r.week)}, own=${number(r.fable)}, got ${verdict._tag}` })
-      if (!fableMatches(state)) return yield* new VerificationFailed({ message: `${name}: Fable refund mismatch at ${snapshots}` })
-      snapshots++
-      if (state.claim) claims++
-    }
+    for (const raw of trace.states) seen.push(yield* checkReset(`${name} at ${seen.length}`, yield* Schema.decodeUnknownEffect(ResetState)(raw[key.value])))
   }
-  if (claims === 0 || claims === snapshots) return yield* new VerificationFailed({ message: "reset replay must exercise claims and waits" })
-  yield* Console.log(`Reset conformance: ${snapshots} snapshots (${claims} claims) match decideClaim and Fable effectOf`)
+  const claims = seen.filter((each) => each.claim).length
+  const vetoed = seen.filter((each) => each.vetoed).length
+  const refused = seen.filter((each) => each.refused).length
+  if (claims === 0 || claims === seen.length) return yield* new VerificationFailed({ message: "reset replay must exercise claims and waits" })
+  if (vetoed === 0 || refused === 0) return yield* new VerificationFailed({ message: `reset replay must exercise the room veto (${vetoed}) and a refused or stale login that is no room (${refused})` })
+  yield* Console.log(`Reset conformance: ${seen.length} snapshots (${claims} claims; ${vetoed} left for a login with room, ${refused} refilled beside a refused or stale login) match decideClaim, hasRoom and Fable effectOf`)
 })
 
 const main = Effect.gen(function* () {

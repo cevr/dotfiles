@@ -52,8 +52,13 @@ interface Claimed {
   readonly requestID: string
 }
 
-/** The pool on memory layers: `readings` by pool and login, the claims sent recorded, each answered by `answer`. */
-const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>, usage?: Parameters<typeof QuotaTest.layer>[3]) => {
+/** The pool on memory layers: `readings` by pool and login, the claims sent recorded, each answered by `answer`; the ledger holds `stored`. */
+const world = (
+  config: Model.Config,
+  connections: Map<PoolId, ReadonlyArray<{ readonly id: string; readonly label: string }>>,
+  options: { readonly usage?: Parameters<typeof QuotaTest.layer>[3]; readonly stored?: Map<string, Schema.Json> } = {},
+) => {
+  const { usage, stored = new Map<string, Schema.Json>() } = options
   const readings = new Map<PoolId, Map<string, QuotaReading>>([...connections.keys()].map((pool) => [pool, new Map()]))
   const claims: Array<Claimed> = []
   const owner = OwnerTest.empty()
@@ -72,7 +77,7 @@ const world = (config: Model.Config, connections: Map<PoolId, ReadonlyArray<{ re
       claims.push(claim)
       return state.answer(claim)
     }, usage),
-    LedgerTest.layer(),
+    LedgerTest.layer(stored),
     PeersTest.layer(new Map()),
     FleetTest.layer(),
     ResetsTest.layer(resets),
@@ -124,7 +129,7 @@ test("dispatch starts every stale read together and ends a hung evidence round w
     yield* TestClock.setTime(now)
     const fixture = world({ providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS },
       new Map([[ANTHROPIC, ids.map((id) => ({ id, label: id }))]]),
-      (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)))
+      { usage: (_pool, id) => Effect.sync(() => { tried.push(id) }).pipe(Effect.andThen(Effect.never)) })
     const pool = yield* fixture.pool
     const request = yield* Effect.forkChild(Effect.result(pool.place({
       providerID: "anthropic", sessionID: "hung", kind: "primary", model: "claude-haiku-4-5",
@@ -399,6 +404,28 @@ describe("Claude resets", () => {
       ))
   })
 
+  test("a running agent's request held for lack of a login it may go out on is work waiting: the other login's record damaged, the spent account is refilled", () =>
+    scoped(
+      Effect.gen(function* () {
+        const now = Date.parse("2026-11-25T19:00:00Z")
+        yield* TestClock.setTime(now)
+        const pair = new Map([[ANTHROPIC, [{ id: "claude-a", label: "Claude A" }, { id: "claude-b", label: "Claude B" }]]])
+        // Claude B has room by its last reading, but its hold record does not read: no request goes out on it.
+        const claude = world(config, pair, { stored: new Map<string, Schema.Json>([["anthropic/hold/claude-b", "not a hold record"]]) })
+        held(claude, now)
+        claude.readings.get(ANTHROPIC)!.set("claude-b", reading(now, { fiveHour: 0.1, sevenDay: 0.2 }))
+        const pool = yield* claude.pool
+        // No start is held: an agent already running asks to send its next request.
+        const request = { providerID: "anthropic", model: "claude-haiku-4-5", sessionID: "ses_agent", kind: "primary" } as const
+        const placed = yield* Effect.result(pool.place(request))
+        expect(Result.isFailure(placed)).toBe(true)
+        yield* settle
+        yield* pool.reviewResets
+        expect(claude.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "grant-1"]])
+        expect(claude.owner.asked.map((question) => question.sessionID)).toEqual(["ses_agent"])
+      }).pipe(Effect.provide(TestClock.layer())),
+    ))
+
   test("an older pool's question still open, about a reset or a push, is withdrawn", () =>
     scoped(
       Effect.gen(function* () {
@@ -439,7 +466,7 @@ describe("admissionQuote", () => {
           // The auth plugin keeps what it read last as its newest reading.
           const taken = fresh(id, now)
           newest.set(id, taken)
-          return taken
+          return Result.succeed(taken)
         })),
       LedgerTest.layer(store),
       PeersTest.layer(new Map()),

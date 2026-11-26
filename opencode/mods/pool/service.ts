@@ -8,7 +8,7 @@ import type { StoreRefreshes } from "./alerts.ts"
 import type { AntigravityReport } from "./antigravity-report.ts"
 import type { Event as FleetEvent, FleetState } from "./fleet.ts"
 import type { LimitsReport, Tally, Use, WorkGroup } from "./limits.ts"
-import type { ClaimAnswer, QuotaReading, UsageReadFailure } from "./quota.ts"
+import type { ClaimAnswer, QuotaReading, UsageRead, UsageReadFailure } from "./quota.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import type { Event as PushEvent, HostLoad, PushAnswer, PushRequest, PushState } from "./push.ts"
 import type { Event as ResetsEvent, ResetsState } from "./resets.ts"
@@ -98,8 +98,8 @@ export class Quota extends Context.Service<
   {
     /** The newest reading the auth plugin holds of a login. */
     readonly reading: (pool: PoolId, credentialID: string) => Effect.Effect<QuotaReading | undefined>
-    /** A fresh reading of a login's usage endpoint. */
-    readonly usage: (pool: PoolId, credentialID: string) => Effect.Effect<QuotaReading | undefined>
+    /** A fresh reading of a login's usage endpoint, or why it has none (`UsageUnread`, its cause kept). */
+    readonly usage: (pool: PoolId, credentialID: string) => Effect.Effect<UsageRead>
     /** Readings the auth plugin publishes as they come. */
     readonly readings: (pool: PoolId) => Stream.Stream<PublishedReading>
     /**

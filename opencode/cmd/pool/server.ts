@@ -290,6 +290,10 @@ export const resetsOf = (options: Options): Readonly<Record<string, ResetProvide
   return resets
 }
 
+/** Whether the pool claims resets on its own: `resets: true` or `{ auto: true }`; `false` works none, so it claims none. */
+export const autoClaimsOf = (options: Pick<Options, "resets">): boolean =>
+  options.resets === true || (options.resets !== false && options.resets.auto)
+
 /** The pools paced only, never placed: each reads the ChatGPT account's quota. */
 const chatgptPools = (options: Options): ReadonlyArray<PoolId> => {
   const placed = new Set(Object.values(options.providers))
@@ -933,7 +937,7 @@ export const make = <R = never,>(
                 pollMs: options.fleet.pollSeconds * 1000,
               },
               resets: resetsOf(options),
-              autoClaims: typeof options.resets === "boolean" || options.resets.auto,
+              autoClaims: autoClaimsOf(options),
               ...(options.unitCost === undefined ? {} : { unitCost: options.unitCost }),
             }).pipe(
               Layer.merge(captureFleet),

@@ -4,7 +4,7 @@ import type { Reply } from "../admission-wire.ts"
 import { cgroupOf, cpuMax } from "./admission.ts"
 import { issue, type Actuation } from "./actuation.ts"
 
-const unqualified = () => new AdmissionUnavailable({ reason: "unqualified" })
+const unqualified = (detail: string) => new AdmissionUnavailable({ reason: "unqualified", detail })
 export type Liveness = "gone" | "live" | "unknown"
 export type DescriptorState = "gone" | "held" | "unknown"
 
@@ -26,7 +26,8 @@ export const attestLinux = Effect.fn("LinuxController.attest")(function* <R>(
   const root = yield* manager.workloadRoot
   const expected = `${root}/${unit}.service`
   const actual = yield* mountedGroup(manager)
-  if (!Option.exists(actual, (found) => found === expected)) return yield* unqualified()
+  if (!Option.exists(actual, (found) => found === expected))
+    return yield* unqualified(`the helper runs in ${Option.getOrElse(actual, () => "no readable cgroup")}, not its unit ${expected}`)
   const read = (entry: string) => manager.read(`${expected}/${entry}`)
   const { cpu, max, swap, grouping } = yield* Effect.all({
     cpu: read("cpu.max"), max: read("memory.max"), swap: read("memory.swap.max"), grouping: read("memory.oom.group"),
@@ -35,7 +36,9 @@ export const attestLinux = Effect.fn("LinuxController.attest")(function* <R>(
   const memory = Number(max.trim())
   if (!Option.exists(bound, (value) => value > 0 && value <= cpuMilli) ||
     !Number.isSafeInteger(memory) || memory <= 0 || memory > memoryBytes || swap.trim() !== "0" || grouping.trim() !== "1")
-    return yield* unqualified()
+    return yield* unqualified(`${expected} does not carry the lease's caps: cpu.max "${cpu.trim()}" (at most ${cpuMilli} mCPU), ` +
+      `memory.max "${max.trim()}" (at most ${memoryBytes}), memory.swap.max "${swap.trim()}" (0), ` +
+      `memory.oom.group "${grouping.trim()}" (1)`)
   return expected
 })
 
@@ -45,11 +48,11 @@ export const stopLinux = Effect.fn("LinuxController.stop")(function* <R>(
   const group = yield* mountedGroup(manager)
   const unit = path.split("/").at(-1)
   if (!owned || !Option.exists(group, (actual) => actual === path) || !unit || !/^host-admit-run-[a-f0-9]{32}\.service$/u.test(unit))
-    return yield* unqualified()
+    return yield* unqualified(`refusing to stop ${path}: not this process's own one-use host-admit unit`)
   const port: Actuation<AdmissionUnavailable, R> = {
     dispatch: (intent) => {
       if (intent.target === "current-unit") return manager.stop(unit)
-      return Effect.fail(unqualified())
+      return Effect.fail(unqualified(`no actuator for ${intent.target}`))
     },
   }
   yield* issue(port, [{ target: "current-unit", signal: "TERM" }])

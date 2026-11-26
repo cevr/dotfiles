@@ -6,7 +6,7 @@
 // plugin on the host shares.
 // The aggregate is the one decision entry point, so the stories run exactly
 // what these do. The plugin calls these and nothing else.
-import { Array as Arr, Clock, Context, Effect, Layer, Match, Option, Predicate, Ref, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
+import { Array as Arr, Clock, Context, DateTime, Effect, Layer, Match, Option, Predicate, Ref, Result, Schema, Scope, Semaphore, Stream, SynchronizedRef } from "effect"
 import { fold } from "@dotfiles/decider/decider"
 import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import {
@@ -32,11 +32,11 @@ import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
 import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
-import { dispatchPace, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
+import { dispatchPace, type HoldReason, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
 import { type Hold, holdRecheckAt, type RecoveryAttempt, UNREADABLE_HOLD_MS } from "./hold.ts"
 import { limitsLine, weeklyRatios, type Tally, type Tokens } from "./limits.ts"
 import type { AccountStatus } from "./status.ts"
-import { asReading, USAGE_TIMEOUT_MS, type ClaimAnswer, type QuotaReading, type QuotaWindow } from "./quota.ts"
+import { asReading, ClaimAnswer, QuotaWindow, USAGE_TIMEOUT_MS, UsageUnread, type QuotaReading, type UsageRead } from "./quota.ts"
 import * as Lease from "./lease.ts"
 import type { LeaseAnswer, LeaseMessage } from "./lease.ts"
 import * as ResetsModel from "./resets.ts"
@@ -69,6 +69,13 @@ import type {
   LaunchRequest,
 } from "./status.ts"
 import { OUTAGE_AFTER_MS, outage } from "./alerts.ts"
+
+/** A claim sent: the provider's answer, the windows read before it, and how the fleet agreed to it. */
+const SentClaim = Schema.TaggedStruct("sent", { answer: ClaimAnswer, before: Schema.Array(QuotaWindow), lease: Schema.optionalKey(Schema.String) })
+/** A claim not sent, and why (`UnsentWhy`): nothing reached the provider. */
+const UnsentClaim = Schema.TaggedStruct("unsent", { why: ResetsModel.UnsentWhy, message: Schema.String, unread: Schema.optionalKey(UsageUnread) })
+/** What became of a claim (`sendClaim`). */
+type Sent = typeof SentClaim.Type | typeof UnsentClaim.Type
 
 /** The pool's settings, from the plugin's options: its rules (the cache life) and the providers it pools. */
 export interface Config extends Rules {
@@ -416,13 +423,24 @@ export const layer = (config: Config) =>
               Effect.andThen(observeClaim(id, credentialID, reading)),
             )
 
+      /** A usage read that came back with no reading, logged with its cause by the login's name (never a token). */
+      const unreadLogged = (where: Pooled, credentialID: string, unread: UsageUnread) =>
+        logins.label(where.id, credentialID).pipe(
+          Effect.flatMap((label) => Effect.logWarning(`pool: the usage read of ${label} on ${where.id} came back unread: ${ResetsModel.unreadText(unread)}`)),
+        )
+
       const readUsage = (where: Pooled, credentialID: string, recovery: boolean, signIn = Option.none<true>()) => {
         if (!recovery)
           return quota.usage(where.id, credentialID).pipe(
-            Effect.flatMap((reading) =>
-              Option.match(Option.fromUndefinedOr(reading), {
-                onNone: () => apply(where.pool, where.id, FailUsageRead.make({ credentialID })).pipe(Effect.asVoid),
-                onSome: (value) => take(where, credentialID, value, true),
+            Effect.flatMap((read) =>
+              Result.match(read, {
+                // The read's cause is kept: a rate limit is tried again once the wait it asked for has passed.
+                onFailure: (unread) =>
+                  unreadLogged(where, credentialID, unread).pipe(
+                    Effect.andThen(apply(where.pool, where.id, FailUsageRead.make({ credentialID, ...Option.match(Option.fromUndefinedOr(unread.retryAfterMs), { onNone: () => ({}), onSome: (retryAfterMs) => ({ retryAfterMs }) }) }))),
+                    Effect.asVoid,
+                  ),
+                onSuccess: (value) => take(where, credentialID, value, true),
               }),
             ),
           )
@@ -434,7 +452,7 @@ export const layer = (config: Config) =>
           if (Option.isNone(reserved)) return
           const at = yield* Clock.currentTimeMillis
           const usage = yield* quota.usage(where.id, credentialID).pipe(Effect.timeoutOption(UNREADABLE_HOLD_MS))
-          if (Option.isSome(usage)) yield* take(where, credentialID, usage.value, true, { at, until: holdRecheckAt(reserved.value.hold) })
+          if (Option.isSome(usage)) yield* take(where, credentialID, Result.getOrUndefined(usage.value), true, { at, until: holdRecheckAt(reserved.value.hold) })
         })
       }
 
@@ -444,7 +462,7 @@ export const layer = (config: Config) =>
         if (Object.hasOwn(current.readings, credentialID)) return
         const measure = Effect.gen(function* () {
           const sampled = yield* quota.usage(where.id, credentialID).pipe(Effect.timeoutOption(USAGE_TIMEOUT_MS))
-          const fresh = Option.flatMap(sampled, Option.fromUndefinedOr)
+          const fresh = Option.flatMap(sampled, Result.getSuccess)
           if (Option.isSome(fresh)) yield* take(where, credentialID, fresh.value, true)
           return fresh
         })
@@ -636,7 +654,7 @@ export const layer = (config: Config) =>
             Arr.findFirst(status(yield* SynchronizedRef.get(where.pool), now, rules), (item) => item.credentialID === credentialID),
           ]).pipe(
             Option.flatMap(([provider, account]) =>
-              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends)[credentialID]).pipe(
+              Option.fromUndefinedOr(ResetsModel.pacePlans(provider, [account], before.claims, now, before.spends, false, before.resets)[credentialID]).pipe(
                 Option.flatMap((plan) => Option.fromUndefinedOr(plan.rebase)),
                 Option.flatMap((rebase) => Option.fromUndefinedOr(rebase.key)),
                 Option.map((claim) => ({ provider, account, claim })),
@@ -928,7 +946,7 @@ export const layer = (config: Config) =>
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
         const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false)
+        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false, state.resets)
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -940,32 +958,46 @@ export const layer = (config: Config) =>
       const leaseMs = fleetConfig.leaseMs ?? Lease.LEASE_MS
       const leaseWaitMs = fleetConfig.leaseWaitMs ?? Lease.LEASE_WAIT_MS
 
-      /** The account as read right now, and whether the claim is still worth sending on it (`staleReason`). */
-      const judge = (where: Pooled, reset: ResetsModel.Reset) =>
+      /**
+       * The account as read for the check before a claim, and whether the
+       * claim is still worth sending on it (`staleReason`). With `reuse` (the
+       * check before the fleet's lease) a reading the sweep took moments ago
+       * stands for the read (`reusableReading`); else the account is read
+       * now. A read with no reading fails with why (`UsageUnread`), and is logged.
+       */
+      const judge = (where: Pooled, reset: ResetsModel.Reset, reuse: boolean): Effect.Effect<Result.Result<{ readonly fresh: QuotaReading; readonly why: string | undefined }, UsageUnread>> =>
         Effect.gen(function* () {
-          const fresh = yield* quota.usage(where.id, reset.credentialID)
-          if (fresh === undefined) return { fresh, why: "the account could not be read just before the claim" }
-          yield* take(where, reset.credentialID, fresh)
           const now = yield* Clock.currentTimeMillis
+          const state = yield* resetsStore.read
+          const held = Arr.findFirst(status(yield* SynchronizedRef.get(where.pool), now, rules), (item) => item.credentialID === reset.credentialID)
+          const kept = Option.flatMap(Option.filter(held, () => reuse), (account) => ResetsModel.reusableReading(state, reset, account, now))
+          const read: UsageRead = yield* Option.match(kept, { onSome: (reading) => Effect.succeed(Result.succeed(reading)), onNone: () => quota.usage(where.id, reset.credentialID) })
+          if (Result.isFailure(read)) {
+            yield* unreadLogged(where, reset.credentialID, read.failure)
+            return Result.fail(read.failure)
+          }
+          const fresh = read.success
+          if (Option.isNone(kept)) yield* take(where, reset.credentialID, fresh)
+          const at = yield* Clock.currentTimeMillis
           const view = (yield* resetViews).find((item) => item.id === reset.pool)
-          const account = status(yield* SynchronizedRef.get(where.pool), now, rules).find((item) => item.credentialID === reset.credentialID)
+          const account = status(yield* SynchronizedRef.get(where.pool), at, rules).find((item) => item.credentialID === reset.credentialID)
           const why =
             view === undefined || account === undefined
               ? "the account is no longer in the pool"
-              : ResetsModel.staleReason(view, { ...account, reading: fresh }, reset, now)
-          return { fresh, why }
+              : ResetsModel.staleReason(view, { ...account, reading: fresh }, reset, at)
+          return Result.succeed({ fresh, why })
         })
 
-      type Sent =
-        | { readonly _tag: "sent"; readonly answer: ClaimAnswer; readonly before: ReadonlyArray<QuotaWindow>; readonly lease?: string }
-        | { readonly _tag: "unreachable"; readonly peers: ReadonlyArray<string> }
-      const failed = (message: string): ClaimAnswer => ({ outcome: "failed", message })
-      const settles = (answer: ClaimAnswer, before: ReadonlyArray<QuotaWindow>, lease?: string): Extract<Sent, { _tag: "sent" }> => ({
-        _tag: "sent",
-        answer,
-        before,
-        ...(lease === undefined ? {} : { lease }),
-      })
+      const settles = (answer: ClaimAnswer, before: ReadonlyArray<QuotaWindow>, lease: Option.Option<string>): Sent =>
+        SentClaim.make({ answer, before, ...Option.match(lease, { onNone: () => ({}), onSome: (lease) => ({ lease }) }) })
+      const unsent = (why: ResetsModel.UnsentWhy, message: string, lease = Option.none<string>(), unread = Option.none<UsageUnread>()): Sent =>
+        UnsentClaim.make({
+          why,
+          message: `${message}${Option.match(lease, { onNone: () => "", onSome: (lease) => `; ${lease}` })}`,
+          ...Option.match(unread, { onNone: () => ({}), onSome: (unread) => ({ unread }) }),
+        })
+      const notRead = (unread: UsageUnread, lease = Option.none<string>()) =>
+        unsent("unread", `not sent: the account could not be read just before the claim (${ResetsModel.unreadText(unread)})`, lease, Option.some(unread))
 
       /**
        * Send a claim under the provider's claim lock and the fleet's lease
@@ -980,16 +1012,17 @@ export const layer = (config: Config) =>
        * taken after every grant, so after each peer judged on its own clock
        * that the claims it knew of settled. The lease is released to the peers that
        * granted it, with the claim's time whenever one was sent.
-       * Backed off (a peer refused): `failed`, to go again while the hold
-       * lasts; no longer worth it: settled unsent.
+       * Not sent (`unsent`): the account unread, backed off (a peer refused),
+       * a peer unreachable, each to go again later by its cause; no longer
+       * worth it (`stale`), settled.
        */
       const sendClaim = (where: Pooled, reset: ResetsModel.Reset): Effect.Effect<Sent> =>
         leases.lock(reset.provider).withPermits(1)(
           Effect.gen(function* () {
-            const first = yield* judge(where, reset)
-            if (first.fresh === undefined) return settles(failed(first.why ?? "unread"), [])
-            const before = first.fresh.windows
-            if (first.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${first.why}` }, before)
+            const judged = yield* judge(where, reset, true)
+            if (Result.isFailure(judged)) return notRead(judged.failure)
+            const first = judged.success
+            if (first.why !== undefined) return unsent("stale", `not sent: ${first.why}`)
             const host = fleetConfig.host
             const requestedAt = yield* Clock.currentTimeMillis
             const ask = {
@@ -1002,9 +1035,9 @@ export const layer = (config: Config) =>
             }
             // A claim this host sent on the account less than SETTLE_MS ago by its clock, a restart ago too: a reading may not show it yet.
             const out = ResetsModel.claimOut(yield* resetsStore.read, reset.provider, requestedAt, reset.credentialID)
-            if (out !== undefined) return settles(failed(`backed off: ${out}`), before)
+            if (out !== undefined) return unsent("backed-off", `backed off: ${out}`)
             const busy = yield* leases.begin(host, ask)
-            if (busy !== undefined) return settles(failed(`backed off: ${busy}`), before)
+            if (busy !== undefined) return unsent("backed-off", `backed off: ${busy}`)
             let claimedAt: number | undefined
             let granted: ReadonlyArray<string> = []
             // However this ends (an answer, a refusal, an interruption), the lease ends here and with every peer that granted it.
@@ -1034,19 +1067,22 @@ export const layer = (config: Config) =>
               )
               granted = answers.flatMap((item) => (item.answer?.granted === true ? [item.peer] : []))
               const verdict = Lease.verdict(answers, reset.yes === true)
-              if (verdict._tag === "refused") return settles(failed(`backed off: ${verdict.reasons.join("; ")}`), before)
-              if (verdict._tag === "unreachable") return { _tag: "unreachable", peers: verdict.peers } satisfies Sent
-              const lease =
+              if (verdict._tag === "refused") return unsent("backed-off", `backed off: ${verdict.reasons.join("; ")}`)
+              // A peer that cannot be reached may be claiming too: the claim is not sent, and goes again later.
+              if (verdict._tag === "unreachable") return unsent("unreachable", `not sent: no agreement, ${verdict.peers.join(", ")} unreachable`)
+              const lease = Option.fromUndefinedOr(
                 verdict.passedOver.length > 0
                   ? `the owner's yes; ${verdict.passedOver.join(", ")} unreachable${verdict.granted.length === 0 ? "" : `; granted by ${verdict.granted.join(", ")}`}`
                   : verdict.granted.length === 0
                     ? undefined
-                    : `granted by ${verdict.granted.join(", ")}`
-              if (!(yield* leases.hold(ask.id))) return settles(failed("backed off: the lease ended or went to a peer that asked first"), before, lease)
-              // Right before the send: a claim made meanwhile, from any pool or host, shows in the account read again.
-              const second = yield* judge(where, reset)
-              if (second.fresh === undefined) return settles(failed(second.why ?? "unread"), before, lease)
-              if (second.why !== undefined) return settles({ outcome: "nothing-to-reset", message: `not sent: ${second.why}` }, second.fresh.windows, lease)
+                    : `granted by ${verdict.granted.join(", ")}`,
+              )
+              if (!(yield* leases.hold(ask.id))) return unsent("backed-off", "backed off: the lease ended or went to a peer that asked first", lease)
+              // Right before the send: a claim made meanwhile, from any pool or host, shows in the account read again, never a reading kept.
+              const rejudged = yield* judge(where, reset, false)
+              if (Result.isFailure(rejudged)) return notRead(rejudged.failure, lease)
+              const second = rejudged.success
+              if (second.why !== undefined) return unsent("stale", `not sent: ${second.why}`, lease)
               claimedAt = yield* Clock.currentTimeMillis
               yield* sendResets(ResetsModel.NoteSend.make({ key: reset.key }))
               const answer = yield* quota.claim(where.id, { credentialID: reset.credentialID, creditID: reset.creditID, requestID: reset.requestID })
@@ -1061,21 +1097,28 @@ export const layer = (config: Config) =>
        * usage again, record the outcome with the windows before and after and
        * how the fleet agreed to it, and log what it did to them: whether the
        * weekly reset moved answers what a Claude grant does to the week. A
-       * claim that found a peer unreachable is recorded failed, unsent, and
-       * goes again later.
+       * claim not sent (`unsent`) is recorded as what it was, not a claim:
+       * no record among the claims, no attempt spent, no read after it; it
+       * goes again by its cause (`SettleUnsent`), unless it no longer pays.
        */
       const claim = Effect.fn("Pool.claim")(function* (reset: ResetsModel.Reset) {
         const where = poolOf(PoolId.make(reset.pool))
         if (where === undefined) return
-        const found = yield* sendClaim(where, reset)
-        // A peer that cannot be reached may be claiming too: the claim is not sent, and goes again later as any that did not go through.
-        const sent: Extract<Sent, { _tag: "sent" }> =
-          found._tag === "unreachable" ? settles(failed(`not sent: no agreement, ${found.peers.join(", ")} unreachable`), []) : found
+        const sent = yield* sendClaim(where, reset)
+        if (sent._tag === "unsent") {
+          const cause = Option.match(Option.fromUndefinedOr(sent.unread), { onNone: () => ({}), onSome: ({ _tag: _unread, ...unread }) => unread })
+          const held = yield* sendResets(ResetsModel.SettleUnsent.make({ key: reset.key, why: sent.why, message: sent.message, ...cause }))
+          const retryAt = Arr.findFirst(held, (event): event is ResetsModel.ClaimUnsent => event._tag === "ClaimUnsent").pipe(Option.flatMap((event) => Option.fromUndefinedOr(event.retryAt)))
+          const again = Option.match(retryAt, { onNone: () => "", onSome: (at) => `; tries again after ${DateTime.formatIso(DateTime.makeUnsafe(at))}` })
+          const line = `pool resets: did not send a ${reset.provider} reset claim on ${reset.label} (${reset.why}): ${sent.message}${again}`
+          yield* Match.value(sent.why).pipe(Match.when("unread", () => Effect.logWarning(line)), Match.orElse(() => Effect.logInfo(line)))
+          return
+        }
         const { answer, before, lease } = sent
         // A claim that emptied the windows frees the account; the reading taken next holds it again if a window is still spent.
         if (answer.outcome === "reset")
           yield* apply(where.pool, where.id, ClearHold.make({ credentialID: reset.credentialID }))
-        const after = yield* quota.usage(where.id, reset.credentialID)
+        const after = Result.getOrUndefined(yield* quota.usage(where.id, reset.credentialID))
         yield* take(where, reset.credentialID, after)
         const settled = yield* sendResets(
           ResetsModel.SettleClaim.make({
@@ -1153,6 +1196,7 @@ export const layer = (config: Config) =>
               case "WaitNoted":
               case "ClaimSent":
               case "ClaimSettled":
+              case "ClaimUnsent":
               case "ClaimObserved":
               case "SpendReserved":
               case "SpendWithdrawn":
@@ -1402,6 +1446,21 @@ export const layer = (config: Config) =>
       })
 
       /**
+       * Work held unmeasured for want of a login it may go out on (`LACKS_LOGIN`: a damaged record, every login
+       * refused) is work waiting, as a measured hold's is: a start, or a running agent's request at its dispatch
+       * (`admission`). The review hears of it as of a held start: the wait `pace` notes (`quotePace` notes none).
+       */
+      const unmeasuredWait = (
+        resetting: Option.Option<ResetsModel.NoteWait["pool"]>, reasonCode: HoldReason, session: Option.Option<string>, model: Option.Option<string>,
+      ) =>
+        Option.map(Option.filter(resetting, () => LACKS_LOGIN.includes(reasonCode)), (pool) =>
+          ResetsModel.NoteWait.make({
+            pool, hard: true,
+            ...Option.match(session, { onNone: () => ({}), onSome: (sessionID) => ({ sessionID }) }),
+            ...Option.match(model, { onNone: () => ({}), onSome: (id) => ({ model: id }) }),
+          }))
+
+      /**
        * The pace in two steps, so that a question can be asked without being recorded (`quotePace`): `paceAsked` takes
        * the evidence and reads the pace on it, and names the newest asker it would record; `paceAnswered` decides the
        * answer and names the wait it would note for the reset review. Neither records anything.
@@ -1432,7 +1491,8 @@ export const layer = (config: Config) =>
         const { paced, id, session, resetting, now } = asked
         const noWait = (answer: Pace) => ({ answer, wait: Option.none<typeof ResetsModel.NoteWait.Type>() })
         const answer = yield* withPending(paced, id, now)
-        if (answer.ok || !answer.measured) return noWait(answer)
+        if (answer.ok) return noWait(answer)
+        if (!answer.measured) return { answer, wait: unmeasuredWait(resetting, answer.reasonCode, session, Option.fromUndefinedOr(model)) }
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
         const root = yield* Option.match(Option.filter(session, () => active.length > 0), {
@@ -1559,9 +1619,25 @@ export const layer = (config: Config) =>
           if (work === "new-work") return forecast(providerID, Option.fromUndefinedOr(model), now)
           return Effect.succeed(LaunchCost.estimate([], Option.none(), now, fleetConfig.startCost))
         })
+        // A start keeps the price its launcher froze. One its launcher does not pace has none: it counts at this host's own
+        // launch estimate for its model, once per model in this quote. A start from an older host counts at the floor.
+        const estimates = new Map<string, number>()
+        const costs = yield* Effect.forEach(pending, (start) => Option.match(Option.fromUndefinedOr(start.cost), {
+          onSome: Effect.succeed,
+          onNone: () => {
+            if (start.unpaced !== true) return Effect.succeed(fleetConfig.startCost)
+            const key = `${start.providerID}/${Option.getOrElse(Option.fromUndefinedOr(start.model), () => "")}`
+            const known = Option.fromUndefinedOr(estimates.get(key))
+            if (Option.isSome(known)) return Effect.succeed(known.value)
+            return forecast(start.providerID, Option.fromUndefinedOr(start.model), now).pipe(Effect.map((estimate) => {
+              estimates.set(key, estimate.cost)
+              return estimate.cost
+            }))
+          },
+        }))
         const inflight = {
           starts: pending.map((start) => start.at),
-          costs: pending.map((start) => Option.getOrElse(Option.fromUndefinedOr(start.cost), () => fleetConfig.startCost)),
+          costs,
           cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs,
           nextCost: Option.match(Option.filter(Option.some(quote.cost), () => work === "new-work"), { onNone: () => 0, onSome: (cost) => cost }),
         }
@@ -1585,16 +1661,24 @@ export const layer = (config: Config) =>
       })
 
       const reserveLaunch = Effect.fn("Pool.reserveLaunch")(function* (input: LaunchRequest) {
-        const poolID = Option.fromUndefinedOr(measuredBy(config, input.providerID))
-        if (Option.isNone(poolID)) return UNPOOLED
-        const provider = Option.getOrElse(resetProvider(poolID.value), () => Match.value(input.providerID).pipe(
-          Match.when("openai", () => "codex" as const), Match.orElse(() => "claude" as const),
-        ))
         const id = launchKey(input.launchID)
         const held = (reason: string, reasonCode: "fleet-busy" | "fleet-unavailable" = "fleet-busy") =>
           Clock.currentTimeMillis.pipe(Effect.map((now): Pace => ({
             ok: false, measured: true, reason, reasonCode, retryAt: nextRetryAt(now, [now + UNREAD_RETRY_MS]), admission: "held", eligible: [],
           })))
+        const poolID = Option.fromUndefinedOr(measuredBy(config, input.providerID))
+        // A provider this host does not pace can spend accounts a peer paces (the peer's `paced`): the launch is still
+        // reserved here, unpriced, so every host that paces it counts it once at its own estimate. This host does not hold
+        // it; a reservation it cannot write holds it, as any launch's (launch-admission.md).
+        if (Option.isNone(poolID)) {
+          return yield* fleetStore.reserve({ id, providerID: input.providerID, model: input.model, unpaced: true, at: yield* Clock.currentTimeMillis }).pipe(
+            Effect.as(UNPOOLED),
+            Effect.catchTag("LaunchStoreUnavailable", (error) => held(error.message, "fleet-unavailable")),
+          )
+        }
+        const provider = Option.getOrElse(resetProvider(poolID.value), () => Match.value(input.providerID).pipe(
+          Match.when("openai", () => "codex" as const), Match.orElse(() => "claude" as const),
+        ))
         const admission = Effect.gen(function* () {
           const prior = Option.fromUndefinedOr((yield* fleetStore.starts).find((start) => start.id === id))
           const now = yield* Clock.currentTimeMillis

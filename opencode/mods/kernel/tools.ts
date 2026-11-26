@@ -52,10 +52,22 @@ export const wildcard = (input: string, pattern: string): boolean => {
   return new RegExp(`^${escaped}$`, "s").test(input.replaceAll("\\", "/"))
 }
 
-/** As the registry decides: the last rule for `action` denies it for every resource. */
-export const whollyDisabled = (action: string, rules: ReadonlyArray<Rule>): boolean => {
-  const rule = rules.findLast((item) => wildcard(action, item.action))
-  return rule?.resource === "*" && rule.effect === "deny"
+/** A resource pattern that matches every resource (`*`, `**`, `* *`), as the fork's PermissionPolicy.isUniversalPattern reads it. */
+const universal = (pattern: string): boolean => /^\*+(?: \*)?$/.test(pattern)
+
+/**
+ * As the registry decides (the fork's packages/core/src/permission/policy.ts `isActionDenied`): every resource of
+ * `action` is denied. The rules fold in order from "ask": a blanket rule replaces what any resource could get, a
+ * narrow one adds its effect, so a later narrow deny keeps a blanket deny and a later narrow allow or ask reopens it.
+ */
+export const actionDenied = (action: string, rules: ReadonlyArray<Rule>): boolean => {
+  const reachable = new Set<string>(["ask"])
+  for (const rule of rules) {
+    if (!wildcard(action, rule.action)) continue
+    if (universal(rule.resource)) reachable.clear()
+    reachable.add(rule.effect)
+  }
+  return reachable.size === 1 && reachable.has("deny")
 }
 
 /** A tool the registry lists: its id, and the permission that gates it when it is not the id. */
@@ -69,7 +81,7 @@ export const callable = <T extends Registered>(tools: ReadonlyArray<T>, rules: R
   new Map(
     tools
       .filter(
-        (tool) => !CODE_TOOLS.has(tool.id) && !HOOKED_TOOLS.has(tool.id) && !whollyDisabled(tool.permission ?? tool.id, rules),
+        (tool) => !CODE_TOOLS.has(tool.id) && !HOOKED_TOOLS.has(tool.id) && !actionDenied(tool.permission ?? tool.id, rules),
       )
       .map((tool) => [tool.id, tool] as const),
   )

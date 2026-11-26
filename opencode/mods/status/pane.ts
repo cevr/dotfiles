@@ -290,6 +290,9 @@ export const PaneResets = Schema.Struct({
       message: Schema.optionalKey(Schema.String),
       kind: Schema.optionalKey(Schema.String),
       told: Schema.optionalKey(Schema.String),
+      /** Its last try was not sent (`message` says why), and when it goes again. */
+      unsent: Schema.optionalKey(Schema.Struct({ why: Schema.String })),
+      retryAt: Schema.optionalKey(Schema.Number),
     }),
   ),
   claims: Schema.Array(
@@ -343,6 +346,14 @@ const resetName = (reset: { readonly provider: string; readonly kind?: string })
   return reset.kind === undefined || reset.kind === "codex" ? provider : `${provider} ${KINDS[reset.kind] ?? reset.kind}`
 }
 
+/** A reset's stage on its row: a try not sent says so, and why, never that a claim went out. */
+const stageText = (reset: PaneResets["resets"][number]) =>
+  Option.match(Option.filter(Option.fromUndefinedOr(reset.unsent), () => reset.stage === "failed"), {
+    onNone: () => STAGES[reset.stage] ?? reset.stage,
+    onSome: () =>
+      `${Option.getOrElse(Option.fromUndefinedOr(reset.message), () => "not sent")}${Option.match(Option.fromUndefinedOr(reset.retryAt), { onNone: () => "", onSome: (at) => `; tries again ${stamp(at)}` })}`,
+  })
+
 export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
   // The pushes on, then the resets that would expire unused at this rate.
   ...(resets.pushes ?? []).map((text) => ({ asking: false, text })),
@@ -351,7 +362,7 @@ export const resetRows = (resets: PaneResets): ReadonlyArray<ResetRow> => [
     .filter((reset) => reset.stage === "asked" || reset.stage === "claiming" || reset.stage === "failed")
     .map((reset) => ({
       asking: reset.stage === "asked",
-      text: `${resetName(reset)} · ${reset.label} · ${STAGES[reset.stage] ?? reset.stage}${WHY[reset.why] ?? ""} · ${stamp(reset.at)}`,
+      text: `${resetName(reset)} · ${reset.label} · ${stageText(reset)}${WHY[reset.why] ?? ""} · ${stamp(reset.at)}`,
     })),
   // A reset claimed on its own, and what the owner was told.
   ...resets.resets

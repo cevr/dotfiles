@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as BunServices from "@effect/platform-bun/BunServices"
-import { Array as Arr, Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Order, Path, Queue, Schedule, Schema, Scope, Stream } from "effect"
+import { Array as Arr, Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Latch, Layer, Option, Order, Path, Queue, Result, Schedule, Schema, Scope, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GateDecision } from "@dotfiles/opencode-pool/antigravity/gate"
 import type * as AgyLive from "@dotfiles/opencode-pool/antigravity/live"
@@ -33,7 +33,7 @@ import * as PeersTest from "@dotfiles/opencode-pool/memory/peers"
 import * as QuotaTest from "@dotfiles/opencode-pool/memory/quota"
 import * as ResetsTest from "@dotfiles/opencode-pool/memory/resets"
 import type { Pace } from "@dotfiles/opencode-pool/pace"
-import type { QuotaReading } from "@dotfiles/opencode-pool/quota"
+import type { QuotaReading, UsageRead } from "@dotfiles/opencode-pool/quota"
 import { type PublishedReading, Quota } from "@dotfiles/opencode-pool/service"
 import { StoreSource } from "@dotfiles/opencode-pool/store/store"
 import { type Alerts, type FleetStatus, POOL_STATUS, type PoolsStatus, type Report, type ResetsStatus, type SessionAnswer, type SessionLogins } from "@dotfiles/opencode-pool/status"
@@ -45,7 +45,7 @@ import { below, generator } from "../../sim/runtime.ts"
 import { MIGRATED } from "@dotfiles/opencode-pool/opencode/migrate"
 import { spentAccount, startFakeChatGPT } from "../../tests/fake-chatgpt.ts"
 import { waitUntil } from "../../tests/wait.ts"
-import Pool, { type AntigravityHost, type AntigravityRoot, CACHE_TTL_HEADER, CREDENTIAL_HEADER, LIVE_STORE_HOST, liveAntigravity, liveWith, make, NO_ANTIGRAVITY } from "./server.ts"
+import Pool, { type AntigravityHost, type AntigravityRoot, autoClaimsOf, CACHE_TTL_HEADER, CREDENTIAL_HEADER, LIVE_STORE_HOST, liveAntigravity, liveWith, make, NO_ANTIGRAVITY } from "./server.ts"
 import * as PeersLive from "@dotfiles/opencode-pool/ssh/peers"
 import { hangGuard, stamp } from "../../tests/hang-guard.ts"
 import { sendCost } from "../../tests/pool-openai-send/cost.ts"
@@ -231,7 +231,9 @@ const quietUsage = Layer.effect(
     return Quota.of({
       ...base,
       usage: (pool, credentialID) =>
-        base.usage(pool, credentialID).pipe(Effect.flatMap((reading) => Option.match(Option.fromUndefinedOr(reading), { onNone: () => Effect.map(Clock.currentTimeMillis, quiet), onSome: Effect.succeed }))),
+        base.usage(pool, credentialID).pipe(
+          Effect.flatMap((read) => Result.match(read, { onSuccess: () => Effect.succeed(read), onFailure: () => Effect.map(Clock.currentTimeMillis, (now): UsageRead => Result.succeed(quiet(now))) })),
+        ),
     })
   }),
 )
@@ -937,6 +939,13 @@ describe("the options", () => {
       expect(message).toStartWith("dotfiles-opencode.pool: invalid options: ")
       expect(message).toContain(`at ${path}`)
     }
+  })
+
+  test("resets: false claims nothing on its own, as { auto: false } does; true and the default claim", () => {
+    expect(autoClaimsOf({ resets: false })).toBe(false)
+    expect(autoClaimsOf({ resets: { auto: false } })).toBe(false)
+    expect(autoClaimsOf({ resets: true })).toBe(true)
+    expect(autoClaimsOf({ resets: { auto: true } })).toBe(true)
   })
 
   test("the installed Anthropic and OpenAI bindings and an arbitrary alias leave the pool available", () =>
