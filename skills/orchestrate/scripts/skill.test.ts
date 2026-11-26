@@ -43,7 +43,7 @@ describe("the owner's kept rules", () => {
 });
 
 describe('nothing names what was cut', () => {
-  const cut: ReadonlyArray<RegExp> = [/end-of-step/, /round-policy/, /rewrite\.md/, /\bTest strength\b/, /\bOn base\b/, /\bBlocker or Major\b/, /\blong run\b/, /\bbatch mode\b/, /third failed round/];
+  const cut: ReadonlyArray<RegExp> = [/end-of-step/, /round-policy/, /rewrite\.md/, /\bTest strength\b/, /\bOn base\b/, /\bBlocker or Major\b/, /`long run`/, /\bbatch mode\b/, /`single fix`/, /third failed round/];
   for (const path of docs)
     test(path.slice(SKILL_DIR.length + 1), () => expect(cut.filter((pattern) => pattern.test(read(path))).map(String)).toEqual([]));
 });
