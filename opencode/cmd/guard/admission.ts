@@ -1,15 +1,19 @@
 import { Array as Arr, Clock, Console, Deferred, Effect, FileSystem, Option, Path, Predicate, Schedule, Stream } from "effect"
-import { AdmissionUnavailable, type Address, hostOffer, type Input, type Lease, type Observation } from "@dotfiles/opencode-guard/admission"
+import { AdmissionUnavailable, type Address, hostOffer, type Input, type Lease, type Observation, volumeShortfall } from "@dotfiles/opencode-guard/admission"
 import { type Reason, type Request, type Width } from "@dotfiles/opencode-guard/admission-wire"
 import { argvModel, demandOnVolume, enforceDeclaredWidth, type CheckDemand } from "@dotfiles/opencode-guard/check-demand"
 import { capacityOf, POLICY, unattested } from "@dotfiles/opencode-guard/host-supply"
 import * as Supply from "@dotfiles/opencode-guard/process/admission"
 import * as Scope from "@dotfiles/opencode-guard/process/launchers"
+import type { ScopeProbe } from "@dotfiles/opencode-guard/process/scope-probe"
 import { attachGrant, runAfterClaim } from "@dotfiles/opencode-guard/process/linux-controller"
 import { foregroundOf, foregroundScope, INTERRUPT_GRACE_MS, type ForegroundInterrupt } from "@dotfiles/opencode-guard/process/terminal"
 import * as Journal from "@dotfiles/opencode-guard/sqlite/admission"
 
 const fail = (reason: ConstructorParameters<typeof AdmissionUnavailable>[0]["reason"]) => new AdmissionUnavailable({ reason })
+/** A refusal that names its own cause beside its v1 reason. */
+const refuse = (reason: ConstructorParameters<typeof AdmissionUnavailable>[0]["reason"], detail: string) =>
+  new AdmissionUnavailable({ reason, detail })
 const active = (lease: Lease) => lease.state === "running" || lease.state === "draining"
 const granting = (lease: Lease) => lease.state === "queued" || lease.state === "granted"
 const terminal = (state: string) => ["released", "expired", "cancelled", "refused"].includes(state)
@@ -17,20 +21,41 @@ const cut = (now: number): Observation => ({ now })
 const envelopeOf = (observation: Observation) => observation.envelope ?? observation.sample?.envelope
 /** The controller `host status --json` names, and why when it cannot
  * attest one: the file that was missing or out of range. */
+/** Why a command cannot run under a lease of `demand` where no controller
+ * enforces its width: a width option that is not a positive integer, or a
+ * tool model wider than the lease (or unknown, against a numeric lease).
+ * Each refusal names the command, its width and the lease's. */
+export const widthMismatch = (demand: Pick<Lease["request"]["demand"], "width" | "cpuMilli">, args: ReadonlyArray<string>,
+  model: { readonly width: number | "unknown" | "full" | "invalid"; readonly advice: string }): Option.Option<AdmissionUnavailable> => {
+  const command = Option.getOrElse(Option.fromNullishOr(args[0]), () => "the command")
+  if (model.width === "invalid") return Option.some(refuse("invalid-width", `${command}: its width option is not a positive integer`))
+  if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(model.width) ||
+    model.width * 1000 > Math.max(demand.width * 1000, demand.cpuMilli)))
+    return Option.some(refuse("unqualified", `${command}'s width by its tool model is ${String(model.width)}, ` +
+      `not within the lease's width ${demand.width}: lease it at that width, or pass the tool a width within it (${model.advice})`))
+  return Option.none()
+}
+
+/** What status says of the launcher: the probe's own result, never a guess. */
+export const probeText = (probe: ScopeProbe) => {
+  switch (probe.kind) {
+    case "scope": return { launcher: "nice + user scope", through: "the guard's nice + user scope launcher" }
+    case "none": return { launcher: "nice", through: `nice alone: no user scope for this caller (${probe.why})` }
+    case "timed-out": return { launcher: "undecided",
+      through: `nice, with a user scope where each launch's own probe answers: this probe timed out after ${probe.afterMs} ms` }
+  }
+}
 const controllerOf = (observation: Observation, launcher: Option.Option<Effect.Success<ReturnType<typeof Scope.groupLauncher>>>) => {
   const attestation = envelopeOf(observation)?.attestation
   // Only a Linux host reads its cgroup tree; the Mac's answer is unchanged.
   const io = Option.match(Option.fromNullishOr(attestation), { onNone: () => ({}), onSome: ({ io }) => ({ io }) })
   if (attestation?.controller === "unattested") {
-    const scope = Option.flatMap(launcher, ({ scope }) => scope)
-    const through = Option.match(scope, {
-      onNone: () => "the guard's nice + user scope launcher",
-      onSome: (why) => `nice alone: no user scope for this caller (${why})`,
-    })
+    const probe = Option.getOrElse(Option.map(launcher, ({ scope }) => scope), (): ScopeProbe => ({ kind: "scope" }))
+    const { launcher: kind, through } = probeText(probe)
     return {
       ...io, controller: "unattested", file: attestation.file, why: attestation.why,
       admission: `fixed cap: ${POLICY.unattestedSlots} heavy leases at a time, FIFO, through ${through}`,
-      launcher: Option.match(scope, { onNone: () => "nice + user scope", onSome: () => "nice" }),
+      launcher: kind,
     }
   }
   return { ...io, controller: observation.sample?.qualification ?? "unavailable" }
@@ -152,9 +177,10 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const state = yield* ledger.inspect()
     const live = Object.values(state.leases).filter(active)
     const scopes = yield* Effect.forEach(live, (row) => Effect.gen(function* () {
-      if (Option.isNone(row.binding) || Option.isNone(row.admittedDemand)) return yield* fail("unqualified")
+      if (Option.isNone(row.binding) || Option.isNone(row.admittedDemand))
+        return yield* refuse("unqualified", `lease ${row.id} is ${row.state} without a binding or an admitted demand`)
       const pin = yield* native.scope(row.binding.value)
-      if (Option.isNone(pin)) return yield* fail("unqualified")
+      if (Option.isNone(pin)) return yield* refuse("unqualified", `lease ${row.id}'s binding has no scope record in this ledger`)
       // A group-placed attempt (claimed while the host was unattested) has
       // no cgroup to meter: its CPU counts as outside load, and its grant
       // stays reserved, so the sample only grows more careful.
@@ -357,7 +383,8 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   })
 
   const linux = Effect.fn("HostAdmission.linux")(function* (row: Lease, argv: ReadonlyArray<string>) {
-    if (Option.isNone(row.admittedDemand) || row.admittedDemand.value.memoryBytes === 0) return yield* fail("unqualified")
+    if (Option.isNone(row.admittedDemand) || row.admittedDemand.value.memoryBytes === 0)
+      return yield* refuse("unqualified", `lease ${row.id} has no memory reservation, and a cgroup launch caps memory by it`)
     const demand = row.admittedDemand.value
     const endpoint = yield* Scope.offerToService(host, {
       version: 1, id: row.id, generation: row.generation, owner: row.owner, argv, environment: Scope.localEnvironment(),
@@ -371,7 +398,8 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
     const final = observed.state.leases[row.id]
     if (final && Option.isNone(final.binding)) {
       if (code === 125 && granting(final)) return Option.none()
-      if (final.generation === row.generation) return yield* fail("unqualified")
+      if (final.generation === row.generation)
+        return yield* refuse("unqualified", `systemd-run --user (unit for lease ${row.id}) exited ${code} before its helper bound the lease`)
     }
     return Option.some(code)
   })
@@ -431,7 +459,12 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
   const diskOf = Effect.fn("HostAdmission.diskOf")(function* (sample: Observation["sample"]): Effect.fn.Return<Readonly<Record<string, string>>, never, FileSystem.FileSystem> {
     if (Option.isNone(target)) return { disk: "unknown-volume" }
     if (!sample) return { disk: "unsampled" }
-    if (Object.hasOwn(sample.volumes, target.value.id)) return { disk: "measured" }
+    const reading = sample.volumes[target.value.id]
+    // The disk rule's own words: a full volume makes every lease wait `disk`.
+    if (reading) return Option.match(volumeShortfall(reading), {
+      onNone: () => ({ disk: "measured" }),
+      onSome: (why) => ({ disk: "full", diskWhy: `${why}; leases on it wait (disk)` }),
+    })
     const why = yield* Supply.volumeOf(host, config.cwd).pipe(
       Effect.as("this sample could not read it; a second read could"),
       Effect.catchTag("AdmissionUnavailable", ({ detail }) => Effect.succeed(detail ?? "unreadable")))
@@ -458,7 +491,9 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       freeManagedCpuMilli: Option.getOrNull(Option.map(Option.fromNullishOr(sample), capacityOf)),
       outsideNoncriticalMilli: Option.getOrNull(Option.fromNullishOr(sample?.outsideNoncriticalMilli)),
       maximumMemoryBytes: offer.maximumMemoryBytes,
+      maximumDiskBytes: offer.maximumDiskBytes,
       offeredClasses: offer.offeredClasses,
+      withheldClasses: offer.withheld,
       resourceKeys: offer.resourceKeys,
     }
   })
@@ -482,9 +517,8 @@ export const open = Effect.fn("HostAdmission.open")(function* (config: Config) {
       let advice = "On Linux the applied scope CPU controller enforces the reservation."
       if (!(yield* enforcedWidth)) {
         const model = argvModel(args, Scope.localEnvironment())
-        if (model.width === "invalid") return yield* fail("invalid-width")
-        if (Predicate.isNumber(demand.width) && (!Predicate.isNumber(model.width) ||
-          model.width * 1000 > Math.max(demand.width * 1000, demand.cpuMilli))) return yield* fail("unqualified")
+        const mismatch = widthMismatch(demand, args, model)
+        if (Option.isSome(mismatch)) return yield* mismatch.value
         advice = model.advice
       }
       const explain = describeWait(demand.width, advice)
