@@ -691,14 +691,22 @@ const splitEvidence = (accounts: ReadonlyArray<AccountStatus>, now: number, requ
 export const roomLeft = (account: AccountStatus, now: number, plan?: PacePlan): Option.Option<number> =>
   Option.all([freshWeek(account, now), Option.fromUndefinedOr(plan?.rebase)]).pipe(Option.map(([week]) => lineOf(week.resetAt, now, plan) - usedOf(week.utilization, plan)))
 
-/** When an account's rebased line has risen `short` more of its week: it rises from the claim's use to TARGET by the weekly reset. */
+/** When an account's planned line (`lineOf`, which never falls) has risen `short` more of its week; its reset at the latest. */
 const roomAt = (account: AccountStatus, now: number, short: number, plan?: PacePlan): ReadonlyArray<number> =>
   Option.toArray(
     Option.all([freshWeek(account, now), Option.fromUndefinedOr(plan?.rebase)]).pipe(
-      Option.map(([week, rebase]) => {
-        const slope = (TARGET - rebase.from) / Math.max(1, week.resetAt - rebase.at)
-        if (slope <= 0) return week.resetAt
-        return Math.min(week.resetAt, now + Math.ceil(short / slope) + 1)
+      Option.map(([week]) => {
+        const base = lineOf(week.resetAt, now, plan)
+        const risen = (at: number) => lineOf(week.resetAt, at, plan) - base >= short - 1e-12
+        if (!risen(week.resetAt)) return week.resetAt
+        let before = now
+        let after = week.resetAt
+        while (after - before > 1) {
+          const middle = Math.floor((before + after) / 2)
+          if (risen(middle)) after = middle
+          else before = middle
+        }
+        return after + 1
       }),
     ),
   )
