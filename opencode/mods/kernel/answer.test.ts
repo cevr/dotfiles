@@ -62,7 +62,7 @@ describe("the answer", () => {
 describe("a new kernel's notice", () => {
   const names = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => `${prefix}_${index}`)
   const started = (restored: ReadonlyArray<string>, lost: ReadonlyArray<string>) =>
-    answer([KernelStarted.make({ session, restored, ...(lost.length > 0 ? { lost } : {}) }), cell({ display: "2" })]).text
+    answer([KernelStarted.make({ session, restored, lost }), cell({ display: "2" })]).text
 
   test("is absent when the kernel restored everything: a planned drop is not news", () => {
     const text = started(names(600, "binding"), [])
@@ -99,7 +99,7 @@ describe("a new kernel's notice", () => {
 
 describe("the lost names", () => {
   test("are the stored names the new worker did not define, once each; a bare import has none", () => {
-    const stored = ["", "f", "kept", "big", "f"].map((name) => ({ name, value: null }))
+    const stored = ["", "f", "kept", "big", "f"].map((name) => ({ name, value: 0 }))
     expect(lostOf(stored, ["f", "kept"])).toEqual(["big"])
     expect(lostOf(stored, ["f", "kept", "big"])).toEqual([])
   })

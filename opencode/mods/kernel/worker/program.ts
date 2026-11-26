@@ -29,7 +29,7 @@
  *
  * @module
  */
-import { Effect, Option, Semaphore } from "effect"
+import { Effect, Option, Schema, Semaphore } from "effect"
 import { createRequire } from "node:module"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { resolve } from "node:path"
@@ -256,24 +256,12 @@ export interface BindingInfo {
   readonly unkept?: string
 }
 
-// Taken at load: a cell may replace them before it lists its bindings.
-const stringify = JSON.stringify
+// Taken at load: a cell may replace the globals before it lists its bindings.
+const jsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
 const byteLength = Buffer.byteLength
-const sortBy = Array.prototype.sort
-const includes = String.prototype.includes
-const regexTest = RegExp.prototype.test
-const isRegExp = types.isRegExp
 
 /** The bytes a stored value takes in the store. */
-const storedBytes = (stored: Json): number => byteLength(stringify(stored) ?? "")
-
-/** `kernel.bindings(filter?)`: every name, the names containing a string, or those a RegExp matches. */
-const nameFilter = (filter: unknown): ((name: string) => boolean) => {
-  if (filter === undefined) return () => true
-  if (typeof filter === "string") return (name) => Reflect.apply(includes, name, [filter]) as boolean
-  if (isRegExp(filter)) return (name) => Reflect.apply(regexTest, filter, [name]) as boolean
-  throw new TypeError("kernel.bindings takes a string or a RegExp to match the names")
-}
+const storedBytes = (stored: Json): number => byteLength(jsonText(stored))
 
 // ── attach ──────────────────────────────────────────────────────────────────
 
@@ -391,10 +379,11 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
     "the kernel's image attachment",
   )
   // Defined below, once the baseline and the declarations exist; installed here so the baseline holds it.
-  let bindingsOf: (filter?: unknown) => ReadonlyArray<BindingInfo> = () => []
+  let bindingsOf: (filter: string) => ReadonlyArray<BindingInfo> = () => []
   installHostGlobal(
     "kernel",
-    Object.freeze({ bindings: (filter?: unknown) => bindingsOf(filter) }),
+    /** `kernel.bindings(filter?)`: every binding, or those whose name contains `filter`, by name. */
+    Object.freeze({ bindings: (filter = "") => bindingsOf(filter) }),
     "the kernel's own namespace",
   )
   if (typeof Reflect.get(globalThis, "require") !== "function")
@@ -459,34 +448,33 @@ export const makeEvaluator = (host: Host, workingDirectory: string) => {
     Object.defineProperty(globalThis, "console", { value, writable: true, configurable: true })
 
   const declarations = makeDeclarations()
-  bindingsOf = (filter?: unknown) => {
-    const matches = nameFilter(filter)
+  /**
+   * Each binding as the snapshot would store it: a carried name by its source
+   * (a global an import added has none of its own), any other as a clone, or
+   * the reason a restart loses it. Runs no code a cell wrote.
+   */
+  bindingsOf = (filter: string) => {
     const globals = namespace()
     const sources = declarations.snapshot(globals)
     const sourced = new BindingMap<string, BindingInfo>()
-    for (let index = 0; index < sources.bindings.length; index++) {
-      const binding = sources.bindings[index]!
+    for (const binding of sources.bindings) {
       const source = decodeDeclaration(binding.value)
-      if (binding.name !== "" && source !== undefined)
-        apply(mapSet, sourced, [binding.name, { name: binding.name, kind: source.kind, bytes: storedBytes(binding.value) }])
+      if (binding.name !== "" && source) sourced.set(binding.name, { name: binding.name, kind: source.kind, bytes: storedBytes(binding.value) })
     }
     const listed: BindingInfo[] = []
-    const add = (info: BindingInfo) =>
-      defineProperty(listed, listed.length, { __proto__: null, value: info, writable: true, enumerable: true, configurable: true } as PropertyDescriptor)
-    apply(mapForEach, globals, [
-      (value: unknown, name: string) => {
-        if (!matches(name)) return
-        // As the snapshot stores it: a carried name by its source (a global an import added has none of its own), any other as a clone.
-        if (apply(mapHas, sources.carried, [name])) return add(apply(mapGet, sourced, [name]) ?? { name, kind: "import", bytes: 0 })
-        const one = new BindingMap<string, unknown>()
-        apply(mapSet, one, [name, value])
-        const encoded = encodeSnapshot(one, sources.classes)
-        const stored = encoded.bindings[0]
-        const unkept = encoded.omitted[0]
-        add(stored !== undefined ? { name, kind: "value", bytes: storedBytes(stored.value) } : { name, kind: "value", bytes: 0, ...(unkept === undefined ? {} : { unkept: unkept.reason }) })
-      },
-    ])
-    return apply(sortBy, listed, [(left: BindingInfo, right: BindingInfo) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)]) as BindingInfo[]
+    for (const [name, value] of globals) {
+      // The cell's own console is the worker's, set while the cell runs: no binding.
+      if (!name.includes(filter) || (name === "console" && value === cellConsole)) continue
+      if (sources.carried.has(name)) {
+        listed.push(sourced.get(name) || { name, kind: "import", bytes: 0 })
+        continue
+      }
+      const encoded = encodeSnapshot(new BindingMap([[name, value]]), sources.classes)
+      for (const stored of encoded.bindings) listed.push({ name, kind: "value", bytes: storedBytes(stored.value) })
+      for (const lost of encoded.omitted) listed.push({ name, kind: "value", bytes: 0, unkept: lost.reason })
+    }
+    // By code unit, as the snapshot names them.
+    return listed.sort((left, right) => Number(left.name > right.name) - Number(left.name < right.name))
   }
   const compile = (code: string) => transpiler.transformSync(code)
   /** A global's value, read from its descriptor. */

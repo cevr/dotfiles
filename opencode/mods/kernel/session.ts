@@ -45,7 +45,7 @@ export const StartKernel = Schema.TaggedStruct("StartKernel", {
 export interface StartKernel extends Schema.Schema.Type<typeof StartKernel> {}
 
 /**
- * `restored` is set when the store had bindings; `lost` when some of them did
+ * `restored` is set when the store had bindings; `lost` names those that did
  * not come back: the last worker held them and this one does not. Only a loss
  * is news to the call's answer (answer.ts).
  */
@@ -153,7 +153,7 @@ export const KernelSession: Decider<KernelSessionState, Command, Event> = {
           KernelStarted.make({
             session: command.session,
             ...(command.stored > 0 ? { restored: command.restored } : {}),
-            ...(command.lost.length > 0 ? { lost: command.lost } : {}),
+            lost: command.lost,
           }),
         ])
       case "RecordCell":

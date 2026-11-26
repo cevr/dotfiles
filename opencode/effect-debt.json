@@ -581,7 +581,7 @@
     "mods/idle-compact/opencode/sessions.ts": {"effect/noAs":5,"effect/noConditionalEmptyObjectSpread":2,"effect/noNodeBuiltinImport":1,"effect/noNullish":33,"effect/noRuntimeTypeof":3,"effect/noTernary":9},
     "mods/idle-compact/price.test.ts": {"effect/noNullish":1},
     "mods/idle-compact/price.ts": {"effect/noNullish":8,"effect/noTernary":2},
-    "mods/kernel/answer.ts": {"effect/noNullish":1,"effect/noTernary":6,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},
+    "mods/kernel/answer.ts": {"effect/noTernary":5,"effect/preferSchemaTaggedUnion":1,"effect/preferTaggedConstructors":3},
     "mods/kernel/attachment.test.ts": {"effect/noRuntimeTypeof":1,"effect/noTernary":1},
     "mods/kernel/attachment.ts": {"effect/noNullish":3,"effect/noTernary":3,"effect/preferMatchTagsExhaustive":1},
     "mods/kernel/bm25.bench.ts": {"effect/noGlobals":3,"effect/noTernary":1},
