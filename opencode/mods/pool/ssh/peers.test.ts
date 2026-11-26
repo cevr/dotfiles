@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Option, Schema } from "effect"
 import { it } from "effect-bun-test"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import { peersLaws } from "../laws.ts"
 import { Peers } from "../service.ts"
 import type { Report } from "../status.ts"
@@ -136,7 +137,7 @@ describe("report.ts, the program a peer runs", () => {
       local("swap", serviceFile("swap", "swap")),
       local("gone", serviceFile("gone", "gone")),
       local("typed", serviceFile("typed", "typed")),
-    ]))))
+    ]))), hangGuard("process-fixture"))
 
   test("an answer that is not a report, or none in time, is unreachable too", async () => {
     const failed = await run(
