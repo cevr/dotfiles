@@ -31,8 +31,14 @@ const COST = 0.005
 /** A week that resets inside the run ends within this of the pool's 99%: at 97% or more. */
 const MARGIN = 0.02
 const SEEDS = 60
-/** Steps are kept per account and 6 hours, so the ranking reads a ledger of the pool's size, not one per request. */
-const BUCKET = 6 * HOUR
+/** The pools one test runs. */
+const GROUP = 3
+/**
+ * Steps are kept per account and day, so the ranking reads a ledger of the pool's size, not one per request:
+ * an account's load in the window is the same sum at any bucket, and with 6-hour ones the ranking (its
+ * ledger scans most of it) was 29% of the run, 18% with days (a workbox profile).
+ */
+const BUCKET = 24 * HOUR
 
 /** A seeded generator: the same seed, the same sequence. */
 const generator = (seed: number) => {
@@ -123,9 +129,11 @@ const simulate = (seed: number): Outcome => {
     // Work the pool cannot take waits; no more than a tick's and a request's worth of it.
     backlog = Math.min(backlog + demand * TICK, demand * TICK + COST)
     const serve = (): boolean => {
+      // No work waiting, no pace to read: the pace (its retry search half of it) is half this run's time.
+      if (backlog < COST) return false
       const open = accounts.filter((account) => account.heldUntil <= now && account.used < TARGET)
       const pace = weeklyPace(open.map((account) => ({ credentialID: account.name, used: account.used, resetAt: account.resetAt })), now, COST)
-      if (!pace.ordinary || backlog < COST) return false
+      if (!pace.ordinary) return false
       const readings: Record<string, QuotaReading> = Object.fromEntries(
         accounts.map((account) => [account.name, { at: now, windows: [{ name: "7d", utilization: account.used, resetAt: account.resetAt }] }]),
       )
@@ -162,13 +170,23 @@ const unusedAtReset = (outcomes: ReadonlyArray<Outcome>) => {
 }
 
 describe("spending every account's week at an even pace", () => {
-  test(`in generated pools of 2 to 8 accounts with staggered resets and any starting usage, under a steady demand the pool can serve, every week that resets in the run ends within ${MARGIN * 100} points of the pool's 99%, and no request goes to a held account, past its even line or past its week's hold line`, () => {
-    const outcomes = Arr.map(Arr.range(1, SEEDS), (seed) => ({ seed, outcome: simulate(seed) }))
-    expect(outcomes.flatMap(({ seed, outcome }) => outcome.breaches.map((breach) => `seed ${seed}: ${breach}`))).toEqual([])
-    const short = outcomes.flatMap(({ seed, outcome }) =>
-      outcome.resets.filter((reset) => !reset.held && reset.used < TARGET - MARGIN).map((reset) => `seed ${seed}: ${reset.name} reset at ${(reset.used * 100).toFixed(1)}%`),
-    )
-    expect(short).toEqual([])
-    expect(unusedAtReset(outcomes.map(({ outcome }) => outcome)).resets).toBeGreaterThan(SEEDS * 4)
+  // The pools go GROUP to a test: on the workbox (16 cores, under load) all 60 in one took 19 to 21 s,
+  // past bun's 5 s per test. Each group keeps the same law; the resets they count are summed below
+  // (bun runs a file's tests in order).
+  const counted: Array<number> = []
+  for (const seeds of Arr.chunksOf(Arr.range(1, SEEDS), GROUP)) {
+    test(`in generated pools of 2 to 8 accounts (seeds ${seeds[0]} to ${seeds[seeds.length - 1]}) with staggered resets and any starting usage, under a steady demand the pool can serve, every week that resets in the run ends within ${MARGIN * 100} points of the pool's 99%, and no request goes to a held account, past its even line or past its week's hold line`, () => {
+      const outcomes = Arr.map(seeds, (seed) => ({ seed, outcome: simulate(seed) }))
+      expect(outcomes.flatMap(({ seed, outcome }) => outcome.breaches.map((breach) => `seed ${seed}: ${breach}`))).toEqual([])
+      const short = outcomes.flatMap(({ seed, outcome }) =>
+        outcome.resets.filter((reset) => !reset.held && reset.used < TARGET - MARGIN).map((reset) => `seed ${seed}: ${reset.name} reset at ${(reset.used * 100).toFixed(1)}%`),
+      )
+      expect(short).toEqual([])
+      counted.push(unusedAtReset(outcomes.map(({ outcome }) => outcome)).resets)
+    })
+  }
+  test(`the ${SEEDS} generated pools count more than ${SEEDS * 4} resets`, () => {
+    expect(counted.length).toBe(Math.ceil(SEEDS / GROUP))
+    expect(counted.reduce((sum, resets) => sum + resets, 0)).toBeGreaterThan(SEEDS * 4)
   })
 })
