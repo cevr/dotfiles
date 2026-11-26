@@ -1175,8 +1175,10 @@ export const recoveryIn = (claim: Claim, windows: ReadonlyArray<QuotaWindow>, at
  * bypasses a hard quota. Once a reset was claimed this
  * week and its own readings observed the week lower after it
  * (`observedGiveback`), the line starts again there: the claim's time and the
- * week's use observed after it. A claim on this host only: a peer's claim
- * shows in its readings, never as room here, so one give-back is spent once.
+ * week's use observed after it, never below the week's own line
+ * (weekly-pace.ts `lineOf`). The claims and spends are the fleet's, merged
+ * from every host's report (fleet-plans.ts), so every host builds one line
+ * and one give-back is spent once across them.
  * The requests admitted on that room so far (`spends`) count as spent on it
  * until a reading shows the week past them (`PacePlan.rebase.spent`).
  */
@@ -1706,10 +1708,14 @@ const withSpends = (state: ResetsState, spends: ReadonlyArray<Spend>): ResetsSta
   return { ...rest, spends }
 }
 
-/** The reservations of claims still kept. */
-export const keptSpends = (claims: ReadonlyArray<Claim>, spends: ReadonlyArray<Spend>): ReadonlyArray<Spend> => {
+/**
+ * The reservations of claims still kept, and those of the last week on a claim
+ * this host does not keep: a peer's, whose room the fleet shares
+ * (fleet-plans.ts), counted here until its week is surely over.
+ */
+export const keptSpends = (claims: ReadonlyArray<Claim>, spends: ReadonlyArray<Spend>, now: number): ReadonlyArray<Spend> => {
   const kept = new Set(claims.map((claim) => claim.key))
-  return spends.filter((spend) => kept.has(spend.claim))
+  return spends.filter((spend) => kept.has(spend.claim) || now - spend.at < 7 * DAY)
 }
 
 const withStage = (state: ResetsState, key: string, stage: Stage, at: number, extra: Partial<Reset> = {}): ResetsState => {
@@ -1735,7 +1741,7 @@ export const evolve = (state: ResetsState, event: Event): ResetsState => {
           }),
           claims,
         },
-        keptSpends(claims, state.spends ?? []),
+        keptSpends(claims, state.spends ?? [], event.claim.at),
       )
     }
     case "ClaimObserved":

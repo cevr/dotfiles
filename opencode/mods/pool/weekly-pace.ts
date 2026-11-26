@@ -21,6 +21,13 @@ export interface PacePlan {
     readonly key?: string
     /** The share of the week reserved on that room by requests admitted on it (resets.ts `Spend`). */
     readonly spent?: number
+    /**
+     * A peer of the fleet cannot be read, so not every request admitted on this
+     * room is known (fleet-plans.ts): the ones known still count as spent
+     * (`usedOf`), but the room is not lent (`lineOf` keeps the week's own line),
+     * so this host is never looser than the fleet's shared line.
+     */
+    readonly withheld?: true
   }
 }
 
@@ -53,7 +60,7 @@ interface Origin {
 /** Where a claim the plan observed this week starts the line again, when it does. */
 const rebasedOrigin = (resetAt: number, now: number, plan?: PacePlan): Option.Option<Origin> =>
   Option.flatMap(Option.fromUndefinedOr(plan), (plan) => Option.fromUndefinedOr(plan.rebase)).pipe(
-    Option.filter((rebase) => rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at),
+    Option.filter((rebase) => rebase.withheld !== true && rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at),
     Option.map((rebase) => ({ at: rebase.at, from: rebase.from })),
   )
 

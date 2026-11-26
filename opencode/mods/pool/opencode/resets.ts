@@ -6,7 +6,7 @@
 // ledger of what claims did to the windows; the newest MAX_CLAIMS are kept.
 // A request admitted on a claim's room is `resets/spend/<at, 15 digits>/<id, URI-encoded>`, kept
 // while its claim is.
-import { Array as Arr, Effect, Layer, Option, Schema } from "effect"
+import { Array as Arr, Clock, Effect, Layer, Option, Schema } from "effect"
 import { Claim, type Event, keptSpends, MAX_CLAIMS, Reset, type ResetsState, Spend, Wait } from "../resets.ts"
 import { ResetsStore } from "../service.ts"
 import { PAGE, type Storage } from "./ledger.ts"
@@ -66,7 +66,7 @@ export const layer = (storage: Storage) =>
         if (reset !== undefined) resets[reset.key] = reset
       }
       const claims = yield* readClaims(storage)
-      const spends = keptSpends(claims, (yield* scanAll(storage, SPENDS)).flatMap(({ value }) => Option.toArray(decodeSpend(value))))
+      const spends = keptSpends(claims, (yield* scanAll(storage, SPENDS)).flatMap(({ value }) => Option.toArray(decodeSpend(value))), yield* Clock.currentTimeMillis)
       return { waits, resets, claims, ...Arr.match(spends, { onEmpty: () => ({}), onNonEmpty: (kept) => ({ spends: kept }) }) } satisfies ResetsState
     }).pipe(
       Effect.catchCause(() => Effect.succeed(EMPTY)),

@@ -12,7 +12,7 @@ import { Schema } from "effect"
 import { Hold } from "./hold.ts"
 import { QuotaReading, UsageReadFailure } from "./quota.ts"
 import { HeldSendAnswer } from "./refuse.ts"
-import { Claim, Reset } from "./resets.ts"
+import { Claim, Reset, Spend } from "./resets.ts"
 import { NoPoolLogin } from "./pace.ts"
 export const LaunchRequest = Schema.Struct({
   providerID: Schema.String, model: Schema.String, sessionID: Schema.String, launchID: Schema.String,
@@ -244,6 +244,15 @@ export const SharedReading = Schema.Struct({ pool: Schema.String, credentialID: 
 export type SharedReading = typeof SharedReading.Type
 
 /**
+ * The records each login's line is built from (resets.ts `pacePlans`), as one
+ * host holds them: the claims it made, each with the readings around it (its
+ * observation), and the requests it admitted on a claim's room. Fleet state:
+ * every host builds every line from the fleet's merged records (fleet-plans.ts).
+ */
+export const PlanRecords = Schema.Struct({ claims: Schema.Array(Claim), spends: Schema.Array(Spend) })
+export type PlanRecords = typeof PlanRecords.Type
+
+/**
  * The report method's answer, what a peer host reads of this one: the agents
  * it admitted in the last few minutes (their spend may not show in a reading
  * yet), the provider of each of its sessions busy now (the agents running,
@@ -258,6 +267,8 @@ export const Report = Schema.Struct({
   launchProtocol: Schema.optionalKey(Schema.Literal(1)),
   busy: Schema.optionalKey(Schema.Array(Schema.String)),
   readings: Schema.Array(SharedReading),
+  /** The host's own line records (`PlanRecords`); none from a host older than the field, whose lines the fleet cannot share. */
+  plans: Schema.optionalKey(PlanRecords),
   /** The tokens the host sent on each open row of the limit tally (limits.ts), from a host that keeps one. */
   limits: Schema.optionalKey(
     Schema.Struct({
@@ -292,6 +303,8 @@ export const FleetStatus = Schema.Struct({
   starts: Schema.Number,
   settleMinutes: Schema.Number,
   peers: Schema.Array(PeerStatus),
+  /** Which line the pace is on (fleet-plans.ts `lineText`): shared with the peers, or the week's own while one cannot be read. None from an older host. */
+  line: Schema.optionalKey(Schema.String),
 })
 export type FleetStatus = typeof FleetStatus.Type
 
