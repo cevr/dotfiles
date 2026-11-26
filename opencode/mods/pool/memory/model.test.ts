@@ -406,7 +406,8 @@ describe("Claude resets", () => {
   test("a running agent's request held for lack of a login it may go out on is work waiting: the other login's record damaged, the spent account is refilled", () =>
     scoped(
       Effect.gen(function* () {
-        const now = stamp()
+        const now = Date.parse("2026-11-25T19:00:00Z")
+        yield* TestClock.setTime(now)
         const pair = new Map([[ANTHROPIC, [{ id: "claude-a", label: "Claude A" }, { id: "claude-b", label: "Claude B" }]]])
         // Claude B has room by its last reading, but its hold record does not read: no request goes out on it.
         const claude = world(config, pair, { stored: new Map<string, Schema.Json>([["anthropic/hold/claude-b", "not a hold record"]]) })
@@ -421,7 +422,7 @@ describe("Claude resets", () => {
         yield* pool.reviewResets
         expect(claude.claims.map((claim) => [claim.credentialID, claim.creditID])).toEqual([["claude-a", "grant-1"]])
         expect(claude.owner.asked.map((question) => question.sessionID)).toEqual(["ses_agent"])
-      }),
+      }).pipe(Effect.provide(TestClock.layer())),
     ))
 
   test("an older pool's question still open, about a reset or a push, is withdrawn", () =>
