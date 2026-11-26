@@ -1825,6 +1825,8 @@ describe("the fleet", () => {
             { name: "workbox", host: "bite-cristian", seenAt: expect.any(Number), starts: 3 },
             { name: "laptop", starts: 0, missed: { since: expect.any(Number), message: "ssh: connect to host laptop port 22: Connection refused" } },
           ],
+          // The workbox answers but sends no line records (an older host), and the laptop cannot be read: no claim's room is lent.
+          line: "line: workbox, laptop cannot be read, so no claimed reset's room is lent until it answers; the week's own line holds, never looser than the shared one",
         })
         // 90% read across two accounts halfway through their week is on pace; the three starts are 30% more.
         const pace = yield* plugin.pace("anthropic")
@@ -1876,8 +1878,12 @@ describe("the fleet", () => {
           ],
           // No step has counted yet: the limit tally tells the peer of no tokens.
           limits: { since: expect.any(Number), rows: [] },
+          // The line records the fleet shares: this host has made no claim and reserved nothing on a claim's room.
+          plans: { claims: [], spends: [] },
         })
         expect(JSON.stringify(report)).not.toContain("token")
+        // With no peers, the line is this host's own records.
+        expect((yield* plugin.fleet).line).toBe("line: this host's claims (no peers)")
         yield* plugin.emit({ type: "session.execution.succeeded", data: { sessionID: "ses_busy" } })
         expect((yield* plugin.report).busy).toEqual([])
         expect((yield* plugin.fleet).starts).toBe(2)
