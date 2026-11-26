@@ -1,10 +1,10 @@
 // The heavy-check footer: what every implementor and verifier prompt ends
 // with. A heavy check (a build, test, vet, lint or benchmark run) takes the
 // agent's thread share of the host, worked out when the prompt is sent from
-// the host's cores and the heavy agents working on it then; and a round runs
-// its spec's round gate only, since the batch runs the full gate, the full
-// e2e and the affected acceptance once on its merged head. The share is
-// advice in the prompt, never a cap on agents (the owner, 2026-11-13).
+// the host's cores and the heavy agents working on it then; a round runs only
+// the checks its change affects, since the land runs the rest. The footer ends
+// with `CLOSING`, the line every brief ends with. The share is advice in the
+// prompt, never a cap on agents (the owner, 2026-11-13).
 //
 // The footer goes at the prompt's very end, never in the system prompt, so the
 // role's cached prefix stays as it is.
