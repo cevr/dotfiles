@@ -4377,8 +4377,17 @@ password crosses. A host reads a peer by running
 `ssh -o BatchMode=yes <dest> 'bun run -'` with
 `mods/pool/ssh/report.ts` on stdin. On the peer, report.ts asks its own
 server on loopback (`~/.local/state/opencode/service.json`) for the pool's
-`report` and prints it. daily configures the peers: the Mac reads
-`bite-workbox`, and the workbox reads `cvr@cristians-macbook-pro`.
+`report` and prints it. The server can answer `rpc.unavailable` while it
+replaces the plugin's registration. report.ts then asks once more a second
+later. Any refusal that remains names the server's RPC error, such as
+`the pool's report answered 400 (rpc.unavailable: …)`. daily configures the
+peers: the Mac reads `bite-workbox`, and the workbox reads
+`cvr@cristians-macbook-pro`.
+
+A worker launched on a provider this host does not pace is still reported as
+a start. It is typed `unpaced` and carries no price. A peer that paces that
+provider on the same accounts (`paced`) counts it once, at its own launch
+estimate (`mods/pool/launch-admission.md`).
 
 OpenCode runs the plugin once per directory it serves. The fleet is kept in
 the plugin's storage, which belongs to the host, so every instance counts

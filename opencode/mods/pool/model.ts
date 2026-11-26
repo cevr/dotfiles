@@ -1503,9 +1503,25 @@ export const layer = (config: Config) =>
           if (work === "new-work") return forecast(providerID, Option.fromUndefinedOr(model), now)
           return Effect.succeed(LaunchCost.estimate([], Option.none(), now, fleetConfig.startCost))
         })
+        // A start keeps the price its launcher froze. One its launcher does not pace has none: it counts at this host's own
+        // launch estimate for its model, once per model in this quote. A start from an older host counts at the floor.
+        const estimates = new Map<string, number>()
+        const costs = yield* Effect.forEach(pending, (start) => Option.match(Option.fromUndefinedOr(start.cost), {
+          onSome: Effect.succeed,
+          onNone: () => {
+            if (start.unpaced !== true) return Effect.succeed(fleetConfig.startCost)
+            const key = `${start.providerID}/${Option.getOrElse(Option.fromUndefinedOr(start.model), () => "")}`
+            const known = Option.fromUndefinedOr(estimates.get(key))
+            if (Option.isSome(known)) return Effect.succeed(known.value)
+            return forecast(start.providerID, Option.fromUndefinedOr(start.model), now).pipe(Effect.map((estimate) => {
+              estimates.set(key, estimate.cost)
+              return estimate.cost
+            }))
+          },
+        }))
         const inflight = {
           starts: pending.map((start) => start.at),
-          costs: pending.map((start) => Option.getOrElse(Option.fromUndefinedOr(start.cost), () => fleetConfig.startCost)),
+          costs,
           cost: fleetConfig.startCost, settleMs: fleetConfig.settleMs,
           nextCost: Option.match(Option.filter(Option.some(quote.cost), () => work === "new-work"), { onNone: () => 0, onSome: (cost) => cost }),
         }
@@ -1529,16 +1545,24 @@ export const layer = (config: Config) =>
       })
 
       const reserveLaunch = Effect.fn("Pool.reserveLaunch")(function* (input: LaunchRequest) {
-        const poolID = Option.fromUndefinedOr(measuredBy(config, input.providerID))
-        if (Option.isNone(poolID)) return UNPOOLED
-        const provider = Option.getOrElse(resetProvider(poolID.value), () => Match.value(input.providerID).pipe(
-          Match.when("openai", () => "codex" as const), Match.orElse(() => "claude" as const),
-        ))
         const id = launchKey(input.launchID)
         const held = (reason: string, reasonCode: "fleet-busy" | "fleet-unavailable" = "fleet-busy") =>
           Clock.currentTimeMillis.pipe(Effect.map((now): Pace => ({
             ok: false, measured: true, reason, reasonCode, retryAt: nextRetryAt(now, [now + UNREAD_RETRY_MS]), admission: "held", eligible: [],
           })))
+        const poolID = Option.fromUndefinedOr(measuredBy(config, input.providerID))
+        // A provider this host does not pace can spend accounts a peer paces (the peer's `paced`): the launch is still
+        // reserved here, unpriced, so every host that paces it counts it once at its own estimate. This host does not hold
+        // it; a reservation it cannot write holds it, as any launch's (launch-admission.md).
+        if (Option.isNone(poolID)) {
+          return yield* fleetStore.reserve({ id, providerID: input.providerID, model: input.model, unpaced: true, at: yield* Clock.currentTimeMillis }).pipe(
+            Effect.as(UNPOOLED),
+            Effect.catchTag("LaunchStoreUnavailable", (error) => held(error.message, "fleet-unavailable")),
+          )
+        }
+        const provider = Option.getOrElse(resetProvider(poolID.value), () => Match.value(input.providerID).pipe(
+          Match.when("openai", () => "codex" as const), Match.orElse(() => "claude" as const),
+        ))
         const admission = Effect.gen(function* () {
           const prior = Option.fromUndefinedOr((yield* fleetStore.starts).find((start) => start.id === id))
           const now = yield* Clock.currentTimeMillis

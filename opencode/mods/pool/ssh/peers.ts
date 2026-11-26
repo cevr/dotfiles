@@ -4,7 +4,7 @@
 // tailnet, and no password or token crosses: only the report does. A peer that
 // does not answer in time, refuses, or answers something that is not a report
 // is unreachable.
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { LeaseAnswer, type LeaseMessage } from "../lease.ts"
 import { PushAnswer, type PushRequest } from "../push.ts"
 import { Peers, PeerUnreachable } from "../service.ts"
@@ -38,7 +38,16 @@ export const LEASE_TIMEOUT_MS = 15_000
 /** How long a push request's SSH run may take: the peer plans on its pool, which reads its accounts. */
 export const PUSH_TIMEOUT_MS = 30_000
 
-const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(Report))
+/** What report.ts prints of the server's answer: the report under `output`. */
+const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ output: Report })))
+/** The host's RPC error a refused report carries (the fork's `RpcError` body). */
+const decodeRefusal = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String, message: Schema.String })))
+
+/**
+ * The host answers rpc.unavailable while it replaces the pool plugin's registration (an instance reloaded, or released
+ * by its routing cache): the next registration answers a moment later, so the report is asked once more after this.
+ */
+export const RETRY_MS = 1_000
 const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(LeaseAnswer))
 const decodePush = Schema.decodeUnknownOption(Schema.fromJsonString(PushAnswer))
 
@@ -80,12 +89,24 @@ export const layer = (peers: ReadonlyArray<Peer>, timeoutMs = TIMEOUT_MS) =>
           yield* Effect.annotateCurrentSpan("peer", name)
           const peer = byName.get(name)
           if (peer === undefined) return yield* new PeerUnreachable({ peer: name, message: "not a peer" })
-          const { out, err, code, killed } = yield* run(peer)
+          const refused = (answer: { readonly out: string; readonly code: number }) =>
+            Option.filter(decodeRefusal(answer.out), () => answer.code !== 0)
+          const first = yield* run(peer)
+          const unavailable = Option.filter(refused(first), (refusal) => refusal.type === "rpc.unavailable" && !first.killed)
+          const { out, err, code, killed } = yield* Option.match(unavailable, {
+            onNone: () => Effect.succeed(first),
+            onSome: () => Effect.sleep(RETRY_MS).pipe(Effect.andThen(run(peer))),
+          })
           if (killed) return yield* new PeerUnreachable({ peer: name, message: `no answer in ${timeoutMs / 1000}s` })
-          if (code !== 0) return yield* new PeerUnreachable({ peer: name, message: lastLine(err) ?? `exited ${code}` })
+          if (code !== 0) {
+            const why = lastLine(err) ?? `exited ${code}`
+            // A refusal names the host's RPC error, so the log and the pane say which one.
+            const message = Option.match(refused({ out, code }), { onNone: () => why, onSome: (refusal) => `${why} (${refusal.type}: ${refusal.message})` })
+            return yield* new PeerUnreachable({ peer: name, message })
+          }
           const report = decodeReport(out)
           if (report._tag === "None") return yield* new PeerUnreachable({ peer: name, message: "its answer is not a report" })
-          return report.value
+          return report.value.output
         }),
         // The message rides in the program, as a JSON literal on its first line: no argument, no file, no token.
         lease: Effect.fn("Peers.lease")(function* (name: string, message: LeaseMessage) {
