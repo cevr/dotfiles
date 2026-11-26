@@ -15,6 +15,7 @@ import * as Operations from "../operations.ts"
 import { Workers, type Cell } from "../service.ts"
 import { KernelSessionId } from "../session.ts"
 import { CallFailed } from "../tools.ts"
+import { hangGuard } from "../../../tests/hang-guard.ts"
 import * as ProcessWorkers from "./workers.ts"
 
 /** A scratch directory of the scope's own, removed when the scope closes. */
@@ -175,7 +176,9 @@ describe("a worker", () => {
         expect(names).not.toContain("kernel")
         expect(names).toContain("fresh")
       }),
-    ))
+    ),
+    hangGuard("process-fixture"),
+  )
 
   test("makes a shell result a live handle whose methods call the shell tool with its id, and rebuilds one by id", () =>
     scenario(
