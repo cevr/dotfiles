@@ -16,6 +16,7 @@ import * as OpenCodeStore from "@dotfiles/opencode-wake/opencode/store"
 import { WakeStore } from "@dotfiles/opencode-wake/service"
 import { Entry, WAKES } from "@dotfiles/opencode-wake/wake"
 import * as Plugins from "../../sim/plugins.ts"
+import { simulationBudget } from "../../sim/budget.ts"
 import { simulationTest } from "../../sim/seed.ts"
 import * as World from "../../sim/world.ts"
 import fixture from "./fixtures/store-bcf7101f.json"
@@ -100,6 +101,7 @@ describe("the handle registry on the simulated host", () => {
       expect(Handles.owed(Handles.stateOf(stored(world)))).toEqual([])
       expect(stored(world).find((handle) => handle.id === "h4")?.phase._tag).toBe("Delivered")
     }),
+    simulationBudget(60_000),
   )
 
   simulationTest(
@@ -131,6 +133,7 @@ describe("the handle registry on the simulated host", () => {
       expect(letters(world, session)).toHaveLength(2)
       expect(started()).toEqual(compaction)
     }),
+    simulationBudget(60_000),
   )
 
   simulationTest(
@@ -168,6 +171,7 @@ describe("the handle registry on the simulated host", () => {
       yield* world.until(() => world.sessions.get(archived)?.running !== true, 60 * SECOND)
       expect(letters(world, archived)).toHaveLength(1)
     }),
+    simulationBudget(60_000),
   )
 
   simulationTest(
@@ -196,6 +200,7 @@ describe("the handle registry on the simulated host", () => {
       expect("value" in dead && Schema.is(Handles.Unavailable)(dead.value)).toBe(true)
       expect(yield* rpc(world, "get", { sessionID: there, id: "h_there" })).toEqual({ state: "open", kind: "call" })
     }),
+    simulationBudget(60_000),
   )
 
   simulationTest(
@@ -223,5 +228,6 @@ describe("the handle registry on the simulated host", () => {
       yield* world.advance(SECOND)
       expect(stored(world)).toEqual([])
     }).pipe(Effect.scoped),
+    simulationBudget(60_000),
   )
 })

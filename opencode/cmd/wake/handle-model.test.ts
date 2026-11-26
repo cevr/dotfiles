@@ -6,6 +6,7 @@ import * as BunServices from "@effect/platform-bun/BunServices"
 import { Effect, Path, Stream } from "effect"
 import { it } from "effect-bun-test"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { hangGuard } from "../../tests/hang-guard.ts"
 
 /** One run: its step, its invariant, and whether that invariant must hold. */
 const RUNS = [
@@ -44,7 +45,7 @@ describe("handle.qnt", () => {
         }
       }),
     ),
-    // Five model runs of 20,000 samples each: about 10 s on the Mac (measured: one run 1.6 s).
-    60_000,
+    // Five model runs of 20,000 samples each, each a process: about 10 s on the Mac (measured: one run 1.6 s).
+    hangGuard("process-fixture"),
   )
 })
