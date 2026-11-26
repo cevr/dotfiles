@@ -5,7 +5,7 @@
 // workbox was granted and then refused "unavailable" at its launch.
 import { expect, test } from "bun:test"
 import { Option } from "effect"
-import { btrfsMetadataHeadroom } from "./admission.ts"
+import { btrfsMetadataHeadroom } from "./readings.ts"
 
 const WORKBOX = `Overall:
     Device size:		      816043786240
