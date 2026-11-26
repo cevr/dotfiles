@@ -13,14 +13,14 @@ Run from `opencode/`:
 bun scripts/verify-pool-pace.ts
 ```
 
-The command requires Quint **0.34.0** and Java, uses Apalache **0.62.4**, checks ordinary admission by **one-transition closure over every integer usage, hour and fleet charge in its domain**, checks reset decisions through **eight transitions**, requires counterexamples from eight broken policies, then compares generated snapshots with the real `dispatchPace`, `decideClaim` and Fable `effectOf`. It keeps logs and ITF traces in `out/pool-pace/`. Quint may also write `_apalache-out/`; that is generated scratch, never a source artifact.
+The command requires Quint **0.34.0** and Java, uses Apalache **0.62.4**, checks ordinary admission by **one-transition closure over every integer usage, hour and fleet charge in its domain**, checks reset decisions through **eight transitions**, requires counterexamples from ten broken policies, then compares generated snapshots with the real `dispatchPace`, `decideClaim`, `hasRoom` and Fable `effectOf`. It keeps logs and ITF traces in `out/pool-pace/`. Quint may also write `_apalache-out/`; that is generated scratch, never a source artifact.
 
 For a reset-only change after a complete admission run, `bun scripts/verify-pool-pace.ts --reset-only` reruns the reset proof and mutants, then replays both saved trace sets.
 
 ## Coverage
 
 - `mods/pool/dynamic-pace.qnt`: two accounts, every usage unit from 0 to 16800, every hour from 0 to 168, every fleet charge from 0 to 1764; independent weekly resets, fresh/stale evidence, refusals, short-window/model limits, unsettled fleet starts, clock ticks, and observed natural resets. Known scheduled capacity uses 0, 0.5, 0.99, 1, 1.49 and 1.98 weekly units, with optional exhaustion deadlines at hours 24, 84 and 160.
-- `mods/pool/reset-policy.qnt`: full Anthropic, Fable and Codex decisions, measured depletion, positive restoration, active/held demand, pending claims, the 30-minute natural-reset boundary, 24-hour expiry and six-hour last call, Fable refund arithmetic, Codex clock restart, and repeated redemptions after fresh inventory.
+- `mods/pool/reset-policy.qnt`: full Anthropic, Fable and Codex decisions, measured depletion, positive restoration, running and held work, the pool's other login (room, refused, stale or none: only room vetoes a refill for running work alone; held work always counts), pending claims, the 30-minute natural-reset boundary, 24-hour expiry and six-hour last call, Fable refund arithmetic, Codex clock restart, and repeated redemptions after fresh inventory.
 - `mods/pool/weekly-pace.ts`: `lineOf`, positive-room aggregation, each account's ordinary eligibility, and catch-up scheduling.
 - `mods/pool/pace.ts`: `budgetPace`, `poolPace`, `dispatchPace`, and the eligible login list.
 - `mods/pool/dynamic-pace.test.ts`: the seven-account regression, unavailable-peer equivalence, ordinary placement, explicit pushes and fleet charges.
@@ -42,7 +42,7 @@ Demand, network availability and external consumers are unconstrained in reality
 
 ## Read a failure
 
-For the original pooled-debt counterexample, a fresh account is at zero usage while a peer is ahead of its own line. The fresh account starts alone but is held when the peer is included. `pooled_debt.itf.json` contains that witness. The other admission mutants admit an ahead-of-pace login, omit fleet charges, or ignore hard limits/evidence. Reset mutants claim at 85% on a forecast, clear unrelated shared usage on a Fable reset, pretend Codex keeps its cadence, or allow only one redemption per weekly period. Each must fail verification; a tool error does not count as a counterexample.
+For the original pooled-debt counterexample, a fresh account is at zero usage while a peer is ahead of its own line. The fresh account starts alone but is held when the peer is included. `pooled_debt.itf.json` contains that witness. The other admission mutants admit an ahead-of-pace login, omit fleet charges, or ignore hard limits/evidence. Reset mutants claim at 85% on a forecast, clear unrelated shared usage on a Fable reset, pretend Codex keeps its cadence, allow only one redemption per weekly period, read room off a refused or stale login's reading (`room_on_reading`), or refill for running work beside a login with room (`room_blind`). The replay derives room from the model's other login through the real `hasRoom` and fails on any disagreement; it must see both a refill left for room and one made beside a refused or stale login (the `initRoom` traces make sure of both). Reading room off the reading alone in `hasRoom` fails the replay (`room mismatch`). Each must fail verification; a tool error does not count as a counterexample.
 
 If Quint passes but replay fails, compare the supplied windows and the model's eligible set with the returned `dispatchPace` answer before changing either rule. Preserve the owner's requested invariants.
 
