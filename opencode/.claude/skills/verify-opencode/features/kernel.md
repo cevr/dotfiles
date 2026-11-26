@@ -10,6 +10,7 @@ The `kernel` tool runs the agent's TypeScript in one persistent Bun process per 
 - `kernel-handles`: `tools.shell` and `tools.subagent` resolve to live handles (a shell's `.wait` and `.kill`, a subagent's `.stop`; a subagent has no wait). A subagent handle carries its start's `.model` and `.note` when named. Its `.observation` separates phase from a diagnostic; a notice alone does not settle the child.
 - `kernel-attach`: `attach(path)` shows an image to the next request.
 - `kernel-transcript`: the cell's header is its description, over the rows of the tool calls it made.
+- `kernel-notice`: a new kernel that restored every stored binding says nothing; one that lost some opens the call's answer with one line within 160 characters (`[new kernel; 600 bindings restored, 3 lost: a, b, c; kernel.bindings() lists what it holds]`). `kernel.bindings(filter?)` in a cell lists the bindings held (`{ name, kind, bytes, unkept? }`); `kernel` cannot be rebound. A cell's bindings a restart cannot keep are named up to eight, then `… and N more`.
 - `kernel-time`: each call's time, from its arrival to its answer, is kept per session for the last hour across a restart; the `time({ sessionIDs })` RPC, the /pool pane's "Time in cells" section and `orchestrate({ action: "status" })` show `cells 4% of the last hour · 31 cells · 2 cut` per root, in the warning colour over 15%; a root over 15% gets one notice an hour (no turn) naming its three longest cells by description, a subagent none.
 
 ## How to get to it (user POV)
