@@ -21,6 +21,13 @@ export interface PacePlan {
     readonly key?: string
     /** The share of the week reserved on that room by requests admitted on it (resets.ts `Spend`). */
     readonly spent?: number
+    /**
+     * A peer of the fleet cannot be read, so not every request admitted on this
+     * room is known (fleet-plans.ts): the ones known still count as spent
+     * (`usedOf`), but the room is not lent (`lineOf` keeps the week's own line),
+     * so this host is never looser than the fleet's shared line.
+     */
+    readonly withheld?: true
   }
 }
 
@@ -45,13 +52,17 @@ export const usedOf = (reading: number, plan?: PacePlan): number =>
     onSome: (rebase) => reading + Math.max(0, Option.getOrElse(Option.fromUndefinedOr(rebase.spent), () => 0) - Math.max(0, reading - rebase.from)),
   })
 
-/** An account's spend-evenly line now: the share of its week it may have used. */
-const originOf = (resetAt: number, now: number, plan?: PacePlan) => {
-  const rebase = Option.flatMap(Option.fromUndefinedOr(plan), (plan) => Option.fromUndefinedOr(plan.rebase))
-  if (Option.isSome(rebase) && rebase.value.at <= now && rebase.value.at > resetAt - WEEK && resetAt > rebase.value.at)
-    return { at: rebase.value.at, from: rebase.value.from }
-  return { at: resetAt - WEEK, from: 0 }
+interface Origin {
+  readonly at: number
+  readonly from: number
 }
+
+/** Where a claim the plan observed this week starts the line again, when it does. */
+const rebasedOrigin = (resetAt: number, now: number, plan?: PacePlan): Option.Option<Origin> =>
+  Option.flatMap(Option.fromUndefinedOr(plan), (plan) => Option.fromUndefinedOr(plan.rebase)).pipe(
+    Option.filter((rebase) => rebase.withheld !== true && rebase.at <= now && rebase.at > resetAt - WEEK && resetAt > rebase.at),
+    Option.map((rebase) => ({ at: rebase.at, from: rebase.from })),
+  )
 
 /** An expiring credit needs the current allowance exhausted before its last-call deadline. */
 const expiryLine = (origin: { readonly at: number; readonly from: number }, now: number, deadline: number): number => {
@@ -60,13 +71,28 @@ const expiryLine = (origin: { readonly at: number; readonly from: number }, now:
   return origin.from + (TARGET - origin.from) * progress + LEEWAY
 }
 
-export const lineOf = (resetAt: number, now: number, plan?: PacePlan): number => {
-  const origin = originOf(resetAt, now, plan)
+/** The line from `origin` to the reset, with the plan's capacity. */
+const lineFrom = (origin: Origin, resetAt: number, now: number, plan?: PacePlan): number => {
   const capacity = Option.flatMap(Option.fromUndefinedOr(plan), (plan) => Option.fromUndefinedOr(plan.capacity))
   const target = TARGET + Option.match(capacity, { onNone: () => 0, onSome: (capacity) => capacity.extra })
   const paced = origin.from + (target - origin.from) * ((now - origin.at) / (resetAt - origin.at)) + LEEWAY
   const expires = Option.flatMap(capacity, (capacity) => Option.filter(Option.fromUndefinedOr(capacity.expiresAt), (at) => at < resetAt))
   return Option.match(expires, { onNone: () => paced, onSome: (deadline) => Math.max(paced, expiryLine(origin, now, deadline)) })
+}
+
+/**
+ * An account's spend-evenly line now: the share of its week it may have used.
+ * A claimed reset only ever adds room: the line a claim's observation starts
+ * again is taken only where it is above the week's own line, never below it
+ * (the pace-hit diagnosis, law 2: a claim observed at 75% when the week's line
+ * stood at 85.4% had held a login every other host admitted).
+ */
+export const lineOf = (resetAt: number, now: number, plan?: PacePlan): number => {
+  const natural = lineFrom({ at: resetAt - WEEK, from: 0 }, resetAt, now, plan)
+  return Option.match(rebasedOrigin(resetAt, now, plan), {
+    onNone: () => natural,
+    onSome: (origin) => Math.max(natural, lineFrom(origin, resetAt, now, plan)),
+  })
 }
 
 /** A usable account's observed cycle; `used` includes any unobserved refund reservations. */
@@ -77,11 +103,9 @@ export interface Cycle {
   readonly plan?: PacePlan
 }
 
-const lineAt = (cycle: Cycle, at: number, ordinary: boolean): number => {
-  const planned = lineOf(cycle.resetAt, at, cycle.plan)
-  if (ordinary) return Math.min(planned, lineOf(cycle.resetAt, at, ordinaryPlan(cycle.plan)))
-  return planned
-}
+/** Ordinary readiness reads the week's own line; a claim's line is never below it (`lineOf`), so it takes no min of the two. */
+const lineAt = (cycle: Cycle, at: number, ordinary: boolean): number =>
+  lineOf(cycle.resetAt, at, Option.getOrElse(Option.map(Option.liftPredicate(cycle.plan, () => ordinary), ordinaryPlan), () => cycle.plan))
 const roomAt = (cycles: ReadonlyArray<Cycle>, at: number, ordinary: boolean) =>
   cycles.reduce((sum, cycle) => sum + Math.max(0, lineAt(cycle, at, ordinary) - cycle.used), 0)
 const readyAt = (cycles: ReadonlyArray<Cycle>, at: number, ordinary: boolean) =>

@@ -1511,6 +1511,55 @@ or request (`<pool>/step/<at>/<session>`, `limits/use/<message>`), as an
 older pool kept them, is read too and folded into chunks in the background. A ledger from before caches were kept restores none. Decisions read Effect's `Clock`; the seam tests move it with
 `TestClock`.
 
+### Interim hold wake (`hold-wake`)
+
+A held primary request that no Step holds still ends its turn in error: on a
+host without a typed Step (pin `c6664062`), and on one with it (fork
+`24dca3c1`) for a signed provider (Anthropic), whose placement the pool does not
+yet defer on the Step (`pool-hold-latch` does). A row held on a Step (it names a
+`stepID`) is the host's and is never woken here. For a subagent (a session
+with a `parentID`), the pool appends `This session resumes by itself then, unless it is stopped first.`
+to the refusal message and stores the request's `model` and the `parentID` on
+`held-send/<sessionID>` (`mods/pool/hold-wake.ts`). A row is one hold that ended
+one turn: its `retryAt` is the time that hold named and never changes, and the
+wake's message id is built from the session and that time, so every attempt,
+pool copy, process and restart delivers the same id, which the host admits
+once. Each pool copy reads the rows at its start, then sleeps until the earliest
+one is due or a new row is written here (no timer while there are none). A row
+another server process on the same store wrote, whether that process still runs
+or stopped for good, is found by the next sweep (`sweepMinutes`, 10 by default):
+the sweep's held-send cleanup reads every row already and rings this copy's
+wake when one still waits on the pool, so a row is found within one sweep
+(with `sweepMinutes: 0`, only at start and on this copy's own writes).
+
+At a row's time the wake asks, once, the question the child's own held request
+would ask then, as an existing request and as a pure read. For a signed pool
+(Anthropic) that is `admissionQuote` (`mods/pool/model.ts`): the same evidence
+step and decision the request's admission runs, with no launch forecast and no
+fleet start counted against it, recording no reset wait, no held-work entry in
+the reset review, no latest asker, no reservation and no claim. For an
+OpenAI-style provider it is that request's own gate, the known hold and then the
+send, never the dispatch pace, which its request is never asked. Still held, the
+row takes a `recheckAt` and nothing is sent; admitted, it delivers the wake
+(`The pool hold that ended your last turn has opened. If a newer task came with this notice, do that task instead; …`)
+and only then records `wokenAt`.
+
+What the parent read stays true until the pool tells it otherwise. A failed or
+unanswered delivery (60 s at most), or a host that cannot say what the session
+is, is counted on the row (`wakeFailures`) and tried again after 30 s, doubling
+to 10 minutes and staying there for as long as the row lives, each logged; a
+reload or a stop between the delivery and its mark leaves the row due, and the
+next look delivers the same id again. The pool stops only for a reason it can
+know: a child the host says no longer exists is never woken, and its parent is
+told once, with one stable id (`The pool will not wake it: the subagent … no
+longer exists …`), then `toldAt` is recorded. A row of the wake's kind that no
+longer decodes is rebuilt once (written only over the damaged value, so one
+rebuild wins across processes) and goes on the same way. Roots and rows the
+installed pool wrote (no `model`: their parents never read "resumes by itself")
+are never woken. A stopped child is not woken (the host keeps the notice for its
+next task, whose words win). The `pool-hold-latch` unit deletes this interim
+once the host holds the Step.
+
 ### Rate-limit resets
 
 The pool spends the usage-limit resets its accounts hold on its own: the

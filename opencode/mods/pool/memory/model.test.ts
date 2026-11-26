@@ -4,10 +4,11 @@
 // session; the pool asks nothing, and withdraws any older question still
 // open. Nothing here reaches a provider: the claim is the memory quota's.
 import { describe, expect, test } from "bun:test"
-import { Context, Effect, Fiber, Layer, Option, Result, Schema } from "effect"
+import { Array as Arr, Cause, Clock, Context, Effect, Exit, Fiber, Layer, Option, Order, Result, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { AccountsHeld, PoolId } from "../account-pool.ts"
 import { CACHE_LIFE_MS } from "../accounts.ts"
+import type { RequestHeld } from "../pace.ts"
 import * as FleetTest from "./fleet.ts"
 import * as LedgerTest from "./ledger.ts"
 import * as LoginsTest from "./logins.ts"
@@ -438,4 +439,140 @@ describe("Claude resets", () => {
         expect(claude.owner.withdrawn.toSorted()).toEqual(["claude:anthropic:claude-a:1", "push:workbox:*:ergo"])
       }),
     ))
+})
+
+// `admissionQuote` is the request's own admission, asked and not taken. For generated pool states, two identical
+// pools at one instant: the quote of one answers as `place` of the other (admitted, or held with the same tag, code
+// and time), and the quote changes nothing in its pool's decision stores (the reset review's waits, claims and
+// spends; the fleet), and nothing in the store at all when no evidence was due (no usage read taken).
+describe("admissionQuote", () => {
+  const config: Model.Config = { providers: { anthropic: ANTHROPIC }, cacheLifeMs: CACHE_LIFE_MS, resets: { anthropic: "claude" } }
+  const ids = ["claude-a", "claude-b"]
+  /** One store for the ledger, the fleet and the resets, as the plugin's storage keeps them, and a counted usage read. */
+  const twin = (accounts: ReadonlyArray<string>, samples: ReadonlyMap<string, QuotaReading>, fresh: (id: string, now: number) => QuotaReading) => {
+    const store = new Map<string, Schema.Json>()
+    const owner = OwnerTest.empty()
+    const usage = { reads: 0 }
+    const newest = new Map(samples)
+    const integration: LoginsTest.Integration = {
+      connections: new Map([[ANTHROPIC, accounts.map((id) => ({ type: "credential" as const, method: "oauth" as const, id, label: id }))]]),
+      marks: [],
+    }
+    const externals = Layer.mergeAll(
+      LoginsTest.layer(integration),
+      QuotaTest.layer(new Map([[ANTHROPIC, newest]]), new Map(), () => ({ outcome: "reset" }), (_pool, id) =>
+        Effect.map(Clock.currentTimeMillis, (now) => {
+          usage.reads += 1
+          // The auth plugin keeps what it read last as its newest reading.
+          const taken = fresh(id, now)
+          newest.set(id, taken)
+          return Result.succeed(taken)
+        })),
+      LedgerTest.layer(store),
+      PeersTest.layer(new Map()),
+      FleetTest.layer(store),
+      ResetsTest.layer(store),
+      OwnerTest.layer(owner),
+    )
+    const pool = Effect.gen(function* () {
+      const services = yield* Layer.build(Model.layer(config).pipe(Layer.provide(externals)))
+      return Context.get(services, Model.Pool)
+    })
+    return { store, usage, pool }
+  }
+  const decisions = (key: string) => key.startsWith("resets/") || key.startsWith("fleet/")
+  const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Json))
+  const snapshot = (store: Map<string, Schema.Json>, keep: (key: string) => boolean) =>
+    encode(Arr.sort([...store.entries()].filter(([key]) => keep(key)), Order.mapInput(Order.String, ([key]: readonly [string, Schema.Json]) => key)))
+  const reasonOf = Schema.decodeUnknownOption(Schema.Struct({ reasonCode: Schema.String }))
+  const outcome = <A>(exit: Exit.Exit<A, AccountsHeld | RequestHeld>) =>
+    Exit.match(exit, {
+      onSuccess: () => "admitted",
+      onFailure: (cause) => {
+        const failure = Cause.findErrorOption(cause)
+        return Option.match(failure, {
+          onNone: () => `defect ${Cause.pretty(cause)}`,
+          onSome: (held) => `${held._tag} ${Option.getOrElse(Option.map(reasonOf(held), ({ reasonCode }) => reasonCode), () => "")} until ${held.retryAt}`,
+        })
+      },
+    })
+
+  test("answers as the request's own admission at the same instant, over generated pool states, and records nothing", () =>
+    scoped(Effect.gen(function* () {
+      let state = 0x2545f491
+      const below = (n: number) => {
+        state ^= state << 13
+        state ^= state >>> 17
+        state ^= state << 5
+        return Math.min(n - 1, Math.floor(((state >>> 0) / 4294967296) * n))
+      }
+      const seen = { admitted: 0, held: 0, evidence: 0, quiet: 0 }
+      for (let index = 0; index < 120; index += 1) {
+        // 2026-11-25T19:00:00Z, a day apart.
+        const now = 1_795_633_200_000 + index * DAY
+        yield* TestClock.setTime(now)
+        const accounts = ids.slice(0, 1 + below(2))
+        // A usage sample as the auth plugin reports it: one read of the login at `at`.
+        const sampleOf = (at: number): QuotaReading => ({
+          ...reading(at, {
+            fiveHour: [0, 0.3, 0.8, 1][below(4)] ?? 0,
+            sevenDay: 0.2 + below(81) / 100,
+            weekIn: [1, 3, 6][below(3)]! * DAY,
+            credits: Option.getOrElse(Arr.get([[], [{ ...credit("grant-1", at, 120 * DAY), count: 2, clears: ["five_hour"] }]], below(2)), () => []),
+          }),
+          usage: { at, samples: 1 },
+        })
+        const samples = new Map(accounts.map((id) => [id, sampleOf(Option.getOrElse(Arr.get([now - 3 * HOUR, now, now], below(3)), () => now))] as const))
+        const fresh = new Map(accounts.map((id) => [id, sampleOf(now)] as const))
+        const read = (id: string, at: number): QuotaReading => ({ ...(fresh.get(id) ?? sampleOf(at)), at, usage: { at, samples: 1 } })
+        const input = {
+          providerID: "anthropic", sessionID: "ses_child", model: "claude-haiku-4-5",
+          kind: Option.getOrElse(Arr.get(["title", "primary", "primary", "primary", "primary"] as const, below(5)), () => "primary" as const), priority: below(4) === 0,
+        }
+        const busyRun = below(2) === 0
+        const label = `case ${index}: ${encode({ accounts, samples: [...samples], input, busyRun })}`
+        const asked = twin(accounts, samples, read)
+        const taken = twin(accounts, samples, read)
+        const quoting = yield* asked.pool
+        const placing = yield* taken.pool
+        if (busyRun) {
+          yield* busy(quoting, "anthropic")
+          yield* busy(placing, "anthropic")
+        }
+        // Half the pools have swept already: they hold fresh readings, and the request has no evidence to take.
+        if (below(2) === 0) {
+          yield* quoting.sweep
+          yield* placing.sweep
+        }
+        yield* settle
+        const everything = snapshot(asked.store, () => true)
+        const decided = snapshot(asked.store, decisions)
+        const readings = snapshot(asked.store, (key) => key.startsWith("anthropic/reading/"))
+        const reads = asked.usage.reads
+        const quote = outcome(yield* Effect.exit(quoting.admissionQuote(input)))
+        yield* settle
+        // Evidence: a usage read, or a reading the pool had not taken yet. Both are what the request itself takes.
+        const evidence = asked.usage.reads !== reads || snapshot(asked.store, (key) => key.startsWith("anthropic/reading/")) !== readings
+        expect([label, snapshot(asked.store, decisions)]).toEqual([label, decided])
+        if (!evidence) expect([label, snapshot(asked.store, () => true)]).toEqual([label, everything])
+        const placed = outcome(yield* Effect.exit(placing.place(input)))
+        expect([label, quote]).toEqual([label, placed])
+        seen.admitted += Number(quote === "admitted")
+        seen.held += Number(quote !== "admitted")
+        seen.evidence += Number(evidence)
+        seen.quiet += Number(!evidence)
+      }
+      // The generated states reach both answers, with evidence due and without.
+      expect([encode(seen), Object.values(seen).every((count) => count > 0)]).toEqual([encode(seen), true])
+    }).pipe(Effect.provide(TestClock.layer()))))
+
+  test("asked of an unpooled provider, it admits and reads nothing", () =>
+    scoped(Effect.gen(function* () {
+      const asked = twin(["claude-a"], new Map(), (_id, at) => reading(at, {}))
+      const pool = yield* asked.pool
+      const before = snapshot(asked.store, () => true)
+      yield* pool.admissionQuote({ providerID: "openai", sessionID: "ses_child", kind: "primary", model: "gpt-5" })
+      expect(snapshot(asked.store, () => true)).toBe(before)
+      expect(asked.usage.reads).toBe(0)
+    }).pipe(Effect.provide(TestClock.layer()))))
 })

@@ -749,10 +749,13 @@ export const requestHeadOf = (request: string): Option.Option<string> =>
 
 /** The verdict a findings file's first non-blank line states, lowercased (the skill's status.ts `verdictOf`). */
 export const findingsVerdictOf = (text: string): Option.Option<string> =>
-  Option.map(Option.fromNullishOr(/\b(accepted|changes|stuck)\b/i.exec(Option.getOrElse(Arr.findFirst(text.split("\n"), (line) => line.trim() !== ""), () => ""))?.[1]), (verdict) => verdict.toLowerCase())
+  Option.map(Option.fromNullishOr(/\b(pass|issues|accepted|changes|stuck)\b/i.exec(Option.getOrElse(Arr.findFirst(text.split("\n"), (line) => line.trim() !== ""), () => ""))?.[1]), (verdict) => SKILL_VERDICTS[verdict.toLowerCase()] ?? verdict.toLowerCase())
+
+/** The skill's verifier words as the record's verdicts. */
+const SKILL_VERDICTS: Readonly<Record<string, string>> = Object.freeze({ pass: "accepted", issues: "changes" })
 
 /** Whether a verifier's findings hold a verdict line: `verifier <batch> r<N>: <verdict>`, `Verdict: <verdict>`, or the verdict alone. */
-export const holdsVerdict = (text: string): boolean => /^[\s>*#`_-]*(?:verifier\s+\S+\s+r\d+:\s*|verdict:\s*)?[*`_]*(accepted|changes|stuck)\b/im.test(text)
+export const holdsVerdict = (text: string): boolean => /^[\s>*#`_-]*(?:verifier\s+\S+\s+r\d+:\s*|verdict:\s*)?[*`_]*(pass|issues|accepted|changes|stuck)\b/im.test(text)
 
 /** The head a batch file names: its `Head: <sha>`, else the dotfiles commit of its `Heads:` line as the fleet reads it (fleet.ts `headsOf`). */
 export const batchHeadOf = (text: string): Option.Option<string> =>

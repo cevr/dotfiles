@@ -56,6 +56,9 @@ describe("a role's hand-back", () => {
     for (const verdict of ["accepted", "changes", "stuck", "blocked"])
       expect(handBackOf("verifier", `verifier batch-2 r1: ${verdict} ${run}/batch-2-findings.md`)).toEqual({ unit: "batch-2", verdict, transition: undefined, file: `${run}/batch-2-findings.md` })
     expect(handBackOf("verifier", `verifier auth r2: changes ${dir}/round-2-findings.md`)?.transition).toBeUndefined()
+    // The skill's words: `pass` is the record's `accepted` (the verified ref's trigger), `issues` its `changes`.
+    expect(handBackOf("verifier", `verifier batch-2 r1: pass ${run}/batch-2-findings.md`)?.verdict).toBe("accepted")
+    expect(handBackOf("verifier", `verifier batch-2 r1: issues ${run}/batch-2-findings.md`)?.verdict).toBe("changes")
   })
 
   test("a planner's ready moves nothing; the line may sit after blank lines, in backticks or bold", () => {

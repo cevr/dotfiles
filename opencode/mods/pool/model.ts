@@ -30,6 +30,7 @@ import {
 import { answeredOn, held, lastPlacedAt, placedOn, sessionAccount, status, type RequestKind, type Rules } from "./accounts.ts"
 import * as Burn from "./burn.ts"
 import * as FleetModel from "./fleet.ts"
+import * as FleetPlans from "./fleet-plans.ts"
 import * as LaunchCost from "./launch-cost.ts"
 import { decodeAntigravityReport, normalizeAntigravityReport } from "./antigravity-report.ts"
 import { dispatchPace, type HoldReason, LACKS_LOGIN, needsSignIn, needsUsageRefresh, nextRetryAt, poolPace, RequestHeld, requiredScopes, staleTracked, storeHeld, UNPOOLED, UNREAD_RETRY_MS, type DispatchPolicy, type Pace } from "./pace.ts"
@@ -55,6 +56,7 @@ const REFUSED_STATUS = new Map([
 import type {
   Alerts,
   FleetStatus,
+  PlanRecords,
   Report,
   SharedReading,
   LoginsQuery,
@@ -198,6 +200,13 @@ export class Pool extends Context.Service<
       /** The session whose cache the request reads when the session has none of its own: a fork's source. */
       readonly cacheOf?: string
     }) => Effect.Effect<Placed | undefined, AccountsHeld | RequestHeld>
+    /**
+     * The admission `place` would give this request now, asked and not taken: the same evidence step and the same
+     * decision, failing with the same `AccountsHeld` or `RequestHeld`, but it records nothing a decision records (no
+     * newest asker, no wait noted for the reset review, no review, no claim, no reservation, no placement). An
+     * unpooled provider is admitted. The interim hold wake asks it for a held request on a host with no Step.
+     */
+    readonly admissionQuote: (input: PlaceInput) => Effect.Effect<void, AccountsHeld | RequestHeld>
     /** Confirm a prepared login from this activation against the current hold store. */
     readonly confirmed: (input: PlaceInput, candidate: string, onAdmission?: Effect.Effect<void>) => Effect.Effect<boolean, RequestHeld>
     /** Admit the actual login of a provider whose credential the host selects. */
@@ -483,14 +492,15 @@ export const layer = (config: Config) =>
       const pull = (where: Pooled, credentialID: string) =>
         quota.reading(where.id, credentialID).pipe(Effect.flatMap((reading) => take(where, credentialID, reading)))
 
-      const admission = Effect.fn("Pool.admission")(function* (input: PlaceInput) {
-        // The request's admission, at its dispatch: the pace a request of its model gets on the readings now (`dispatchPace`).
-        // Held, it goes out on no login; the review has heard of the held work.
+      // The request's admission, at its dispatch: the pace a request of its model gets on the readings now
+      // (`dispatchPace`). Held, it goes out on no login; asked through `pace`, the review has heard of the held work,
+      // asked through `quotePace` (`admissionQuote`), nothing is recorded. One body, so the two cannot answer apart.
+      const admissionBy = (ask: typeof pace) => Effect.fnUntraced(function* (input: PlaceInput) {
         const auxiliary = Option.filter(Option.some(input.kind), (kind) => kind !== "primary" && kind !== "compaction")
         const policy = Option.match(auxiliary, {
           onNone: () => ({ priority: input.priority === true }), onSome: (kind) => ({ auxiliary: kind }),
         })
-        const asked = yield* Effect.option(pace(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
+        const asked = yield* Effect.option(ask(input.providerID, input.model, input.sessionID, true, policy, "existing-request"))
         const now = yield* Clock.currentTimeMillis
         if (Option.isNone(asked))
           return yield* new RequestHeld({
@@ -509,6 +519,11 @@ export const layer = (config: Config) =>
         }
         return answer
       })
+      const admission = (input: PlaceInput) => admissionBy(pace)(input).pipe(Effect.withSpan("Pool.admission"))
+      const admissionQuote = Effect.fn("Pool.admissionQuote")(function* (input: PlaceInput) {
+        if (Option.isNone(Option.fromUndefinedOr(pooled(input.providerID)))) return
+        yield* admissionBy(quotePace)(input)
+      }, (effect) => dispatchLock.withPermits(1)(effect))
 
       const place = Effect.fn("Pool.place")(function* (input: PlaceInput) {
         const where = pooled(input.providerID)
@@ -630,10 +645,36 @@ export const layer = (config: Config) =>
        * on the host, is taken back and the request held. Written first and read after, so of two instances that race, a
        * share either sees the other's or is seen by it; a write that failed is not read back, and holds.
        */
+      /**
+       * The records every login's line is built from, as the fleet holds them (fleet-plans.ts): this host's resets
+       * store (`own`), each peer's last report's records and whether that report is current, the two merged, and
+       * which line is in force.
+       */
+      /** What this host sends its peers of its line records: its own claims, with their observations, and its own reservations. */
+      const ownPlanRecords = Effect.map(resetsStore.read, (state): PlanRecords => FleetPlans.recordsOf(state))
+
+      const lineRecords = (now: number) =>
+        Effect.gen(function* () {
+          const own = yield* resetsStore.read
+          const fleet = yield* fleetStore.read
+          const known = peers.names.map((name): FleetPlans.PeerPlans => {
+            const peer = Option.fromUndefinedOr(fleet.peers[name])
+            return {
+              name,
+              records: Option.flatMap(peer, (held) => Option.flatMap(Option.fromUndefinedOr(held.report), (report) => Option.fromUndefinedOr(report.plans))),
+              current: Option.exists(peer, (held) =>
+                Option.isNone(Option.fromUndefinedOr(held.missed)) && Option.exists(Option.fromUndefinedOr(held.seenAt), (at) => now - at <= FleetPlans.PLANS_FRESH_MS)),
+            }
+          })
+          return { own, peers: known, ...FleetPlans.fleetRecords(FleetPlans.recordsOf(own), known) }
+        })
+
       const reserve = (where: Pooled, credentialID: string, sessionID: string) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis
-          const before = yield* resetsStore.read
+          // The fleet's records: a claim's room is shared, its reservations on every host count (fleet-plans.ts).
+          const line = yield* lineRecords(now)
+          const before = { ...line.own, ...line.records }
           const refuse = (reason: string) => new RequestHeld({ sessionID, reason, reasonCode: "reset-room", retryAt: now + UNREAD_RETRY_MS })
           // The login's account and its pool's reset provider, and the claim whose room the request is admitted on.
           const found = Option.all([
@@ -653,7 +694,8 @@ export const layer = (config: Config) =>
           spendSeq += 1
           const spend: ResetsModel.Spend = { id: `${fleetConfig.host}:${sessionID}:${now}:${spendSeq}`, claim, credentialID, at: now, cost: fleetConfig.startCost }
           yield* sendResets(ResetsModel.ReserveSpend.make({ spend }))
-          if (ResetsModel.reservationHolds(yield* resetsStore.read, provider, account, now, spend.id)) return
+          const after = yield* lineRecords(now)
+          if (ResetsModel.reservationHolds({ ...after.own, ...after.records }, provider, account, now, spend.id)) return
           yield* sendResets(ResetsModel.WithdrawSpend.make({ id: spend.id }))
           return yield* refuse("the room a claimed reset gave back on the chosen login is reserved by requests admitted meanwhile")
         })
@@ -932,8 +974,8 @@ export const layer = (config: Config) =>
       const plansOf = Effect.fn("Pool.plansOf")(function* (id: string, accounts: ReadonlyArray<AccountStatus>, now: number) {
         const provider = resetProvider(id)
         if (Option.isNone(provider)) return {}
-        const state = yield* resetsStore.read
-        return ResetsModel.pacePlans(provider.value, accounts, state.claims, now, state.spends, config.autoClaims !== false, state.resets)
+        const { own, peers: known } = yield* lineRecords(now)
+        return FleetPlans.fleetPlans(provider.value, accounts, FleetPlans.recordsOf(own), known, now, config.autoClaims !== false, own.resets).plans
       })
 
       const windowsText = (windows: ReadonlyArray<{ readonly name: string; readonly utilization: number; readonly resetAt?: number }> | undefined) =>
@@ -1435,36 +1477,51 @@ export const layer = (config: Config) =>
       /**
        * Work held unmeasured for want of a login it may go out on (`LACKS_LOGIN`: a damaged record, every login
        * refused) is work waiting, as a measured hold's is: a start, or a running agent's request at its dispatch
-       * (`admission`). The review hears of it as of a held start.
+       * (`admission`). The review hears of it as of a held start: the wait `pace` notes (`quotePace` notes none).
        */
-      const noteUnmeasured = (
+      const unmeasuredWait = (
         resetting: Option.Option<ResetsModel.NoteWait["pool"]>, reasonCode: HoldReason, session: Option.Option<string>, model: Option.Option<string>,
       ) =>
-        Option.match(Option.filter(resetting, () => LACKS_LOGIN.includes(reasonCode)), {
-          onNone: () => Effect.void,
-          onSome: (pool) =>
-            sendResets(ResetsModel.NoteWait.make({
-              pool, hard: true,
-              ...Option.match(session, { onNone: () => ({}), onSome: (sessionID) => ({ sessionID }) }),
-              ...Option.match(model, { onNone: () => ({}), onSome: (id) => ({ model: id }) }),
-            })).pipe(Effect.andThen(Effect.forkIn(reviewResets, scope)), Effect.asVoid),
-        })
+        Option.map(Option.filter(resetting, () => LACKS_LOGIN.includes(reasonCode)), (pool) =>
+          ResetsModel.NoteWait.make({
+            pool, hard: true,
+            ...Option.match(session, { onNone: () => ({}), onSome: (sessionID) => ({ sessionID }) }),
+            ...Option.match(model, { onNone: () => ({}), onSome: (id) => ({ model: id }) }),
+          }))
 
-      const pace = Effect.fn("Pool.pace")(function* (
-        providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
-        work: "new-work" | "existing-request" = "new-work",
-        authority: Option.Option<FleetModel.FleetState> = Option.none(),
-      ) {
+      /**
+       * The pace in two steps, so that a question can be asked without being recorded (`quotePace`): `paceAsked` takes
+       * the evidence and reads the pace on it, and names the newest asker it would record; `paceAnswered` decides the
+       * answer and names the wait it would note for the reset review. Neither records anything.
+       */
+      interface PaceQuestion {
+        readonly providerID: string
+        readonly model?: string
+        readonly sessionID?: string
+        readonly dispatch?: boolean
+        readonly policy: DispatchPolicy
+        readonly work: "new-work" | "existing-request"
+        readonly authority: Option.Option<FleetModel.FleetState>
+      }
+      const paceAsked = Effect.fnUntraced(function* (question: PaceQuestion) {
+        const { providerID, model, sessionID, dispatch, policy, work, authority } = question
         const paced = yield* paceOf(providerID, model, dispatch, policy, work, authority)
         const id = Option.fromUndefinedOr(measuredBy(config, providerID))
         const session = Option.fromUndefinedOr(sessionID)
         // A title or other auxiliary request waits for ordinary room; it does not ask for another reset.
         const resetting = Option.filter(id, (pool) => Option.isNone(Option.fromUndefinedOr(policy.auxiliary)) && Option.isSome(resetProvider(pool)))
         const now = yield* Clock.currentTimeMillis
-        if (Option.isSome(resetting) && Option.isSome(session)) askers.set(resetting.value, { at: now, sessionID: session.value })
+        const asker = Option.map(Option.all({ pool: resetting, sessionID: session }), (named) => ({ ...named, at: now }))
+        return { paced, id, session, resetting, now, asker }
+      })
+      type Asked = Effect.Success<ReturnType<typeof paceAsked>>
+      const paceAnswered = Effect.fnUntraced(function* (asked: Asked, question: PaceQuestion) {
+        const { providerID, model, sessionID, dispatch, policy, work, authority } = question
+        const { paced, id, session, resetting, now } = asked
+        const noWait = (answer: Pace) => ({ answer, wait: Option.none<typeof ResetsModel.NoteWait.Type>() })
         const answer = yield* withPending(paced, id, now)
-        if (answer.ok) return answer
-        if (!answer.measured) return yield* Effect.as(noteUnmeasured(resetting, answer.reasonCode, session, Option.fromUndefinedOr(model)), answer)
+        if (answer.ok) return noWait(answer)
+        if (!answer.measured) return { answer, wait: unmeasuredWait(resetting, answer.reasonCode, session, Option.fromUndefinedOr(model)) }
         // A push active on this host covers the start when its scope names no session, or the root of the start's.
         const active = PushModel.activeOn(yield* pushStore.read, fleetConfig.host, now)
         const root = yield* Option.match(Option.filter(session, () => active.length > 0), {
@@ -1478,30 +1535,55 @@ export const layer = (config: Config) =>
         // The spend-evenly target alone does not hold a start a push covers: the accounts have quota, and the push spends
         // them to 100% and claims its resets. Once its approved resets are spent, the pace holds again from the last claim's line.
         const approved = Option.filter(push, (activePush) => activePush.allowance.max === 0 || used < activePush.allowance.max)
-        if (answer.soft === true && Option.isSome(approved)) return yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work, authority)
+        if (answer.soft === true && Option.isSome(approved)) return noWait(yield* liftPace(providerID, model, dispatch, policy, approved.value, answer, work, authority))
         // A start held by a measured pace waits: the resets are reviewed for it, without holding up the answer.
-        if (Option.isNone(resetting)) return answer
+        if (Option.isNone(resetting)) return noWait(answer)
         const hard = answer.soft !== true
-        yield* sendResets(
-          ResetsModel.NoteWait.make({
-            pool: resetting.value,
-            ...(sessionID === undefined ? {} : { sessionID }),
-            ...(hard ? { hard: true } : {}),
-            ...(root === undefined ? {} : { root }),
-            ...(model === undefined ? {} : { model }),
-          }),
-        )
-        yield* Effect.forkIn(reviewResets, scope)
-        if (!hard || Option.isNone(push)) return answer
+        const wait = Option.some(ResetsModel.NoteWait.make({
+          pool: resetting.value,
+          ...(sessionID === undefined ? {} : { sessionID }),
+          ...(hard ? { hard: true } : {}),
+          ...(root === undefined ? {} : { root }),
+          ...(model === undefined ? {} : { model }),
+        }))
+        if (!hard || Option.isNone(push)) return { answer, wait }
         // Held for lack of quota in a push's scope: the review claims one of its resets, and the start asks again soon.
         const { allowance, goal } = push.value
         const left = allowance.max - used
-        if (left <= 0) return { ...answer, reason: `${answer.reason}; the push "${goal}" has spent its ${allowance.max} approved resets` }
+        if (left <= 0) return { answer: { ...answer, reason: `${answer.reason}; the push "${goal}" has spent its ${allowance.max} approved resets` }, wait }
         return {
-          ...answer,
-          reason: `${answer.reason}; the push "${goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
-          retryAt: nextRetryAt(now, [answer.retryAt, now + PUSH_RETRY_MS]),
+          answer: {
+            ...answer,
+            reason: `${answer.reason}; the push "${goal}" claims one of its ${left} approved reset${left === 1 ? "" : "s"}`,
+            retryAt: nextRetryAt(now, [answer.retryAt, now + PUSH_RETRY_MS]),
+          },
+          wait,
         }
+      })
+
+      /** The pace `pace` answers, asked and not taken: the same evidence and decision, and nothing recorded. */
+      const quotePace = Effect.fn("Pool.quotePace")(function* (
+        providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+        authority: Option.Option<FleetModel.FleetState> = Option.none(),
+      ) {
+        const question = { providerID, model, sessionID, dispatch, policy, work, authority }
+        return (yield* paceAnswered(yield* paceAsked(question), question)).answer
+      })
+
+      const pace = Effect.fn("Pool.pace")(function* (
+        providerID: string, model?: string, sessionID?: string, dispatch?: boolean, policy: DispatchPolicy = {},
+        work: "new-work" | "existing-request" = "new-work",
+        authority: Option.Option<FleetModel.FleetState> = Option.none(),
+      ) {
+        const question = { providerID, model, sessionID, dispatch, policy, work, authority }
+        const asked = yield* paceAsked(question)
+        if (Option.isSome(asked.asker)) askers.set(asked.asker.value.pool, { at: asked.asker.value.at, sessionID: asked.asker.value.sessionID })
+        const { answer, wait } = yield* paceAnswered(asked, question)
+        if (Option.isNone(wait)) return answer
+        yield* sendResets(wait.value)
+        yield* Effect.forkIn(reviewResets, scope)
+        return answer
       })
 
       const recordTimedOutReads = (paced: Pooled, unread: ReadonlyArray<AccountStatus>, before: number) =>
@@ -1711,7 +1793,7 @@ export const layer = (config: Config) =>
           readings,
           busyNow(now),
           Option.getOrUndefined(agyReport),
-        ), launchProtocol: 1 as const }
+        ), launchProtocol: 1 as const, plans: yield* ownPlanRecords }
         // The tokens this host sent count in a peer's tally of the same accounts.
         return limits === undefined ? answer : { ...answer, limits: yield* limits.report }
       }).pipe(Effect.withSpan("Pool.report"))
@@ -1790,6 +1872,8 @@ export const layer = (config: Config) =>
           starts: FleetModel.ownStarts(state, now, fleetConfig.settleMs).length,
           settleMinutes: fleetConfig.settleMs / 60_000,
           peers: FleetModel.peers(state, peers.names, now, fleetConfig.settleMs),
+          // Which line the pace is on: the fleet's shared one, or the week's own while a peer cannot be read.
+          line: FleetPlans.lineText((yield* lineRecords(now)).source),
         } satisfies FleetStatus
       }).pipe(Effect.withSpan("Pool.fleet"))
 
@@ -1836,6 +1920,7 @@ export const layer = (config: Config) =>
 
       return {
         place,
+        admissionQuote,
         confirmed,
         admitActive,
         responded,

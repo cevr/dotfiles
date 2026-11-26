@@ -143,16 +143,25 @@ seeded("a measured login at a REPORTED limit before its reset is still held duri
     yield* world.prompt(id, "still before 5h reset")
     yield* world.advance(25_000)
     expect(primary()).toHaveLength(0)
+    // Until the 5h window's own reset nothing goes out.
+    yield* world.advance(shortReset - 1 - world.now())
+    expect(primary()).toHaveLength(0)
     // Past the 5h window's own reset, the expired limit stops binding and the login sends as unmeasured.
-    yield* world.advance(shortReset - world.now() + MINUTE)
+    yield* world.advance(MINUTE + 1)
     const afterReset = yield* pace(id)
     expect(afterReset).toMatchObject({ ok: true, measured: false, eligible: ["a"] })
+    // The session is a subagent: on a host with no Step its held turn ended, and the pool woke it once the reset
+    // passed (cmd/pool/pool-hold-wake.sim.test.ts), so the held work went out exactly once, after the reset.
+    expect(primary()).toHaveLength(1)
     yield* world.prompt(id, "after 5h reset while usage endpoint is still down")
-    const sent = yield* world.until(() => primary().length === 1, 25_000).pipe(
+    const sent = yield* world.until(() => primary().length === 2, 25_000).pipe(
       Effect.as(true),
       Effect.orElseSucceed(() => false),
     )
     expect(sent).toBe(true)
+    // The next prompt sent exactly one more.
+    yield* world.advance(MINUTE)
+    expect(primary()).toHaveLength(2)
 
     // Reported weekly over-the-even-line limit also still binds during failed usage reads.
     const overLine = fixture({ a: quota(0.75, 0.1) }, refunds)

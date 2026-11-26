@@ -70,9 +70,6 @@ export const namesModel = (model: string, ref: ModelRef): boolean => {
   return parsed === undefined ? model.split("#")[0] === ref.id : parsed.providerID === ref.providerID && parsed.id === ref.id
 }
 
-/** A model at a variant, as the subagent tool takes it. */
-export const formatModel = (model: ModelRef, variant: string) => `${model.providerID}/${model.id}#${variant}`
-
 /**
  * The orchestrate skill's Codex admission, read from the script's exit code
  * and last line: `admit: …` with 0, `hold: …[; opens about <date> <hh:mm>Z]`
