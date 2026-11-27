@@ -218,6 +218,10 @@ const sameLocation = (actual: { readonly directory: string; readonly workspaceID
 
 type Work = typeof Fact.cases.Work.Type.work
 
+/** A stored projection another read can draw on: a live descendant's, or a shell's owner. */
+const matters = (state: Projection) =>
+  executionActive(state) || Option.isSome(workEvidence(state)) || Object.keys(state.shellOwners ?? {}).length > 0
+
 const oldFact = (view: Observation) => {
   const { phase } = view
   if (phase._tag === "Unknown" && phase.reason)
@@ -266,11 +270,37 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     stored(child).pipe(
       Effect.map((value) => forIncarnation(Option.getOrElse(value, () => initial(child, parent)), parent, markerOf(info))),
     )
+  // The stored projections a read can draw on beside its own: an open
+  // execution, work evidence, or an owned shell. Built from one scan at first
+  // use and kept by every save, so a row never scans the location's records.
+  const index = new Map<string, Projection>()
+  const built = yield* Ref.make(false)
+  const note = (key: string, state: Option.Option<Projection>) => Effect.sync(() => {
+    const kept = Option.filter(state, matters)
+    if (Option.isSome(kept)) index.set(key, kept.value)
+    else index.delete(key)
+  })
+  const indexed = Effect.fn("ChildLifecycle.indexed")(function* () {
+    if (!(yield* Ref.get(built))) {
+      let page = yield* ctx.storage.scan({ prefix: locationPrefix, limit: 128 })
+      while (true) {
+        for (const entry of page.entries) yield* note(entry.key, readProjection(entry.value))
+        const after = Option.fromUndefinedOr(page.next)
+        if (Option.isNone(after)) break
+        page = yield* ctx.storage.scan({ prefix: locationPrefix, after: after.value, limit: 128 })
+      }
+      yield* Ref.set(built, true)
+    }
+    return [...index.keys()].toSorted().flatMap((key) => Option.toArray(Option.fromUndefinedOr(index.get(key))))
+  })
   const save = (current: Projection, next: Projection) =>
     Option.match(Option.filter(Option.some(current.rev), (rev) => rev > 0), {
       onNone: () => ctx.storage.setIf(keyOf(current.child), next),
       onSome: (rev) => ctx.storage.setIf(keyOf(current.child), next, rev),
-    })
+    }).pipe(Effect.tap((written) => {
+      if (written) return note(keyOf(next.child), Option.some(next))
+      return stored(current.child).pipe(Effect.flatMap((state) => note(keyOf(current.child), state)))
+    }))
   const infoOf = Effect.fn("ChildLifecycle.info")(function* (child: string) {
     const id = yield* Effect.fromOption(sessionID(child))
     const info = yield* ctx.session.get({ sessionID: id })
@@ -278,22 +308,9 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
     return info
   })
 
-  const findStored = Effect.fn("ChildLifecycle.findStored")(function* (matches: (state: Projection) => boolean) {
-    let page = yield* ctx.storage.scan({ prefix: locationPrefix, limit: 128 })
-    while (true) {
-      for (const entry of page.entries) {
-        const state = readProjection(entry.value)
-        if (Option.exists(state, matches)) return state
-      }
-      const after = Option.fromUndefinedOr(page.next)
-      if (Option.isNone(after)) return Option.none<Projection>()
-      page = yield* ctx.storage.scan({ prefix: locationPrefix, after: after.value, limit: 128 })
-    }
-  })
-
-  const ownerOfShell = (id: string) => findStored(({ work, shellOwners }) =>
+  const ownerOfShell = (id: string) => indexed().pipe(Effect.map(Arr.findFirst(({ work, shellOwners }) =>
     Boolean(work?.[id]?.running || (shellOwners && Object.hasOwn(shellOwners, id))),
-  )
+  )))
 
   const ownedBy = Effect.fn("ChildLifecycle.ownedBy")(function* (parent: string, child: string) {
     let id = parent
@@ -309,28 +326,22 @@ export const make = Effect.fn("ChildLifecycle.make")(function* (ctx: Plugin.Cont
   const liveDescendant = Effect.fn("ChildLifecycle.liveDescendant")(function* (candidate: Projection, child: string) {
     const work = workEvidence(candidate)
     if (candidate.child === child || !(executionActive(candidate) || Option.isSome(work))) return Option.none<WorkEvidence>()
-    if (!(yield* ownedBy(candidate.parent, child))) return Option.none<WorkEvidence>()
+    // Liveness first: it costs one read, the ancestry walk up to 32.
     const info = yield* infoOf(candidate.child).pipe(Effect.option)
     if (Option.isNone(info) || !info.value.parentID) return Option.none<WorkEvidence>()
     const current = forIncarnation(candidate, info.value.parentID, markerOf(info.value))
     const snapshot = snapshotOf(info.value, readMark(info.value.metadata))
     const choice = decide(current, snapshot, activation)
     if (!isLive(choice.phase)) return Option.none<WorkEvidence>()
+    if (!(yield* ownedBy(candidate.parent, child))) return Option.none<WorkEvidence>()
     return Option.some<WorkEvidence>({ kind: "Child", facts: choice.facts })
   })
   const childWork = Effect.fn("ChildLifecycle.childWork")(function* (child: string) {
-    let page = yield* ctx.storage.scan({ prefix: locationPrefix, limit: 128 })
-    while (true) {
-      for (const entry of page.entries) {
-        const decoded = readProjection(entry.value)
-        if (Option.isNone(decoded)) continue
-        const live = yield* liveDescendant(decoded.value, child)
-        if (Option.isSome(live)) return live
-      }
-      const after = Option.fromUndefinedOr(page.next)
-      if (Option.isNone(after)) return Option.none<WorkEvidence>()
-      page = yield* ctx.storage.scan({ prefix: locationPrefix, after: after.value, limit: 128 })
+    for (const candidate of yield* indexed()) {
+      const live = yield* liveDescendant(candidate, child)
+      if (Option.isSome(live)) return live
     }
+    return Option.none<WorkEvidence>()
   })
 
   const shellExit = Effect.fn("ChildLifecycle.shellExit")(function* (shellID: string, id: string, at: number) {
