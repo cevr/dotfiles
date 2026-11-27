@@ -12,6 +12,7 @@ import { formatNotificationTime } from "@dotfiles/decider/notification-time"
 import {
   AccountPool,
   AccountsHeld,
+  everyHeld,
   ClearHold,
   FailUsageRead,
   ListLogins,
@@ -211,14 +212,18 @@ export class Pool extends Context.Service<
     readonly confirmed: (input: PlaceInput, candidate: string, onAdmission?: Effect.Effect<void>) => Effect.Effect<boolean, RequestHeld>
     /** Admit the actual login of a provider whose credential the host selects. */
     readonly admitActive: (input: PlaceInput, candidate: string, phase: "known-hold" | "send" | "signed-out", onAdmission?: Effect.Effect<void>) => Effect.Effect<void, RequestHeld>
-    /** A response came back. A refusal (401 or 429) holds the login it went out on. */
+    /**
+     * A response came back. A refusal (401 or 429) holds the login it went out on; when every account of the pool is
+     * held then, the pool's refusal of the request, which the response answers in place of the provider's: the host
+     * may have no retry left to ask the pool (`retry`) and end the turn on its words.
+     */
     readonly responded: (input: {
       readonly providerID: string
       readonly sessionID: string
       readonly kind: RequestKind
       readonly status: number
       readonly credentialID?: string
-    }) => Effect.Effect<void>
+    }) => Effect.Effect<Option.Option<AccountsHeld>>
     /**
      * A primary request failed: whether it should go again at once, on another login. `error` is the failure's type
      * as OpenCode names it (`Authentication`, `RateLimit`, `QuotaExceeded`, ...).
@@ -719,19 +724,20 @@ export const layer = (config: Config) =>
         readonly status: number
         readonly credentialID?: string
       }) {
-        if (input.status !== 401 && input.status !== 429) return
+        if (input.status !== 401 && input.status !== 429) return Option.none<AccountsHeld>()
         const where = pooled(input.providerID)
-        if (where === undefined) return
+        if (where === undefined) return Option.none<AccountsHeld>()
         const answered = yield* Option.match(Option.fromUndefinedOr(input.credentialID), {
           onNone: () => answeredHere(where, input.sessionID, input.kind),
           onSome: (id) => Effect.succeed(Option.some(id)),
         })
-        if (Option.isNone(answered)) return
+        if (Option.isNone(answered)) return Option.none<AccountsHeld>()
         const credentialID = answered.value
         // The reading says for how long; without one (or with one that holds
         // nothing) the refusal holds the login for the default time.
         yield* pull(where, credentialID)
         yield* apply(where.pool, where.id, RefuseRequest.make({ credentialID, status: input.status }))
+        return everyHeld(yield* SynchronizedRef.get(where.pool), input.sessionID, input.kind, yield* Clock.currentTimeMillis)
       })
 
       const retry = Effect.fn("Pool.retry")(function* (input: { readonly providerID: string; readonly sessionID: string; readonly error?: string }) {

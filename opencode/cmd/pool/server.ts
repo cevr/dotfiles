@@ -246,6 +246,19 @@ const sendHoldKey = (sessionID: string) => `${SEND_HOLD_PREFIX}${sessionID}`
 const decodeSendHold = Schema.decodeUnknownEffect(HeldSend)
 const sendHoldOf = Schema.decodeUnknownOption(HeldSend)
 const frameType = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ type: Schema.String })))
+const encodeRefusal = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.String, error: Schema.Struct({ type: Schema.String, message: Schema.String }) })),
+)
+/**
+ * The pool's refusal as the provider's error envelope, its status kept: the host reads `message` as the turn's end. Not
+ * to be retried by itself: a retry is the pool's to grant (its `retry` hook), and with every account held it places none.
+ */
+const REFUSAL_TYPE = new Map([[401, "authentication_error"]])
+const heldResponse = (status: number, message: string) =>
+  new Response(encodeRefusal({ type: "error", error: { type: REFUSAL_TYPE.get(status) ?? "rate_limit_error", message } }), {
+    status,
+    headers: { "content-type": "application/json", "x-should-retry": "false" },
+  })
 type SendScope = { readonly sessionID: string; readonly providerID: string; readonly kind: Model.PlaceInput["kind"]; readonly model?: string; readonly stepID?: string }
 const publicHeldSend = (hold: HeldSend): HeldSend => HeldSend.make({
   sessionID: hold.sessionID,
@@ -1115,6 +1128,20 @@ export const make = <R = never,>(
         )
       }
 
+      // A refusal that leaves every account held answers in the pool's words, as the placement's refusal would: the host
+      // asks the pool to fail over only while it has retries left, and a turn that failed over through them all would
+      // end on the provider's refusal, with no time to try again. Its hold is recorded, so the session wakes when the
+      // first account opens.
+      const answerHeld = (event: { readonly sessionID: string; readonly kind: Model.PlaceInput["kind"]; readonly model: { readonly providerID: string; readonly id: string }; response: Response }, held: AccountsHeld) =>
+        recordHeld({ sessionID: event.sessionID, providerID: event.model.providerID, kind: event.kind, model: event.model.id }, heldMessage(held), "account-held", held.retryAt).pipe(
+          Effect.tap(() => Option.match(Option.fromNullishOr(event.response.body), {
+            onNone: () => Effect.void,
+            onSome: (body) => Effect.promise(() => body.cancel()),
+          })),
+          Effect.map((hold) => {
+            event.response = heldResponse(event.response.status, hold.reason)
+          }),
+        )
       yield* ctx.session.hook("http.response", (event) =>
         withPool((pool) =>
           pool.responded({
@@ -1125,6 +1152,7 @@ export const make = <R = never,>(
             credentialID: Option.getOrUndefined(Option.map(sentPlacementOf(event.request), (sent) => sent.credentialID)),
           }),
         ).pipe(
+            Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (held) => answerHeld(event, held) })),
             Effect.andThen(
               observe(event.model.providerID, (now) => ChatGPT.fromHeaders((name) => event.response.headers.get(name), now)),
             ),

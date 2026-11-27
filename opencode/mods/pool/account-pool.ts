@@ -170,6 +170,24 @@ export const heldMessage = (error: AccountsHeld): string => {
   return `dotfiles-opencode.pool: all pool accounts are held; ${tryAgainAt(error.retryAt)}`
 }
 
+/** The refusal of a pool whose every account is held: the first to open, or the sign-ins every one needs. */
+const heldPool = (state: AccountPoolState, sessionID: string, kind: RequestKind, now: number): AccountsHeld => {
+  const everySignIn = state.credentials.every((credentialID) =>
+    Option.exists(Option.fromNullishOr(state.holds[credentialID]), (hold) => hold.kind === "signin"))
+  return new AccountsHeld({
+    sessionID,
+    kind,
+    retryAt: Math.min(...state.credentials.map((credentialID) => state.holds[credentialID]?.until ?? now)),
+    signIn: [...state.credentials].sort().filter(() => everySignIn),
+  })
+}
+
+/** The pool's refusal when every account is held now, as placing a request would fail; none while one is free. */
+export const everyHeld = (state: AccountPoolState, sessionID: string, kind: RequestKind, now: number): Option.Option<AccountsHeld> =>
+  Option.liftPredicate(state.credentials, (credentials) => credentials.length > 0 && credentials.every((credentialID) => held(state, credentialID, now))).pipe(
+    Option.map(() => heldPool(state, sessionID, kind, now)),
+  )
+
 export declare namespace PlaceRequest {
   export type Rejections = NoAccount | AccountsHeld
 }
@@ -192,19 +210,7 @@ const placeRequest = (
   const choice = pinned ?? rank(state, command.sessionID, now, rules, command.cacheOf, command.eligible)[0]
   if (choice === undefined) return Effect.fail(new NoAccount({ sessionID: command.sessionID, kind: command.kind }))
   // Placement ranks held accounts last: a held choice means every account is held.
-  if (held(state, choice, now)) {
-    const forSignIn = (credentialID: string) =>
-      Option.exists(Option.fromNullishOr(state.holds[credentialID]), (hold) => hold.kind === "signin")
-    const everySignIn = state.credentials.every(forSignIn)
-    return Effect.fail(
-      new AccountsHeld({
-        sessionID: command.sessionID,
-        kind: command.kind,
-        retryAt: Math.min(...state.credentials.map((credentialID) => state.holds[credentialID]?.until ?? now)),
-        signIn: [...state.credentials].sort().filter(() => everySignIn),
-      }),
-    )
-  }
+  if (held(state, choice, now)) return Effect.fail(heldPool(state, command.sessionID, command.kind, now))
   const cache = requestCache(rules, state.recent[command.sessionID], command.cacheLifeMs, now)
   return Effect.succeed([
     RequestPlaced.make({ sessionID: command.sessionID, kind: command.kind, credentialID: choice, at: now, ...cacheFields(cache) }),
