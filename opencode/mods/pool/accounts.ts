@@ -312,7 +312,11 @@ export const sessionAccount = (
 
 /** Each account as the status method reports it. */
 export const status = (state: AccountPoolState, now: number, rules: Rules): ReadonlyArray<AccountStatus> => {
-  const where = liveSessions(state, now, rules)
+  // One pass over the steps and the sessions, not one per account.
+  const loads = new Map<string, number>()
+  for (const step of state.steps) if (now - step.at < WINDOW_MS) loads.set(step.credentialID, (loads.get(step.credentialID) ?? 0) + step.cost)
+  const lives = new Map<string, number>()
+  for (const account of liveSessions(state, now, rules).values()) lives.set(account, (lives.get(account) ?? 0) + 1)
   return state.credentials.map((credentialID) => {
     const hold = state.holds[credentialID]
     const reading = state.readings[credentialID]
@@ -324,10 +328,8 @@ export const status = (state: AccountPoolState, now: number, rules: Rules): Read
         onNone: () => ({}),
         onSome: (usageReadFailure) => ({ usageReadFailure }),
       }),
-      load: state.steps
-        .filter((step) => step.credentialID === credentialID && now - step.at < WINDOW_MS)
-        .reduce((total, step) => total + step.cost, 0),
-      live: [...where.values()].filter((account) => account === credentialID).length,
+      load: loads.get(credentialID) ?? 0,
+      live: lives.get(credentialID) ?? 0,
       noRoom: noRoom(freshReading(state, credentialID, now)),
     }
   })

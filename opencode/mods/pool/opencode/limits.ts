@@ -6,17 +6,17 @@
 // process, the CLI view (opencode/scripts/pool-limits.ts) and the orchestrate
 // skill's models.ts read. Instances on one host write the same file: each
 // merges what the file holds before it writes (limits.ts `merge`).
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import * as TuiDirs from "@dotfiles/decider/tui-dirs"
 import { dirname, join } from "node:path"
 import { Clock, Effect, Layer, Option, Ref, Schema } from "effect"
 import type { PoolId } from "../account-pool.ts"
 import {
+  counter,
   emptyState,
   limitsLine,
   merge,
   observe,
-  recount,
   reportOf,
   takePeer,
   tally,
@@ -135,6 +135,23 @@ const readFile = (path: string): unknown => {
   }
 }
 
+/** The file's state as `readFile` and `stateOf` read it, read again only when the file is another (each write renames a new one in). */
+const fileReader = (path: string) => {
+  let held = Option.none<{ readonly stamp: string; readonly state: Option.Option<LimitsState> }>()
+  return Effect.gen(function* () {
+    const stamp = yield* Effect.option(
+      Effect.try({ try: () => statSync(path, { bigint: true }), catch: (cause) => cause }).pipe(
+        Effect.map((stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`),
+      ),
+    )
+    const same = Option.filter(held, (kept) => Option.contains(stamp, kept.stamp))
+    if (Option.isSome(same)) return same.value.state
+    const state = Option.fromUndefinedOr(stateOf(readFile(path)))
+    held = Option.map(stamp, (read) => ({ stamp: read, state }))
+    return state
+  })
+}
+
 /**
  * The tally's store over the plugin's storage and the file at `path`; the requests in `recorded`, the one store
  * every copy of the plugin in a process shares (records.ts), else its own.
@@ -144,23 +161,26 @@ export const layer = (storage: Storage, path: string = defaultPath(), recorded: 
     Limits,
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
-      const uses = new Map<string, Use>()
+      // The requests kept, each counted on its rows once, as it comes (limits.ts `counter`).
+      const uses = counter()
       // The requests a previous process recorded; a storage that cannot be read starts empty.
-      for (const { messageID, use } of yield* recorded.entries) if (now - use.at < USE_KEPT_MS) uses.set(messageID, use)
+      for (const { messageID, use } of yield* recorded.entries) if (now - use.at < USE_KEPT_MS) uses.add(messageID, use)
       yield* recorded.expire(now - USE_KEPT_MS)
-      const state = yield* Ref.make(stateOf(readFile(path)) ?? emptyState(now))
+      // The shared store's revision this one has read every request of.
+      let seen = yield* recorded.revision
+      const stored = fileReader(path)
+      const state = yield* Ref.make(Option.getOrElse(yield* stored, () => emptyState(now)))
 
       const write = (next: LimitsState, at: number) =>
-        Effect.sync(() => {
-          const kept = stateOf(readFile(path))
-          const merged = kept === undefined ? next : merge(kept, next)
+        Effect.flatMap(stored, (kept) => Effect.sync(() => {
+          const merged = Option.match(kept, { onNone: () => next, onSome: (file) => merge(file, next) })
           const answer = tally(merged, at)
           mkdirSync(dirname(path), { recursive: true })
           const temporary = `${path}.${process.pid}.tmp`
           writeFileSync(temporary, JSON.stringify({ version: 1, line: limitsLine(answer) ?? null, tally: answer, state: merged }))
           renameSync(temporary, path)
           return merged
-        }).pipe(
+        })).pipe(
           Effect.flatMap((merged) => Ref.set(state, merged)),
           Effect.ignoreCause,
         )
@@ -168,32 +188,44 @@ export const layer = (storage: Storage, path: string = defaultPath(), recorded: 
       return {
         workCosts: (pool: PoolId, groups: ReadonlyArray<WorkGroup>) => Effect.gen(function* () {
           const at = yield* Clock.currentTimeMillis
-          for (const { messageID, use } of yield* recorded.entries) if (at - use.at < USE_KEPT_MS) uses.set(messageID, use)
-          const stored = Option.fromUndefinedOr(stateOf(readFile(path)))
+          // Another copy of the plugin in this process may have recorded requests since.
+          const revision = yield* recorded.revision
+          if (revision !== seen) {
+            for (const { messageID, use } of yield* recorded.entries) if (at - use.at < USE_KEPT_MS) uses.add(messageID, use)
+            seen = revision
+          }
+          const file = yield* stored
           const current = yield* Ref.get(state)
-          const shared = Option.match(stored, { onNone: () => current, onSome: (kept) => merge(kept, current) })
-          return workCosts(tally(recount(shared, [...uses.values()], at), at), uses, pool, groups)
+          const shared = Option.match(file, { onNone: () => current, onSome: (kept) => merge(kept, current) })
+          return workCosts(tally(uses.recount(shared, at), at), uses.uses, pool, groups)
         }),
         use: (messageID: string, use: Use) =>
-          uses.has(messageID)
-            ? Effect.void
-            : Effect.sync(() => void uses.set(messageID, use)).pipe(Effect.andThen(recorded.append({ messageID, use }))),
+          Effect.suspend(() => {
+            if (!uses.add(messageID, use)) return Effect.void
+            return Effect.gen(function* () {
+              const before = yield* recorded.revision
+              yield* recorded.append({ messageID, use })
+              const after = yield* recorded.revision
+              // Its own request moved the revision only: nothing else is new to read.
+              if (before === seen && after === before + 1) seen = after
+            })
+          }),
         observe: (pool: PoolId, credentialID: string, reading: QuotaReading) =>
           Ref.update(state, (held) => observe(held, pool, credentialID, reading)),
         report: Effect.gen(function* () {
           const at = yield* Clock.currentTimeMillis
-          return reportOf(recount(yield* Ref.get(state), [...uses.values()], at), at)
+          return reportOf(uses.recount(yield* Ref.get(state), at), at)
         }),
         takePeer: (peer, report) => Ref.update(state, (held) => takePeer(held, peer, report)),
         flush: Effect.gen(function* () {
           const at = yield* Clock.currentTimeMillis
-          for (const [messageID, use] of uses) if (at - use.at >= USE_KEPT_MS) uses.delete(messageID)
+          uses.expire(at - USE_KEPT_MS)
           yield* recorded.expire(at - USE_KEPT_MS)
-          yield* write(recount(yield* Ref.get(state), [...uses.values()], at), at)
+          yield* write(uses.recount(yield* Ref.get(state), at), at)
         }),
         tally: Effect.gen(function* () {
           const at = yield* Clock.currentTimeMillis
-          return tally(recount(yield* Ref.get(state), [...uses.values()], at), at)
+          return tally(uses.recount(yield* Ref.get(state), at), at)
         }),
       }
     }),

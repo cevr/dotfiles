@@ -51,6 +51,8 @@ export interface Kind<A, R, L> {
 export interface Store<A> {
   /** Every entry kept, from both shapes, read from the storage the first time; one decoded copy per process. */
   readonly entries: Effect.Effect<ReadonlyArray<A>>
+  /** Moves each time an entry is added (read, or appended); a reader that saw it unmoved has nothing new to read. */
+  readonly revision: Effect.Effect<number>
   /** Keeps an entry, unless one of its identity is kept already. A write that fails is lost (logged). */
   readonly append: (entry: A) => Effect.Effect<void>
   /**
@@ -106,6 +108,8 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
   /** The chunk appends go to, and what it holds. */
   let current = Option.none<{ readonly key: string; readonly oldest: number; readonly entries: Array<A> }>()
   let folded = false
+  // Moves each time an entry is added: a reader that saw this revision has seen every entry.
+  let revision = 0
 
   const read = Effect.gen(function* () {
     const found: Held<A> = { byIdentity: new Map(), chunks: new Map(), legacy: [], onlyLegacy: new Set() }
@@ -135,6 +139,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
       })
     }
     held = Option.some(found)
+    revision++
     yield* Effect.logInfo(
       `pool storage: read ${kind.prefix} (${found.chunks.size} chunks) and ${kind.legacy} (${found.legacy.length} old keys): ${found.byIdentity.size} entries`,
     )
@@ -172,6 +177,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
       const identity = kind.identity(entry)
       if (found.byIdentity.has(identity)) return
       found.byIdentity.set(identity, entry)
+      revision++
       // A full chunk, or one whose oldest entry is SEAL_MS or more before this one, is never written again. The bound
       // counts from the oldest entry, not the first: another process judges the chunk by the oldest it sees, and an
       // entry older than the first (a clock set back, two appends that read the clock before the lock) lowers both.
@@ -244,6 +250,7 @@ export const open = <A, R, L>(storage: Storage, kind: Kind<A, R, L>): Store<A> =
 
   return {
     entries: Effect.map(Semaphore.withPermit(lock, load), (found) => [...found.byIdentity.values()]),
+    revision: Effect.sync(() => revision),
     append,
     expire,
     fold,

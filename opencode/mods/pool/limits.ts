@@ -81,13 +81,24 @@ export const PRICE: Readonly<Record<string, readonly [number, number, number, nu
   "gpt-5.6-luna": [0.2, 0.25, 0.02, 1.2],
 }
 
+/** Each model id's family and price row, worked out once: every request of a model asks again. */
+const families = new Map<string, string>()
+const prices = new Map<string, Option.Option<readonly [number, number, number, number]>>()
+
 /**
  * A model's family, as the tally names it: a Claude model by its name
  * (`claude-opus-5-5` → `Opus`), a GPT model by what follows its version
  * (`gpt-6.1-sol` → `sol`, `gpt-6.1-sol-ultrafast` → `sol-ultrafast`), any
  * other by its id.
  */
-export const familyOf = (model: string): string => {
+export const familyOf = (model: string): string =>
+  Option.getOrElse(Option.fromUndefinedOr(families.get(model)), () => {
+    const family = findFamily(model)
+    families.set(model, family)
+    return family
+  })
+
+const findFamily = (model: string): string => {
   const id = model.replace(/^[\w-]+\//, "").toLowerCase()
   const claude = /^claude-([a-z]+)/.exec(id)
   if (claude?.[1] !== undefined) return claude[1].charAt(0).toUpperCase() + claude[1].slice(1)
@@ -97,15 +108,24 @@ export const familyOf = (model: string): string => {
 }
 
 /** The model's price row: its own, else a row of its family or of the family it extends (`sol-ultrafast` → `sol`). */
-const priceOf = (model: string): readonly [number, number, number, number] | undefined => {
+const priceOf = (model: string): readonly [number, number, number, number] | undefined =>
+  Option.getOrUndefined(
+    Option.getOrElse(Option.fromUndefinedOr(prices.get(model)), () => {
+      const found = findPrice(model)
+      prices.set(model, found)
+      return found
+    }),
+  )
+
+const findPrice = (model: string): Option.Option<readonly [number, number, number, number]> => {
   const own = PRICE[model.replace(/^[\w-]+\//, "")]
-  if (own !== undefined) return own
+  if (own !== undefined) return Option.some(own)
   let family = familyOf(model)
   for (;;) {
     const row = Object.entries(PRICE).find(([id]) => familyOf(id) === family)?.[1]
-    if (row !== undefined) return row
+    if (row !== undefined) return Option.some(row)
     const cut = family.lastIndexOf("-")
-    if (cut <= 0) return undefined
+    if (cut <= 0) return Option.none()
     family = family.slice(0, cut)
   }
 }
@@ -238,12 +258,17 @@ const add = (sums: Record<string, { w: number; raw: number }>, use: Use) => {
   sums[family] = { w: held.w + weightedOf(use.model, use.tokens), raw: held.raw + rawOf(use.tokens) }
 }
 
+/** The per-use work of the row sums, for the tests that bound it: each use a row's sums looked at. */
+export const work = { visits: 0 }
+
 /** The tokens `uses` sent on the row's account from its start to its last reading, of the models its window counts. */
 export const sumsOf = (row: Pick<LimitRow, "pool" | "credentialID" | "window" | "start" | "at">, uses: Iterable<Use>): Sums => {
   const sums: Record<string, { w: number; raw: number }> = {}
-  for (const use of uses)
+  for (const use of uses) {
+    work.visits++
     if (use.pool === row.pool && use.credentialID === row.credentialID && use.at > row.start && use.at <= row.at && counts(row.window, use.model))
       add(sums, use)
+  }
   return sums
 }
 
@@ -260,6 +285,109 @@ export const recount = (state: LimitsState, uses: ReadonlyArray<Use>, now: numbe
   for (const [key, row] of Object.entries(state.rows))
     rows[key] = row.resetAt < now - OPEN_MS ? row : { ...row, own: sumsOf(row, byAccount.get(`${row.pool}|${row.credentialID}`) ?? []) }
   return { ...state, rows }
+}
+
+/** The period one row's sums counted, and what they hold so far; `frozen` is their copy a state holds. */
+interface Counted {
+  readonly row: Pick<LimitRow, "pool" | "credentialID" | "window" | "start" | "at" | "resetAt">
+  readonly sums: Record<string, { w: number; raw: number }>
+  frozen: Option.Option<Sums>
+}
+
+/** How many periods of one row (its last reading as one state or another holds it) are kept counted. */
+const PERIODS_KEPT = 4
+
+const accountOf = (use: Pick<Use, "pool" | "credentialID">) => `${use.pool}|${use.credentialID}`
+
+/**
+ * The requests kept, and every open row's sums of them, kept as they come:
+ * `recount` answers as the `recount` of every request would, and counts again
+ * only a row whose period or last reading is new to it. A request is counted
+ * once by each open row of its account when it comes; one that goes uncounts
+ * only the rows that held it, counted again. The sums add the requests in the
+ * order they came, as `recount`'s do, so each total is the same number.
+ */
+export const counter = () => {
+  const uses = new Map<string, Use>()
+  const byAccount = new Map<string, Array<Use>>()
+  /** By account, by row key: the periods counted, the last asked for first. */
+  const rows = new Map<string, Map<string, Array<Counted>>>()
+
+  const take = (counted: Counted, use: Use) => {
+    work.visits++
+    const { row } = counted
+    if (use.at > row.start && use.at <= row.at && counts(row.window, use.model)) {
+      add(counted.sums, use)
+      counted.frozen = Option.none()
+    }
+  }
+
+  /** The row's period counted from every request kept on its account. */
+  const fresh = (account: string, { pool, credentialID, window, start, at, resetAt }: LimitRow): Counted => {
+    const counted: Counted = { row: { pool, credentialID, window, start, at, resetAt }, sums: {}, frozen: Option.none() }
+    for (const use of byAccount.get(account) ?? []) take(counted, use)
+    return counted
+  }
+
+  const countedOf = (key: string, row: LimitRow): Sums => {
+    const account = accountOf(row)
+    const keys = rows.get(account) ?? new Map<string, Array<Counted>>()
+    rows.set(account, keys)
+    const periods = keys.get(key) ?? []
+    const held = Option.fromUndefinedOr(periods.find(({ row: kept }) => kept.window === row.window && kept.start === row.start && kept.at === row.at))
+    const counted = Option.getOrElse(held, () => fresh(account, row))
+    keys.set(key, [counted, ...periods.filter((period) => period !== counted)].slice(0, PERIODS_KEPT))
+    return Option.getOrElse(counted.frozen, () => {
+      const frozen = { ...counted.sums }
+      counted.frozen = Option.some(frozen)
+      return frozen
+    })
+  }
+
+  const kept: ReadonlyMap<string, Use> = uses
+  return {
+    /** Every request kept, by its message. */
+    uses: kept,
+    /** Keeps a request and counts it on its account's open rows; whether it was new. */
+    add: (messageID: string, use: Use): boolean => {
+      if (uses.has(messageID)) return false
+      uses.set(messageID, use)
+      const account = accountOf(use)
+      byAccount.set(account, byAccount.get(account) ?? [])
+      byAccount.get(account)?.push(use)
+      for (const periods of rows.get(account)?.values() ?? []) for (const counted of periods) take(counted, use)
+      return true
+    },
+    /** Forgets every request of time `through` or before; a row that counted one counts again when next asked. */
+    expire: (through: number) => {
+      const gone = new Map<string, number>()
+      for (const [messageID, use] of uses)
+        if (use.at <= through) {
+          uses.delete(messageID)
+          gone.set(accountOf(use), Math.max(gone.get(accountOf(use)) ?? -Infinity, use.at))
+        }
+      for (const [account, newest] of gone) {
+        byAccount.set(account, (byAccount.get(account) ?? []).filter((use) => use.at > through))
+        for (const [key, periods] of rows.get(account) ?? []) rows.get(account)?.set(key, periods.filter(({ row }) => row.start >= newest))
+      }
+    },
+    /** `recount(state, every request kept, now)`. */
+    recount: (state: LimitsState, now: number): LimitsState => {
+      const next: Record<string, LimitRow> = {}
+      for (const [key, row] of Object.entries(state.rows)) {
+        next[key] = row
+        if (row.resetAt >= now - OPEN_MS) next[key] = { ...row, own: countedOf(key, row) }
+      }
+      // A period closed is final: its row is counted no more.
+      for (const keys of rows.values())
+        for (const [key, periods] of keys) {
+          const live = periods.filter(({ row }) => row.resetAt >= now - OPEN_MS)
+          if (live.length === 0) keys.delete(key)
+          else if (live.length < periods.length) keys.set(key, live)
+        }
+      return { ...state, rows: next }
+    },
+  }
 }
 
 /** One open row's sums, as a host reports them to its peers. */
