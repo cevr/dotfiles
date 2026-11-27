@@ -2,9 +2,11 @@
 // hold, pin c6664062; and on a host with one, fork 24dca3c1, a signed provider's
 // placement, which the pool does not defer on the Step yet; a row held on a Step,
 // one with a `stepID`, is the host's and never woken here):
-// decides whether a recorded held-send row should wait, wake the subagent,
-// be checked again later, tell the subagent's parent that it will not be
-// woken, or be left alone, and what the row records after each outcome.
+// decides whether a recorded held-send row should wait, wake the subagent (or
+// an orchestrator root: one with a subagent of its own running, pool-held or
+// latched at the hold), be checked again later, tell the subagent's parent
+// that it will not be woken, or be left alone, and what the row records after
+// each outcome. A root with no such subagent is a person's chat: never woken.
 // Deleted by the pool-hold-latch unit, which holds every primary on the Step.
 //
 // A row is one hold that ended one turn: its `retryAt` is the time that hold
@@ -35,8 +37,54 @@ export const DELIVERY_TIMEOUT_MS = 60_000
 export const WAKE_TEXT =
   "The pool hold that ended your last turn has opened. If a newer task came with this notice, do that task instead; otherwise continue from where you left off, without repeating completed work."
 
+/**
+ * Synthetic wake message delivered to an orchestrator root (see `orchestrator`) when its hold opens: why the pool
+ * woke it, that the pool is open, and that it only continues the turn that ended. A person's message wins over it.
+ */
+export const ROOT_WAKE_TEXT =
+  "The pool hold that ended your last turn has opened: the pool is admitting requests again. The pool woke this session by itself because it was running subagents of its own when the hold stopped it. If a newer message came with this notice, do what it asks instead; otherwise continue the turn that ended from where you left off, without repeating completed work and without starting anything that turn did not ask for."
+
 /** Short description stored on the synthetic wake message. */
 export const WAKE_DESCRIPTION = "pool hold opened"
+
+/**
+ * One subagent of a held root, as the host and the pool know it at the hold: its execution times (`Session.Info.time`,
+ * epoch ms; it runs while `busy` is later than `idle`), its metadata (a latched child carries the wakes' `latch` mark,
+ * mods/wake/latch.ts, until its latch opens, is cancelled or fails), and whether the pool holds a row of its own that
+ * it will still wake.
+ */
+export interface Child {
+  readonly busy: Option.Option<number>
+  readonly idle: Option.Option<number>
+  readonly metadata: unknown
+  readonly poolHeld: boolean
+}
+
+/** The part of the wakes' latch mark (mods/wake/latch.ts `Mark`, under `latch`) that says the latch is still live. */
+const LatchMark = Schema.Struct({
+  latch: Schema.Struct({
+    opensAt: Schema.Finite,
+    cancelledAt: Schema.optional(Schema.Unknown),
+    failed: Schema.optional(Schema.Unknown),
+  }),
+})
+const latchMarkOf = Schema.decodeUnknownOption(LatchMark)
+
+/** Whether the child runs now: its latest execution started after the last one ended. */
+export const running = (child: Child): boolean =>
+  Option.exists(child.busy, (busy) => Option.match(child.idle, { onNone: () => true, onSome: (idle) => busy > idle }))
+
+/** Whether the child waits on a live latch: the wakes' mark, neither cancelled nor failed. */
+export const latched = (child: Child): boolean =>
+  Option.exists(latchMarkOf(child.metadata), ({ latch }) =>
+    Option.isNone(Option.fromUndefinedOr(latch.cancelledAt)) && Option.isNone(Option.fromUndefinedOr(latch.failed)))
+
+/**
+ * Whether a held root is an orchestrator: at the moment of the hold, at least one subagent of its own is running,
+ * pool-held or latched. Only such a root is woken at its opening; a person's chat with none is left for them.
+ */
+export const orchestrator = (children: ReadonlyArray<Child>): boolean =>
+  children.some((child) => child.poolHeld || running(child) || latched(child))
 
 /** What the parent of a held subagent reads once the child is gone: the pool will not wake it. */
 export const goneText = (sessionID: string): string =>
@@ -111,7 +159,8 @@ export const needsCheck = (row: HeldSend, now: number): boolean => Option.exists
 
 /**
  * Pure wake decision for one held-send row:
- * - never sent anything by the pool (`dueAt` none), or a root -> Drop
+ * - never sent anything by the pool (`dueAt` none), or a root that was no orchestrator at its hold -> Drop
+ * - an orchestrator root (`row.orchestrator`) goes on as a subagent does
  * - not yet due -> Wait
  * - the host did not answer -> Retry
  * - the child is gone -> Tell its parent, or Drop when no parent is known
@@ -119,7 +168,7 @@ export const needsCheck = (row: HeldSend, now: number): boolean => Option.exists
  */
 export const decide = (input: WakeInput): Decision => {
   const due = dueAt(input.row)
-  if (Option.isNone(due) || input.session === "root") return Decision.cases.Drop.make({})
+  if (Option.isNone(due) || (input.session === "root" && !wakesRoot(input.row))) return Decision.cases.Drop.make({})
   if (input.now < due.value) return Decision.cases.Wait.make({})
   if (input.session === "unknown") return Decision.cases.Retry.make({})
   if (input.session === "gone")
@@ -135,6 +184,17 @@ export const decide = (input: WakeInput): Decision => {
     }),
   })
 }
+
+/** Whether the row is a root's the pool wakes: its root was an orchestrator at the hold. */
+export const wakesRoot = (row: HeldSend): boolean => row.orchestrator === true
+
+/** Whether the pool may wake the row's session (and so asks the held request's admission): a subagent, or an orchestrator root. */
+export const wakeable = (row: HeldSend, session: SessionRole): boolean =>
+  session === "subagent" || (session === "root" && wakesRoot(row))
+
+/** The wake's text for the session: a root is told why the pool woke it. */
+export const wakeText = (session: SessionRole): string => WAKE_TEXTS[session]
+const WAKE_TEXTS: Record<SessionRole, string> = { subagent: WAKE_TEXT, root: ROOT_WAKE_TEXT, gone: WAKE_TEXT, unknown: WAKE_TEXT }
 
 /** Whether `current` is still the hold `seen` was: the same session's same hold, not replaced by a newer one. */
 export const sameHold = (seen: HeldSend, current: HeldSend): boolean =>
@@ -163,11 +223,13 @@ const Damaged = Schema.Struct({
   reasonCode: Schema.optionalKey(Schema.Unknown),
   retryAt: Schema.optionalKey(Schema.Unknown),
   parentID: Schema.optionalKey(Schema.Unknown),
+  orchestrator: Schema.optionalKey(Schema.Unknown),
 })
 const damagedOf = Schema.decodeUnknownOption(Damaged)
 const stringOf = Schema.decodeUnknownOption(Schema.String)
 const finiteOf = Schema.decodeUnknownOption(Schema.Finite)
 const reasonOf = Schema.decodeUnknownOption(HoldReason)
+const trueOf = Schema.decodeUnknownOption(Schema.Literal(true))
 
 /**
  * A row this pool's kind wrote (it names a `model`, so its parent read "resumes by itself") that no longer decodes,
@@ -184,6 +246,7 @@ export const repaired = (sessionID: string, stored: Schema.Json, now: number): O
       reasonCode: Option.getOrElse(reasonOf(head.reasonCode), () => "record-unreadable"),
       retryAt: Option.getOrElse(finiteOf(head.retryAt), () => now),
       ...Option.match(stringOf(head.parentID), { onNone: () => ({}), onSome: (parentID) => ({ parentID }) }),
+      ...Option.match(trueOf(head.orchestrator), { onNone: () => ({}), onSome: (orchestrator) => ({ orchestrator }) }),
     }),
   )
 }

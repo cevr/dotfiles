@@ -131,7 +131,7 @@
  */
 import { hostname } from "node:os"
 import { Agent, Integration, Plugin, Tool } from "@opencode/plugin/effect"
-import { Cause, Clock, Context, Deferred, Duration, Effect, Exit, type FileSystem, Layer, Option, type Path, Queue, Schedule, Schema, type Scope, Stream } from "effect"
+import { Cause, Clock, Context, DateTime, Deferred, Duration, Effect, Exit, type FileSystem, Layer, Option, type Path, Queue, Schedule, Schema, type Scope, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { type AccountsHeld, heldMessage, PoolId } from "@dotfiles/opencode-pool/account-pool"
 import * as HoldWake from "@dotfiles/opencode-pool/hold-wake"
@@ -661,6 +661,27 @@ export const make = <R = never,>(
               ),
             ),
         })
+      /**
+       * Whether the root `sessionID` is an orchestrator now (`HoldWake.orchestrator`): its subagents as the host lists
+       * them (their execution times and the wakes' latch mark), each with whether the pool still wakes a row of its
+       * own. A host that cannot list them leaves the root a person's, not woken.
+       */
+      const orchestrates = (sessionID: string) =>
+        Schema.decodeUnknownEffect(HostSessionID)(sessionID).pipe(
+          Effect.flatMap((id) => ctx.session.list({ parentID: id })),
+          Effect.flatMap((page) =>
+            Effect.forEach(page.data, (child) =>
+              Effect.map(ctx.storage.get(sendHoldKey(child.id)), (stored): HoldWake.Child => ({
+                busy: Option.map(Option.fromUndefinedOr(child.time.busy), DateTime.toEpochMillis),
+                idle: Option.map(Option.fromUndefinedOr(child.time.idle), DateTime.toEpochMillis),
+                metadata: child.metadata,
+                poolHeld: Option.isSome(Option.flatMap(sendHoldOf(stored), HoldWake.dueAt)),
+              })),
+            ),
+          ),
+          Effect.map(HoldWake.orchestrator),
+          Effect.orElseSucceed(() => false),
+        )
       // The deadline changes what the record says, not whether it exists.
       // Reading from storage and the current clock also works after a restart,
       // without a timer, an activation scan, or a missed expiry to recover.
@@ -683,11 +704,15 @@ export const make = <R = never,>(
         // A hold that ends the turn (no Step holds it: a host without one, or a signed provider's placement, which the
         // pool does not defer yet) tells a held subagent's parent that it resumes by itself: its row names the parent,
         // whom the pool tells should the child be gone before it can be woken. A row held on a Step is the host's.
+        // A held root is woken too when it is an orchestrator now, at the hold: a subagent of its own runs, is held by
+        // the pool or waits on a latch (`HoldWake.orchestrator`); its row says so.
         const waking = scope.kind === "primary" && Option.isNone(Option.fromUndefinedOr(scope.stepID))
-        const parent = yield* Option.match(Option.liftPredicate(scope.sessionID, () => waking), {
-          onNone: () => Effect.succeed(Option.none<string>()),
-          onSome: (sessionID) => Effect.map(hostSession(sessionID), (session) => Option.filter(session.parentID, () => session.role === "subagent")),
+        const session = yield* Option.match(Option.liftPredicate(scope.sessionID, () => waking), {
+          onNone: () => Effect.succeed(heldSession("unknown", Option.none())),
+          onSome: hostSession,
         })
+        const parent = Option.filter(session.parentID, () => session.role === "subagent")
+        const orchestrating = session.role === "root" && (yield* orchestrates(scope.sessionID))
         const hold = HeldSend.make({
           sessionID: scope.sessionID,
           providerID: scope.providerID,
@@ -696,9 +721,14 @@ export const make = <R = never,>(
           ...Option.match(Option.fromUndefinedOr(scope.stepID), { onNone: () => ({}), onSome: (stepID) => ({ stepID }) }),
           ...Option.match(Option.fromUndefinedOr(scope.model), { onNone: () => ({}), onSome: (model) => ({ model }) }),
           ...Option.match(parent, { onNone: () => ({}), onSome: (parentID) => ({ parentID }) }),
+          ...Option.match(Option.liftPredicate(true as const, () => orchestrating), { onNone: () => ({}), onSome: (orchestrator) => ({ orchestrator }) }),
         })
         if (scope.kind !== "primary") return { ...hold, reason }
-        const message = Option.match(parent, { onNone: () => reason, onSome: () => HoldWake.appendSubagentNote(reason) })
+        // A session the pool wakes reads that it resumes by itself.
+        const message = Option.match(Option.liftPredicate(reason, () => Option.isSome(parent) || orchestrating), {
+          onNone: () => reason,
+          onSome: HoldWake.appendSubagentNote,
+        })
         // No successful/typed refusal is published before this commit.
         yield* sendRecords.withPermits(1)(ctx.storage.set(sendHoldKey(scope.sessionID), hold))
         // Every wake scanner of the process looks at the new row (a reload's copies too): a row it may wake has a time.
@@ -814,14 +844,14 @@ export const make = <R = never,>(
         if (Option.isNone(due)) return Option.none<number>()
         if ((yield* Clock.currentTimeMillis) < due.value) return due
         const session = yield* hostSession(row.sessionID)
-        // Asked once per due time, never on a tick, and only of a subagent's row.
-        const answer = yield* Option.match(Option.liftPredicate(row, () => session.role === "subagent"), {
+        // Asked once per due time, never on a tick, and only of a row whose session the pool wakes.
+        const answer = yield* Option.match(Option.liftPredicate(row, (held) => HoldWake.wakeable(held, session.role)), {
           onNone: () => Effect.succeed(Option.none<HoldWake.Answer>()),
           onSome: (held) => Effect.asSome(heldAnswer(held)),
         })
         const { decision, next } = yield* sendRecords.withPermits(1)(decideHeldRow(key, row, session.role, answer))
         if (HoldWake.Decision.guards.Wake(decision))
-          return yield* sendForRow(key, row, row.sessionID, { id: decision.id, text: HoldWake.WAKE_TEXT, description: HoldWake.WAKE_DESCRIPTION, mark: HoldWake.delivered }, false)
+          return yield* sendForRow(key, row, row.sessionID, { id: decision.id, text: HoldWake.wakeText(session.role), description: HoldWake.WAKE_DESCRIPTION, mark: HoldWake.delivered }, false)
         if (HoldWake.Decision.guards.Tell(decision))
           return yield* sendForRow(key, row, decision.parentID, { id: decision.id, text: HoldWake.goneText(row.sessionID), description: HoldWake.GONE_DESCRIPTION, mark: HoldWake.told }, true)
         return next

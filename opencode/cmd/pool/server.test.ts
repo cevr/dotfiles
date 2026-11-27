@@ -359,6 +359,13 @@ const start = <R = never,>(
             ...(parentID === undefined ? {} : { parentID }),
           })
         },
+        // A session's subagents, as the host lists them: never run, with no metadata of their own.
+        list: ({ parentID }: { readonly parentID: string }) =>
+          Effect.succeed({
+            data: Arr.flatMap([...state.parents], ([id, parent]) =>
+              Option.toArray(Option.map(Option.liftPredicate(id, () => parent === parentID), (child) => ({ id: child, parentID, time: {}, metadata: {} }))),
+            ),
+          }),
         synthetic: (input: { readonly sessionID: string; readonly id?: string; readonly text: string; readonly description?: string; readonly resume?: boolean }) =>
           Effect.suspend((): Effect.Effect<void, unknown> => {
             state.wakeAccess.calls += 1
@@ -2483,15 +2490,17 @@ describe("interim hold-wake on hosts without a Step", () => {
     return state
   }
 
-  test("a held subagent's error states it resumes by itself unless stopped first; a root's and an auxiliary request's do not", () =>
+  test("a held subagent's error states it resumes by itself unless stopped first; a root's with no live subagent and an auxiliary request's do not", () =>
     onTestClock(Effect.gen(function* () {
       const until = 10 * MINUTE
       const state = heldWorld(until)
       const plugin = yield* start({ sweepMinutes: 0 }, state, live())
-      const childError = yield* refusalOf(plugin.request("ses_child"))
-      expect(childError).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      // Held before its subagent is: no subagent of its own runs, is held or latched.
       const rootError = yield* refusalOf(plugin.request("ses_root"))
       expect(rootError).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      expect(state.storage.get("held-send/ses_root")).not.toHaveProperty("orchestrator")
+      const childError = yield* refusalOf(plugin.request("ses_child"))
+      expect(childError).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
       const titleError = yield* refusalOf(plugin.request("ses_child", "anthropic", "title"))
       expect(titleError).not.toContain(HoldWake.SUBAGENT_RESUME_NOTE)
       expect(state.storage.get("held-send/ses_child")).toMatchObject({ sessionID: "ses_child", model: model.id, retryAt: until })
@@ -2527,6 +2536,29 @@ describe("interim hold-wake on hosts without a Step", () => {
       yield* start({ sweepMinutes: 0 }, state, live())
       yield* advance(5 * MINUTE)
       expect(state.synthetics).toHaveLength(1)
+    })))
+
+  test("an orchestrator root (a subagent of its own pool-held at its hold) is told it resumes, is woken once with its own text after a failed delivery, and a stopped one is not woken by the host", () =>
+    onTestClock(Effect.gen(function* () {
+      const until = 2 * MINUTE
+      const state = heldWorld(until)
+      const plugin = yield* start({ sweepMinutes: 0 }, state, live())
+      yield* refusalOf(plugin.request("ses_child"))
+      expect(yield* refusalOf(plugin.request("ses_root"))).toContain(HoldWake.SUBAGENT_RESUME_NOTE)
+      expect(state.storage.get("held-send/ses_root")).toMatchObject({ orchestrator: true, retryAt: until })
+      // The person stopped the root; the first delivery of each (the child's, then the root's) fails.
+      state.stopped.add("ses_root")
+      state.wakeAccess.fails = 2
+      yield* advance(until + 10 * MINUTE)
+      expect(admittedFor(state, "ses_root")).toHaveLength(1)
+      expect(admittedFor(state, "ses_root")[0]).toMatchObject({ id: HoldWake.wakeDeliveryId("ses_root", until), text: HoldWake.ROOT_WAKE_TEXT, resume: true, woke: false })
+      expect(admittedFor(state, "ses_child")[0]).toMatchObject({ text: HoldWake.WAKE_TEXT, woke: true })
+      expect(state.storage.get("held-send/ses_root")).toMatchObject({ wakeFailures: 1 })
+      expect(state.storage.get("held-send/ses_root")).toHaveProperty("wokenAt")
+      // A fresh pool copy after restart sends nothing more.
+      yield* start({ sweepMinutes: 0 }, state, live())
+      yield* advance(5 * MINUTE)
+      expect(admittedFor(state, "ses_root")).toHaveLength(1)
     })))
 
   test("a failed wake delivery is tried again: the held child is woken exactly once, and the row records only what the host took", () =>

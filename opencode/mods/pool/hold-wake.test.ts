@@ -3,6 +3,7 @@ import { Option, Schema } from "effect"
 import {
   Answer,
   appendSubagentNote,
+  type Child,
   decide,
   Decision,
   delivered,
@@ -11,15 +12,20 @@ import {
   goneNoticeId,
   heldUntil,
   needsCheck,
+  orchestrator,
   repaired,
   retryDelay,
+  ROOT_WAKE_TEXT,
   sameHold,
   type SessionRole,
   SUBAGENT_RESUME_NOTE,
   told,
   WAKE_RETRY_MAX_MS,
   WAKE_RETRY_MS,
+  WAKE_TEXT,
+  wakeable,
   wakeDeliveryId,
+  wakeText,
 } from "./hold-wake.ts"
 import { HoldReason } from "./pace.ts"
 import { HeldSend } from "./refuse.ts"
@@ -44,6 +50,7 @@ const STEPS: ReadonlyArray<Option.Option<string>> = [Option.none(), Option.some(
 const RECHECKS: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(RECHECK)]
 const PARENTS: ReadonlyArray<Option.Option<string>> = [Option.none(), Option.some("ses_root")]
 const FAILURES: ReadonlyArray<Option.Option<number>> = [Option.none(), Option.some(1), Option.some(10_000)]
+const ORCHESTRATORS: ReadonlyArray<boolean> = [false, true]
 
 const answersAt = (now: number): ReadonlyArray<readonly [string, Option.Option<Answer>]> => [
   ["none", Option.none()],
@@ -62,6 +69,7 @@ interface RowFields {
   readonly recheckAt: Option.Option<number>
   readonly parentID: Option.Option<string>
   readonly wakeFailures: Option.Option<number>
+  readonly orchestrator: boolean
 }
 
 const makeRow = (fields: RowFields): HeldSend =>
@@ -77,11 +85,12 @@ const makeRow = (fields: RowFields): HeldSend =>
     ...Option.match(fields.recheckAt, { onNone: () => ({}), onSome: (recheckAt) => ({ recheckAt }) }),
     ...Option.match(fields.parentID, { onNone: () => ({}), onSome: (parentID) => ({ parentID }) }),
     ...Option.match(fields.wakeFailures, { onNone: () => ({}), onSome: (wakeFailures) => ({ wakeFailures }) }),
+    ...Option.match(Option.liftPredicate(true as const, () => fields.orchestrator), { onNone: () => ({}), onSome: (orchestrator) => ({ orchestrator }) }),
   })
 
 const FRESH: RowFields = {
   reasonCode: "account-held", model: Option.some("m"), wokenAt: Option.none(), toldAt: Option.none(), stepID: Option.none(),
-  recheckAt: Option.none(), parentID: Option.some("ses_root"), wakeFailures: Option.none(),
+  recheckAt: Option.none(), parentID: Option.some("ses_root"), wakeFailures: Option.none(), orchestrator: false,
 }
 
 /** Whether the pool may ever send anything for a row built from `fields`, as the rules state it (not read from the row). Failures never end it. */
@@ -90,7 +99,8 @@ const live = (fields: RowFields): boolean =>
 
 /** The decision as the rules state it, from the fields the row was built from. */
 const expectedDecision = (fields: RowFields, session: SessionRole, now: number, answer: Option.Option<Answer>): string => {
-  if (!live(fields) || session === "root") return "Drop"
+  // A root is woken only when it orchestrated at the hold; then it goes on as a subagent does.
+  if (!live(fields) || (session === "root" && !fields.orchestrator)) return "Drop"
   if (now < Option.getOrElse(fields.recheckAt, () => RETRY)) return "Wait"
   if (session === "unknown") return "Retry"
   if (session === "gone") return Option.match(fields.parentID, { onNone: () => "Drop", onSome: () => "Tell" })
@@ -104,7 +114,11 @@ const everyRow: ReadonlyArray<RowFields> = HoldReason.literals.flatMap((reasonCo
       TOLD.flatMap((toldAt) =>
         STEPS.flatMap((stepID) =>
           RECHECKS.flatMap((recheckAt) =>
-            PARENTS.flatMap((parentID) => FAILURES.map((wakeFailures) => ({ reasonCode, model, wokenAt, toldAt, stepID, recheckAt, parentID, wakeFailures }))),
+            PARENTS.flatMap((parentID) =>
+              FAILURES.flatMap((wakeFailures) =>
+                ORCHESTRATORS.map((orchestrator) => ({ reasonCode, model, wokenAt, toldAt, stepID, recheckAt, parentID, wakeFailures, orchestrator })),
+              ),
+            ),
           ),
         ),
       ),
@@ -122,6 +136,7 @@ const labelOf = (fields: RowFields, clock: string, session: SessionRole, answer:
     `recheck=${Option.isSome(fields.recheckAt)}`,
     `parent=${Option.isSome(fields.parentID)}`,
     `failures=${Option.getOrElse(fields.wakeFailures, () => 0)}`,
+    `orchestrator=${fields.orchestrator}`,
     clock,
     session,
     answer,
@@ -142,7 +157,7 @@ const checkCase = (fields: RowFields, session: SessionRole, [clock, now]: readon
 }
 
 describe("hold-wake decision domain", () => {
-  test("enumerates the entire input domain: reason, model, woken, told, Step, recheck, parent, failures, session, clock and answer", () => {
+  test("enumerates the entire input domain: reason, model, woken, told, Step, recheck, parent, failures, orchestrator, session, clock and answer", () => {
     let checked = 0
     for (const fields of everyRow)
       for (const session of SESSIONS)
@@ -152,7 +167,7 @@ describe("hold-wake decision domain", () => {
             checked += 1
           }
     expect(checked).toBe(
-      HoldReason.literals.length * MODELS.length * WOKEN.length * TOLD.length * STEPS.length * RECHECKS.length * PARENTS.length * FAILURES.length *
+      HoldReason.literals.length * MODELS.length * WOKEN.length * TOLD.length * STEPS.length * RECHECKS.length * PARENTS.length * FAILURES.length * ORCHESTRATORS.length *
         SESSIONS.length * CLOCKS.length * 4,
     )
   })
@@ -218,6 +233,48 @@ describe("what the row records", () => {
     expect(sameHold(row, { ...row, retryAt: RETRY + 1 })).toBe(false)
     expect(sameHold(row, { ...row, sessionID: "ses_other" })).toBe(false)
     expect(sameHold(row, { ...row, recheckAt: RECHECK, wakeFailures: 2 })).toBe(true)
+  })
+})
+
+describe("an orchestrator root: at the hold, a subagent of its own is running, pool-held or latched", () => {
+  const child = (over: Partial<Child>): Child => ({ busy: Option.none(), idle: Option.none(), metadata: {}, poolHeld: false, ...over })
+  const mark = { hold: "pace", reason: "pace", opensAt: RETRY, recheckAt: RETRY, at: BASE }
+
+  test("a running, pool-held or latched subagent makes it one; a finished, never-run or cancelled or failed latch does not", () => {
+    expect(orchestrator([])).toBe(false)
+    expect(orchestrator([child({ busy: Option.some(BASE) })])).toBe(true)
+    expect(orchestrator([child({ busy: Option.some(BASE + 1), idle: Option.some(BASE) })])).toBe(true)
+    expect(orchestrator([child({ poolHeld: true })])).toBe(true)
+    expect(orchestrator([child({ metadata: { latch: mark } })])).toBe(true)
+    expect(orchestrator([child({ busy: Option.some(BASE), idle: Option.some(BASE) })])).toBe(false)
+    expect(orchestrator([child({ busy: Option.some(BASE), idle: Option.some(BASE + 1) })])).toBe(false)
+    expect(orchestrator([child({ metadata: { latch: { ...mark, cancelledAt: BASE } } })])).toBe(false)
+    expect(orchestrator([child({ metadata: { latch: { ...mark, failed: "no" } } })])).toBe(false)
+    expect(orchestrator([child({ metadata: { latch: "garbage" } })])).toBe(false)
+    expect(orchestrator([child({}), child({ poolHeld: true })])).toBe(true)
+  })
+
+  test("its row is woken with the hold's one id and told why; a root that did not orchestrate is dropped", () => {
+    const row = { ...makeRow({ ...FRESH, parentID: Option.none() }), orchestrator: true as const }
+    const admitted = Option.some(Answer.cases.Admitted.make({}))
+    expect(wakeable(row, "root")).toBe(true)
+    expect(wakeable(makeRow(FRESH), "root")).toBe(false)
+    expect(decide({ row, session: "root", now: RETRY, answer: admitted })).toEqual(Decision.cases.Wake.make({ id: wakeDeliveryId("ses_child", RETRY) }))
+    expect(decide({ row: makeRow(FRESH), session: "root", now: RETRY, answer: admitted })).toEqual(Decision.cases.Drop.make({}))
+    // A gone root has no one to tell; a woken one is done.
+    expect(decide({ row, session: "gone", now: RETRY, answer: Option.none() })).toEqual(Decision.cases.Drop.make({}))
+    expect(decide({ row: delivered(row, RETRY), session: "root", now: RETRY, answer: admitted })).toEqual(Decision.cases.Drop.make({}))
+    expect(wakeText("root")).toBe(ROOT_WAKE_TEXT)
+    expect(wakeText("subagent")).toBe(WAKE_TEXT)
+    expect(ROOT_WAKE_TEXT).toContain("has opened: the pool is admitting requests again")
+    expect(ROOT_WAKE_TEXT).toContain("because it was running subagents of its own")
+    expect(ROOT_WAKE_TEXT).toContain("without starting anything that turn did not ask for")
+  })
+
+  test("a damaged row keeps that it orchestrates", () => {
+    expect(repaired("ses_child", { model: "m", retryAt: "soon", orchestrator: true }, RETRY)).toEqual(
+      Option.some(HeldSend.make({ sessionID: "ses_child", providerID: "anthropic", model: "m", reasonCode: "record-unreadable", retryAt: RETRY, orchestrator: true })),
+    )
   })
 })
 

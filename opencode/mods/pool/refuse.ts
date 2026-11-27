@@ -18,6 +18,8 @@ export const HeldSend = Schema.Struct({
   // again, how many deliveries failed, when the host took its wake, and when its parent took the word that it will
   // not be woken. `retryAt` stays the time the hold named.
   parentID: Schema.optionalKey(Schema.String),
+  // A held root that was an orchestrator at the hold (`HoldWake.orchestrator`): the pool wakes it as a subagent.
+  orchestrator: Schema.optionalKey(Schema.Literal(true)),
   recheckAt: Schema.optionalKey(Schema.Finite),
   wakeFailures: Schema.optionalKey(Schema.Int),
   wokenAt: Schema.optionalKey(Schema.Finite),

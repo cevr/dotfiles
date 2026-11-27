@@ -3,7 +3,10 @@
 // The interim on a host with no Step to hold (the installed fork): a subagent
 // whose request the pool holds still ends its turn, as today, and the pool
 // wakes it by itself, once, when it would admit the request again. A root is
-// never woken. Deleted by the pool-hold-latch unit, whose host holds the Step.
+// woken the same way only when it orchestrates (a subagent of its own runs, is
+// pool-held or latched at the hold); a person's chat is never woken.
+// Deleted by the pool-hold-latch unit, whose host holds the Step.
+import * as HoldWake from "@dotfiles/opencode-pool/hold-wake"
 import { Array as Arr, Effect, Option } from "effect"
 import * as Plugins from "../../sim/plugins.ts"
 import * as Provider from "../../sim/provider.ts"
@@ -112,4 +115,122 @@ seeded("a held root is never woken: its owner sends it again", ({ seed, expect }
     yield* s.world.advance(s.opens + 30 * MINUTE - s.world.now())
     expect(s.sends).toEqual([])
     expect(s.executions() - before).toBe(0)
+  }))
+
+/** What a held root's own subagent is at the hold: live ones make the root an orchestrator, the others do not. */
+const CHILDREN = ["pool-held", "latched", "running", "none", "finished", "cancelled-latch"] as const
+type ChildKind = (typeof CHILDREN)[number]
+const ORCHESTRATING: ReadonlyArray<ChildKind> = ["pool-held", "latched", "running"]
+
+/** One held root with one subagent of `child`'s kind at the hold, on a host with no Step. */
+const heldRoot = (seed: number, child: ChildKind) =>
+  Effect.gen(function* () {
+    const accounts = Provider.accounts(seed, ["first"])
+    const opens = World.START + 10 * MINUTE
+    const world: World.World = World.make({
+      seed,
+      sendRefusal: false,
+      script: () => World.say(""),
+      anthropic: {
+        accounts,
+        script: ({ body }) => {
+          const tools = body["tools"]
+          if (!Array.isArray(tools) || tools.length === 0) return { kind: "ok", text: "Title" }
+          return { kind: "ok", text: ANSWER }
+        },
+      },
+      integrations: { anthropic: Arr.map(Object.values(accounts), (account) => ({ id: "cred_first", label: "Anthropic 1", ...account, expires: World.START + 24 * 60 * MINUTE })) },
+    })
+    yield* world.load(Plugins.anthropicAuth(world.provider()), { directory: WORK })
+    yield* world.load(Plugins.pool(), { directory: WORK, options: { sweepMinutes: 0, limitsFile: "/nonexistent/sim/limits.json" } })
+    const hold = (until: number) =>
+      Option.match(Option.fromUndefinedOr(world.storage.get(POOL)), { onNone: () => {}, onSome: (rows) => void rows.set(HOLD_ROW, { kind: "rate-limit", at: world.now(), until }) })
+    hold(opens)
+    const root = yield* world.session(WORK, { title: "the orchestrator" })
+    const entry = (id: string) => Option.getOrThrow(Option.fromUndefinedOr(world.sessions.get(id)))
+    if (child !== "none") {
+      const sub = yield* world.session(WORK, { parentID: root, title: "a unit" })
+      const mark = { hold: "pace", reason: "pace", opensAt: opens + 60 * MINUTE, recheckAt: opens + 60 * MINUTE, at: world.now() }
+      // The host's own record of the child, as the wakes (its latch mark) and its executions leave it.
+      if (child === "latched") entry(sub).metadata = { latch: mark }
+      if (child === "cancelled-latch") entry(sub).metadata = { latch: { ...mark, cancelledAt: world.now() } }
+      if (child === "running") entry(sub).busy = Option.some(world.now())
+      if (child === "finished") {
+        entry(sub).busy = Option.some(world.now() - MINUTE)
+        entry(sub).idle = Option.some(world.now())
+      }
+      // Held by the pool: its turn ends held, and its report wakes the root, whose own turn ends held too.
+      if (child === "pool-held") yield* world.prompt(sub, "do the unit's work")
+    }
+    if (child !== "pool-held") yield* world.prompt(root, "run the night's units")
+    yield* world.advance(MINUTE)
+    const executions = () => world.trace().split("\n").filter((line) => line.includes("session.execution.started") && line.includes(root)).length
+    const wakes = () => world.messages(root).map(line).filter((text) => text.includes(HoldWake.ROOT_WAKE_TEXT)).length
+    const asked = () => world.asked().filter((request) => request.sessionID === root && line(request).includes(HoldWake.ROOT_WAKE_TEXT))
+    const running = () => entry(root).running
+    // The pool's record of the root's hold (its `held-send/` row), which says whether the root orchestrates.
+    const row = () => Option.flatMap(Option.fromUndefinedOr(world.storage.get(POOL)), (rows) => Option.fromUndefinedOr(rows.get(`held-send/${root}`)))
+    return { world, root, opens, hold, executions, wakes, asked, running, row }
+  })
+
+for (const child of ORCHESTRATING)
+  for (const restart of RESTARTS)
+    seeded(`an orchestrator root (a root with a subagent of its own running, pool-held or latched at the hold; here ${child}) is woken once at its opening (server: ${restart})`, ({ seed, expect }) =>
+      Effect.gen(function* () {
+        const s = yield* heldRoot(seed, child)
+        expect(s.running()).toBe(false)
+        expect(s.wakes()).toBe(0)
+        expect(Option.getOrThrow(s.row())).toMatchObject({ sessionID: s.root, orchestrator: true })
+        // Its turn ended on the pool's word that it resumes by itself.
+        expect(s.world.messages(s.root).map(line).some((text) => text.includes(HoldWake.SUBAGENT_RESUME_NOTE.trim()))).toBe(true)
+        if (restart === "reload") yield* s.world.restart
+        if (restart === "down-up") {
+          yield* s.world.down
+          yield* s.world.advance(30_000)
+          yield* s.world.up
+        }
+        yield* s.world.advance(s.opens - 1 - s.world.now())
+        expect(s.wakes()).toBe(0)
+        yield* s.world.advance(3 * MINUTE)
+        yield* s.world.until(() => !s.running(), 5 * MINUTE)
+        expect(s.wakes()).toBe(1)
+        expect(s.asked().length).toBeGreaterThanOrEqual(1)
+        // `at` is virtual ms since the world's start.
+        expect(Option.getOrThrow(Arr.head(s.asked())).at).toBeGreaterThanOrEqual(s.opens - World.START)
+        expect(s.world.messages(s.root).map(line).some((text) => text.includes(ANSWER))).toBe(true)
+        // Nothing wakes it again, a restart later either.
+        yield* s.world.restart
+        yield* s.world.advance(30 * MINUTE)
+        expect(s.wakes()).toBe(1)
+      }))
+
+for (const child of CHILDREN.filter((kind) => !ORCHESTRATING.includes(kind)))
+  seeded(`a held root with no subagent of its own running, pool-held or latched at the hold (here ${child}) is a person's chat: never woken`, ({ seed, expect }) =>
+    Effect.gen(function* () {
+      const s = yield* heldRoot(seed, child)
+      const before = s.executions()
+      // Its turn ended held, and the row does not say it orchestrates.
+      expect(Option.getOrThrow(s.row())).toMatchObject({ sessionID: s.root })
+      expect(Option.getOrThrow(s.row())).not.toHaveProperty("orchestrator")
+      expect(s.world.messages(s.root).map(line).some((text) => text.includes(HoldWake.SUBAGENT_RESUME_NOTE.trim()))).toBe(false)
+      yield* s.world.advance(s.opens + 30 * MINUTE - s.world.now())
+      expect(s.wakes()).toBe(0)
+      expect(s.executions() - before).toBe(0)
+    }))
+
+seeded("an orchestrator root the person types to before its opening is not woken by the pool: typing first cancels the wake", ({ seed, expect }) =>
+  Effect.gen(function* () {
+    const s = yield* heldRoot(seed, "latched")
+    expect(Option.getOrThrow(s.row())).toMatchObject({ orchestrator: true })
+    const before = s.executions()
+    // The accounts open early; the person's message goes out and its turn ends.
+    s.hold(s.world.now())
+    yield* s.world.prompt(s.root, "the person again")
+    yield* s.world.advance(MINUTE)
+    yield* s.world.until(() => !s.running(), 5 * MINUTE)
+    expect(s.executions() - before).toBe(1)
+    expect(Option.isNone(s.row())).toBe(true)
+    yield* s.world.advance(s.opens + 30 * MINUTE - s.world.now())
+    expect(s.wakes()).toBe(0)
+    expect(s.executions() - before).toBe(1)
   }))
